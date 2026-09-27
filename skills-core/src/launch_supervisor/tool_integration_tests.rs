@@ -91,32 +91,62 @@ fn measured_integration_rejects_missing_evidence_and_runtime_overrides() {
     let manifest = manifest(&executable);
     let release = &manifest.release_id;
     assert!(
-        super::super::ToolIsolationEvidence::measure(&plan, root.path(), release, "backend")
-            .is_err()
+        super::super::ToolIsolationEvidence::measure(
+            super::super::tool_integration::Integration::TestTool,
+            &plan,
+            root.path(),
+            release,
+            "backend"
+        )
+        .is_err()
     );
     write_json(&root.path().join("manifest.json"), &manifest);
     assert!(
-        super::super::ToolIsolationEvidence::measure(&plan, root.path(), release, "backend")
-            .is_ok()
+        super::super::ToolIsolationEvidence::measure(
+            super::super::tool_integration::Integration::TestTool,
+            &plan,
+            root.path(),
+            release,
+            "backend"
+        )
+        .is_ok()
     );
     let mut invalid = plan.clone();
     invalid
         .environment
         .insert("LD_PRELOAD".to_owned(), "workspace/plugin.so".to_owned());
     assert!(
-        super::super::ToolIsolationEvidence::measure(&invalid, root.path(), release, "backend")
-            .is_err()
+        super::super::ToolIsolationEvidence::measure(
+            super::super::tool_integration::Integration::TestTool,
+            &invalid,
+            root.path(),
+            release,
+            "backend"
+        )
+        .is_err()
     );
     invalid = plan.clone();
     invalid.arguments.push("workspace/plugin".to_owned());
     assert!(
-        super::super::ToolIsolationEvidence::measure(&invalid, root.path(), release, "backend")
-            .is_err()
+        super::super::ToolIsolationEvidence::measure(
+            super::super::tool_integration::Integration::TestTool,
+            &invalid,
+            root.path(),
+            release,
+            "backend"
+        )
+        .is_err()
     );
     fs::write(&executable, b"other runtime bytes").unwrap();
     assert!(
-        super::super::ToolIsolationEvidence::measure(&plan, root.path(), release, "backend")
-            .is_err()
+        super::super::ToolIsolationEvidence::measure(
+            super::super::tool_integration::Integration::TestTool,
+            &plan,
+            root.path(),
+            release,
+            "backend"
+        )
+        .is_err()
     );
 }
 

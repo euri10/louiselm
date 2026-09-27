@@ -11,8 +11,9 @@ integrations remain `louiselm-d6fv.9`.
 ## Exact integration evidence
 
 The optional Agent registration field `tool_integration` must select
-`louiselm.test-tool-integration/1`. Missing and unknown selections refuse Verified
-launch. The selected release manifest must bind the executable component
+`louiselm.test-tool-integration/1` or `louiselm.codex-acp-integration/1`. Missing
+and unknown selections refuse Verified launch. Both contracts require empty
+registered arguments and environment; each fixes its launch values in code. The selected release manifest must bind the executable component
 `louiselm-tool-test-agent`, and the registered runtime must contain those exact
 bytes. Startup arguments and environment must both be empty. Release identity,
 executable hash, device/inode, Session and measured Bubblewrap digest are exposed
@@ -20,6 +21,18 @@ as `ToolIsolationEvidence::canonical_bytes()` on the authenticated runtime.
 The launcher constructs this evidence before startup and checks it against the
 kernel-pinned executable before enabling capabilities. A registration name or
 an integration's assertion cannot manufacture the evidence.
+
+`louiselm.codex-acp-integration/1` (louiselm-fkdv8) runs the registered runtime
+executable (Node) on `codex-acp.js`, which starts the stock `codex` binary; both
+files sit at those fixed names in the runtime root and must be registered
+adapters. The launcher supplies the adapter argument and a fixed environment:
+`CODEX_CONFIG` names only the Session's broker listener
+(`http://127.0.0.1:40773/v1`) with no MCP servers, `DEFAULT_AUTH_REQUEST` carries
+no headers or credentials, and `HOME` is the private Session home. No operator
+Codex home or configuration is read. The evidence adds the adapter, runtime and
+configuration digests. Guarded Brokered start refuses this contract until the
+Sender guard can enroll the measured Codex descendant rather than the adapter
+(louiselm-g3rvu).
 
 The deterministic Agent is the executable itself, not a runtime wrapper. It
 echoes ordinary stdin bytes. A record separator (`0x1e`) introduces a bounded

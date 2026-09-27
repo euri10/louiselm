@@ -1259,7 +1259,8 @@ repair an immutable release in place.
 The [Agent process identity boundary](../docs/agent-process-identity.md) pins the
 actual workload, not Bubblewrap's reaper. The [tool boundary](../docs/tool-isolation.md)
 supports the exact release-bound deterministic test integration, selected with
-Agent registration `tool_integration: "louiselm.test-tool-integration/1"`.
+Agent registration `tool_integration: "louiselm.test-tool-integration/1"`, and the
+stock Codex ACP chain `louiselm.codex-acp-integration/1` (not yet Brokered).
 Unset or unsupported integrations refuse Verified launch; whole-Session
 containment is not Agent/tool-isolation proof.
 

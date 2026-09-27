@@ -95,6 +95,7 @@ pub(in crate::launch_supervisor) fn fixture(root: &Path) -> MeasuredFixture {
         "fixture".into(),
     );
     let evidence = super::super::ToolIsolationEvidence::measure(
+        super::super::tool_integration::Integration::TestTool,
         &plan,
         &release_root,
         &manifest.release_id,

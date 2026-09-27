@@ -1,20 +1,51 @@
-//! Exact compatibility evidence for the deterministic integration only.
+//! Exact compatibility evidence for the measured Agent integrations.
+//!
+//! Each contract fixes its process shape in code. A registration names the
+//! contract and keeps empty arguments and environment; the launcher derives the
+//! exact launch values, so no registration can widen the boundary.
 
 use super::{AgentAuthentication, SupervisorError};
 use crate::{
+    Digest,
     registry::{AgentRegistration, Registry},
     release,
     sandbox::ConfinementPlan,
 };
 use serde::Serialize;
-use std::{fs, os::unix::fs::MetadataExt, path::Path};
+use std::{collections::BTreeMap, fs, os::unix::fs::MetadataExt, path::Path};
 
 pub(super) const CONTRACT: &str = "louiselm.test-tool-integration/1";
+pub(super) const CODEX_CONTRACT: &str = "louiselm.codex-acp-integration/1";
 const COMPONENT: &str = "louiselm-tool-test-agent";
+/// Runtime-root-relative ACP adapter script run by the measured Node executable.
+pub(super) const CODEX_ADAPTER: &str = "codex-acp.js";
+/// Runtime-root-relative stock Codex executable the adapter starts.
+pub(super) const CODEX_RUNTIME: &str = "codex";
+/// The Session-local broker listener; the Sender guard binds this exact address.
+const CODEX_BASE_URL: &str = "http://127.0.0.1:40773/v1";
+const CODEX_PROVIDER: &str = "louiselm-broker";
+
+/// Which measured integration a registration selects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Integration {
+    /// The release's deterministic test Agent.
+    TestTool,
+    /// Node running `codex-acp.js`, which starts the stock Codex app-server.
+    CodexAcp,
+}
+
+/// Stock Codex ACP chain identity bound into the evidence.
+#[derive(Clone, Debug, Serialize)]
+struct CodexEvidence {
+    // SHA-256 digests of the adapter, runtime and fixed configuration.
+    adapter: String,
+    runtime: String,
+    configuration: String,
+}
 
 /// Checkable exact integration identity, constructed only by the trusted launcher.
 ///
-/// This proves support for the release's deterministic test Agent. It never
+/// This proves support for one fixed integration contract. It never
 /// establishes compatibility of another executable, adapter or vendor Agent.
 #[derive(Clone, Debug, Serialize)]
 pub struct ToolIsolationEvidence {
@@ -25,6 +56,8 @@ pub struct ToolIsolationEvidence {
     executable_device: u64,
     executable_inode: u64,
     backend_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codex: Option<CodexEvidence>,
 }
 
 impl ToolIsolationEvidence {
@@ -41,7 +74,16 @@ impl ToolIsolationEvidence {
         serde_json::to_vec(self).expect("integration evidence is serializable")
     }
 
+    /// Whether the sending runtime is a descendant rather than the first exec.
+    ///
+    /// The Sender guard currently enrolls only the first exec-stopped process,
+    /// which for this chain is the adapter, never the sending Codex runtime.
+    pub(super) fn requires_descendant_enrollment(&self) -> bool {
+        self.codex.is_some()
+    }
+
     pub(super) fn measure(
+        integration: Integration,
         plan: &ConfinementPlan,
         release_root: &Path,
         release_id: &str,
@@ -50,35 +92,33 @@ impl ToolIsolationEvidence {
         if !plan.arguments.is_empty() || !plan.environment.is_empty() {
             return Err(SupervisorError::ToolIsolationUnproven);
         }
-        let manifest = release::read_manifest(release_root)
-            .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
-        let component = manifest
-            .component(COMPONENT)
-            .ok_or(SupervisorError::ToolIsolationUnproven)?;
-        if manifest.release_id != release_id
-            || manifest.digest().to_string() != release_id
-            || component.path != format!("bin/{COMPONENT}")
-            || !component.executable
-        {
-            return Err(SupervisorError::ToolIsolationUnproven);
-        }
-        let digest = crate::registry::measure_file(&plan.executable)
-            .map_err(|_| SupervisorError::ToolIsolationUnproven)?
-            .hex()
-            .to_owned();
+        let codex = match integration {
+            Integration::TestTool => {
+                measure_release_component(plan, release_root, release_id)?;
+                None
+            }
+            Integration::CodexAcp => Some(CodexEvidence {
+                adapter: hash(&plan.runtime_root.join(CODEX_ADAPTER))?,
+                runtime: hash(&plan.runtime_root.join(CODEX_RUNTIME))?,
+                configuration: configuration_digest(),
+            }),
+        };
+        let digest = hash(&plan.executable)?;
         let metadata =
             fs::metadata(&plan.executable).map_err(|_| SupervisorError::ToolIsolationUnproven)?;
-        if digest != component.sha256 || metadata.len() != component.size {
-            return Err(SupervisorError::ToolIsolationUnproven);
-        }
         Ok(Self {
-            contract: CONTRACT.to_owned(),
+            contract: match integration {
+                Integration::TestTool => CONTRACT,
+                Integration::CodexAcp => CODEX_CONTRACT,
+            }
+            .to_owned(),
             session_id: plan.session_id.clone(),
             release_id: release_id.to_owned(),
             executable_digest: digest,
             executable_device: metadata.dev(),
             executable_inode: metadata.ino(),
             backend_digest: backend_digest.to_owned(),
+            codex,
         })
     }
 
@@ -93,7 +133,7 @@ impl ToolIsolationEvidence {
         let agent = registry
             .agent(&request.agent_id)
             .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
-        validate_registration(&agent)?;
+        let integration = validate_registration(&agent)?;
         let runtime = registry
             .runtime(&agent.runtime_id)
             .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
@@ -110,8 +150,25 @@ impl ToolIsolationEvidence {
         {
             return Err(SupervisorError::AgentIdentityRejected);
         }
+        let codex_matches = match (integration, &self.codex) {
+            (Integration::TestTool, None) => self.contract == CONTRACT,
+            (Integration::CodexAcp, Some(codex)) => {
+                let adapter = |path: &str| {
+                    measured
+                        .adapters
+                        .iter()
+                        .find(|file| file.path == path)
+                        .map(|file| file.sha256.as_str())
+                };
+                self.contract == CODEX_CONTRACT
+                    && adapter(CODEX_ADAPTER) == Some(codex.adapter.as_str())
+                    && adapter(CODEX_RUNTIME) == Some(codex.runtime.as_str())
+                    && codex.configuration == configuration_digest()
+            }
+            _ => false,
+        };
         let executable = process.executable_identity();
-        if self.contract != CONTRACT
+        if !codex_matches
             || self.session_id != request.session_id
             || self.release_id != release_id
             || self.backend_digest != backend_digest
@@ -128,12 +185,268 @@ impl ToolIsolationEvidence {
     }
 }
 
-pub(super) fn validate_registration(agent: &AgentRegistration) -> Result<(), SupervisorError> {
-    if agent.tool_integration.as_deref() != Some(CONTRACT)
-        || !agent.arguments.is_empty()
-        || !agent.environment.is_empty()
+/// Accepts only a known contract with empty registered arguments/environment.
+pub(super) fn validate_registration(
+    agent: &AgentRegistration,
+) -> Result<Integration, SupervisorError> {
+    let integration = match agent.tool_integration.as_deref() {
+        Some(CONTRACT) => Integration::TestTool,
+        Some(CODEX_CONTRACT) => Integration::CodexAcp,
+        _ => return Err(SupervisorError::ToolIsolationUnproven),
+    };
+    if !agent.arguments.is_empty() || !agent.environment.is_empty() {
+        return Err(SupervisorError::ToolIsolationUnproven);
+    }
+    Ok(integration)
+}
+
+/// Launcher-derived arguments and environment for one integration.
+///
+/// Called only after `measure`, which requires the registration's own values
+/// to be empty. The Codex values are fixed by this contract: the Provider is the
+/// Session's broker listener, MCP servers are empty, and no operator Codex home
+/// or configuration file is read.
+pub(super) fn launch_values(
+    integration: Integration,
+    runtime_root: &Path,
+    home: &Path,
+) -> (Vec<String>, BTreeMap<String, String>) {
+    match integration {
+        Integration::TestTool => (Vec::new(), BTreeMap::new()),
+        Integration::CodexAcp => {
+            let root = runtime_root.display().to_string();
+            let home = home.display().to_string();
+            let (config, authentication) = codex_configuration();
+            let environment = BTreeMap::from([
+                ("CODEX_CONFIG".to_owned(), config),
+                (
+                    "CODEX_PATH".to_owned(),
+                    runtime_root.join(CODEX_RUNTIME).display().to_string(),
+                ),
+                ("DEFAULT_AUTH_REQUEST".to_owned(), authentication),
+                ("HOME".to_owned(), home.clone()),
+                ("INITIAL_AGENT_MODE".to_owned(), "agent".to_owned()),
+                ("MODEL_PROVIDER".to_owned(), CODEX_PROVIDER.to_owned()),
+                ("PATH".to_owned(), format!("{root}:/usr/bin:/bin")),
+                ("USER".to_owned(), "louiselm".to_owned()),
+                ("XDG_STATE_HOME".to_owned(), format!("{home}/.local/state")),
+            ]);
+            let adapter = runtime_root.join(CODEX_ADAPTER).display().to_string();
+            (vec![adapter], environment)
+        }
+    }
+}
+
+/// The fixed Codex configuration and gateway authentication request.
+///
+/// Both are Session-independent, so their digest identifies the contract's
+/// configuration exactly. The gateway carries no headers or credentials; the
+/// broker adds the Provider key after admission.
+fn codex_configuration() -> (String, String) {
+    let config = serde_json::json!({
+        "mcp_servers": {},
+        "model_provider": CODEX_PROVIDER,
+        "model_providers": {
+            CODEX_PROVIDER: {
+                "base_url": CODEX_BASE_URL,
+                "name": CODEX_PROVIDER,
+                "request_max_retries": 0,
+                "requires_openai_auth": false,
+                "stream_max_retries": 0,
+                "wire_api": "responses",
+            },
+        },
+    });
+    let authentication = serde_json::json!({
+        "_meta": {
+            "gateway": {
+                "baseUrl": CODEX_BASE_URL,
+                "headers": {},
+                "providerName": CODEX_PROVIDER,
+            },
+        },
+        "methodId": "gateway",
+    });
+    (config.to_string(), authentication.to_string())
+}
+
+fn configuration_digest() -> String {
+    let (config, authentication) = codex_configuration();
+    Digest::of(format!("{config}\n{authentication}").as_bytes()).to_string()
+}
+
+fn measure_release_component(
+    plan: &ConfinementPlan,
+    release_root: &Path,
+    release_id: &str,
+) -> Result<(), SupervisorError> {
+    let manifest =
+        release::read_manifest(release_root).map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+    let component = manifest
+        .component(COMPONENT)
+        .ok_or(SupervisorError::ToolIsolationUnproven)?;
+    if manifest.release_id != release_id
+        || manifest.digest().to_string() != release_id
+        || component.path != format!("bin/{COMPONENT}")
+        || !component.executable
     {
         return Err(SupervisorError::ToolIsolationUnproven);
     }
+    let digest = hash(&plan.executable)?;
+    let metadata =
+        fs::metadata(&plan.executable).map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+    if digest != component.sha256 || metadata.len() != component.size {
+        return Err(SupervisorError::ToolIsolationUnproven);
+    }
     Ok(())
+}
+
+fn hash(path: &Path) -> Result<String, SupervisorError> {
+    Ok(crate::registry::measure_file(path)
+        .map_err(|_| SupervisorError::ToolIsolationUnproven)?
+        .hex()
+        .to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "Test fixtures assert setup and observable contract outcomes."
+    )]
+
+    use super::*;
+    use crate::{
+        registry::{NetworkPolicy, Provider},
+        sandbox::IdentityPlan,
+    };
+
+    fn registration(contract: Option<&str>) -> AgentRegistration {
+        AgentRegistration {
+            id: "codex".to_owned(),
+            provider: Provider::Fixed("OpenAI".to_owned()),
+            runtime_id: "runtime".to_owned(),
+            arguments: vec![],
+            environment: BTreeMap::new(),
+            tool_integration: contract.map(str::to_owned),
+        }
+    }
+
+    fn codex_plan(root: &Path) -> ConfinementPlan {
+        ConfinementPlan {
+            session_id: "session".to_owned(),
+            runtime_root: root.to_path_buf(),
+            executable: root.join("node"),
+            arguments: vec![],
+            environment: BTreeMap::new(),
+            home: root.join("home"),
+            workspace: root.join("workspace"),
+            cache: None,
+            beads_replica: None,
+            system_roots: vec![],
+            identity: IdentityPlan::NamespaceOnly,
+            network: NetworkPolicy::Denied,
+            channels: vec![],
+        }
+    }
+
+    #[test]
+    fn registration_selects_only_known_contracts_without_overrides() {
+        assert_eq!(
+            validate_registration(&registration(Some(CONTRACT))),
+            Ok(Integration::TestTool)
+        );
+        assert_eq!(
+            validate_registration(&registration(Some(CODEX_CONTRACT))),
+            Ok(Integration::CodexAcp)
+        );
+        for contract in [None, Some("louiselm.codex-acp-integration/2"), Some("")] {
+            assert_eq!(
+                validate_registration(&registration(contract)),
+                Err(SupervisorError::ToolIsolationUnproven)
+            );
+        }
+        let mut argument = registration(Some(CODEX_CONTRACT));
+        argument.arguments.push("--extra".to_owned());
+        let mut environment = registration(Some(CODEX_CONTRACT));
+        environment
+            .environment
+            .insert("CODEX_CONFIG".to_owned(), "{}".to_owned());
+        for agent in [argument, environment] {
+            assert_eq!(
+                validate_registration(&agent),
+                Err(SupervisorError::ToolIsolationUnproven)
+            );
+        }
+    }
+
+    #[test]
+    fn codex_measurement_binds_chain_and_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let plan = codex_plan(root.path());
+        fs::write(&plan.executable, b"node").unwrap();
+        fs::write(root.path().join(CODEX_ADAPTER), b"adapter").unwrap();
+        let measure = |plan: &ConfinementPlan| {
+            ToolIsolationEvidence::measure(Integration::CodexAcp, plan, root.path(), "r", "b")
+        };
+        assert!(measure(&plan).is_err(), "a missing Codex runtime refuses");
+        fs::write(root.path().join(CODEX_RUNTIME), b"codex").unwrap();
+        let evidence = measure(&plan).unwrap();
+        assert!(evidence.requires_descendant_enrollment());
+        let value: serde_json::Value = serde_json::from_slice(&evidence.canonical_bytes()).unwrap();
+        assert_eq!(value["contract"], CODEX_CONTRACT);
+        assert_eq!(value["codex"]["runtime"], Digest::of(b"codex").hex());
+        assert_eq!(value["codex"]["adapter"], Digest::of(b"adapter").hex());
+        assert_eq!(value["codex"]["configuration"], configuration_digest());
+
+        let mut overridden = plan.clone();
+        overridden
+            .environment
+            .insert("LD_PRELOAD".to_owned(), "plugin.so".to_owned());
+        assert_eq!(
+            measure(&overridden).unwrap_err(),
+            SupervisorError::ToolIsolationUnproven
+        );
+        fs::write(root.path().join(CODEX_RUNTIME), b"updated codex").unwrap();
+        let changed = measure(&plan).unwrap().canonical_bytes();
+        assert_ne!(changed, evidence.canonical_bytes());
+    }
+
+    #[test]
+    fn codex_launch_values_are_fixed_by_the_contract() {
+        let root = Path::new("/runtime");
+        let home = Path::new("/session/home");
+        let (arguments, environment) = launch_values(Integration::CodexAcp, root, home);
+        assert_eq!(arguments, ["/runtime/codex-acp.js"]);
+        assert_eq!(environment["CODEX_PATH"], "/runtime/codex");
+        assert_eq!(environment["HOME"], "/session/home");
+        assert_eq!(environment["PATH"], "/runtime:/usr/bin:/bin");
+        let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
+        assert_eq!(config["mcp_servers"], serde_json::json!({}));
+        assert_eq!(
+            config["model_providers"][CODEX_PROVIDER]["base_url"],
+            CODEX_BASE_URL
+        );
+        let authentication: serde_json::Value =
+            serde_json::from_str(&environment["DEFAULT_AUTH_REQUEST"]).unwrap();
+        assert_eq!(
+            authentication["_meta"]["gateway"]["headers"],
+            serde_json::json!({})
+        );
+        assert!(
+            environment
+                .keys()
+                .all(|key| !key.contains("KEY") && !key.contains("TOKEN")),
+            "no credential enters the Session environment"
+        );
+        assert_eq!(
+            launch_values(Integration::CodexAcp, root, home),
+            (arguments, environment)
+        );
+        assert_eq!(
+            launch_values(Integration::TestTool, root, home),
+            (vec![], BTreeMap::new())
+        );
+    }
 }

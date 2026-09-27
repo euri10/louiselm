@@ -1214,6 +1214,31 @@ impl SystemLaunchPlatform {
             plan,
         )
     }
+    /// Measures the registered integration, then applies its launch values.
+    fn measure_integration(
+        &self,
+        request: &LaunchRequest,
+        plan: &mut ConfinementPlan,
+        release_root: &Path,
+    ) -> Result<super::ToolIsolationEvidence, SupervisorError> {
+        let integration = crate::registry::Registry::open_trusted(&self.registry_root)
+            .and_then(|registry| registry.agent(&request.agent_id))
+            .map_err(|_| SupervisorError::ToolIsolationUnproven)
+            .and_then(|agent| super::tool_integration::validate_registration(&agent))?;
+        let evidence = super::ToolIsolationEvidence::measure(
+            integration,
+            plan,
+            release_root,
+            &self.config.release_id,
+            &self.config.bwrap_digest,
+        )?;
+        // Measurement requires empty registered values; the contract then
+        // supplies its exact launcher-owned arguments and environment.
+        (plan.arguments, plan.environment) =
+            super::tool_integration::launch_values(integration, &plan.runtime_root, &plan.home);
+        Ok(evidence)
+    }
+
     fn prepare_workspace(
         &self,
         request: &LaunchRequest,
@@ -1331,7 +1356,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
             let agent = registry
                 .agent(&request.agent_id)
                 .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
-            super::tool_integration::validate_registration(&agent)
+            super::tool_integration::validate_registration(&agent).map(|_| ())
         })();
         complete(result);
         Ok(())
@@ -1421,12 +1446,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 .release_prefix
                 .join("releases")
                 .join(&self.config.release_id);
-            let tool_isolation = super::ToolIsolationEvidence::measure(
-                &plan,
-                &release_root,
-                &self.config.release_id,
-                &self.config.bwrap_digest,
-            )?;
+            let tool_isolation = self.measure_integration(request, &mut plan, &release_root)?;
             // Registration is validated first; this derived private path is a
             // launcher-owned environment addition, shared with confined tools.
             plan.environment.insert(
@@ -1590,7 +1610,14 @@ impl PreparedAgent for SystemPreparedAgent {
         scope: GuardScope,
         broker: SeqpacketChannel,
     ) -> Result<(), SupervisorError> {
-        if self.sender_guard.is_some() {
+        if self.sender_guard.is_some()
+            || self
+                .tool_isolation
+                .as_ref()
+                .is_some_and(super::ToolIsolationEvidence::requires_descendant_enrollment)
+        {
+            // Refused until the guard can enroll the measured sending descendant
+            // (louiselm-g3rvu); enrolling the adapter would misplace authority.
             return Err(SupervisorError::IsolationRejected);
         }
         let mut guard =
