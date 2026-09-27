@@ -12,7 +12,155 @@ use crate::{
 
 const VERIFY_WORKER: &str =
     "launch_supervisor::system::installed_tests::verification::installed_verification_worker";
+const OPERATOR_WORKER: &str =
+    "launch_supervisor::system::installed_tests::verification::installed_verification_operator";
 const LITERAL_ARGUMENT: &str = "literal'$(touch INJECTED)";
+
+fn operator_socket(root: &Path) -> PathBuf {
+    root.join("operator-api/authorization.sock")
+}
+
+fn operator_client(root: &Path) -> PathBuf {
+    root.join("runtime/verification-operator")
+}
+
+#[test]
+fn installed_verification_operator() {
+    let Some(root) = std::env::var_os("LOUISELM_VERIFICATION_OPERATOR") else {
+        return;
+    };
+    let mut input = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::stdin(), &mut input).unwrap();
+    let request = serde_json::from_slice(&input).unwrap();
+    match crate::broker::operator::authorization(
+        &operator_socket(Path::new(&root)),
+        BROKER_UID,
+        &request,
+        Duration::from_secs(5),
+    ) {
+        Ok(response) => println!("AUTH_RESULT:{}", serde_json::to_string(&response).unwrap()),
+        Err(_) => println!("AUTH_DENIED"),
+    }
+}
+
+fn operator_request(
+    root: &Path,
+    uid: u32,
+    request: &crate::broker::operator::AuthorizationRequest,
+) -> Result<crate::broker::operator::AuthorizationResponse, ()> {
+    let mut child = Command::new("/usr/bin/setpriv")
+        .args([
+            "--reuid",
+            &uid.to_string(),
+            "--regid",
+            &uid.to_string(),
+            "--clear-groups",
+        ])
+        .arg(operator_client(root))
+        .args([OPERATOR_WORKER, "--exact", "--nocapture"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LOUISELM_VERIFICATION_OPERATOR", root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(request).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "operator client failed");
+    let output = String::from_utf8(output.stdout).unwrap();
+    if let Some((_, response)) = output
+        .lines()
+        .find_map(|line| line.split_once("AUTH_RESULT:"))
+    {
+        Ok(serde_json::from_str(response).unwrap())
+    } else {
+        assert!(
+            output.contains("AUTH_DENIED"),
+            "operator client did not run: {output}"
+        );
+        Err(())
+    }
+}
+
+fn authorize_run(
+    root: &Path,
+    uid: u32,
+    envelope: crate::broker::run_envelope::RunEnvelope,
+) -> crate::broker::run_envelope::RunAuthorization {
+    let request = crate::broker::operator::AuthorizationRequest::Run {
+        envelope: Box::new(envelope),
+    };
+    let crate::broker::operator::AuthorizationResponse::Run { receipt } =
+        operator_request(root, uid, &request).unwrap()
+    else {
+        panic!("operator returned a child receipt for a Run")
+    };
+    receipt
+}
+
+fn authorize_child(
+    root: &Path,
+    uid: u32,
+    grant: &GrantRequest,
+    digest: &str,
+) -> Result<crate::broker::run_envelope::ChildAuthorization, ()> {
+    let request = crate::broker::operator::AuthorizationRequest::Session {
+        grant: Box::new(grant.clone()),
+        expected_envelope_digest: digest.into(),
+    };
+    match operator_request(root, uid, &request)? {
+        crate::broker::operator::AuthorizationResponse::Session { receipt } => Ok(receipt),
+        crate::broker::operator::AuthorizationResponse::Run { .. } => Err(()),
+    }
+}
+
+fn start_operator_server(broker: Arc<InstalledBroker>, root: &Path, uid: u32) {
+    let parent = root.join("operator-api");
+    fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+    let server =
+        crate::broker::operator::OperatorServer::bind(&operator_socket(root), uid).unwrap();
+    thread::spawn(move || {
+        loop {
+            server
+                .serve_once(
+                    |request| {
+                        use crate::broker::operator::{
+                            AuthorizationRequest, AuthorizationResponse, InspectError,
+                        };
+                        match request {
+                            AuthorizationRequest::Run { envelope } => broker
+                                .authorize_run(envelope)
+                                .map(|receipt| AuthorizationResponse::Run { receipt }),
+                            AuthorizationRequest::Session {
+                                grant,
+                                expected_envelope_digest,
+                            } => broker
+                                .authorize_child(grant, expected_envelope_digest)
+                                .map(|receipt| AuthorizationResponse::Session { receipt }),
+                        }
+                        .map_err(|_| InspectError::InvalidRequest)
+                    },
+                    |_, _| panic!("not dependencies"),
+                    |_, _| panic!("not inspection"),
+                    |_| panic!("not conformance"),
+                    |_, _| panic!("not skill"),
+                    |_, _| panic!("not Beads"),
+                    |_, _| panic!("not retention"),
+                    |_, _, _| panic!("not waiver"),
+                    |_, _, _| panic!("not extension"),
+                )
+                .unwrap();
+        }
+    });
+}
 
 #[path = "installed_promotion_tests.rs"]
 mod promotion;
@@ -73,32 +221,28 @@ fn approval(launch: LaunchRequest, uid: u32, commands: Option<ApprovedCommands>)
     }
 }
 
-fn assert_run_child_denials(broker: &InstalledBroker, grant: &GrantRequest, digest: &str) {
+fn assert_run_child_denials(root: &Path, uid: u32, grant: &GrantRequest, digest: &str) {
     let mut wrong_run = grant.clone();
     wrong_run.request.run_id = "other-run".into();
-    assert!(broker.authorize_child(&wrong_run, digest).is_err());
+    assert!(authorize_child(root, uid, &wrong_run, digest).is_err());
     let mut wrong_operator = grant.clone();
     wrong_operator.controller_uid += 1;
-    assert!(broker.authorize_child(&wrong_operator, digest).is_err());
+    assert!(authorize_child(root, uid, &wrong_operator, digest).is_err());
     let mut stale_revision = grant.clone();
     stale_revision.request.envelope_revision += 1;
-    assert!(broker.authorize_child(&stale_revision, digest).is_err());
+    assert!(authorize_child(root, uid, &stale_revision, digest).is_err());
     let mut widened_provider = grant.clone();
     let mut provider = guard::approval(clock_ms());
     provider.max_run_requests += 1;
     widened_provider.provider_requests = Some(provider);
-    assert!(broker.authorize_child(&widened_provider, digest).is_err());
+    assert!(authorize_child(root, uid, &widened_provider, digest).is_err());
     let mut widened_command = grant.clone();
     widened_command.commands.as_mut().unwrap().timeout_ms += 1;
-    assert!(broker.authorize_child(&widened_command, digest).is_err());
+    assert!(authorize_child(root, uid, &widened_command, digest).is_err());
     let mut expired = grant.clone();
     expired.expires_at_ms = 1;
-    assert!(broker.authorize_child(&expired, digest).is_err());
-    assert!(
-        broker
-            .authorize_child(grant, &Digest::of(b"stale").to_string())
-            .is_err()
-    );
+    assert!(authorize_child(root, uid, &expired, digest).is_err());
+    assert!(authorize_child(root, uid, grant, &Digest::of(b"stale").to_string()).is_err());
 }
 
 #[test]
@@ -111,8 +255,9 @@ fn installed_verification_worker() {
         .unwrap()
         .parse()
         .unwrap();
-    let broker = InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap();
+    let broker = Arc::new(InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap());
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
+    start_operator_server(Arc::clone(&broker), &root, config.operator_uid);
     let caller = LifecycleCaller::Operator {
         uid: config.operator_uid,
     };
@@ -130,20 +275,17 @@ fn installed_verification_worker() {
     );
     let plan_digest =
         Digest::of(&fs::read(root.join(format!("inputs/plan-{index}.json"))).unwrap()).to_string();
-    let run = broker
-        .authorize_run(&fixture_run_envelope(&grant, plan_digest, now))
-        .unwrap();
+    let envelope = fixture_run_envelope(&grant, plan_digest, now);
+    let wrong_peer = crate::broker::operator::AuthorizationRequest::Run {
+        envelope: Box::new(envelope.clone()),
+    };
+    assert!(operator_request(&root, AGENT_UID, &wrong_peer).is_err());
+    let run = authorize_run(&root, config.operator_uid, envelope);
     assert_ne!(run.envelope_digest, grant.request.digest().to_string());
-    assert_run_child_denials(&broker, &grant, &run.envelope_digest);
-    let child = broker
-        .authorize_child(&grant, &run.envelope_digest)
-        .unwrap();
+    assert_run_child_denials(&root, config.operator_uid, &grant, &run.envelope_digest);
+    let child = authorize_child(&root, config.operator_uid, &grant, &run.envelope_digest).unwrap();
     assert_eq!(child.request_digest, grant.request.digest().to_string());
-    assert!(
-        broker
-            .authorize_child(&grant, &run.envelope_digest)
-            .is_err()
-    );
+    assert!(authorize_child(&root, config.operator_uid, &grant, &run.envelope_digest).is_err());
     println!("PRODUCER_READY");
     let mut producer = broker.serve_launch().unwrap();
     // The producing Agent really requests and completes this governed write.
@@ -191,6 +333,7 @@ fn run_job(
     uid: u32,
     envelope_digest: &str,
 ) {
+    let operator_root = root;
     let root = root.join("inputs");
     let snapshot = root.join("snapshot");
     let plan = root.join(format!("plan-{index}.json"));
@@ -246,16 +389,21 @@ fn run_job(
         .export_verification(producer, caller, &export_request)
         .unwrap();
     let launch = verifier_launch(index);
-    broker
-        .authorize_child(&approval(launch.clone(), uid, None), envelope_digest)
-        .unwrap();
+    authorize_child(
+        operator_root,
+        uid,
+        &approval(launch.clone(), uid, None),
+        envelope_digest,
+    )
+    .unwrap();
     assert!(
-        broker
-            .authorize_child(
-                &approval(verifier_launch(index + 10), uid, None),
-                envelope_digest
-            )
-            .is_err(),
+        authorize_child(
+            operator_root,
+            uid,
+            &approval(verifier_launch(index + 10), uid, None),
+            envelope_digest
+        )
+        .is_err(),
         "the third Session exceeds the fixed Run ceiling"
     );
     println!("VERIFIER_READY_{index}");
@@ -526,6 +674,16 @@ fn privileged_verification_case(index: usize) {
         .unwrap();
     // Broker identity reconciliation is separate work: each consumed launch keeps its slot reserved.
     let (paths, config, registry) = install_fixture_with_slots(root.path(), 2);
+    fs::copy(
+        std::env::current_exe().unwrap(),
+        operator_client(root.path()),
+    )
+    .unwrap();
+    fs::set_permissions(
+        operator_client(root.path()),
+        fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
     prepare_inputs(root.path());
     promotion::prepare(root.path(), config.operator_uid);
     let sessions = root.path().join("sessions");
