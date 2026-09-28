@@ -118,7 +118,7 @@ def inventory(source):
     return files
 
 
-def restic(paths, *arguments, cwd=None, cloud=False):
+def invoke(paths, arguments, cwd, cloud):
     # The access-token variable overrides Google's explicit credentials file.
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(("RESTIC_", "GOOGLE_"))}
@@ -133,12 +133,24 @@ def restic(paths, *arguments, cwd=None, cloud=False):
                # though their wrapper locks are independent (louiselm-l1q8).
                "--retry-lock", "1m", "--json", *arguments]
     try:
-        result = subprocess.run(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=2700)
+        return subprocess.run(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=2700)
     except FileNotFoundError:
         raise Failure("restic could not start; check runtime PATH and source availability") from None
     except subprocess.TimeoutExpired:
         raise Failure("restic operation timed out; previous verified snapshot retained") from None
+
+
+def restic(paths, *arguments, cwd=None, cloud=False):
+    result = invoke(paths, arguments, cwd, cloud)
+    if result.returncode == 11:
+        # A killed run's lock never expires on its own (louiselm-a7c4u). Plain
+        # unlock removes only locks Restic proves stale (dead PID on this host or
+        # unrefreshed for 30 min); a live holder still wins the retry. Copy also
+        # locks the local source, so a cloud failure unlocks both repositories.
+        for repository in {cloud, False}:
+            invoke(paths, ("unlock",), None, repository)
+        result = invoke(paths, arguments, cwd, cloud)
     if result.returncode:
         detail = " (incomplete snapshot)" if result.returncode == 3 else ""
         raise Failure(f"restic {arguments[0]} failed: exit {result.returncode}{detail}")

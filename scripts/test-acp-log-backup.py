@@ -417,6 +417,26 @@ sys.exit(result.returncode)
             self.assertNotIn("unlock", args)
 
     @unittest.skipUnless(shutil.which("restic"), "restic runtime missing")
+    def test_killed_restic_lock_does_not_fail_later_verification(self):
+        # louiselm-a7c4u: power loss mid-copy left a dead-PID lock; every hourly
+        # check then exited 11 until a manual unlock.
+        self.run_command("init")
+        repository = self.destination / "repository"
+        with subprocess.Popen(["restic", "--repo", str(repository), "--password-file", str(self.key),
+                               "--cache-dir", str(self.destination / "cache"), "backup", "--stdin"],
+                              stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL) as holder:
+            deadline = time.monotonic() + 15
+            while not any((repository / "locks").iterdir()):
+                self.assertIsNone(holder.poll(), "holder ended before its lock was observed")
+                self.assertLess(time.monotonic(), deadline, "holder never acquired a lock")
+                time.sleep(0.02)
+            holder.kill()
+        local = json.loads(self.run_command("run", timeout=150).stdout)
+        self.assertEqual(local["last_attempt"]["state"], "verified")
+        self.assertFalse(any((repository / "locks").iterdir()))
+
+    @unittest.skipUnless(shutil.which("restic"), "restic runtime missing")
     def test_cloud_does_not_hold_local_wrapper_lock(self):
         import fcntl
         self.cloud_bridge()

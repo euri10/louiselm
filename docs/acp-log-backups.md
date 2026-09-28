@@ -54,7 +54,12 @@ also maintains its native repository locks; failures never trigger force-unlocki
 Commands retry a conflicting native Restic lock for up to one minute, allowing
 short overlaps between local verification and cloud copying to finish. A longer
 conflict still fails explicitly and preserves the previous verified snapshot;
-the next scheduled attempt retries. The wrapper locks remain independent, so
+the next scheduled attempt retries. A lock left by a killed Restic process (power
+loss, sleep that never resumes) never expires on its own. After the minute, the
+wrapper therefore runs a plain `restic unlock` once and retries. Plain unlock
+removes only locks Restic proves stale: a dead process on this host, or a lock
+not refreshed for 30 minutes. A live holder keeps its lock, and `--remove-all`
+is never used. The wrapper locks remain independent, so
 an offline cloud operation does not take the local wrapper lock.
 
 ## Prepare configuration (not enablement)
