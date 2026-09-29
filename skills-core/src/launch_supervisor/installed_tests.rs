@@ -503,6 +503,7 @@ fn installed_broker_worker() {
             session.provider_address_for_test().unwrap()
         );
         let deadline = Instant::now() + Duration::from_secs(if live_provider { 90 } else { 20 });
+        let mut parked = false;
         while !root.join("guard-provider-done").exists() {
             assert!(Instant::now() < deadline, "Provider fixture timed out");
             broker.drive_provider(&mut session).unwrap();
@@ -512,10 +513,12 @@ fn installed_broker_worker() {
                 thread::sleep(Duration::from_millis(10));
             }
             if live_provider && broker.settle_provider_hold(&mut session).unwrap().is_some() {
+                parked = true;
                 println!("BROKER_PARKED");
             }
         }
-        guard::park_and_dispose(&broker, &mut session, config.operator_uid, live_provider);
+        // Live refusal-only runs never exhaust the Run, so the operator parks.
+        guard::park_and_dispose(&broker, &mut session, config.operator_uid, parked);
         return;
     }
     if root.join("guard-close-no-ack").exists() {
@@ -767,6 +770,7 @@ fn installed_broker_effects(
             "acme",
             agent_pid,
             broker_process.0.id(),
+            false,
         );
     }
     let command = ToolExecutionRequest {

@@ -131,13 +131,26 @@ pub(super) fn assert_session_surfaces(
     provider: &str,
     agent_pid: u32,
     broker_pid: u32,
+    guarded: bool,
 ) {
     let directory = ProviderCredentialStore::root_in(&root.join("state"));
     let credential = directory.join(provider);
     let secret = fs::read(&credential).unwrap();
     for pid in [agent_pid, broker_pid] {
         for name in ["environ", "cmdline"] {
-            absent(&fs::read(format!("/proc/{pid}/{name}")).unwrap(), &secret);
+            let path = format!("/proc/{pid}/{name}");
+            // The Sender guard denies cross-task ptrace-read of the enrolled
+            // broker even to root (louiselm-4j6lt); unguarded installed custody
+            // proves the same broker's environ is secret-free.
+            if guarded && pid == broker_pid && name == "environ" {
+                let error = fs::read(&path).unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied, "{path}");
+                continue;
+            }
+            match fs::read(&path) {
+                Ok(bytes) => absent(&bytes, &secret),
+                Err(error) => panic!("{path}: {error}"),
+            }
         }
     }
     // A distinct host UID has more filesystem reach than the confined Agent.

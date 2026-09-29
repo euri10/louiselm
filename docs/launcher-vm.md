@@ -86,28 +86,42 @@ explicit guest-egress mode:
 ./scripts/launcher-vm reset --discard
 ./scripts/launcher-vm plan --provider-egress
 ./scripts/launcher-vm start --provider-egress
-git archive HEAD skills-core scripts/fetch-stock-codex-chain |
+git archive HEAD skills-core scripts/fetch-stock-codex-chain \
+  docs/recovery-ceremony.md tests/fixtures/verified_posture_v1.json \
+  tests/fixtures/provider_config.json tests/fixtures/preflight_v1.json \
+  tests/fixtures/preflight_request_v2.json \
+  tests/fixtures/broker_attention_projection.json \
+  tests/fixtures/provider_metadata_disclosure.json |
   ./scripts/launcher-vm exec tar -x -C /home/vm
 ./scripts/launcher-vm exec python3 /home/vm/scripts/fetch-stock-codex-chain \
   /var/tmp/louiselm-stock-chain
-./scripts/launcher-vm exec env PATH=/home/vm/.cargo/bin:/usr/bin:/bin \
+# A failed build must stop here: the target dir can hold older binaries.
+set -o pipefail
+TEST_BIN=$(./scripts/launcher-vm exec env PATH=/home/vm/.cargo/bin:/usr/bin:/bin \
   CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 \
   CARGO_PROFILE_DEV_DEBUG=line-tables-only \
   CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target \
   cargo test --manifest-path /home/vm/skills-core/Cargo.toml \
-  --all-features --locked --no-run
+  --all-features --locked --no-run 2>&1 |
+  sed -n 's/.*unittests src\/lib.rs (\(.*\))$/\1/p') && test -n "$TEST_BIN"
 ./scripts/launcher-vm exec sudo -n strip --strip-debug \
   /var/tmp/louiselm-skills-target/debug/louiselm-launch
 ./scripts/launcher-vm exec sudo -n env \
   LOUISELM_REQUIRE_BROKER_GUARD=1 \
   LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
-  /bin/bash -c 'set -euo pipefail; mapfile -t tests < <(find /var/tmp/louiselm-skills-target/debug/deps -maxdepth 1 -type f -perm /111 -name "louiselm_skills-*"); test "${#tests[@]}" -eq 1; exec timeout 180 unshare --net "${tests[0]}" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_completes_prompt --exact --nocapture --test-threads=1'
+  timeout 180 unshare --net "$TEST_BIN" \
+  launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_completes_prompt \
+  --exact --nocapture --test-threads=1
 ./scripts/launcher-vm exec getent ahostsv4 api.openai.com
 ```
 
 The offline stock gate must pass before provisioning a key or making a paid
 request. It also checks the installed guard and measured runtime. The stripped
 debug launcher stays within the installed profile's 128 MiB file limit.
+`TEST_BIN` is the library test binary cargo reports: the target dir also holds
+the `main.rs` test binary and leftovers from earlier builds, so do not glob for it.
+A base image prepared before a provisioning or Cargo.lock change fails this
+build; see louiselm-6y1ee.
 
 Choose one IPv4 literal from the last command for `OPENAI_IP` below. Before
 provisioning the key, the maintainer opens `./scripts/launcher-vm terminal` in a
@@ -119,20 +133,55 @@ the Agent's environment:
 sudo -n bash -c 'umask 077; read -r -s -p "Project API key: " key </dev/tty; printf "\n" >/dev/tty; printf %s "$key" > /root/louiselm-live-openai.key; unset key'
 ```
 
-Run the ignored test as guest root, replacing `OPENAI_IP` with the selected
-literal. The test refuses absent/unsafe key files and requires both opt-in
-variables. Its only upstream is `https://api.openai.com/v1/responses`, through
-the broker's selected IP and TLS hostname. It requests two Luna turns at low
-effort under a two-request Run limit; above-high effort and a Model outside the
-allowlist are tried first and must spend zero units. A third Luna prompt must
-exhaust the Run, Park the Session and create a `run_parked` Attention item.
+Certification refuses the guest's initial network namespace, while the live
+tests need egress. Create a separate namespace with NAT egress, and enter only
+its network namespace with `nsenter`. `ip netns exec` also remounts `/sys` in a
+new mount namespace, which hides the guard's BPF state (`GuardUnavailable`).
+The namespace does not survive a guest restart; run this again after one.
 
 ```sh
-./scripts/launcher-vm exec sudo -n env \
-  LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_REQUIRE_LIVE_OPENAI=1 \
-  LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
-  LOUISELM_LIVE_OPENAI_IP=OPENAI_IP \
-  /bin/bash -c 'set -euo pipefail; mapfile -t tests < <(find /var/tmp/louiselm-skills-target/debug/deps -maxdepth 1 -type f -perm /111 -name "louiselm_skills-*"); test "${#tests[@]}" -eq 1; exec timeout 180 "${tests[0]}" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_real_openai --exact --ignored --nocapture --test-threads=1'
+./scripts/launcher-vm exec sudo -n env DEBIAN_FRONTEND=noninteractive \
+  apt-get install -y -qq --no-install-recommends nftables
+./scripts/launcher-vm exec sudo -n bash -c 'set -euo pipefail
+ip netns add live
+ip link add veth-host type veth peer name veth-live
+ip link set veth-live netns live
+ip addr add 10.200.0.1/30 dev veth-host; ip link set veth-host up
+ip -n live addr add 10.200.0.2/30 dev veth-live
+ip -n live link set veth-live up; ip -n live link set lo up
+ip -n live route add default via 10.200.0.1
+echo 1 > /proc/sys/net/ipv4/ip_forward
+nft add table ip livenat
+nft "add chain ip livenat post { type nat hook postrouting priority 100; }"
+nft add rule ip livenat post ip saddr 10.200.0.0/30 oifname enp0s4 masquerade'
+```
+
+Run both ignored tests as guest root, replacing `OPENAI_IP` with the selected
+literal. They refuse absent/unsafe key files and require both opt-in variables.
+Their only upstream is `https://api.openai.com/v1/responses`, through the
+broker's selected IP and TLS hostname.
+
+- `privileged_installed_brokered_real_openai_refusals_precede_upstream` costs
+  nothing. The raw fixture sender, not Codex, sends an above-ceiling effort and
+  a Model outside the allowlist to the real-key broker. Both must be refused
+  with `capability_denied` and zero recorded upstream attempts. Stock Codex may
+  lower an unsupported effort before sending, so it cannot prove this refusal
+  (louiselm-4j6lt).
+- `privileged_installed_brokered_stock_codex_real_openai` runs two real Luna
+  turns at low effort under a two-request Run limit. A third prompt must exhaust
+  the Run, Park the Session and create a `run_parked` Attention item.
+
+```sh
+for test in privileged_installed_brokered_real_openai_refusals_precede_upstream \
+  privileged_installed_brokered_stock_codex_real_openai; do
+  ./scripts/launcher-vm exec sudo -n env \
+    LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_REQUIRE_LIVE_OPENAI=1 \
+    LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
+    LOUISELM_LIVE_OPENAI_IP=OPENAI_IP \
+    nsenter --net=/run/netns/live timeout 180 "$TEST_BIN" \
+    "launch_supervisor::system::installed_tests::guard::$test" \
+    --exact --ignored --nocapture --test-threads=1 || break
+done
 ```
 
 Record the test's redacted markers, compiled revision, Node/Codex/adapter

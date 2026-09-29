@@ -406,14 +406,41 @@ fn privileged_installed_brokered_stock_codex_completes_prompt() {
 #[test]
 #[ignore = "requires a dedicated hard-capped API project and private VM key"]
 fn privileged_installed_brokered_stock_codex_real_openai() {
+    let address = live_openai_preconditions();
+    let stock = std::env::var_os("LOUISELM_STOCK_CODEX_DIR")
+        .expect("provide the hash-pinned stock Codex chain");
+    installed_guard_case_for(
+        false,
+        true,
+        false,
+        true,
+        false,
+        CodexCase::Live(Path::new(&stock), address),
+    );
+}
+
+#[test]
+#[ignore = "requires a dedicated hard-capped API project and private VM key"]
+fn privileged_installed_brokered_real_openai_refusals_precede_upstream() {
+    let address = live_openai_preconditions();
+    installed_guard_case_for(
+        false,
+        true,
+        false,
+        true,
+        false,
+        CodexCase::LiveFixture(address),
+    );
+}
+
+/// Explicit opt-in, the resolved Provider address and a private guest key.
+fn live_openai_preconditions() -> IpAddr {
     assert_eq!(
         std::env::var("LOUISELM_REQUIRE_LIVE_OPENAI").as_deref(),
         Ok("1"),
         "live API calls require an explicit opt-in"
     );
     assert!(std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some());
-    let stock = std::env::var_os("LOUISELM_STOCK_CODEX_DIR")
-        .expect("provide the hash-pinned stock Codex chain");
     let address: IpAddr = std::env::var("LOUISELM_LIVE_OPENAI_IP")
         .expect("provide the resolved OpenAI address")
         .parse()
@@ -427,14 +454,7 @@ fn privileged_installed_brokered_stock_codex_real_openai() {
             && key.nlink() == 1
             && (1..=16 * 1024).contains(&key.len())
     );
-    installed_guard_case_for(
-        false,
-        true,
-        false,
-        true,
-        false,
-        CodexCase::Live(Path::new(&stock), address),
-    );
+    address
 }
 
 #[test]
@@ -471,6 +491,9 @@ enum CodexCase<'a> {
     WrongAncestry,
     Stock(&'a Path),
     Live(&'a Path, IpAddr),
+    /// Real-key broker aimed at the live Provider, driven by the raw fixture
+    /// sender: refusals must precede any upstream attempt (louiselm-4j6lt).
+    LiveFixture(IpAddr),
 }
 
 #[expect(
@@ -520,7 +543,7 @@ fn installed_guard_case_for(
         fs::write(root.path().join("brokered"), b"").unwrap();
     }
     let live_address = match codex {
-        CodexCase::Live(_, address) => Some(address),
+        CodexCase::Live(_, address) | CodexCase::LiveFixture(address) => Some(address),
         _ => None,
     };
     let tls_server = (provider && live_address.is_none())
@@ -650,6 +673,7 @@ fn installed_guard_case_for(
             "openai",
             agent_pid,
             broker_child.0.id(),
+            true,
         );
         super::provider_credentials::assert_records(root.path(), "openai");
         println!("LIVE_CUSTODY_PROBES_PASSED");
@@ -721,9 +745,31 @@ fn installed_guard_case_for(
         controller_peer_output.read_exact(&mut echoed).unwrap();
         assert_eq!(&echoed, b"enroll-trigger\n");
     }
+    // Run exhaustion reports its Park mid-test; teardown must not await a second.
+    let mut parked_seen = false;
     if let Some(address) = provider_address {
-        if live_address.is_some() {
+        if matches!(codex, CodexCase::LiveFixture(_)) {
+            controller_peer_output
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            for variant in ["bad-effort", "bad-model"] {
+                let refused = provider_exchange(
+                    &mut controller_peer_input,
+                    &mut controller_peer_output,
+                    address,
+                    variant,
+                );
+                assert!(
+                    refused.contains("capability_denied"),
+                    "{variant}: {refused}"
+                );
+                assert_eq!(live_spent(root.path()), 0, "{variant} reached upstream");
+            }
+            println!("LIVE_REFUSALS=bad-effort,bad-model UPSTREAM_ATTEMPTS=0");
+            fs::write(root.path().join("guard-provider-done"), b"").unwrap();
+        } else if live_address.is_some() {
             marker(&lines, "BROKER_PARKED");
+            parked_seen = true;
             assert_eq!(live_spent(root.path()), 2);
             let outbox = crate::broker::attention::Outbox::open(
                 &root.path().join("state/authorizations/attention-outbox"),
@@ -739,6 +785,7 @@ fn installed_guard_case_for(
                 "openai",
                 agent_pid,
                 broker_child.0.id(),
+                true,
             );
             super::provider_credentials::assert_records(root.path(), "openai");
             println!("LIVE_REQUESTS=2 EXHAUSTED=1 ATTENTION=run_parked");
@@ -820,7 +867,7 @@ fn installed_guard_case_for(
         }
     } else {
         outcome.unwrap();
-        if park {
+        if park && !parked_seen {
             marker(&lines, "BROKER_PARKED");
         }
         marker(&lines, "BROKER_TERMINAL");
@@ -929,10 +976,6 @@ fn stock_acp_prompt(
     assert_eq!(completed["stopReason"], "end_turn", "{completed}");
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "One redacted live ACP script checks denials before the two paid turns and exhaustion."
-)]
 fn stock_acp_live_prompts(
     input: &mut std::os::unix::net::UnixStream,
     output: &mut std::os::unix::net::UnixStream,
@@ -960,6 +1003,15 @@ fn stock_acp_live_prompts(
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
             denied |= line.contains("capability_denied");
+            // Frame kinds and error fields only; never agent text (louiselm-4j6lt).
+            eprintln!(
+                "LIVE_FRAME id={} method={} update={} error={} stop={}",
+                frame["id"],
+                frame["method"],
+                frame["params"]["update"]["sessionUpdate"],
+                frame["error"],
+                frame["result"]["stopReason"]
+            );
             if frame.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
                 return (
                     frame["result"].clone(),
@@ -987,23 +1039,9 @@ fn stock_acp_live_prompts(
     );
     assert!(!denied && !errored);
     let session_id = created["sessionId"].as_str().unwrap();
-    let (_, denied, errored) = request(
-        3,
-        "session/set_config_option",
-        serde_json::json!({"sessionId":session_id,"configId":"reasoning_effort","value":"xhigh"}),
-    );
-    assert!(!denied && !errored, "ACP configuration was refused");
-    let (_, denied, _) = request(
-        4,
-        "session/prompt",
-        serde_json::json!({"sessionId":session_id,"prompt":[{"type":"text","text":"Reply with OK. Do not use tools."}]}),
-    );
-    assert!(
-        denied,
-        "above-ceiling effort was not rejected by the broker"
-    );
-    assert_eq!(live_spent(root), 0);
-    for (id, config_id, value) in [(5, "reasoning_effort", "low"), (6, "model", "gpt-6-sol")] {
+    // Stock Codex may lower an above-ceiling effort before sending, so broker
+    // refusals are proven by the raw-sender LiveFixture case (louiselm-4j6lt).
+    for (id, config_id, value) in [(3, "reasoning_effort", "low"), (4, "model", "gpt-5.6-luna")] {
         let (_, denied, errored) = request(
             id,
             "session/set_config_option",
@@ -1011,22 +1049,6 @@ fn stock_acp_live_prompts(
         );
         assert!(!denied && !errored, "ACP configuration was refused");
     }
-    let (_, denied, _) = request(
-        7,
-        "session/prompt",
-        serde_json::json!({"sessionId":session_id,"prompt":[{"type":"text","text":"Reply with OK. Do not use tools."}]}),
-    );
-    assert!(
-        denied,
-        "non-allowlisted Model was not rejected by the broker"
-    );
-    assert_eq!(live_spent(root), 0);
-    let (_, denied, errored) = request(
-        8,
-        "session/set_config_option",
-        serde_json::json!({"sessionId":session_id,"configId":"model","value":"gpt-5.6-luna"}),
-    );
-    assert!(!denied && !errored, "ACP configuration was refused");
     for id in [9, 10] {
         let (completed, denied, errored) = request(
             id,

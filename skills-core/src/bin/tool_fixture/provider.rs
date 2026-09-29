@@ -38,6 +38,10 @@ pub(super) fn exchange(input: &mut impl BufRead, output: &mut impl Write) -> io:
             r#"{"model":"unapproved-model","input":[],"reasoning":{"effort":"low"},"stream":true}"#,
             1,
         ),
+        "bad-effort" => (
+            r#"{"model":"fixture-model","input":[],"reasoning":{"effort":"xhigh"},"stream":true}"#,
+            1,
+        ),
         "bad-disclosure" => (
             r#"{"model":"fixture-model","input":[],"reasoning":{"effort":"low"},"stream":true,"client_metadata":{"unknown":"not reviewed"}}"#,
             1,
