@@ -54,7 +54,7 @@ the existing host rustup executable provisions the pinned guest toolchain.
 ```sh
 ./scripts/launcher-vm plan                  # JSON argv, limits, image pin; no effects
 ./scripts/launcher-vm plan --provider-egress # inspect explicit live-API network mode
-./scripts/launcher-vm prepare               # one-time download and guest provisioning
+./scripts/launcher-vm prepare               # build the base for the current inputs
 ./scripts/launcher-vm start                 # restricted network; bounded SSH readiness
 ./scripts/launcher-vm start --provider-egress # live-API guest only, fresh overlay
 ./scripts/launcher-vm status                # JSON systemd state and limits
@@ -120,8 +120,8 @@ request. It also checks the installed guard and measured runtime. The stripped
 debug launcher stays within the installed profile's 128 MiB file limit.
 `TEST_BIN` is the library test binary cargo reports: the target dir also holds
 the `main.rs` test binary and leftovers from earlier builds, so do not glob for it.
-A base image prepared before a provisioning or Cargo.lock change fails this
-build; see louiselm-6y1ee.
+`start` refuses a base prepared from older provisioning inputs or
+`Cargo.lock`, so this build does not meet a stale crate cache.
 
 Choose one IPv4 literal from the last command for `OPENAI_IP` below. Before
 provisioning the key, the maintainer opens `./scripts/launcher-vm terminal` in a
@@ -297,25 +297,27 @@ and the recovery guide included by the onboarding test. It fetches locked
 dependencies and compiles tests without running them.
 Builds use the same line-table debug metadata as the skills-core CI gate.
 The clean baseline thus retains dependency and build caches across resets.
-Normal builds are offline. A changed lockfile needs a new baseline or an explicit
-transfer of its dependency cache; do not silently enable guest egress.
+Normal builds are offline; do not silently enable guest egress.
 
-`prepare` is one-time for each cache root: it returns without updating an
-existing `prepared.qcow2`, and `reset --discard` replaces only the run overlay.
-To refresh guest packages or locked dependencies, wait until the existing VM is
-stopped and no longer in use, then prepare under a new private cache root. The
-old prepared base remains intact:
+The base is named by its provisioning inputs: `prepared-<id>.qcow2`, where the
+id hashes the Debian image checksum, the package list, the Rust toolchain and
+`Cargo.lock` at `HEAD`. `plan` prints the current `base_image`. After any of
+those inputs change:
 
 ```sh
-refresh_cache="$HOME/.cache/louiselm-launcher-refresh"
-mkdir -m 700 -- "$refresh_cache"
-XDG_CACHE_HOME="$refresh_cache" ./scripts/launcher-vm prepare
-XDG_CACHE_HOME="$refresh_cache" ./scripts/launcher-vm start
+./scripts/launcher-vm prepare         # builds the new base; the old one stays
+./scripts/launcher-vm reset --discard # archives the old overlay, new one on the new base
 ```
 
-Use that same `XDG_CACHE_HOME` for later commands targeting the refreshed VM.
-The launcher VM has one shared systemd unit and SSH port, so do not prepare a
-second cache root while another launcher VM is active or in use.
+Until then `start` and `reset` refuse with that instruction. `start` also
+refuses an overlay built on another base, rather than failing later inside the
+guest. A base is never overwritten or deleted by the script: archived overlays
+(`discarded.*`) and retained disks keep their backing file. Delete an old base
+by hand only after checking with `qemu-img info` that no kept overlay uses it
+(louiselm-6y1ee).
+
+The launcher VM has one shared systemd unit and SSH port, so do not prepare
+while another launcher VM is active or in use.
 
 Existing privileged CI recipes are in `.github/workflows/ci.yml`, under
 `cargo (skills-core)`. Execute them **inside the guest**. Keep build artifacts
@@ -359,8 +361,8 @@ The nonprivileged wrapper contract is checked by
 
 The `Sender guard object and loader (disposable KVM)` CI job prepares this same pinned
 guest and runs both gates below. Fresh preparation includes `clang`,
-`linux-libc-dev`, `libbpf-dev`, `libelf-dev`, Python 3 and `iproute2`; an older immutable prepared
-image must be refreshed using the separate cache-root procedure above.
+`linux-libc-dev`, `libbpf-dev`, `libelf-dev`, Python 3 and `iproute2`; a base
+prepared from an older package list is refused until the next `prepare`.
 
 ```sh
 ./scripts/launcher-vm start

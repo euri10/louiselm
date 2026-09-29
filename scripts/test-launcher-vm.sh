@@ -20,7 +20,8 @@ jq -e '
   (.systemd | index("MemorySwapMax=0")) != null and
   (.systemd | index("CPUQuota=200%")) != null and
   (.systemd | index("RuntimeMaxSec=3600")) != null and
-  ([.qemu[] | select(test("virtfs|virtiofs|usb-host|recovery-usb|u2f|pcap|vhost-vsock|guestfwd|/dev/sd"))] | length) == 0
+  ([.qemu[] | select(test("virtfs|virtiofs|usb-host|recovery-usb|u2f|pcap|vhost-vsock|guestfwd|/dev/sd"))] | length) == 0 and
+  (.base_image | test("/louiselm-launcher-vm/prepared-[0-9a-f]{16}\\.qcow2$"))
 ' <<<"$plan" >/dev/null
 
 # Real Provider acceptance opts the guest into egress; normal starts stay offline.
@@ -74,7 +75,8 @@ fi
 test_dir=$(mktemp -d "${TMPDIR:-/var/tmp}/louiselm-vm-test.XXXXXX")
 cleanup() {
   rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/ssh-args" \
-    "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2" \
+    "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2 \
+    "$test_dir/cache/louiselm-launcher-vm/run.qcow2" \
     "$test_dir/cache/louiselm-launcher-vm/control.lock"
   rmdir -- "$test_dir/cache/louiselm-launcher-vm" "$test_dir/cache" "$test_dir/bin" "$test_dir"
 }
@@ -97,7 +99,26 @@ MOCK
 chmod +x "$test_dir/bin/systemctl" "$test_dir/bin/ssh"
 export XDG_CACHE_HOME="$test_dir/cache" PATH="$test_dir/bin:$PATH"
 export VM_TEST_ACTIVE=1 VM_TEST_LOAD=loaded VM_TEST_SSH_ARGS="$test_dir/ssh-args"
+base=$(bash "$vm" plan | jq -r .base_image)
+# louiselm-6y1ee: a base built from other provisioning inputs is never used.
 touch "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2"
+export VM_TEST_ACTIVE=0 VM_TEST_LOAD=not-found
+if message=$(bash "$vm" start 2>&1); then
+  echo 'started without a base for the current provisioning inputs' >&2; exit 1
+fi
+grep -Fq 'run prepare' <<<"$message" || { echo "unhelpful missing-base refusal: $message" >&2; exit 1; }
+if bash "$vm" reset --discard >/dev/null 2>&1; then
+  echo 'reset created an overlay without a current base' >&2; exit 1
+fi
+touch "$base"
+qemu-img create -q -u -f qcow2 -F qcow2 -b "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2" \
+  "$test_dir/cache/louiselm-launcher-vm/run.qcow2" 1G
+if message=$(bash "$vm" start 2>&1); then
+  echo 'started an overlay built on a stale base' >&2; exit 1
+fi
+grep -Fq 'reset --discard' <<<"$message" || { echo "unhelpful stale-overlay refusal: $message" >&2; exit 1; }
+rm -- "$test_dir/cache/louiselm-launcher-vm/run.qcow2"
+export VM_TEST_ACTIVE=1 VM_TEST_LOAD=loaded
 if bash "$vm" start --yubikey 003:002 >/dev/null 2>&1; then
   echo 'accepted hardware attachment to active VM' >&2; exit 1
 fi

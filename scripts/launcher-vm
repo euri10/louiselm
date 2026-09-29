@@ -47,6 +47,19 @@ unit=louiselm-launcher-vm.service
 image=debian-13-genericcloud-amd64-20260831-2587.qcow2
 image_url="https://cloud.debian.org/images/cloud/trixie/20260831-2587/$image"
 image_sha=8ea9faae810043a0b35b0149f05014f26705c2339ffb11ead308f33e844a87cc3ef46ec81d5262b38817b6a88af404874d48a5857ebe072ef6a31dfb6e371f50
+packages=(bubblewrap build-essential pkg-config libssl-dev jq git curl ca-certificates strace
+  clang linux-libc-dev libbpf-dev libelf-dev python3 iproute2)
+rust_toolchain=1.97.1
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# The base is named by its provisioning inputs and never overwritten: retained
+# overlays keep their backing file, and changed inputs need a new prepare
+# instead of failing later inside the guest (louiselm-6y1ee).
+base_id=$({
+  printf '%s\n' "$image_sha" "$rust_toolchain" "${packages[@]}"
+  git -C "$project_root" show HEAD:skills-core/Cargo.lock
+} | sha256sum | cut -c 1-16)
+base="$state/prepared-$base_id.qcow2"
+build="$state/build-$base_id.qcow2"
 
 qemu_args() {
   qemu=(/usr/bin/qemu-system-x86_64
@@ -80,8 +93,8 @@ if [[ $action == plan ]]; then
   service_json=$(printf '%s\n' "${service[@]}" | jq -R 'sub("^--property="; "")' | jq -s .)
   jq -n --arg state "$state" --arg url "$image_url" --arg sha "$image_sha" \
     --argjson qemu "$qemu_json" --argjson systemd "$service_json" \
-    --arg network "$network_mode" \
-    '{schema:"louiselm.launcher-vm.plan/1",state_dir:$state,network:$network,image_url:$url,image_sha512:$sha,qemu:$qemu,systemd:$systemd}'
+    --arg network "$network_mode" --arg base "$base" \
+    '{schema:"louiselm.launcher-vm.plan/1",state_dir:$state,network:$network,image_url:$url,image_sha512:$sha,base_image:$base,qemu:$qemu,systemd:$systemd}'
   exit 0
 fi
 
@@ -152,7 +165,7 @@ case $action in
       command -v "$tool" >/dev/null || die "missing existing host prerequisite: $tool"
     done
     stopped
-    [[ ! -f $state/prepared.qcow2 ]] || { echo 'launcher-vm: already prepared'; exit 0; }
+    [[ ! -f $base ]] || { echo "launcher-vm: already prepared ${base##*/}"; exit 0; }
     [[ -r /usr/share/OVMF/OVMF_CODE_4M.fd && -r /usr/share/OVMF/OVMF_VARS_4M.fd ]] || die 'existing OVMF firmware is required; no host install fallback'
     if [[ ! -f $state/$image ]]; then
       curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 900 --retry 2 \
@@ -176,21 +189,19 @@ case $action in
       printf '  ed25519_public: %s\n' "$(<"$state/host-key.pub")"
     } >"$state/seed/user-data"
     xorriso -as mkisofs -quiet -output "$state/seed.iso" -volid cidata -joliet -rock "$state/seed"
-    [[ -f $state/build.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/$image" "$state/build.qcow2" 32G
-    [[ -f $state/build.qcow2.vars.fd ]] || cp -- /usr/share/OVMF/OVMF_VARS_4M.fd "$state/build.qcow2.vars.fd"
+    [[ -f $build ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/$image" "$build" 32G
+    [[ -f $build.vars.fd ]] || cp -- /usr/share/OVMF/OVMF_VARS_4M.fd "$build.vars.fd"
     # Only trusted distro provisioning gets egress; test guests always use restrict=on.
     trap 'stop_vm' EXIT
-    start_image "$state/build.qcow2" off
+    start_image "$build" off
     guest sudo -n cloud-init status --wait
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      bubblewrap build-essential pkg-config libssl-dev jq git curl ca-certificates strace \
-      clang linux-libc-dev libbpf-dev libelf-dev python3 iproute2
+      "${packages[@]}"
     scp "${ssh_options[@]}" -P 22554 -- "$(command -v rustup)" vm@127.0.0.1:/home/vm/rustup-init
     guest chmod 700 /home/vm/rustup-init
-    guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.97.1 --component rustfmt,clippy
+    guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain "$rust_toolchain" --component rustfmt,clippy
     guest sudo -n install -d -o vm -g vm -m 0755 /var/tmp/louiselm-skills-target
-    project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
     git -C "$project_root" archive HEAD skills-core docs/recovery-ceremony.md \
       tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
       tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
@@ -204,16 +215,20 @@ case $action in
     guest sudo -n sync
     stop_vm
     trap - EXIT
-    mv -- "$state/build.qcow2" "$state/prepared.qcow2"
-    mv -- "$state/build.qcow2.vars.fd" "$state/prepared.qcow2.vars.fd"
-    chmod 400 -- "$state/prepared.qcow2"
-    chmod 400 -- "$state/prepared.qcow2.vars.fd"
-    echo 'launcher-vm: prepared; next: launcher-vm start'
+    mv -- "$build" "$base"
+    mv -- "$build.vars.fd" "$base.vars.fd"
+    chmod 400 -- "$base" "$base.vars.fd"
+    echo "launcher-vm: prepared ${base##*/}; next: launcher-vm reset --discard, then start"
     ;;
   start)
-    [[ -f $state/prepared.qcow2 ]] || die 'run prepare first'
     active && die 'VM already running; stop it before selecting a network mode'
     stopped
+    [[ -f $base ]] || die "no base for the current provisioning inputs (${base##*/}); run prepare"
+    if [[ -f $state/run.qcow2 ]]; then
+      backing=$(qemu-img info --output=json -- "$state/run.qcow2" | jq -r '."backing-filename" // ""')
+      [[ $backing == "$base" ]] ||
+        die "overlay is built on ${backing##*/}, not ${base##*/}; run reset --discard (the old overlay is kept)"
+    fi
     if [[ -n $yubikey_bus ]]; then
       printf -v yubikey_device '/dev/bus/usb/%03d/%03d' "$yubikey_bus" "$yubikey_addr"
       [[ -c $yubikey_device && -r $yubikey_device && -w $yubikey_device ]] || die 'selected USB device needs existing read/write access; no permission fallback'
@@ -221,8 +236,8 @@ case $action in
       grep -Fxq 'ID_VENDOR_ID=1050' <<<"$yubikey_properties" &&
         grep -Fxq 'ID_MODEL_ID=0407' <<<"$yubikey_properties" || die 'selected USB device is not the approved 1050:0407 YubiKey'
     fi
-    [[ -f $state/run.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/prepared.qcow2" "$state/run.qcow2"
-    [[ -f $state/run.qcow2.vars.fd ]] || install -m 600 -- "$state/prepared.qcow2.vars.fd" "$state/run.qcow2.vars.fd"
+    [[ -f $state/run.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$base" "$state/run.qcow2"
+    [[ -f $state/run.qcow2.vars.fd ]] || install -m 600 -- "$base.vars.fd" "$state/run.qcow2.vars.fd"
     trap 'stop_vm' EXIT
     start_image "$state/run.qcow2" "$network_restrict"
     if [[ -n $yubikey_bus ]]; then
@@ -249,7 +264,7 @@ case $action in
   stop) stop_vm ;;
   reset)
     stopped
-    [[ -f $state/prepared.qcow2 ]] || die 'run prepare first'
+    [[ -f $base ]] || die "no base for the current provisioning inputs (${base##*/}); run prepare"
     # Keep the discarded overlay recoverable; never recursively delete user data.
     if [[ -f $state/run.qcow2 ]]; then
       archive=$(mktemp -d "$state/discarded.XXXXXX")
@@ -257,8 +272,8 @@ case $action in
       mv -- "$state/run.qcow2.vars.fd" "$archive/run.qcow2.vars.fd"
       echo "launcher-vm: old overlay retained at $archive/run.qcow2" >&2
     fi
-    qemu-img create -f qcow2 -F qcow2 -b "$state/prepared.qcow2" "$state/run.qcow2"
-    install -m 600 -- "$state/prepared.qcow2.vars.fd" "$state/run.qcow2.vars.fd"
+    qemu-img create -f qcow2 -F qcow2 -b "$base" "$state/run.qcow2"
+    install -m 600 -- "$base.vars.fd" "$state/run.qcow2.vars.fd"
     ;;
   exec) active || die 'VM is not running'; guest "$@" ;;
   terminal)
