@@ -35,7 +35,7 @@ end
 ---@param value string
 ---@return integer
 local function character_count(value)
-  return nvim().str_utfindex(value)
+  return nvim().str_utfindex(value, "utf-32")
 end
 
 ---@param lines string[]

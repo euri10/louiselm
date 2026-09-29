@@ -529,6 +529,29 @@ T["discover"]["validates Agent Skills name and description constraints"] = funct
   })
 end
 
+T["discover"]["counts Unicode codepoints at metadata limits"] = function()
+  local Metadata = require("louiselm.skills.metadata")
+  for field, limit in pairs({ description = 1024, compatibility = 500 }) do
+    for _, count in ipairs({ limit, limit + 1 }) do
+      local lines = { "---", "name: unicode-test" }
+      if field ~= "description" then
+        table.insert(lines, "description: Unicode limits")
+      end
+      table.insert(lines, field .. ": " .. string.rep("😀", count))
+      table.insert(lines, "---")
+      local result, err =
+        Metadata.skill(lines, "/unicode-test/SKILL.md", table.concat(lines, "\n"), "unicode-test", require("lyaml"))
+      if count == limit then
+        MiniTest.expect.equality(result ~= nil, true)
+        MiniTest.expect.equality(err, nil)
+      else
+        MiniTest.expect.equality(result, nil)
+        MiniTest.expect.equality(err, "frontmatter " .. field .. " must be at most " .. limit .. " characters")
+      end
+    end
+  end
+end
+
 T["discover"]["honors both explicit-only controls and warns on conflicts"] = function()
   local claude_dir = nvim.fs.joinpath(temp_dir, "claude-only")
   local claude_path = write_lines(claude_dir, {
@@ -818,7 +841,7 @@ T["inject"]["fairly truncates multibyte descriptions within the complete byte bu
   local catalog = assert(Skills.inject(skills))
 
   MiniTest.expect.equality(#catalog.text <= 8000, true)
-  MiniTest.expect.equality(pcall(nvim.str_utfindex, catalog.text), true)
+  MiniTest.expect.equality(pcall(nvim.str_utfindex, catalog.text, "utf-32"), true)
   MiniTest.expect.equality(#catalog.truncated, 40)
   MiniTest.expect.equality(catalog.omitted, {})
   for _, skill in ipairs(skills) do
