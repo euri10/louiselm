@@ -87,7 +87,7 @@ elif 'BEADS_DIR' in os.environ:
     program
 }
 
-fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
+pub(super) fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
     let program = provision_program(root);
     // Private tmpfs supplied by mounts(): broker writes must not depend on the
     // disposable VM disk retaining non-root reserved space.

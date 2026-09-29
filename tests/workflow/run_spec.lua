@@ -81,6 +81,34 @@ T["ownership"]["creates stage Sessions through the Run owner"] = function()
   MiniTest.expect.equality(#run.workers, 1)
 end
 
+T["ownership"]["asynchronous readiness retains one owner and one disposal"] = function()
+  local session = worker("starting")
+  local ready = false
+  local api = {
+    create_session = function(_, _, _, callback)
+      nvim.schedule(function()
+        callback(session)
+        ready = true
+      end)
+      return session
+    end,
+  }
+  local run = assert(Workflow.new_run({ session_api = api }))
+  MiniTest.finally(function()
+    run:dispose()
+  end)
+  assert(run:create_session("stage-agent"))
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return ready
+    end),
+    true
+  )
+  MiniTest.expect.equality(#run.workers, 1)
+  assert(run:dispose())
+  MiniTest.expect.equality(session.disposed, 1)
+end
+
 T["ownership"]["a skill invoked by a stage Agent inherits Run ownership and stops when the Run cancels"] = function()
   -- The motivating scenario for the whole ownership contract (louiselm-qbr.3.2):
   -- a stage's Agent invokes a work-producing skill mid-turn. The skill's own

@@ -28,6 +28,13 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
 ./scripts/generate-plugin-version --check
 ```
 
+Contained Bead-executor or launcher-prefix changes also require the installed
+`privileged_installed_lua_bead_executor` gate described in
+[bead-executor](bead-executor.md), inside the disposable launcher VM. CI runs it
+with real operator authorization, launcher, Lua Sessions and terminal cleanup;
+the ACP peer and capture admission/attachment are explicit offline doubles.
+A skipped unprivileged Rust fixture is not installed acceptance.
+
 Usage benchmark harness changes also run `python3 scripts/test-usage-benchmark.py`.
 It injects SQLite exits, signals and timeout into disposable synthetic captures,
 checks redacted failure artifacts and retained timings, and runs the successful

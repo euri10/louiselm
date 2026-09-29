@@ -1,5 +1,6 @@
 local Config = require("louiselm.agent.config")
 local Protocol = require("louiselm.acp.protocol")
+local Launch = require("louiselm.acp.launch")
 
 ---@class louiselm.acp.ProcessHandle
 ---@field write fun(self: louiselm.acp.ProcessHandle, data: string|nil)
@@ -9,6 +10,7 @@ local Protocol = require("louiselm.acp.protocol")
 ---@class louiselm.acp.TransportOptions
 ---@field cwd? string Working directory for the agent process.
 ---@field env? table<string, string> Per-Session process environment overrides.
+---@field launch_request? louiselm.acp.LaunchRequest Exact authorized installed-launcher request.
 ---@field on_message? fun(message: louiselm.acp.JsonRpcMessage) Called for each decoded message.
 ---@field on_error? fun(message: string) Called for protocol, stream, or process errors.
 ---@field on_stderr? fun(message: string) Called for agent stderr chunks.
@@ -18,6 +20,7 @@ local Protocol = require("louiselm.acp.protocol")
 ---@field handle louiselm.acp.ProcessHandle
 ---@field buffer string
 ---@field closed boolean
+---@field contained boolean Whether supervisor-owned cleanup is required.
 ---@field options louiselm.acp.TransportOptions
 ---@field send fun(self: louiselm.acp.Transport, message: louiselm.acp.JsonRpcMessage): boolean, string?
 ---@field close fun(self: louiselm.acp.Transport): boolean, string?
@@ -127,16 +130,26 @@ end
 ---Start an ACP agent and connect its JSON-RPC stream.
 ---@param definition louiselm.agent.Definition Normalized or valid agent definition.
 ---@param options? louiselm.acp.TransportOptions Transport callbacks and process options.
+---@param system? fun(command: string[], options: table, callback: fun(result: louiselm.agent.ProcessResult)): louiselm.acp.ProcessHandle Testable process boundary.
 ---@return louiselm.acp.Transport? transport
 ---@return string? error_message Validation or launch error.
-function M.start(definition, options)
+function M.start(definition, options, system)
   local normalized, validation_error = normalize_definition(definition)
   if normalized == nil then
     return nil, validation_error
   end
+  local launch_bytes
+  if options and options.launch_request ~= nil then
+    local launch_error
+    launch_bytes, launch_error = Launch.encode(options.launch_request)
+    if launch_bytes == nil then
+      return nil, launch_error
+    end
+  end
   local transport = setmetatable({
     buffer = "",
     closed = false,
+    contained = launch_bytes ~= nil,
     options = options or {},
   }, Transport)
 
@@ -167,9 +180,16 @@ function M.start(definition, options)
   if transport.options.cwd ~= nil then
     process_options.cwd = transport.options.cwd
   end
+  if launch_bytes ~= nil then
+    command = { "/usr/bin/sudo", "-n", "/usr/local/lib/louiselm/current/bin/louiselm-launch", "run" }
+    -- The installed registry selects the Agent, environment and private cwd.
+    process_options.cwd = "/"
+    process_options.env = { PATH = "/usr/bin:/bin" }
+    process_options.clear_env = true
+  end
 
   ---@diagnostic disable-next-line: undefined-global -- vim.system is Neovim's stable process API.
-  local call_ok, handle_or_error = pcall(vim.system, command, process_options, function(result)
+  local call_ok, handle_or_error = pcall(system or vim.system, command, process_options, function(result)
     on_exit(transport, result)
   end)
   if not call_ok then
@@ -177,6 +197,13 @@ function M.start(definition, options)
   end
   ---@cast handle_or_error louiselm.acp.ProcessHandle
   transport.handle = handle_or_error
+  if launch_bytes ~= nil then
+    local written, write_error = pcall(transport.handle.write, transport.handle, launch_bytes .. "\n")
+    if not written then
+      local closed, close_error = transport:close()
+      return nil, closed and "could not write launch request" or (close_error or tostring(write_error))
+    end
+  end
   return transport
 end
 
@@ -200,7 +227,7 @@ function Transport:send(message)
   return true
 end
 
----Close the agent's stdin and terminate the process.
+---Close controller input; unmanaged agents also receive SIGTERM.
 ---@param self louiselm.acp.Transport
 ---@return boolean closed
 ---@return string? error_message
@@ -211,7 +238,15 @@ function Transport:close()
   self.closed = true
   local write_ok, write_error = pcall(self.handle.write, self.handle, nil)
   if not write_ok then
+    if self.contained then
+      self.closed = false
+    end
     return false, tostring(write_error)
+  end
+  if self.contained then
+    -- EOF starts the supervisor's authenticated Park/settlement/disposal path.
+    -- Killing sudo/the supervisor here could interrupt that cleanup proof.
+    return true
   end
   local kill_ok, kill_error = pcall(self.handle.kill, self.handle, "sigterm")
   if not kill_ok then

@@ -73,6 +73,14 @@ M.new_executor = Executor.new
 M.new_cache = Cache.new
 M.new_ledger = Ledger.new
 
+---Construct a sequential Run of Contained Codex workers for an exact Bead list.
+---@param options louiselm.workflow.BeadExecutorOptions Operator-selected envelope and execution callbacks.
+---@return louiselm.workflow.BeadExecutor? controller
+---@return string? error_message Invalid definition or off-list Bead.
+function M.new_bead_executor(options)
+  return require("louiselm.workflow.beads").new(options)
+end
+
 ---Validate through a caller-owned pure result cache.
 ---@param cache louiselm.workflow.Cache Cache isolated to the caller's lifecycle.
 ---@param workflow string Workflow name.

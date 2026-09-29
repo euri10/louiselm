@@ -254,6 +254,11 @@ function Run:adopt_session(session)
   if not is_worker(session) then
     return false, "Run worker must support cancel, dispose, and inspect"
   end
+  for _, worker in ipairs(self.workers) do
+    if worker == session then
+      return true
+    end
+  end
   ---@diagnostic disable-next-line: assign-type-mismatch -- Session is the production RunWorker implementation.
   self.workers[#self.workers + 1] = session
   ---@diagnostic disable-next-line: undefined-field -- Runtime ownership is deliberately attached at construction.
@@ -287,19 +292,7 @@ function Run:create_session(agent_name, options, ready_callback)
   if session == nil then
     return nil, create_error
   end
-  local already_owned = false
-  for _, worker in ipairs(self.workers) do
-    if worker == session then
-      already_owned = true
-      break
-    end
-  end
-  local adopted, adopt_error
-  if already_owned then
-    adopted = true
-  else
-    adopted, adopt_error = self:adopt_session(session)
-  end
+  local adopted, adopt_error = self:adopt_session(session)
   if not adopted then
     session:dispose()
     return nil, adopt_error

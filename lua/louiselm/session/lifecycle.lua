@@ -53,6 +53,7 @@ local nvim = vim
 ---@field name? string User-facing session name.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field broker_session_id? string Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
+---@field launch_request? louiselm.acp.LaunchRequest Launch through the installed supervisor instead of the configured command.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store? louiselm.permission.Store Remembered-permission owner.
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -742,6 +743,12 @@ local function handle_request(self, request, respond)
       respond(automatic_response)
       return
     end
+    if self.options.launch_request ~= nil then
+      -- An automatic contained decision must never turn into human attendance
+      -- when the peer offers no compatible option. Refuse that request instead.
+      respond({ outcome = { outcome = "cancelled" } })
+      return
+    end
   end
   self.permission_queue[#self.permission_queue + 1] = { data = data, respond = respond, answered = false }
   pump_permissions(self)
@@ -983,6 +990,7 @@ function Session:start()
   local client, connect_error = Acp.connect(self.definition, {
     cwd = self.state.working_dir,
     env = self.options.env,
+    launch_request = self.options.launch_request,
     on_notification = function(message)
       handle_notification(self, message)
     end,

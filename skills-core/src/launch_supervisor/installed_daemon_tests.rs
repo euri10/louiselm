@@ -22,6 +22,9 @@ mod beads;
 #[path = "installed_daemon_state_tests.rs"]
 mod state;
 
+#[path = "installed_bead_executor_tests.rs"]
+mod bead_executor;
+
 fn completed<T: Send + 'static>(queue: impl FnOnce(Box<dyn FnOnce(T) + Send>)) -> T {
     let (tx, rx) = mpsc::channel();
     queue(Box::new(move |value| tx.send(value).unwrap()));
@@ -287,6 +290,21 @@ fn install_daemon_with(
     root: &Path,
     enforcement: crate::conformance::admission::Enforcement,
 ) -> (LauncherPaths, LauncherConfig, OwnedFd) {
+    let installed = install_unseeded_daemon(root, enforcement);
+    assert!(
+        process(&installed.2, BROKER_UID, true)
+            .0
+            .wait()
+            .unwrap()
+            .success()
+    );
+    installed
+}
+
+fn install_unseeded_daemon(
+    root: &Path,
+    enforcement: crate::conformance::admission::Enforcement,
+) -> (LauncherPaths, LauncherConfig, OwnedFd) {
     let (paths, mut config, _) = install_fixture_at(root, 3, LauncherPaths::system());
     config.conformance = enforcement;
     write_json(&paths.state_root.join("config.json"), &config);
@@ -311,13 +329,6 @@ fn install_daemon_with(
     )
     .unwrap();
     listen(&manager, 8).unwrap();
-    assert!(
-        process(&manager, BROKER_UID, true)
-            .0
-            .wait()
-            .unwrap()
-            .success()
-    );
     (paths, config, manager)
 }
 

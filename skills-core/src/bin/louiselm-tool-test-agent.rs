@@ -3,7 +3,10 @@
 //! Ordinary stdin bytes are echoed. A record separator introduces one bounded
 //! JSON capability request terminated by newline. Only this native process opens
 //! its own capability socket; it never executes commands or loads workspace code.
+//! An opening JSON brace selects the offline ACP fixture protocol.
 
+#[path = "tool_fixture/acp.rs"]
+mod acp;
 #[path = "tool_fixture/beads.rs"]
 mod beads;
 #[path = "tool_fixture/channel.rs"]
@@ -28,6 +31,9 @@ fn run() -> io::Result<()> {
     let mut byte = [0];
     let mut counter = 0_u64;
     while input.read(&mut byte)? != 0 {
+        if byte[0] == b'{' {
+            return acp::run(io::Cursor::new(byte).chain(input), &mut output);
+        }
         // Explicit fixture reconnect after authorized Resume; never retry a
         // possibly executed command automatically across a disconnected channel.
         if byte[0] == 0x1f {

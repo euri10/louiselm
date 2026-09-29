@@ -166,6 +166,7 @@ local function valid_options(value)
       and key ~= "schedule"
       and key ~= "start_timeout_ms"
       and key ~= "broker_session_id"
+      and key ~= "launch_request"
     then
       return false
     end
@@ -538,12 +539,22 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
   if permission_policy == nil then
     return nil, "invalid session permission policy: " .. (policy_error or "invalid policy")
   end
+  if options.launch_request ~= nil then
+    local bytes, launch_error = require("louiselm.acp.launch").encode(options.launch_request)
+    if bytes == nil then
+      return nil, launch_error
+    end
+    if options.broker_session_id ~= options.launch_request.session_id then
+      return nil, "launch request must match the broker Session binding"
+    end
+  end
   local session_options = {
     cwd = options.cwd,
     env = options.env,
     name = options.name,
     on_event = options.on_event,
     broker_session_id = options.broker_session_id,
+    launch_request = options.launch_request and nvim.deepcopy(options.launch_request) or nil,
     permission_policy = permission_policy,
     permission_store = self.permission_store,
     schedule = options.schedule,

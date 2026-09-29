@@ -118,6 +118,7 @@ string|table
 - `broker_session_id: string?` -- Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 - `cwd: string?` -- Working directory for the ACP session.
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
+- `launch_request: (louiselm.acp.LaunchRequest)?` -- Launch through the installed supervisor instead of the configured command.
 - `name: string?` -- User-facing session name.
 - `on_event: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.

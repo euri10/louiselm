@@ -2880,6 +2880,52 @@ T["new"]["automatically responds only to explicitly scoped permission requests"]
   restore_processes(original_system)
 end
 
+T["new"]["contained automatic approval cancels an unapprovable request without human fallback"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    broker_session_id = "worker",
+    launch_request = {
+      schema = "louiselm.launch.request/2",
+      protocol_version = 1,
+      request_id = "launch",
+      authorization_id = "authorization",
+      session_id = "worker",
+      run_id = "run",
+      agent_id = "agent",
+      envelope_id = "envelope",
+      envelope_revision = 1,
+      skill_generation_id = "sha256:" .. string.rep("a", 64),
+      session_input_manifest_id = "sha256:" .. string.rep("b", 64),
+    },
+    permission_policy = {
+      name = "automatic",
+      evaluate = function()
+        return "allow"
+      end,
+    },
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "agent-acp" })
+  local permissions = 0
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions = permissions + 1
+    end
+  end)
+  local request = assert(Protocol.request(9, "session/request_permission", {
+    sessionId = "agent-acp",
+    options = { { optionId = "reject", kind = "reject_once" } },
+  }))
+  process.options.stdout(nil, assert(Protocol.encode(request)) .. "\n")
+  MiniTest.expect.equality(permissions, 0)
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).result, {
+    outcome = { outcome = "cancelled" },
+  })
+end
+
 T["new"]["persists exact always choices and replays only through compatible option kinds"] = function()
   local root = nvim.fn.tempname()
   local state_path = nvim.fs.joinpath(root, "permissions.json")

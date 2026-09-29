@@ -48,7 +48,7 @@ image=debian-13-genericcloud-amd64-20260831-2587.qcow2
 image_url="https://cloud.debian.org/images/cloud/trixie/20260831-2587/$image"
 image_sha=8ea9faae810043a0b35b0149f05014f26705c2339ffb11ead308f33e844a87cc3ef46ec81d5262b38817b6a88af404874d48a5857ebe072ef6a31dfb6e371f50
 packages=(bubblewrap build-essential pkg-config libssl-dev jq git curl ca-certificates strace
-  clang linux-libc-dev libbpf-dev libelf-dev python3 iproute2)
+  clang linux-libc-dev libbpf-dev libelf-dev python3 iproute2 sqlite3)
 rust_toolchain=1.97.1
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # The base is named by its provisioning inputs and never overwritten: retained
