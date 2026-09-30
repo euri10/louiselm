@@ -6,16 +6,14 @@ local nvim = vim
 nvim.opt.rtp:prepend(nvim.fn.getcwd())
 local Workflow = require("louiselm.workflow")
 local input = nvim.json.decode(table.concat(nvim.fn.readfile(nvim.env.LOUISELM_BEADS_FIXTURE), "\n"))
-local completed, failure, count = false, nil, 0
-local controller
-local function failed(err)
-  failure = failure or tostring(err)
-  completed = true
-end
-controller = assert(Workflow.new_bead_executor({
+local index = assert(tonumber(nvim.env.LOUISELM_BEADS_CASE), "explicit installed case")
+local case = assert(input.cases[index], "selected installed case")
+print("installed verification case " .. index)
+local completed, failure, observed = false, nil, false
+local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
-  envelope = input.envelope,
-  bead_ids = { "fixture-1", "fixture-2", "fixture-3" },
+  envelope = case.envelope,
+  bead_ids = { "fixture-" .. index },
   system = function(argv, options, done)
     if argv[1] == "louiselm-capture" then
       nvim.schedule(function()
@@ -23,49 +21,58 @@ controller = assert(Workflow.new_bead_executor({
       end)
       return nil
     end
-    return nvim.system(argv, options, function(result)
-      if result.code ~= 0 then
-        nvim.schedule(function()
-          failed("installed " .. nvim.json.decode(options.stdin).kind .. " authorization refused: " .. result.stderr)
-        end)
-      end
-      done(result)
-    end)
+    return nvim.system(argv, options, done)
   end,
   prepare = function(id, done)
-    print("installed Lua worker: " .. id)
-    local index = assert(tonumber(id:match("%d+$")))
-    assert(count == index - 1, "preparation overtook verification")
+    assert(id == "fixture-" .. index)
     nvim.schedule(function()
       done({
-        grant = input.grants[index],
+        grant = case.grant,
         prompt = index == 3 and "unapprovable" or "Complete this offline fixture turn.",
+        verification = {
+          snapshot = case.snapshot,
+          snapshot_digest = case.snapshot_digest,
+          plan = case.plan,
+          plan_digest = case.plan_digest,
+          verifier_grant = case.verifier_grant,
+        },
       })
     end)
     return true
   end,
   on_worker = function(result, continue)
-    if result.bead_id == "fixture-3" then
+    assert(result.bead_id == "fixture-" .. index)
+    assert(result.envelope_digest ~= result.request_digest)
+    if index == 3 then
       assert(
         result.error and result.error:find("exited", 1, true),
-        "unapprovable request must end without a human decision"
+        "unapprovable request must fail without a human decision"
       )
-    elseif result.error then
-      return failed(result.error)
+      assert(result.verification == nil)
+      continue(false, result.error)
     else
-      assert(result.session and result.session:inspect().status == "ready")
+      if result.error then
+        failure = "case " .. index .. ": " .. result.error
+        observed = true
+        return continue(false, result.error)
+      end
+      assert(result.verification and result.verification.state == "completed")
+      local step = result.verification.detail.execution.steps[1]
+      assert(step.state == "completed")
+      assert(step.exit_code == (index == 1 and 0 or 7))
+      assert(result.verification_passed == (index == 1))
+      continue(true)
     end
-    assert(result.envelope_digest ~= result.request_digest)
+    observed = true
     assert(result.session:dispose())
-    count = count + 1
-    continue(true)
   end,
 }))
 assert(controller:start(function(ok, err)
-  if not ok then
-    return failed(err)
+  if ok ~= (index == 1) then
+    failure = err or "unexpected Run outcome"
+  elseif index == 2 and err ~= "Run verification did not pass" then
+    failure = "failing plan outcome: " .. tostring(err)
   end
-  assert(count == 3)
   completed = true
 end))
 local finished = nvim.wait(90000, function()
@@ -75,4 +82,5 @@ local disposed, dispose_error = controller:dispose()
 assert(disposed, dispose_error)
 assert(finished, "installed Lua controller timed out")
 assert(not failure, failure)
-print("installed Lua Bead executor: three authorized Sessions, automatic permission/refusal, sequential handoff")
+assert(observed, "installed Lua controller did not report worker result for case " .. index)
+print("installed Lua Bead executor case " .. index .. " complete")

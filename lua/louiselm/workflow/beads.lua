@@ -10,10 +10,12 @@ local nvim = vim
 local M = {}
 local Controller = {}
 Controller.__index = Controller
+local advance, next_bead
 
 ---@class louiselm.workflow.BeadPreparation
 ---@field grant table Closed Rust GrantRequest; the broker validates all authority fields.
 ---@field prompt string Worker instruction for this Bead.
+---@field verification { snapshot: string, snapshot_digest: string, plan: string, plan_digest: string, verifier_grant: table } Controller-owned baseline, plan and separate verifier grant.
 
 ---@class louiselm.workflow.BeadResult
 ---@field bead_id string
@@ -22,6 +24,8 @@ Controller.__index = Controller
 ---@field envelope_digest string Run approval digest, never a launch digest.
 ---@field request_digest string Exact child launch digest.
 ---@field error? string Worker failure; no retry is made.
+---@field verification? table Broker-owned durable status, including ordered command results.
+---@field verification_passed? boolean True only for complete passing broker evidence.
 
 ---@class louiselm.workflow.BeadExecutorOptions
 ---@field envelope table Closed Rust RunEnvelope explicitly selected by the operator; start authorizes it.
@@ -46,6 +50,10 @@ Controller.__index = Controller
 
 local function digest(value)
   return type(value) == "string" and #value == 71 and value:match("^sha256:[0-9a-f]+$") ~= nil
+end
+
+local function present(value)
+  return value ~= nil and value ~= nvim.NIL
 end
 
 local function strings(value)
@@ -133,9 +141,236 @@ local function authorize(self, request, callback)
 end
 
 ---@param self louiselm.workflow.BeadExecutor
+---@param argv string[]
+---@param request? table
+---@param expected string
+---@param callback fun(value: table?, error_message?: string)
+local function control(self, argv, request, expected, callback)
+  local bytes
+  if request then
+    local encoded, value = pcall(nvim.json.encode, request)
+    if not encoded then
+      callback(nil, "verification request is not JSON")
+      return
+    end
+    bytes = value
+  end
+  local done = response(self, function(result)
+    if type(result) ~= "table" or result.code ~= 0 then
+      callback(nil, "Control broker " .. expected .. " unavailable")
+      return
+    end
+    local decoded, value = pcall(nvim.json.decode, result.stdout)
+    if not decoded or type(value) ~= "table" or (expected ~= "inspect" and value.kind ~= expected) then
+      callback(nil, "Control broker returned invalid " .. expected)
+      return
+    end
+    callback(value)
+  end)
+  local started, err = pcall(self.options.system or nvim.system, argv, { stdin = bytes, text = true, cwd = "/" }, done)
+  if not started then
+    done({ code = 1, stderr = tostring(err) })
+  end
+end
+
+---@param session_id string
+---@param operation string
+---@return string
+local function operation_id(session_id, operation)
+  return "verification-" .. operation .. "-" .. nvim.fn.sha256(session_id):sub(1, 32)
+end
+
+---@param self louiselm.workflow.BeadExecutor
+---@param result louiselm.workflow.BeadResult
+local function handoff(self, result)
+  self.options.on_worker(
+    result,
+    response(self, function(proceed, verification_error)
+      if proceed ~= true then
+        return finish(self, false, verification_error or "verification stopped the Run")
+      end
+      if result.verification_passed ~= true then
+        return finish(self, false, "Run verification did not pass")
+      end
+      advance(self, "next", function()
+        self.index = self.index + 1
+        next_bead(self)
+      end)
+    end)
+  )
+end
+
+---@param self louiselm.workflow.BeadExecutor
+---@param result louiselm.workflow.BeadResult
+---@param prepared louiselm.workflow.BeadPreparation
+---@param input_id string
+---@param input_digest string
+local function verify_worker(self, result, prepared, input_id, input_digest)
+  if result.error then
+    return handoff(self, result)
+  end
+  local launch = result.launch_request
+  local grant = prepared.verification.verifier_grant
+  local verifier_launch = grant.request
+  local expires = self.options.envelope.expires_at_ms
+  local reported = false
+  local function report(status, passed, message)
+    if reported then
+      return
+    end
+    reported = true
+    result.verification = status
+    result.verification_passed = passed
+    result.error = message
+    handoff(self, result)
+  end
+  local function unknown(message)
+    report({ state = "unknown" }, false, message)
+  end
+  control(
+    self,
+    { "louiselm-control", "session", "inspect", launch.session_id, "--json" },
+    nil,
+    "inspect",
+    function(status, err)
+      if not status or status.state ~= "running" or type(status.broker_head) ~= "table" then
+        return unknown(err or "producer has no Running broker receipt")
+      end
+      local park = {
+        schema = "louiselm.launch.lifecycle-request/1",
+        protocol_version = 1,
+        request_id = operation_id(launch.session_id, "park"),
+        authorization_id = operation_id(launch.session_id, "park-authorize"),
+        session_id = launch.session_id,
+        run_id = launch.run_id,
+        action = "park",
+        expected_state = "running",
+        expected_receipt_sequence = status.broker_head.sequence,
+        envelope_revision = launch.envelope_revision,
+      }
+      control(
+        self,
+        { "louiselm-control", "verification", "--json" },
+        { kind = "park", request = park },
+        "parked",
+        function(parked, park_error)
+          if not parked then
+            return unknown(park_error or "producer Park is uncertain")
+          end
+          local export = {
+            schema = "louiselm.launch.verification/1",
+            protocol_version = 1,
+            request_id = operation_id(launch.session_id, "export"),
+            launch = launch,
+            head = parked.head,
+            expires_at_ms = expires,
+            operation = { kind = "export", input_id = input_id, input_digest = input_digest },
+          }
+          control(
+            self,
+            { "louiselm-control", "verification", "--json" },
+            { kind = "export", request = export },
+            "exported",
+            function(exported, export_error)
+              if not exported then
+                return unknown(export_error or "producer export is uncertain")
+              end
+              authorize(
+                self,
+                { kind = "session", grant = grant, expected_envelope_digest = self.envelope_digest },
+                function(receipt)
+                  local bytes = Launch.encode(verifier_launch)
+                  if receipt.request_digest ~= "sha256:" .. nvim.fn.sha256(bytes) then
+                    return unknown("broker returned a mismatched verifier authorization")
+                  end
+                  local verifier, start_error = self.run:create_session(
+                    verifier_launch.agent_id,
+                    {
+                      cwd = "/var/lib/louiselm/sessions/" .. verifier_launch.session_id .. "/workspace",
+                      broker_session_id = verifier_launch.session_id,
+                      launch_request = verifier_launch,
+                      permission_policy = {
+                        name = "contained-verifier",
+                        evaluate = function()
+                          return "deny"
+                        end,
+                      },
+                    },
+                    response(self, function(ready, ready_error)
+                      if not ready then
+                        return unknown(ready_error or "verifier startup failed")
+                      end
+                      control(
+                        self,
+                        { "louiselm-control", "session", "inspect", verifier_launch.session_id, "--json" },
+                        nil,
+                        "inspect",
+                        function(verifier_status, inspect_error)
+                          if
+                            not verifier_status
+                            or verifier_status.state ~= "running"
+                            or type(verifier_status.broker_head) ~= "table"
+                            or verifier_status.broker_head.sequence ~= 1
+                          then
+                            return unknown(inspect_error or "verifier has no fresh Running receipt")
+                          end
+                          local run_request = {
+                            schema = "louiselm.launch.verification/1",
+                            protocol_version = 1,
+                            request_id = operation_id(verifier_launch.session_id, "run"),
+                            launch = verifier_launch,
+                            head = verifier_status.broker_head,
+                            expires_at_ms = expires,
+                            operation = {
+                              kind = "run",
+                              producer_session_id = launch.session_id,
+                              export_request_id = export.request_id,
+                              export_digest = exported.export_digest,
+                              job_digest = exported.evidence.job.job_digest,
+                            },
+                          }
+                          control(
+                            self,
+                            { "louiselm-control", "verification", "--json" },
+                            { kind = "run", request = run_request },
+                            "executed",
+                            function(_, run_error)
+                              -- A lost reply may follow a spent intent. Read durable status; never resend.
+                              control(
+                                self,
+                                { "louiselm-control", "verification", "--json" },
+                                { kind = "status", session_id = verifier_launch.session_id },
+                                "status",
+                                function(view, status_error)
+                                  if not view then
+                                    return unknown(status_error or run_error or "verification outcome is unknown")
+                                  end
+                                  report(view.status, view.commands_passed == true)
+                                end
+                              )
+                            end
+                          )
+                        end
+                      )
+                    end)
+                  )
+                  if not verifier then
+                    unknown(start_error or "verifier startup failed")
+                  end
+                end
+              )
+            end
+          )
+        end
+      )
+    end
+  )
+end
+
+---@param self louiselm.workflow.BeadExecutor
 ---@param outcome string
 ---@param callback fun()
-local function advance(self, outcome, callback)
+advance = function(self, outcome, callback)
   local started, err = self.executor:advance(
     outcome,
     nil,
@@ -183,11 +418,39 @@ local function check_prepared(self, id, prepared)
   if type(scope) ~= "table" or not nvim.deep_equal(scope.issue_ids, { id }) or scope.role ~= "worker" then
     return nil, "worker grant must name only its assigned Bead with the worker role"
   end
+  local verification = prepared.verification
+  if
+    type(verification) ~= "table"
+    or type(verification.snapshot) ~= "string"
+    or type(verification.plan) ~= "string"
+    or not digest(verification.snapshot_digest)
+    or verification.plan_digest ~= envelope.verification_plan_digest
+    or type(verification.verifier_grant) ~= "table"
+  then
+    return nil, "verification requires the approved plan, baseline and verifier grant"
+  end
+  local verifier = verification.verifier_grant
+  local verifier_bytes = Launch.encode(verifier.request)
+  if
+    not verifier_bytes
+    or verifier.request.run_id ~= envelope.run_id
+    or verifier.request.envelope_id ~= envelope.envelope_id
+    or verifier.request.envelope_revision ~= envelope.envelope_revision
+    or verifier.request.agent_id ~= self.options.agent_id
+    or verifier.request.session_id == request.session_id
+    or present(verifier.commands)
+    or present(verifier.beads_mutations)
+    or present(verifier.dependencies)
+    or present(verifier.skill_requests)
+    or present(verifier.provider_requests)
+  then
+    return nil, "verifier must be a distinct grant without ordinary capabilities"
+  end
   return bytes
 end
 
 ---@param self louiselm.workflow.BeadExecutor
-local function next_bead(self)
+next_bead = function(self)
   local id = self.options.bead_ids[self.index]
   if not id then
     return finish(self, true)
@@ -203,96 +466,104 @@ local function next_bead(self)
     -- Own the exact bytes sent for approval even if a preparer reuses its table.
     prepared = nvim.deepcopy(prepared)
     local launch = prepared.grant.request
-    authorize(
+    local input_id = "verify-input-" .. launch.session_id
+    control(
       self,
-      { kind = "session", grant = prepared.grant, expected_envelope_digest = self.envelope_digest },
-      function(receipt)
-        if
-          receipt.schema ~= "louiselm.broker.child-authorization/1"
-          or receipt.run_id ~= launch.run_id
-          or receipt.session_id ~= launch.session_id
-          or receipt.authorization_id ~= launch.authorization_id
-          or receipt.envelope_revision ~= launch.envelope_revision
-          or receipt.envelope_digest ~= self.envelope_digest
-          or receipt.request_digest ~= "sha256:" .. nvim.fn.sha256(bytes)
-        then
-          return finish(self, false, "broker returned a mismatched child authorization")
+      { "louiselm-control", "verification", "--json" },
+      {
+        kind = "stage",
+        input_id = input_id,
+        snapshot = prepared.verification.snapshot,
+        snapshot_digest = prepared.verification.snapshot_digest,
+        plan = prepared.verification.plan,
+        plan_digest = prepared.verification.plan_digest,
+      },
+      "staged",
+      function(staged, stage_error)
+        if not staged then
+          return finish(self, false, stage_error or "verification inputs could not be staged")
         end
-        local result = {
-          bead_id = id,
-          launch_request = launch,
-          envelope_digest = receipt.envelope_digest,
-          request_digest = receipt.request_digest,
-        }
-        local completed = response(self, function(_, worker_error)
-          result.error = worker_error
-          advance(self, "verify", function()
-            self.options.on_worker(
-              result,
-              response(self, function(proceed, verification_error)
-                if proceed ~= true then
-                  return finish(self, false, verification_error or "verification stopped the Run")
+        authorize(
+          self,
+          { kind = "session", grant = prepared.grant, expected_envelope_digest = self.envelope_digest },
+          function(receipt)
+            if
+              receipt.schema ~= "louiselm.broker.child-authorization/1"
+              or receipt.run_id ~= launch.run_id
+              or receipt.session_id ~= launch.session_id
+              or receipt.authorization_id ~= launch.authorization_id
+              or receipt.envelope_revision ~= launch.envelope_revision
+              or receipt.envelope_digest ~= self.envelope_digest
+              or receipt.request_digest ~= "sha256:" .. nvim.fn.sha256(bytes)
+            then
+              return finish(self, false, "broker returned a mismatched child authorization")
+            end
+            local result = {
+              bead_id = id,
+              launch_request = launch,
+              envelope_digest = receipt.envelope_digest,
+              request_digest = receipt.request_digest,
+            }
+            local completed = response(self, function(_, worker_error)
+              result.error = worker_error
+              advance(self, "verify", function()
+                verify_worker(self, result, prepared, input_id, staged.input_digest)
+              end)
+            end)
+            local session, start_error = self.run:create_session(
+              self.options.agent_id,
+              {
+                cwd = "/var/lib/louiselm/sessions/" .. launch.session_id .. "/workspace",
+                broker_session_id = launch.session_id,
+                launch_request = launch,
+                permission_policy = {
+                  name = "contained-worker",
+                  evaluate = function()
+                    return "allow"
+                  end,
+                },
+              },
+              response(self, function(ready, ready_error)
+                if not ready then
+                  return completed(nil, ready_error or "worker startup failed")
                 end
-                advance(self, "next", function()
-                  self.index = self.index + 1
-                  next_bead(self)
+                result.session = ready
+                local function prompt()
+                  local sent, prompt_error = ready:prompt(prepared.prompt, completed)
+                  if not sent then
+                    completed(nil, prompt_error or "worker prompt refused")
+                  end
+                end
+                if self.index ~= 1 then
+                  return prompt()
+                end
+                -- Capture's current Run projection has one anchor Session. The broker
+                -- separately retains every child binding; the finite graph generates no work.
+                local state = ready:inspect()
+                local attached = response(self, function(ok, attach_error)
+                  if not ok then
+                    return finish(self, false, attach_error or "Run attachment failed")
+                  end
+                  prompt()
                 end)
+                local attached_started, attach_error = Service.attach({
+                  id = launch.run_id,
+                  session_id = state.agent .. "/" .. state.acp_session_id,
+                  agent = state.agent,
+                  acp_session_id = state.acp_session_id,
+                  cwd = state.working_dir,
+                  load_session = ready.client ~= nil and ready.client.agent_capabilities.loadSession == true,
+                }, attached, self.options.system)
+                if not attached_started then
+                  attached(false, attach_error)
+                end
               end)
             )
-          end)
-        end)
-        local session, start_error = self.run:create_session(
-          self.options.agent_id,
-          {
-            cwd = "/var/lib/louiselm/sessions/" .. launch.session_id .. "/workspace",
-            broker_session_id = launch.session_id,
-            launch_request = launch,
-            permission_policy = {
-              name = "contained-worker",
-              evaluate = function()
-                return "allow"
-              end,
-            },
-          },
-          response(self, function(ready, ready_error)
-            if not ready then
-              return completed(nil, ready_error or "worker startup failed")
+            if not session then
+              completed(nil, start_error or "worker startup failed")
             end
-            result.session = ready
-            local function prompt()
-              local sent, prompt_error = ready:prompt(prepared.prompt, completed)
-              if not sent then
-                completed(nil, prompt_error or "worker prompt refused")
-              end
-            end
-            if self.index ~= 1 then
-              return prompt()
-            end
-            -- Capture's current Run projection has one anchor Session. The broker
-            -- separately retains every child binding; the finite graph generates no work.
-            local state = ready:inspect()
-            local attached = response(self, function(ok, attach_error)
-              if not ok then
-                return finish(self, false, attach_error or "Run attachment failed")
-              end
-              prompt()
-            end)
-            local attached_started, attach_error = Service.attach({
-              id = launch.run_id,
-              session_id = state.agent .. "/" .. state.acp_session_id,
-              agent = state.agent,
-              acp_session_id = state.acp_session_id,
-              cwd = state.working_dir,
-              load_session = ready.client ~= nil and ready.client.agent_capabilities.loadSession == true,
-            }, attached, self.options.system)
-            if not attached_started then
-              attached(false, attach_error)
-            end
-          end)
+          end
         )
-        if not session then
-          completed(nil, start_error or "worker startup failed")
-        end
       end
     )
   end)
@@ -338,6 +609,9 @@ function M.new(options)
     if not nvim.tbl_contains(envelope.bead_scope.issue_ids, id) then
       return nil, "Bead is outside the approved list: " .. id
     end
+  end
+  if type(envelope.max_sessions) ~= "number" or envelope.max_sessions < 2 * #options.bead_ids then
+    return nil, "Run envelope needs one worker and one verifier Session per Bead"
   end
   if
     type(options.agent_id) ~= "string"

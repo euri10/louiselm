@@ -62,6 +62,7 @@ fn approval_reply_requires_the_exact_receipt_and_session() {
             }
             server
                 .serve_once(
+                    |_, _| panic!("not verification control"),
                     |_| panic!("authorization request not expected"),
                     |_, _| panic!("not dependencies"),
                     |_, _| panic!("not status"),

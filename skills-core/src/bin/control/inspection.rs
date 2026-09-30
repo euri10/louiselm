@@ -137,6 +137,11 @@ struct Query {
 }
 
 enum WorkerQuery {
+    Verification {
+        expires: Instant,
+        request: Box<operator::VerificationControlRequest>,
+        reply: SyncSender<Result<operator::VerificationControlResponse, InspectError>>,
+    },
     Status(Query),
     ProviderExtension {
         expires: Instant,
@@ -161,6 +166,95 @@ pub(super) struct Queries {
 }
 
 impl Queries {
+    fn verification(
+        &self,
+        broker: &InstalledBroker,
+        request: &operator::VerificationControlRequest,
+        deadline: Instant,
+    ) -> Result<operator::VerificationControlResponse, InspectError> {
+        use operator::{
+            VerificationControlRequest as Request, VerificationControlResponse as Response,
+        };
+        match request {
+            Request::Stage {
+                input_id,
+                snapshot,
+                snapshot_digest,
+                plan,
+                plan_digest,
+            } => {
+                let snapshot_digest = louiselm_skills::Digest::parse(snapshot_digest)
+                    .map_err(|_| InspectError::InvalidRequest)?;
+                let plan_digest = louiselm_skills::Digest::parse(plan_digest)
+                    .map_err(|_| InspectError::InvalidRequest)?;
+                broker
+                    .stage_verification(input_id, snapshot, &snapshot_digest, plan, &plan_digest)
+                    .map(|digest| Response::Staged {
+                        input_digest: digest.to_string(),
+                    })
+                    .map_err(|_| InspectError::StatusUnavailable)
+            }
+            Request::Status { session_id } => {
+                operator::validate_subject(session_id)?;
+                broker
+                    .verification_status(session_id)
+                    .map(|status| {
+                        let commands_passed = matches!(&status, louiselm_skills::broker::verification::VerificationStatus::Completed(record) if record.execution.commands_passed());
+                        Response::Status { status, commands_passed }
+                    })
+                    .map_err(|_| InspectError::StatusUnavailable)
+            }
+            Request::Park { request } => self.verification_worker(
+                &request.session_id,
+                Request::Park {
+                    request: request.clone(),
+                },
+                deadline,
+            ),
+            Request::Export { request } => self.verification_worker(
+                &request.launch.session_id,
+                Request::Export {
+                    request: request.clone(),
+                },
+                deadline,
+            ),
+            Request::Run { request } => self.verification_worker(
+                &request.launch.session_id,
+                Request::Run {
+                    request: request.clone(),
+                },
+                deadline,
+            ),
+        }
+    }
+
+    fn verification_worker(
+        &self,
+        id: &str,
+        request: operator::VerificationControlRequest,
+        deadline: Instant,
+    ) -> Result<operator::VerificationControlResponse, InspectError> {
+        operator::validate_subject(id)?;
+        let sender = self
+            .sessions
+            .lock()
+            .map_err(|_| InspectError::StatusUnavailable)?
+            .get(id)
+            .cloned()
+            .ok_or(InspectError::UnknownSession)?;
+        let (reply, receive) = mpsc::sync_channel(1);
+        sender
+            .try_send(WorkerQuery::Verification {
+                expires: deadline,
+                request: Box::new(request),
+                reply,
+            })
+            .map_err(|_| InspectError::StatusUnavailable)?;
+        receive
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| InspectError::StatusUnavailable)?
+    }
+
     pub(super) fn start(broker: Arc<InstalledBroker>) -> Result<Arc<Self>, BrokerError> {
         let config = louiselm_skills::launcher_install::public_runtime_config(
             &louiselm_skills::launcher_install::LauncherPaths::system(),
@@ -191,6 +285,7 @@ impl Queries {
             .spawn(move || {
                 loop {
                     if let Err(error) = endpoint.serve_once(
+                        |request, deadline| owner.verification(&broker, request, deadline),
                         |request| {
                             use louiselm_skills::broker::operator::{
                                 AuthorizationRequest, AuthorizationResponse,
@@ -370,6 +465,53 @@ impl Queries {
     /// Answers one operator query on the Session's own worker turn.
     fn answer(&self, broker: &InstalledBroker, session: &mut BrokerSession, query: WorkerQuery) {
         match query {
+            WorkerQuery::Verification {
+                expires,
+                request,
+                reply,
+            } => {
+                if Instant::now() < expires {
+                    use operator::{
+                        VerificationControlRequest as Request,
+                        VerificationControlResponse as Response,
+                    };
+                    let caller = LifecycleCaller::Operator {
+                        uid: self.operator_uid,
+                    };
+                    let result = match *request {
+                        Request::Park { request } => broker
+                            .request_lifecycle(session, &caller, &request)
+                            .map(|receipt| Response::Parked {
+                                head: louiselm_skills::launch_receipt::ReceiptHead {
+                                    sequence: receipt.payload.sequence,
+                                    digest: receipt.digest().to_string(),
+                                },
+                            }),
+                        Request::Export { request } => broker
+                            .export_verification(session, &caller, &request)
+                            .and_then(|evidence| {
+                                Ok(Response::Exported {
+                                    export_digest: evidence
+                                        .digest()
+                                        .map_err(BrokerError::Policy)?
+                                        .to_string(),
+                                    evidence: Box::new(evidence),
+                                })
+                            }),
+                        Request::Run { request } => broker
+                            .run_verification(session, &caller, &request)
+                            .map(|record| Response::Executed {
+                                commands_passed: record.execution.commands_passed(),
+                                record: Box::new(record),
+                            }),
+                        Request::Stage { .. } | Request::Status { .. } => {
+                            Err(BrokerError::InvalidGrant)
+                        }
+                    }
+                    .map_err(|_| InspectError::StatusUnavailable);
+                    let _ = reply.send(result);
+                }
+            }
             WorkerQuery::Waiver {
                 expires,
                 request,

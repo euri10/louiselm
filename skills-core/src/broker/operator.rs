@@ -3,12 +3,15 @@
 mod wire;
 
 use super::conformance_inspection::{ConformanceInspection, MAX_INSPECTION_BYTES};
+use crate::Digest;
 use crate::beads_mutation::{BeadsControlDecision, BeadsInspection, BeadsInspectionDetail};
+use crate::broker::verification::{VerificationRecord, VerificationStatus};
 use crate::broker::{
     GrantRequest,
     run_envelope::{ChildAuthorization, RunAuthorization, RunEnvelope},
 };
 use crate::launch_protocol::SessionStatus;
+use crate::launch_protocol::{LifecycleRequest, VerificationRequest};
 use crate::skill_request::{SkillRequestOutcome, SkillRequestStatus};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -25,6 +28,8 @@ use std::{
 pub const SOCKET: &str = "/run/louiselm-operator/inspect.sock";
 /// Total budget for one authenticated inspection exchange.
 pub const TIMEOUT: Duration = Duration::from_secs(35);
+/// Upper bound for an exact installed verification exchange.
+pub const VERIFICATION_TIMEOUT: Duration = Duration::from_mins(10);
 const READY: &[u8] = b"louiselm.operator/1";
 
 /// Stable, redacted operator failures; no OS paths or external prose are included.
@@ -85,6 +90,10 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-verification/1")]
+    Verification {
+        request: Box<VerificationControlRequest>,
+    },
     #[serde(rename = "louiselm.operator-authorization/1")]
     Authorization {
         authorization: Box<AuthorizationRequest>,
@@ -123,6 +132,166 @@ enum Request {
         operation_id: String,
         outcome: Option<SkillRequestOutcome>,
     },
+}
+
+/// Operator-owned verification operations. Session channel operations are routed
+/// to the one broker worker that owns that channel.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VerificationControlRequest {
+    /// Copy the selected baseline and exact plan into private broker storage.
+    Stage {
+        /// Identifier of the private staged input.
+        input_id: String,
+        /// Trusted baseline snapshot directory.
+        snapshot: PathBuf,
+        /// Exact baseline snapshot digest.
+        snapshot_digest: String,
+        /// Selected fixed plan file.
+        plan: PathBuf,
+        /// Exact plan digest approved in the Run envelope.
+        plan_digest: String,
+    },
+    /// Park the producer through its authenticated supervisor.
+    Park {
+        /// Exact lifecycle CAS request.
+        request: LifecycleRequest,
+    },
+    /// Export the producer's actual frozen workspace.
+    Export {
+        /// Exact export request.
+        request: VerificationRequest,
+    },
+    /// Execute the exact job in a distinct verifier Session.
+    Run {
+        /// Exact job request.
+        request: VerificationRequest,
+    },
+    /// Inspect the durable result, including an unknown spent intent.
+    Status {
+        /// Verifier Session identifier.
+        session_id: String,
+    },
+}
+
+/// Redacted result of one verification control operation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VerificationControlResponse {
+    /// Exact private input digest.
+    Staged {
+        /// Digest of staged snapshot and plan.
+        input_digest: String,
+    },
+    /// Signed producer Park receipt head.
+    Parked {
+        /// Broker-acknowledged head.
+        head: crate::launch_receipt::ReceiptHead,
+    },
+    /// Actual producer export evidence.
+    Exported {
+        /// Broker-validated export.
+        evidence: Box<crate::launch_protocol::VerificationExport>,
+        /// Canonical identity of the export evidence.
+        export_digest: String,
+    },
+    /// Actual command outcomes and cleanup evidence.
+    Executed {
+        /// Completed record.
+        record: Box<VerificationRecord>,
+        /// Whether every required command actually passed.
+        commands_passed: bool,
+    },
+    /// Current durable applicability.
+    Status {
+        /// Verification status.
+        status: VerificationStatus,
+        /// Whether the completed record has a fully passing plan.
+        commands_passed: bool,
+    },
+}
+
+/// Submit one exact verification operation through the authenticated operator socket.
+/// # Errors
+/// Refuses malformed input, untrusted broker replies, or unavailable ownership.
+pub fn verification(
+    path: &Path,
+    broker_uid: u32,
+    request: &VerificationControlRequest,
+    timeout: Duration,
+) -> Result<VerificationControlResponse, InspectError> {
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Verification {
+            request: Box::new(request.clone()),
+        },
+        timeout,
+    )?;
+    let response: VerificationControlResponse =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if serde_json::to_vec(&response).map_err(|_| InspectError::StatusUnavailable)? != bytes {
+        return Err(InspectError::StatusUnavailable);
+    }
+    let valid = match (request, &response) {
+        (
+            VerificationControlRequest::Stage { plan_digest, .. },
+            VerificationControlResponse::Staged { input_digest },
+        ) => Digest::parse(plan_digest).is_ok() && Digest::parse(input_digest).is_ok(),
+        (
+            VerificationControlRequest::Park { request },
+            VerificationControlResponse::Parked { head },
+        ) => request
+            .expected_receipt_sequence
+            .and_then(|sequence| sequence.checked_add(1))
+            .is_some_and(|sequence| head.sequence == sequence),
+        (
+            VerificationControlRequest::Export { request },
+            VerificationControlResponse::Exported {
+                evidence,
+                export_digest,
+            },
+        ) => {
+            evidence.request == *request
+                && evidence
+                    .digest()
+                    .is_ok_and(|digest| digest.to_string() == *export_digest)
+        }
+        (
+            VerificationControlRequest::Run { request },
+            VerificationControlResponse::Executed {
+                record,
+                commands_passed,
+            },
+        ) => {
+            record.execution.request == *request
+                && record.execution.validate().is_ok()
+                && record.execution.commands_passed() == *commands_passed
+        }
+        (
+            VerificationControlRequest::Status { session_id },
+            VerificationControlResponse::Status {
+                status,
+                commands_passed,
+            },
+        ) => {
+            let valid_record = match status {
+                VerificationStatus::Completed(record) => {
+                    record.execution.request.launch.session_id == *session_id
+                        && record.execution.validate().is_ok()
+                }
+                _ => true,
+            };
+            valid_record
+                && matches!(status, VerificationStatus::Completed(record) if record.execution.commands_passed())
+                    == *commands_passed
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(response)
 }
 
 /// One operator-approved Run or one controller-requested child launch.
@@ -706,6 +875,10 @@ impl OperatorServer {
     )]
     pub fn serve_once(
         &self,
+        verification: impl FnOnce(
+            &VerificationControlRequest,
+            Instant,
+        ) -> Result<VerificationControlResponse, InspectError>,
         authorization: impl FnOnce(&AuthorizationRequest) -> Result<AuthorizationResponse, InspectError>,
         dependencies: impl FnOnce(
             &str,
@@ -738,7 +911,7 @@ impl OperatorServer {
         >,
     ) -> io::Result<()> {
         let (mut stream, _) = self.listener.accept()?;
-        let deadline = Instant::now() + TIMEOUT;
+        let mut deadline = Instant::now() + TIMEOUT;
         let result = (|| {
             if peer_uid(&stream)? != self.operator_uid {
                 return Err(InspectError::AuthenticationRefused);
@@ -748,10 +921,17 @@ impl OperatorServer {
                 wire::read(&mut stream, deadline).map_err(|_| InspectError::InvalidRequest)?;
             let request: Request =
                 serde_json::from_slice(&bytes).map_err(|_| InspectError::InvalidRequest)?;
+            if matches!(request, Request::Verification { .. }) {
+                deadline = Instant::now() + VERIFICATION_TIMEOUT;
+            }
             if Instant::now() >= deadline {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::Verification { request } => {
+                    serde_json::to_vec(&verification(&request, deadline)?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
                 Request::Authorization {
                     authorization: request,
                 } => serde_json::to_vec(&authorization(&request)?)

@@ -290,7 +290,7 @@ fn install_daemon_with(
     root: &Path,
     enforcement: crate::conformance::admission::Enforcement,
 ) -> (LauncherPaths, LauncherConfig, OwnedFd) {
-    let installed = install_unseeded_daemon(root, enforcement);
+    let installed = install_unseeded_daemon(root, enforcement, 3);
     assert!(
         process(&installed.2, BROKER_UID, true)
             .0
@@ -304,8 +304,9 @@ fn install_daemon_with(
 fn install_unseeded_daemon(
     root: &Path,
     enforcement: crate::conformance::admission::Enforcement,
+    slots: u32,
 ) -> (LauncherPaths, LauncherConfig, OwnedFd) {
-    let (paths, mut config, _) = install_fixture_at(root, 3, LauncherPaths::system());
+    let (paths, mut config, _) = install_fixture_at(root, slots, LauncherPaths::system());
     config.conformance = enforcement;
     write_json(&paths.state_root.join("config.json"), &config);
     write_json(&paths.state_root.join("public-config.json"), &config);

@@ -55,6 +55,7 @@ fn operator_authorization_checks_peer_identity_and_exact_run_digest() {
         let worker = thread::spawn(move || {
             server
                 .serve_once(
+                    |_, _| panic!("not verification control"),
                     |request| {
                         let AuthorizationRequest::Run { envelope } = request else {
                             panic!("wrong request")
@@ -95,6 +96,7 @@ fn operator_authorization_checks_peer_identity_and_exact_run_digest() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_, _| panic!("not verification control"),
                 |_| panic!("foreign peer reached authorization"),
                 |_, _| panic!("foreign peer reached dependencies"),
                 |_, _| panic!("foreign peer reached inspection"),

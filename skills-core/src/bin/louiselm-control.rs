@@ -28,6 +28,8 @@ mod inspection;
 mod provider_extension;
 #[path = "control/run_authorization.rs"]
 mod run_authorization;
+#[path = "control/verification.rs"]
+mod verification;
 #[path = "control/waiver.rs"]
 mod waiver;
 
@@ -53,6 +55,9 @@ fn main() -> ExitCode {
     }
     if collected.first().is_some_and(|verb| verb == "run") {
         return ExitCode::from(run_authorization::cli(&collected[1..]));
+    }
+    if collected.first().is_some_and(|verb| verb == "verification") {
+        return ExitCode::from(verification::cli(&collected[1..]));
     }
     if collected
         .first()

@@ -20,7 +20,7 @@ local controller = assert(require("louiselm.workflow").new_bead_executor({
   bead_ids = selected_order,
   agent_id = registered_codex_id,
   prepare = prepare_next_snapshot,
-  on_worker = verify_then_preview,
+  on_worker = inspect_verification_then_decide,
 }))
 assert(controller:start(function(ok, err)
   -- Present completion or the explicit failure to the operator.
@@ -31,18 +31,26 @@ end))
 The two callbacks are controller responsibilities:
 
 - `prepare(bead_id, done)` starts asynchronous snapshot preparation and returns
-  `true`, or `false, error`. It calls `done({grant = grant, prompt = instruction})`
+  `true`, or `false, error`. It calls `done({grant = grant, prompt = instruction,
+  verification = inputs})`
   when the inputs are staged, or `done(nil, error)`. `grant` is the complete
   closed `GrantRequest` in `skills-core/src/broker/authorization.rs`. Its launch
   must name this Run, revision, envelope and Agent, with fresh Session,
   authorization and request IDs. Its Beads scope must use the worker role and
   exactly this one Bead. The broker validates the remaining authority fields.
+  The Run's `max_sessions` must reserve two Sessions per selected Bead: its
+  worker and a distinct verifier.
+  `inputs` names a private baseline `snapshot`, its `snapshot_digest`, the exact
+  `plan`, its `plan_digest`, and a distinct `verifier_grant` without ordinary
+  command, Beads, Provider, dependency or skill grants. The plan digest must
+  match the operator-approved Run envelope.
 - `on_worker(result, continue)` receives the retained Session, assigned Bead,
   exact launch request, separate Run-envelope and launch-request digests, and
-  any worker error. Verification and promotion consume this handoff. Only
-  `continue(true)` prepares the next snapshot, so it can include the previously
-  accepted change. `continue(false, error)` stops execution. Worker failures are
-  not retried; the verifier/failure controller decides whether to continue.
+  any worker error. A finished worker also supplies durable `verification`
+  status, ordered command observations and `verification_passed`. Only
+  `continue(true)` after a passing plan prepares the next snapshot.
+  `continue(false, error)` stops execution. Failed and unknown outcomes are
+  not retried automatically.
 
 All continuations run once on Neovim's main loop. Off-list Beads are rejected
 before effects, and mismatched child receipts are refused before launch. The
@@ -66,9 +74,12 @@ terminal launcher receipt proves confined descendants were cleaned up. The
 supervisor must stay alive to finish that proof. Late startup, authorization,
 prompt or verification callbacks cannot start another worker after disposal.
 
-This API ends at verification handoff. The fixed-plan verifier
-(`louiselm-u06e2`), promotion, failure recording and Run summary are separate
-work. It does not claim Verified posture or complete the first live Run.
+The controller stages the selected inputs, Parks and exports each successful
+worker, launches a distinct verifier Session, runs the broker's fixed plan and
+reads durable status before the continuation. The broker checks the plan against
+the Run envelope and spends verifier authority once. Promotion, failure
+recording and Run summary are separate work. This does not claim Verified
+posture or complete the first live Run.
 
 ## Acceptance
 
@@ -77,14 +88,17 @@ policy, ledger admission, cancellation and fast-event callbacks. The installed
 gate is required in the `sender-guard-vm` CI job:
 
 ```sh
-./scripts/launcher-vm exec sudo -n env \
-  LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_TEST_LUA_ROOT=/home/vm \
-  LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
-  LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim \
-  timeout 120 unshare --mount --propagation private -- \
-  /bin/bash -c 'umask 022; exec "$1" \
-    launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor \
-    --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable
+for bead_case in 1 2 3; do
+  ./scripts/launcher-vm exec sudo -n env \
+    LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
+    LOUISELM_TEST_LUA_ROOT=/home/vm \
+    LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+    LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim \
+    timeout 120 unshare --mount --propagation private -- \
+    /bin/bash -c 'umask 022; exec "$1" \
+      launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor \
+      --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable
+done
 ```
 
 The guest must contain the current Rust build, `lua/`,
@@ -94,7 +108,8 @@ distro Neovim is too old for the plugin's supported APIs. This gate uses the rea
 operator CLI, installed launcher, headless Lua Sessions and durable terminal
 cleanup receipts. Operator inspection is live-only, so it cannot prove cleanup
 after its worker disappears. The measured ACP peer and tracker are offline
-fixtures; no Provider requests or tracker mutations are issued. Capture
+fixtures; the gate runs a passing plan, a failing plan and an unapprovable
+worker. No Provider requests or tracker mutations are issued. Capture
 admission/attachment is doubled, with separate real capture-service integration
 coverage in the normal suite. Live Codex/Provider acceptance remains the
 persistent-VM Run's responsibility.

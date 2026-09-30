@@ -21,9 +21,11 @@ fn privileged_installed_lua_bead_executor() {
     let (_, config, manager) = install_unseeded_daemon(
         root.path(),
         crate::conformance::admission::Enforcement::PreCutover,
+        6,
     );
     let (_, tracker, _) = beads::provision(root.path());
     let manifest = workspace::fixture_manifest();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
     fs::create_dir(SYSTEM_REGISTRY_ROOT).unwrap();
     for name in ["agents.json", "runtimes.json", "envelopes.json"] {
         fs::copy(
@@ -39,12 +41,29 @@ fn privileged_installed_lua_bead_executor() {
             .as_millis(),
     )
     .unwrap();
-    let mut grants = Vec::new();
+    let mut cases = Vec::new();
+    let verification_root = Path::new("/var/lib/louiselm/verification-fixture");
+    fs::create_dir(verification_root).unwrap();
+    fs::set_permissions(verification_root, fs::Permissions::from_mode(0o755)).unwrap();
+    let snapshot = verification_root.join("snapshot");
+    fs::create_dir(&snapshot).unwrap();
+    fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o755)).unwrap();
+    let snapshot_bytes = format!(
+        "{{\"schema\":\"louiselm.workspace.snapshot/1\",\"base_commit\":\"{}\",\"files\":[],\"selected\":[],\"changes\":[]}}",
+        "a".repeat(40)
+    );
+    fs::write(snapshot.join("snapshot.json"), snapshot_bytes.as_bytes()).unwrap();
+    fs::set_permissions(
+        snapshot.join("snapshot.json"),
+        fs::Permissions::from_mode(0o444),
+    )
+    .unwrap();
+    let snapshot_digest = Digest::of(snapshot_bytes.as_bytes()).to_string();
     for index in 1..=3 {
         let mut launch = named_request(&format!("lua-worker-{index}"));
-        launch.run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".into();
+        launch.run_id = format!("lua-run-{index}");
         launch.session_input_manifest_id = manifest.digest().to_string();
-        grants.push(GrantRequest {
+        let grant = GrantRequest {
             request: launch,
             controller_uid: config.operator_uid,
             expires_at_ms: now + 120_000,
@@ -63,19 +82,45 @@ fn privileged_installed_lua_bead_executor() {
                 max_mutations: 1,
                 expires_at_ms: now + 120_000,
             }),
-        });
+        };
+        let mut verifier_launch = named_request(&format!("lua-verifier-{index}"));
+        verifier_launch.run_id = grant.request.run_id.clone();
+        verifier_launch.session_input_manifest_id = manifest.digest().to_string();
+        let verifier_grant = GrantRequest {
+            request: verifier_launch,
+            controller_uid: config.operator_uid,
+            expires_at_ms: now + 120_000,
+            broker_loss_grace_ms: crate::launch::MAX_BROKER_LOSS_GRACE_MS,
+            require_cold_recovery: false,
+            conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+            dependencies: None,
+            commands: None,
+            skill_requests: None,
+            provider_requests: None,
+            beads_mutations: None,
+        };
+        let plan = verification_root.join(format!("plan-{index}.json"));
+        let command = if index == 2 {
+            serde_json::json!({"argv":["sh","-c","exit 7"],"cwd":".","timeout_ms":5000})
+        } else {
+            serde_json::json!({"argv":["true"],"cwd":".","timeout_ms":5000})
+        };
+        write_json(
+            &plan,
+            &serde_json::json!({"schema":"louiselm.workspace.verification-plan/1","commands":[command]}),
+        );
+        fs::set_permissions(&plan, fs::Permissions::from_mode(0o444)).unwrap();
+        let plan_digest = Digest::of(&fs::read(&plan).unwrap()).to_string();
+        let mut envelope = fixture_run_envelope(&grant, plan_digest.clone(), now);
+        envelope.bead_scope = grant.beads_mutations.clone().unwrap();
+        envelope.bead_scope.role = crate::beads_mutation::BeadsRole::Coordinator;
+        envelope.max_sessions = 2;
+        cases.push(serde_json::json!({"envelope":envelope,"grant":grant,
+            "verifier_grant":verifier_grant,"snapshot":snapshot,
+            "snapshot_digest":snapshot_digest,"plan":plan,"plan_digest":plan_digest}));
     }
-    let mut envelope = fixture_run_envelope(&grants[0], Digest::of(b"lua-plan").to_string(), now);
-    envelope.bead_scope = grants[0].beads_mutations.clone().unwrap();
-    envelope.bead_scope.role = crate::beads_mutation::BeadsRole::Coordinator;
-    envelope.bead_scope.issue_ids.push("fixture-2".into());
-    envelope.bead_scope.issue_ids.push("fixture-3".into());
-    envelope.max_sessions = 3;
     let input = root.path().join("controller.json");
-    write_json(
-        &input,
-        &serde_json::json!({"envelope":envelope,"grants":grants}),
-    );
+    write_json(&input, &serde_json::json!({"cases":cases}));
     let state = root.path().join("operator");
     fs::create_dir(&state).unwrap();
     chown(&state, Some(config.operator_uid), Some(config.operator_uid)).unwrap();
@@ -83,6 +128,11 @@ fn privileged_installed_lua_bead_executor() {
     ready(&config);
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit stable Neovim executable");
+    let index: usize = std::env::var("LOUISELM_BEAD_EXECUTOR_CASE")
+        .expect("explicit installed case")
+        .parse()
+        .unwrap();
+    assert!((1..=3).contains(&index));
     let status = Command::new("/usr/bin/setpriv")
         .args([
             "--reuid",
@@ -91,7 +141,7 @@ fn privileged_installed_lua_bead_executor() {
             &config.operator_uid.to_string(),
             "--clear-groups",
         ])
-        .arg(neovim)
+        .arg(&neovim)
         .args([
             "--headless",
             "--noplugin",
@@ -100,21 +150,24 @@ fn privileged_installed_lua_bead_executor() {
             "-l",
             "tests/workflow/installed_beads.lua",
         ])
-        .current_dir(project)
+        .current_dir(&project)
         .env_clear()
         .env("PATH", "/usr/local/lib/louiselm/current/bin:/usr/bin:/bin")
-        .env("XDG_STATE_HOME", state)
-        .env("LOUISELM_BEADS_FIXTURE", input)
+        .env("XDG_STATE_HOME", &state)
+        .env("LOUISELM_BEADS_FIXTURE", &input)
+        .env("LOUISELM_BEADS_CASE", index.to_string())
         .status()
         .unwrap();
-    if status.success() {
-        for index in 1..=3 {
-            wait_terminal(&format!("lua-worker-{index}"));
-        }
-        eprintln!("installed Lua workers: three durable terminal cleanup receipts");
+    assert!(
+        status.success(),
+        "installed Lua Bead executor case {index} failed"
+    );
+    wait_terminal(&format!("lua-worker-{index}"));
+    if index <= 2 {
+        wait_terminal(&format!("lua-verifier-{index}"));
     }
+    eprintln!("installed Lua workers and verifiers: durable terminal cleanup receipts");
     terminate(&mut daemon);
-    assert!(status.success(), "installed Lua Bead executor failed");
 }
 
 fn wait_terminal(id: &str) {

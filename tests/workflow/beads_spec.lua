@@ -13,13 +13,16 @@ local function later(callback, first, second)
 end
 
 local function fixture()
-  local f = { calls = {}, prepared = {}, workers = {}, handoffs = {}, finished = 0 }
+  local f = { calls = {}, prepared = {}, workers = {}, verifiers = {}, handoffs = {}, finished = 0 }
   f.options = {
     agent_id = "codex",
     envelope = {
       run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       envelope_id = "env",
       envelope_revision = 1,
+      expires_at_ms = 9999999999999,
+      verification_plan_digest = DIGEST,
+      max_sessions = 4,
       bead_scope = { issue_ids = { "b-1", "b-2" } },
     },
     bead_ids = { "b-1", "b-2" },
@@ -44,8 +47,26 @@ local function fixture()
         beads_mutations = { issue_ids = { id }, role = "worker" },
       }
       f.prepared_grant = grant
+      local verifier_grant = {
+        request = nvim.tbl_extend("force", {}, grant.request, {
+          request_id = "verify-request-" .. index,
+          authorization_id = "verify-authorization-" .. index,
+          session_id = "verifier-" .. index,
+        }),
+      }
+      f.verifier_grant = verifier_grant
       f.prepare_done = function()
-        later(done, { grant = grant, prompt = "Work on " .. id })
+        later(done, {
+          grant = grant,
+          prompt = "Work on " .. id,
+          verification = {
+            snapshot = "/fixture/snapshot",
+            snapshot_digest = DIGEST,
+            plan = "/fixture/plan",
+            plan_digest = DIGEST,
+            verifier_grant = verifier_grant,
+          },
+        })
       end
       if not f.hold_prepare then
         f.prepare_done()
@@ -60,7 +81,53 @@ local function fixture()
     system = function(argv, options, done)
       f.calls[#f.calls + 1] = argv
       local response
-      if argv[2] == "run" then
+      if argv[2] == "verification" then
+        local input = nvim.json.decode(options.stdin)
+        if input.kind == "stage" then
+          response = { kind = "staged", input_digest = DIGEST }
+        elseif input.kind == "park" then
+          response = { kind = "parked", head = { sequence = 2, digest = DIGEST } }
+        elseif input.kind == "export" then
+          response = {
+            kind = "exported",
+            export_digest = DIGEST,
+            evidence = {
+              job = { job_digest = DIGEST, command_count = 1 },
+            },
+          }
+        elseif input.kind == "run" then
+          f.run_calls = (f.run_calls or 0) + 1
+          f.last_run = input.request
+          response = { kind = "executed", commands_passed = true }
+        elseif input.kind == "status" then
+          response = f.unknown_verification
+              and { kind = "status", commands_passed = false, status = { state = "unknown" } }
+            or {
+              kind = "status",
+              commands_passed = not f.fail_verification,
+              status = {
+                state = "completed",
+                detail = {
+                  execution = {
+                    steps = { { state = "completed", exit_code = f.fail_verification and 7 or 0, timed_out = false } },
+                  },
+                },
+              },
+            }
+        end
+        if input.kind == "run" and f.unknown_verification then
+          later(done, { code = 1, stdout = "", stderr = "" })
+          return { kill = function() end }
+        end
+      elseif argv[2] == "session" then
+        response = {
+          state = "running",
+          broker_head = {
+            sequence = argv[4]:match("^verifier") and 1 or 1,
+            digest = DIGEST,
+          },
+        }
+      elseif argv[2] == "run" then
         local input = nvim.json.decode(options.stdin)
         local request = input.grant and input.grant.request
         response = {
@@ -111,7 +178,11 @@ local function fixture()
           end
           return "prompt"
         end
-        f.workers[#f.workers + 1] = worker
+        if options.permission_policy.name == "contained-verifier" then
+          f.verifiers[#f.verifiers + 1] = worker
+        else
+          f.workers[#f.workers + 1] = worker
+        end
         later(function()
           worker.status = "ready"
           ready(worker)
@@ -157,6 +228,8 @@ T["sequences contained workers across the verification continuation"] = function
   MiniTest.expect.equality(f.handoffs[1].bead_id, "b-1")
   MiniTest.expect.equality(f.handoffs[1].envelope_digest, DIGEST)
   MiniTest.expect.equality(f.handoffs[1].request_digest == DIGEST, false)
+  MiniTest.expect.equality(f.handoffs[1].verification_passed, true)
+  MiniTest.expect.equality(f.handoffs[1].verification.detail.execution.steps[1].exit_code, 0)
   local continue = f.verify_done
   later(continue, true)
   later(continue, true)
@@ -173,7 +246,8 @@ T["sequences contained workers across the verification continuation"] = function
   end)
   MiniTest.expect.equality(f.ok, true)
   MiniTest.expect.equality(f.runner.executor:inspect().status, "completed")
-  MiniTest.expect.equality(#f.calls, 5) -- Run authorization, admission, attachment, two child grants.
+  MiniTest.expect.equality(#f.verifiers, 2)
+  MiniTest.expect.equality(f.last_run.operation.kind, "run")
 end
 
 T["refuses an unapproved list before effects and widened children before launch"] = function()
@@ -195,6 +269,39 @@ T["refuses an unapproved list before effects and widened children before launch"
     return f.finished == 1
   end)
   MiniTest.expect.equality(f.error, "worker grant must name only its assigned Bead with the worker role")
+  MiniTest.expect.equality(#f.workers, 0)
+end
+
+T["requires capacity for a distinct verifier per Bead"] = function()
+  local f = fixture()
+  f.options.envelope.max_sessions = 3
+  local runner, err = require("louiselm.workflow.beads").new(f.options)
+  MiniTest.expect.equality(runner, nil)
+  MiniTest.expect.equality(err, "Run envelope needs one worker and one verifier Session per Bead")
+  MiniTest.expect.equality(f.calls, {})
+end
+
+T["rejects plan drift and ordinary verifier authority before staging"] = function()
+  local f = fixture()
+  f.options.envelope.verification_plan_digest = "sha256:" .. string.rep("b", 64)
+  f:start()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "verification requires the approved plan, baseline and verifier grant")
+  MiniTest.expect.equality(#f.workers, 0)
+  f = fixture()
+  f.hold_prepare = true
+  f:start()
+  wait(function()
+    return f.prepare_done ~= nil
+  end)
+  f.verifier_grant.commands = { command_digest = DIGEST }
+  f.prepare_done()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "verifier must be a distinct grant without ordinary capabilities")
   MiniTest.expect.equality(#f.workers, 0)
 end
 
@@ -309,6 +416,47 @@ T["worker failure is handed off once without retry and verification can stop"] =
   end)
   MiniTest.expect.equality(f.error, "verification refused")
   MiniTest.expect.equality(f.prepared, { "b-1" })
+end
+
+T["failed command is reported and cannot advance the next Bead"] = function()
+  local f = fixture()
+  f.fail_verification = true
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return #f.handoffs == 1
+  end)
+  MiniTest.expect.equality(f.handoffs[1].verification.detail.execution.steps[1].exit_code, 7)
+  MiniTest.expect.equality(f.handoffs[1].verification_passed, false)
+  later(f.verify_done, true)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "Run verification did not pass")
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+end
+
+T["spent verification with a lost reply stays unknown and is not replayed"] = function()
+  local f = fixture()
+  f.unknown_verification = true
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return #f.handoffs == 1
+  end)
+  MiniTest.expect.equality(f.handoffs[1].verification.state, "unknown")
+  MiniTest.expect.equality(f.run_calls, 1)
+  later(f.verify_done, true)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "Run verification did not pass")
 end
 
 return T

@@ -325,6 +325,10 @@ is `skills-core/tests/workspace_cli/verification.rs`.
 `InstalledBroker::stage_verification`, `export_verification`, `run_verification`
 and `verification_status` compose with the existing launch and lifecycle APIs.
 They are blocking broker-worker entrypoints, not editor callbacks or a new daemon.
+The installed `louiselm-control verification --json` command sends one closed
+operator request (`stage`, `park`, `export`, `run`, or `status`) to that broker.
+Export and Run execute on the owning Session worker; a timed-out Run reply is
+followed by a status read, never an automatic replay.
 The controller supplies its authenticated `LifecycleCaller::Operator` identity;
 an Agent-provided role or self-reported result never authorizes verification.
 This supports operator-selected automatic policy without requiring a human

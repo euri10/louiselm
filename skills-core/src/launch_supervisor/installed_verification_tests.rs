@@ -128,6 +128,7 @@ fn start_operator_server(broker: Arc<InstalledBroker>, root: &Path, uid: u32) {
         loop {
             server
                 .serve_once(
+                    |_, _| panic!("not verification control"),
                     |request| {
                         use crate::broker::operator::{
                             AuthorizationRequest, AuthorizationResponse, InspectError,

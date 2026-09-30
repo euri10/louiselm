@@ -41,7 +41,8 @@ pub struct VerificationRecord {
 }
 
 /// Current applicability of durable evidence; never an installed promotion claim.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "detail", rename_all = "snake_case")]
 pub enum VerificationStatus {
     /// No authority was spent for this verifier.
     NotRequested,
