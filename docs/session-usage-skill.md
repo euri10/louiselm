@@ -11,11 +11,11 @@ invocation/acceptance remains separate from those checks.
 
 Implementation choices: file-granular refresh, atomic publication of canonical
 facts, private metadata-only storage, bounded JSON plus optional table output.
-Raw-content drill-down, optional token estimation, percentiles/cost conversion,
-richer shell normalization and broader origin metadata remain follow-up work;
-the relevant sections below describe design intent, not shipped claims.
-Those extensions are tracked as `louiselm-7p7n0`; safe opt-in content inspection
-is tracked separately as `louiselm-ix2bd`.
+Optional token estimation, percentiles/cost conversion, richer shell
+normalization and broader origin metadata remain follow-up work; the relevant
+sections below describe design intent, not shipped claims. Those extensions are
+tracked as `louiselm-7p7n0`. The content-inspection decision and conditional
+design for `louiselm-ix2bd` are below; no payload-reading command is shipped.
 
 ## Outcome and boundary
 
@@ -348,9 +348,8 @@ command operand literals, tool results, environment maps or credentials into the
 default index or model responses. Fingerprints and metadata remain sensitive;
 they are not anonymization or evidence that an export is safe to share.
 
-Normal drill-down returns facts and pointers. Explicit `show ... --content` can
-read a bounded selected source record, with redaction and truncation disclosed;
-it is not part of the skill's default loop. Logs are untrusted data: their
+Normal drill-down returns facts and pointers. The content-inspection decision
+below leaves source payloads outside the CLI. Logs are untrusted data: their
 instructions, shell text, terminal escapes and paths never become executable
 actions. Do not run historical commands to measure hypothetical savings.
 
@@ -375,6 +374,56 @@ derived facts with their last-observed generation; do not silently remove histor
 A fact's source pointer may become unavailable even while its aggregate survives.
 Explicit rebuild replaces only the owned derived index after a successful new
 build; it never rewrites, repairs or deletes source histories.
+
+## Opt-in content inspection decision (`louiselm-ix2bd`)
+
+Do not add raw-content output to the current CLI. `show` already gives a selected
+fact's source, line or row ID, source state and indexed digest. The installed
+skill's ranking-and-trace QA (`louiselm-je8la`) followed these pointers to a
+real call without opening its payload. Usage rankings and historical-option
+comparisons need the indexed facts, not transcript text. A pointer is a locator,
+not proof that the source still contains the indexed record. In particular,
+JSONL's stored digest includes parser/normalizer versioning, while SQLite's
+stored digest hashes extracted facts rather than the source row. Neither is a
+general-purpose record-integrity check for content output.
+
+If a concrete task later requires CLI-mediated inspection of exact source text,
+the first version should have this contract:
+
+- One explicit, noninteractive `show call ID --content --generation G
+  --evidence N --field tool-argument|tool-result` request selects one evidence
+  entry from a prior `show call ID` response and one format-supported text field.
+  No arbitrary path, SQL, JSON pointer, bulk search or implicit content in
+  `calls`, `stats`, `schema` or ordinary `show`. A changed index generation or
+  missing/ambiguous evidence fails closed. Other record kinds and fields require
+  their own demonstrated need and extraction rules.
+- Resolve the source from the indexed evidence, then open an owned regular file
+  without following unexpected symlinks. Validate the opened source against the
+  indexed generation before reading its selected complete record, and recheck
+  for change before output. JSONL can use its captured whole-file hash and a
+  bounded line read. SQLite needs a format-specific row/content digest captured
+  during indexing and a consistent read-only transaction; the present digest
+  of extracted facts is insufficient. Until that exists, return unsupported for
+  SQLite evidence. Missing, rotated, rewritten, oversized and partial records
+  return payload-free errors with a refresh instruction.
+- Cap both the source record read and emitted text; default to at most 4 KiB of
+  emitted text and retain the existing 32-KiB total JSON response ceiling.
+  Emit one JSON object with source ID, record locator, verified generation,
+  selected field, emitted-byte count, truncation and redaction status. Escape
+  terminal controls; omit nontext/binary content. Redact recognized credentials
+  and structured secret fields before output, show that redaction occurred, and
+  describe it as best-effort rather than safe for onward sharing. Do not put raw
+  text in the index, diagnostics, errors, cursors, logs or temporary files.
+- Treat selected text only as data. The CLI never executes, replays, evaluates,
+  follows links in, or acts on instructions from a source record. The skill uses
+  this mode only for a user's explicit, scoped content question, never as its
+  routine ranking or tracing step.
+
+Before shipping that mode, offline fixtures must prove that a selected field is
+bound to its indexed evidence and that changed generations, row rewrites,
+symlinks, partial/oversize records, secrets, terminal controls and truncation
+cannot silently return unverified content. The current pointer-only behavior
+remains the default and needs no new dependency or stored payload.
 
 ## Intended skill entrypoint
 
