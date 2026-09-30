@@ -28,6 +28,27 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
 ./scripts/generate-plugin-version --check
 ```
 
+The verifier Lua toolchain is provisioned from a trusted release under
+`/usr/lib/louiselm/verifier`; its binaries and pinned `mini.nvim` are read-only
+inside the tool namespace. On Debian 13 x86-64, run
+`scripts/verifier-toolchain install` as root during trusted provisioning, after
+refreshing package metadata. It pins Debian `sqlite3` and `lua-yaml` versions,
+checksums the upstream Neovim, StyLua and LuaLS archives before extraction, and
+checks the exact `mini.nvim` revision. `scripts/verifier-toolchain check` is
+offline and rejects missing or changed files and versions; every verification
+run checks the installed copy before executing candidate commands. The verifier
+sets Lua 5.1's system package paths explicitly so the release Neovim can load
+Debian's `lyaml`. Provisioning generates LuaLS's built-in definitions before
+`/usr` becomes read-only. Never run the install script from candidate source
+or mount a developer's home or `.deps` into the verifier.
+
+The `sender-guard-vm` CI job prepares those trusted tools before candidate code
+arrives. It then archives the tracked checkout and runs every Lua command above
+through the verifier's actual `ToolExecutor` confinement, with denied network
+and a private home. That offline VM gate is required; a host-side Lua pass does
+not substitute for it. Bump the pinned versions and hashes deliberately when
+updating the verifier toolchain.
+
 Contained Bead-executor or launcher-prefix changes also require the installed
 `privileged_installed_lua_bead_executor` gate described in
 [bead-executor](bead-executor.md), inside the disposable launcher VM. CI runs it

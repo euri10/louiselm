@@ -57,6 +57,7 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 base_id=$({
   printf '%s\n' "$image_sha" "$rust_toolchain" "${packages[@]}"
   git -C "$project_root" show HEAD:skills-core/Cargo.lock
+  sha256sum "$project_root/scripts/verifier-toolchain"
 } | sha256sum | cut -c 1-16)
 base="$state/prepared-$base_id.qcow2"
 build="$state/build-$base_id.qcow2"
@@ -198,6 +199,8 @@ case $action in
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       "${packages[@]}"
+    scp "${ssh_options[@]}" -P 22554 -- "$project_root/scripts/verifier-toolchain" vm@127.0.0.1:/home/vm/verifier-toolchain
+    guest sudo -n env DEBIAN_FRONTEND=noninteractive /bin/bash /home/vm/verifier-toolchain install
     scp "${ssh_options[@]}" -P 22554 -- "$(command -v rustup)" vm@127.0.0.1:/home/vm/rustup-init
     guest chmod 700 /home/vm/rustup-init
     guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain "$rust_toolchain" --component rustfmt,clippy

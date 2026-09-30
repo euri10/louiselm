@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run only from a trusted release or the disposable launcher VM, before
+# candidate source is admitted. Verification itself never downloads anything.
+umask 022
+export PATH=/usr/bin:/bin
+root=/usr/lib/louiselm/verifier
+mini_revision=1345d191bb3da9c7b0e977f4387c5761f9bff68d
+sqlite_package=3.46.1-7+deb13u2
+yaml_package=6.2.8-2+b2
+
+fail() { echo "verifier-toolchain: $*" >&2; exit 1; }
+download() {
+  local url=$1 digest=$2 destination=$3
+  curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 \
+    --max-time 900 --retry 2 --output "$destination" "$url"
+  printf '%s  %s\n' "$digest" "$destination" | sha256sum --check --status ||
+    fail "download checksum mismatch: ${destination##*/}"
+}
+check() {
+  [[ -d $root && ! -L $root ]] || fail "missing trusted toolchain at $root"
+  (cd "$root" && sha256sum --check --status SHA256SUMS) || fail 'trusted toolchain bytes drifted'
+  [[ $(readlink "$root/bin/nvim") == ../nvim/bin/nvim ]] || fail 'Neovim link drift'
+  [[ $(readlink "$root/bin/lua-language-server") == ../luals/bin/lua-language-server ]] || fail 'LuaLS link drift'
+  [[ $(dpkg-query -W -f='${Version}' sqlite3) == "$sqlite_package" ]] || fail 'sqlite3 package drift'
+  [[ $(dpkg-query -W -f='${Version}' lua-yaml) == "$yaml_package" ]] || fail 'lua-yaml package drift'
+  [[ $("$root/bin/nvim" --version) == "NVIM v0.12.5"$'\n'* ]] || fail 'Neovim version drift'
+  [[ $("$root/bin/stylua" --version) == 'stylua 2.5.2' ]] || fail 'StyLua version drift'
+  [[ $("$root/bin/lua-language-server" --version) == *'3.19.1'* ]] || fail 'LuaLS version drift'
+  [[ $(<"$root/mini-revision") == "$mini_revision" ]] || fail 'mini.nvim revision drift'
+  [[ $(/usr/bin/sqlite3 --version) == 3.46.1\ * ]] || fail 'sqlite3 version drift'
+  env -i HOME=/tmp PATH="$root/bin:/usr/bin:/bin" \
+    'LUA_PATH=/usr/share/lua/5.1/?.lua;/usr/share/lua/5.1/?/init.lua;;' \
+    'LUA_CPATH=/usr/lib/x86_64-linux-gnu/lua/5.1/?.so;;' \
+    "$root/bin/nvim" --headless --noplugin -u NONE -i NONE \
+    -c "lua if not pcall(require, 'lyaml') then vim.cmd('cquit 1') end" -c 'qa!'
+}
+
+case ${1:-} in
+  check) [[ $# == 1 ]] || fail 'usage: verifier-toolchain {install|check}'; check ;;
+  install)
+    [[ $# == 1 && $EUID == 0 ]] || fail 'install requires root and no extra arguments'
+    [[ $(. /etc/os-release; echo "$ID:$VERSION_ID") == debian:13 ]] || fail 'requires Debian 13'
+    if [[ -e $root || -L $root ]]; then check; exit 0; fi
+    apt-get install -y --no-install-recommends "sqlite3=$sqlite_package" "lua-yaml=$yaml_package"
+    install -d -m 0755 /usr/lib/louiselm
+    scratch=$(mktemp -d /var/tmp/louiselm-verifier-tools.XXXXXX)
+    stage=$(mktemp -d /usr/lib/louiselm/.verifier.XXXXXX)
+    trap 'rm -r -- "$scratch"; if [[ -d $stage ]]; then rm -r -- "$stage"; fi' EXIT
+    download 'https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-x86_64.tar.gz' \
+      bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875 "$scratch/nvim.tar.gz"
+    download 'https://github.com/JohnnyMorganz/StyLua/releases/download/v2.5.2/stylua-linux-x86_64.zip' \
+      bcb0d855e91f102f28a370e850f8566b3b44b79e6274d806ea5246837c0fd5ab "$scratch/stylua.zip"
+    download 'https://github.com/LuaLS/lua-language-server/releases/download/3.19.1/lua-language-server-3.19.1-linux-x64.tar.gz' \
+      e9235d2d72ef55bc41cf8c99cda2ed64777682024b4bb81f5dea425060c5cbb8 "$scratch/luals.tar.gz"
+    install -d -m 0755 "$stage/bin" "$stage/nvim" "$stage/luals" "$scratch/stylua"
+    tar -xzf "$scratch/nvim.tar.gz" -C "$stage/nvim" --strip-components=1
+    tar -xzf "$scratch/luals.tar.gz" -C "$stage/luals"
+    # LuaLS otherwise tries to generate its built-in definitions under this
+    # read-only tree during the first confined check.
+    install -d -m 0755 "$scratch/luals-warmup"
+    env -i HOME="$scratch" PATH=/usr/bin:/bin \
+      "$stage/luals/bin/lua-language-server" --check "$scratch/luals-warmup" \
+      --checklevel=Warning --logpath="$scratch/luals-log"
+    python3 -m zipfile -e "$scratch/stylua.zip" "$scratch/stylua"
+    install -m 0755 "$scratch/stylua/stylua" "$stage/bin/stylua"
+    install -m 0755 "$0" "$stage/bin/verifier-toolchain"
+    ln -s ../nvim/bin/nvim "$stage/bin/nvim"
+    ln -s ../luals/bin/lua-language-server "$stage/bin/lua-language-server"
+    git clone --filter=blob:none --no-checkout https://github.com/nvim-mini/mini.nvim.git "$scratch/mini.nvim"
+    git -C "$scratch/mini.nvim" fetch --depth 1 origin "$mini_revision"
+    git -C "$scratch/mini.nvim" checkout --detach "$mini_revision"
+    [[ $(git -C "$scratch/mini.nvim" rev-parse HEAD) == "$mini_revision" ]] || fail 'mini.nvim revision mismatch'
+    install -d -m 0755 "$stage/mini.nvim"
+    git -C "$scratch/mini.nvim" archive HEAD | tar -x -C "$stage/mini.nvim"
+    printf '%s\n' "$mini_revision" > "$stage/mini-revision"
+    (cd "$stage" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+    chmod 0755 "$stage"
+    mv -T -- "$stage" "$root"
+    check
+    ;;
+  *) fail 'usage: verifier-toolchain {install|check}' ;;
+esac

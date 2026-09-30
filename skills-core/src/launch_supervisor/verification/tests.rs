@@ -6,7 +6,25 @@
 )]
 
 use super::*;
-use std::sync::mpsc;
+use std::{os::unix::fs::PermissionsExt, sync::mpsc};
+
+#[test]
+fn toolchain_check_refuses_missing_or_drifted_installation() {
+    let root = tempfile::tempdir().unwrap();
+    let program = root.path().join("verifier-toolchain");
+    assert_eq!(
+        execution::check_toolchain(&program),
+        Err(SupervisorError::VerifierToolchainUnavailable)
+    );
+    fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(execution::check_toolchain(&program), Ok(()));
+    fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+    assert_eq!(
+        execution::check_toolchain(&program),
+        Err(SupervisorError::VerifierToolchainUnavailable)
+    );
+}
 
 #[test]
 fn completion_releases_busy_state_before_callback_returns() {

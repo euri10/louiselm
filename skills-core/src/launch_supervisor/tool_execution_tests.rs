@@ -53,16 +53,103 @@ fn fixture() -> (tempfile::TempDir, ToolExecutor) {
     (root, ToolExecutor::new(backend, &plan).unwrap())
 }
 
+#[test]
+fn tool_environment_selects_the_trusted_lua_toolchain() {
+    let (_root, executor) = fixture();
+    assert_eq!(executor.plan.environment["PATH"], "/usr/bin:/bin");
+    assert!(!executor.plan.environment.contains_key("MINI_NVIM_PATH"));
+    let (_, verifier) = executor.verification_context();
+    assert_eq!(
+        verifier.environment["PATH"],
+        "/usr/lib/louiselm/verifier/bin:/usr/bin:/bin"
+    );
+    assert_eq!(
+        verifier.environment["MINI_NVIM_PATH"],
+        "/usr/lib/louiselm/verifier/mini.nvim"
+    );
+    assert_eq!(
+        verifier.environment["LUA_PATH"],
+        "/usr/share/lua/5.1/?.lua;/usr/share/lua/5.1/?/init.lua;;"
+    );
+    assert_eq!(
+        verifier.environment["LUA_CPATH"],
+        "/usr/lib/x86_64-linux-gnu/lua/5.1/?.so;;"
+    );
+}
+
+#[test]
+fn privileged_confined_lua_gates_from_clean_snapshot() {
+    let Some(source) = std::env::var_os("LOUISELM_LUA_SOURCE") else {
+        eprintln!("skipping: offline Lua gates require the disposable launcher VM");
+        return;
+    };
+    assert!(rustix::process::geteuid().is_root());
+    let source = fs::canonicalize(source).unwrap();
+    assert!(
+        !source.join(".deps").exists(),
+        "source must be a clean tracked archive"
+    );
+    let (root, executor) = fixture();
+    assert!(
+        std::process::Command::new("/usr/bin/cp")
+            .arg("-R")
+            .arg(source.join("."))
+            .arg(root.path().join("workspace"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (backend, verifier) = executor.verification_context();
+    assert_eq!(verifier.network, NetworkPolicy::Denied);
+    let probe = format!(
+        "test \"$HOME\" = '{}' && test ! -e '{}' && test -z \"$(/usr/sbin/ip route show default)\"",
+        verifier.home.display(),
+        root.path().join("home/authority").display()
+    );
+    let output = command_with_plan(&backend, &verifier, &probe, Duration::from_secs(10)).unwrap();
+    assert_eq!(output.exit_code, 0, "isolation probe: {}", output.stderr);
+    for gate in [
+        "stylua --check .",
+        "lua-language-server --check . --checklevel=Warning",
+        "nvim --headless --noplugin -u ./tests/minimal_init.lua -c 'lua MiniTest.run()' -c 'qa!'",
+        "./scripts/generate-api-appendix --check",
+        "./scripts/generate-luacats --check",
+        "./scripts/generate-vimdoc --check",
+        "./scripts/generate-plugin-version --check",
+    ] {
+        let observed = format!(
+            "{gate} > /tmp/louiselm-verifier-gate.log 2>&1 || {{ status=$?; tail -n 80 /tmp/louiselm-verifier-gate.log; exit \"$status\"; }}"
+        );
+        let output =
+            command_with_plan(&backend, &verifier, &observed, Duration::from_secs(180)).unwrap();
+        assert_eq!(
+            output.exit_code, 0,
+            "{gate}: stdout={} stderr={}",
+            output.stdout, output.stderr
+        );
+        assert!(!output.timed_out, "{gate} timed out");
+    }
+}
+
 fn command(
     executor: &ToolExecutor,
     command: &str,
     timeout: Duration,
 ) -> Result<ToolExecutionResult, SupervisorError> {
-    let mut plan = executor.plan.clone();
+    command_with_plan(&executor.backend, &executor.plan, command, timeout)
+}
+
+fn command_with_plan(
+    backend: &BubblewrapBackend,
+    source: &ConfinementPlan,
+    command: &str,
+    timeout: Duration,
+) -> Result<ToolExecutionResult, SupervisorError> {
+    let mut plan = source.clone();
     plan.session_id = "tool-test".to_owned();
     plan.arguments = vec!["-c".to_owned(), command.to_owned()];
     run(
-        &executor.backend,
+        backend,
         &plan,
         timeout,
         &AtomicBool::new(false),

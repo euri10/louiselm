@@ -40,7 +40,24 @@ pub(super) struct ToolExecutor {
 
 impl ToolExecutor {
     pub(super) fn verification_context(&self) -> (BubblewrapBackend, ConfinementPlan) {
-        (self.backend.clone(), self.plan.clone())
+        let mut plan = self.plan.clone();
+        plan.environment.insert(
+            "PATH".to_owned(),
+            "/usr/lib/louiselm/verifier/bin:/usr/bin:/bin".to_owned(),
+        );
+        plan.environment.insert(
+            "MINI_NVIM_PATH".to_owned(),
+            "/usr/lib/louiselm/verifier/mini.nvim".to_owned(),
+        );
+        plan.environment.insert(
+            "LUA_PATH".to_owned(),
+            "/usr/share/lua/5.1/?.lua;/usr/share/lua/5.1/?/init.lua;;".to_owned(),
+        );
+        plan.environment.insert(
+            "LUA_CPATH".to_owned(),
+            "/usr/lib/x86_64-linux-gnu/lua/5.1/?.so;;".to_owned(),
+        );
+        (self.backend.clone(), plan)
     }
     pub(super) fn new(
         backend: BubblewrapBackend,

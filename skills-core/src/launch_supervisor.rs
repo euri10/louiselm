@@ -888,6 +888,9 @@ pub enum SupervisorError {
     /// Trusted registry resolution failed before process creation.
     #[error("launch registry resolution failed")]
     ResolutionFailed,
+    /// The pinned verifier tools are missing or no longer match their trusted installation.
+    #[error("verifier toolchain unavailable or changed; check the trusted installation")]
+    VerifierToolchainUnavailable,
     /// The disabled capability socket could not be created or bound.
     #[error("Agent capability channel unavailable")]
     CapabilityUnavailable,

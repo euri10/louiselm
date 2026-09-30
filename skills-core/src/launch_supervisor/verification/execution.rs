@@ -9,7 +9,26 @@ use crate::{
     launch_protocol::{VerificationExecution, VerificationStep},
     sandbox::{IdentityPlan, PreparedSession},
 };
-use std::os::unix::fs::{PermissionsExt, chown};
+use std::{
+    os::unix::fs::{PermissionsExt, chown},
+    process::{Command, Stdio},
+};
+
+pub(super) fn check_toolchain(program: &Path) -> Result<(), SupervisorError> {
+    let status = Command::new(program)
+        .arg("check")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if status.is_ok_and(|status| status.success()) {
+        Ok(())
+    } else {
+        Err(SupervisorError::VerifierToolchainUnavailable)
+    }
+}
 
 impl Storage {
     fn load_job(
@@ -101,6 +120,9 @@ impl Storage {
         cleanup_failed: &AtomicBool,
         deadline: Instant,
     ) -> Result<VerificationExecution, SupervisorError> {
+        check_toolchain(Path::new(
+            "/usr/lib/louiselm/verifier/bin/verifier-toolchain",
+        ))?;
         let (exported, loaded) = self.load_job(request)?;
         let process = {
             let mut session = session
