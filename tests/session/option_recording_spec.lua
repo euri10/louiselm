@@ -89,10 +89,10 @@ local function query(sql)
   return result.stdout == "" and {} or nvim.json.decode(result.stdout)
 end
 
-local function start(provider, load)
+local function start(provider, load, auto, initial_options)
   api = assert(
     Session.new(
-      { agent = { command = "option-test-agent", provider = provider or "test-service" } },
+      { agent = { command = "option-test-agent", provider = provider or "test-service", auto = auto } },
       nil,
       { usage_directory = directory }
     )
@@ -103,7 +103,7 @@ local function start(provider, load)
     notify(options("high"))
     notify(options("medium"))
   end
-  respond(2, { sessionId = "recording-session", configOptions = options("medium") })
+  respond(2, { sessionId = "recording-session", configOptions = initial_options or options("medium") })
   MiniTest.expect.equality(session:inspect().status, "ready")
   return session
 end
@@ -145,6 +145,218 @@ local T = MiniTest.new_set({
     end,
   },
 })
+
+T["Auto rejection records an attempt without a prepared turn when Model removes baseline effort"] = function()
+  local session = start(nil, nil, { model = "model-b", effort = "high" })
+  local callback_error
+  local id = assert(session:prompt("kept by caller", function(_, err)
+    callback_error = err
+  end, { parent_turn_id = "parent-with-no-turn" }))
+  MiniTest.expect.equality(session:inspect().status, "admitting")
+  wait_for(function()
+    return #process.writes >= 3
+  end)
+  MiniTest.expect.equality(process.writes[#process.writes].params.configId, "model")
+  local changed = options("medium", "model-b")
+  changed[1].options = { { value = "medium", name = "Medium" } }
+  respond(process.writes[#process.writes].id, { configOptions = changed })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(callback_error, "Auto baseline effort is not supported by this Agent's current Model")
+  MiniTest.expect.equality(flush(), nil)
+  MiniTest.expect.equality(#query("SELECT * FROM turns"), 0)
+  local rows = query("SELECT * FROM admission_events ORDER BY phase")
+  MiniTest.expect.equality(#rows, 2)
+  MiniTest.expect.equality(rows[1].turn_id, id)
+  MiniTest.expect.equality(nvim.json.decode(rows[1].data).parent_turn_id, "parent-with-no-turn")
+  MiniTest.expect.equality(nvim.json.decode(rows[2].data).result, "not_sent")
+  MiniTest.expect.equality(nvim.json.decode(rows[2].data).requests.model, process.writes[#process.writes].id)
+  MiniTest.expect.equality(process.writes[#process.writes].method, "session/set_config_option")
+end
+
+T["cancelling an in-flight Auto change holds the Session until its acknowledgement"] = function()
+  local session = start(nil, nil, { model = "model-b", effort = "high" })
+  local id = assert(session:prompt("kept by caller"))
+  wait_for(function()
+    return #process.writes >= 3
+  end)
+  local request = process.writes[#process.writes]
+  assert(session:cancel())
+  MiniTest.expect.equality(session:inspect().status, "cancelling")
+  MiniTest.expect.equality({ session:prompt("racing") }, { nil, "session is not ready" })
+  respond(request.id, { configOptions = options("medium", "model-b") })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(flush(), nil)
+  MiniTest.expect.equality(#query("SELECT * FROM turns"), 0)
+  local row = query("SELECT * FROM admission_events WHERE phase='settlement'")[1]
+  MiniTest.expect.equality(row.turn_id, id)
+  MiniTest.expect.equality(nvim.json.decode(row.data).result, "cancelled")
+  MiniTest.expect.equality(process.writes[#process.writes].method, "session/set_config_option")
+end
+
+T["operator selection pins the full pair and Auto can be selected again"] = function()
+  local session = start(nil, nil, { model = "model-a", effort = "medium" })
+  local request = assert(session:set_config_option("model", "model-b"))
+  respond(request, { configOptions = options("high", "model-b") })
+  MiniTest.expect.equality(session:inspect().auto_mode, "manual")
+  MiniTest.expect.equality(session:inspect().manual_pair, { model = "model-b", effort = "high" })
+  assert(session:prompt("manual"))
+  wait_for(function()
+    return session:inspect().status == "prompting"
+  end)
+  MiniTest.expect.equality(process.writes[#process.writes].method, "session/prompt")
+  respond(process.writes[#process.writes].id, { stopReason = "end_turn" })
+  assert(session:set_auto(true))
+  MiniTest.expect.equality(session:inspect().auto_mode, "auto")
+  local effort_request = assert(session:set_config_option("reasoning_effort", "medium"))
+  respond(effort_request, { configOptions = options("medium", "model-b") })
+  MiniTest.expect.equality(session:inspect().auto_mode, "manual")
+  MiniTest.expect.equality(session:inspect().manual_pair, { model = "model-b", effort = "medium" })
+  MiniTest.expect.equality(flush(), nil)
+end
+
+T["Auto without an effort option admits a Model-only baseline"] = function()
+  local initial = options("medium", "model-a")
+  table.remove(initial, 1)
+  local session = start(nil, nil, { model = "model-a" }, initial)
+  assert(session:prompt("model only"))
+  wait_for(function()
+    return session:inspect().status == "prompting"
+  end)
+  MiniTest.expect.equality(process.writes[#process.writes].method, "session/prompt")
+  respond(process.writes[#process.writes].id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(flush(), nil)
+end
+
+T["successful Auto dispatch shares one ID with durable admission and exact turn options"] = function()
+  local session = start(nil, nil, { model = "model-b", effort = "high" })
+  local id = assert(session:prompt("not recorded as metadata"))
+  wait_for(function()
+    return #process.writes >= 3
+  end)
+  local model_request = process.writes[#process.writes]
+  respond(model_request.id, { configOptions = options("medium", "model-b") })
+  local effort_request = process.writes[#process.writes]
+  respond(effort_request.id, { configOptions = options("high", "model-b") })
+  wait_for(function()
+    return session:inspect().status == "prompting"
+  end)
+  respond(process.writes[#process.writes].id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(flush(), nil)
+  local turn = query("SELECT * FROM turns")[1]
+  MiniTest.expect.equality(turn.id, id)
+  MiniTest.expect.equality(nvim.json.decode(turn.options), { model = "model-b", reasoning_effort = "high" })
+  local settlement = nvim.json.decode(query("SELECT * FROM admission_events WHERE phase='settlement'")[1].data)
+  MiniTest.expect.equality(settlement.result, "dispatched")
+  MiniTest.expect.equality(settlement.options, nvim.json.decode(turn.options))
+  MiniTest.expect.equality(settlement.requests, { model = model_request.id, reasoning_effort = effort_request.id })
+end
+
+T["helper correlation does not require Auto, a Model option, or an existing parent turn"] = function()
+  local session = start(nil, nil, nil, {})
+  local id = assert(session:prompt("helper prompt", nil, { parent_turn_id = "parent-not-dispatched" }))
+  wait_for(function()
+    return session:inspect().status == "prompting"
+  end)
+  respond(process.writes[#process.writes].id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(flush(), nil)
+  local rows = query("SELECT * FROM admission_events ORDER BY phase")
+  MiniTest.expect.equality(#rows, 2)
+  MiniTest.expect.equality(rows[1].turn_id, id)
+  local decision = nvim.json.decode(rows[1].data)
+  MiniTest.expect.equality(decision.origin, "helper")
+  MiniTest.expect.equality(decision.parent_turn_id, "parent-not-dispatched")
+  MiniTest.expect.equality(decision.requested, {})
+  MiniTest.expect.equality(query("SELECT id FROM turns")[1].id, id)
+end
+
+T["Auto keeps an unsent attempt recoverable when the recording barrier fails"] = function()
+  local session = start(nil, nil, { model = "model-a", effort = "medium" })
+  MiniTest.expect.equality(flush(), nil)
+  assert(nvim.uv.fs_chmod(directory, 320))
+  MiniTest.finally(function()
+    assert(nvim.uv.fs_chmod(directory, 448))
+  end)
+  local callback_error
+  local sent = #process.writes
+  local id = assert(session:prompt("caller retains this text", function(_, err)
+    callback_error = err
+  end))
+  wait_for(function()
+    return callback_error ~= nil
+  end)
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(
+    callback_error,
+    "turn recording needs an owned private directory (0700) and regular database (0600)"
+  )
+  MiniTest.expect.equality(#process.writes, sent)
+  assert(nvim.uv.fs_chmod(directory, 448))
+  MiniTest.expect.equality(flush(), nil)
+  local row = query("SELECT * FROM admission_events WHERE phase='settlement'")[1]
+  MiniTest.expect.equality(row.turn_id, id)
+  MiniTest.expect.equality(nvim.json.decode(row.data).reason, "recording_failed")
+end
+
+T["unknown Auto configuration response never releases admission as safe"] = function()
+  local session = start(nil, nil, { model = "model-b", effort = "high" })
+  local attempts = 0
+  assert(session:prompt("caller retains this text", function(_, err)
+    attempts = attempts + 1
+    assert(err ~= nil)
+  end))
+  wait_for(function()
+    return #process.writes >= 3
+  end)
+  local request = process.writes[#process.writes]
+  feed({ jsonrpc = "2.0", id = request.id, error = { code = -32603, message = "uncertain" } })
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(attempts, 1)
+  MiniTest.expect.equality(#process.writes, 3)
+  MiniTest.expect.equality({ session:prompt("racing") }, { nil, "session is not ready" })
+  MiniTest.expect.equality(flush(), nil)
+  MiniTest.expect.equality(
+    nvim.json.decode(query("SELECT * FROM admission_events WHERE phase='settlement'")[1].data).result,
+    "uncertain"
+  )
+end
+
+T["Auto refuses an effort acknowledgement that silently changes Model"] = function()
+  local session = start(nil, nil, { model = "model-b", effort = "high" })
+  assert(session:prompt("kept by caller"))
+  wait_for(function()
+    return #process.writes >= 3
+  end)
+  respond(process.writes[#process.writes].id, { configOptions = options("medium", "model-b") })
+  local effort_request = process.writes[#process.writes]
+  MiniTest.expect.equality(effort_request.params.configId, "reasoning_effort")
+  respond(effort_request.id, { configOptions = options("high", "model-a") })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(process.writes[#process.writes].method, "session/set_config_option")
+  MiniTest.expect.equality(flush(), nil)
+  MiniTest.expect.equality(#query("SELECT * FROM turns"), 0)
+  MiniTest.expect.equality(
+    nvim.json.decode(query("SELECT * FROM admission_events WHERE phase='settlement'")[1].data).reason,
+    "configuration_mismatch"
+  )
+end
+
+T["late Auto acknowledgement after Disposal cannot dispatch"] = function()
+  local session = start(nil, nil, { model = "model-b", effort = "high" })
+  assert(session:prompt("kept by caller"))
+  wait_for(function()
+    return #process.writes >= 3
+  end)
+  local request = process.writes[#process.writes]
+  assert(session:dispose())
+  respond(request.id, { configOptions = options("medium", "model-b") })
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  MiniTest.expect.equality(process.writes[#process.writes].method, "session/set_config_option")
+  MiniTest.expect.equality(flush(), nil)
+  MiniTest.expect.equality(
+    nvim.json.decode(query("SELECT * FROM admission_events WHERE phase='settlement'")[1].data).reason,
+    "disposed"
+  )
+end
 
 T["no-prompt transitions preserve typed snapshots and observed order"] = function()
   start()
@@ -377,7 +589,7 @@ T["schema upgrade preserves prior turn facts and resumed observation streams sta
   MiniTest.expect.equality(rows[2].observer_id ~= first.observer_id, true)
   MiniTest.expect.equality(rows[2].sequence, 1)
   MiniTest.expect.equality(query("SELECT * FROM turns"), turns)
-  MiniTest.expect.equality(query("PRAGMA user_version")[1].user_version, 2)
+  MiniTest.expect.equality(query("PRAGMA user_version")[1].user_version, 3)
 end
 
 return T

@@ -140,7 +140,7 @@ local function emit_class(context, class, lines)
     if field == nil then
       error("normalized table schema contains a missing field")
     end
-    local optional = field.default ~= nil and "?" or ""
+    local optional = (field.default ~= nil or field.optional) and "?" or ""
     local field_type = type_for(context, field, child_class_name(class.name, field_name))
     local line = string.format("---@field %s%s %s", field_name, optional, field_type)
     if field.description ~= nil then

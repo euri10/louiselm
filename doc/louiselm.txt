@@ -443,6 +443,24 @@ agents.<name>.args                          *louiselm-config-agents-name-args*
     Description: Arguments passed after the executable.
 
 ------------------------------------------------------------------------------
+agents.<name>.auto                          *louiselm-config-agents-name-auto*
+    Type: table
+    Description: Opt in to submission-time Auto routing for this Agent with an
+    explicit baseline pair. Omit to keep existing submission behavior.
+
+------------------------------------------------------------------------------
+agents.<name>.auto.effort            *louiselm-config-agents-name-auto-effort*
+    Type: string
+    Description: Optional advertised thought-level value. Omit only when the
+    Agent has no effort option.
+
+------------------------------------------------------------------------------
+agents.<name>.auto.model              *louiselm-config-agents-name-auto-model*
+    Type: string
+    Description: Advertised baseline Model value; checked against the live
+    Session before each Auto submission.
+
+------------------------------------------------------------------------------
 agents.<name>.capabilities          *louiselm-config-agents-name-capabilities*
     Type: array of string
     Default: {}

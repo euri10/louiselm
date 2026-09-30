@@ -104,7 +104,8 @@ end
 ---@return boolean
 local function acknowledged(worker)
   local state = worker.inspect(worker)
-  return state.status ~= "preparing"
+  return state.status ~= "admitting"
+    and state.status ~= "preparing"
     and state.status ~= "prompting"
     and state.status ~= "running"
     and state.status ~= "waiting_permission"

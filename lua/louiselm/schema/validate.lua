@@ -264,7 +264,7 @@ local function validate_table(errors, node, value, path)
     local field_value = value[field_name]
     local field_path = child_path(path, field_name)
     if field_value == nil then
-      if field.default == nil then
+      if field.default == nil and not field.optional then
         errors[#errors + 1] = {
           type = "missing_required",
           path = field_path,

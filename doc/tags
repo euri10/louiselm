@@ -46,6 +46,9 @@ louiselm-api	louiselm.txt	/*louiselm-api*
 louiselm-commands	louiselm.txt	/*louiselm-commands*
 louiselm-config-agents	louiselm.txt	/*louiselm-config-agents*
 louiselm-config-agents-name-args	louiselm.txt	/*louiselm-config-agents-name-args*
+louiselm-config-agents-name-auto	louiselm.txt	/*louiselm-config-agents-name-auto*
+louiselm-config-agents-name-auto-effort	louiselm.txt	/*louiselm-config-agents-name-auto-effort*
+louiselm-config-agents-name-auto-model	louiselm.txt	/*louiselm-config-agents-name-auto-model*
 louiselm-config-agents-name-capabilities	louiselm.txt	/*louiselm-config-agents-name-capabilities*
 louiselm-config-agents-name-command	louiselm.txt	/*louiselm-config-agents-name-command*
 louiselm-config-agents-name-env	louiselm.txt	/*louiselm-config-agents-name-env*

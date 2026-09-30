@@ -15,6 +15,25 @@ end
 
 T["validate"] = MiniTest.new_set()
 
+T["validate"]["optional fields may be omitted without a default"] = function()
+  local schema = assert(Schema.define({
+    auto = {
+      type = "table",
+      optional = true,
+      fields = {
+        model = { type = "string" },
+        effort = { type = "string", optional = true },
+      },
+    },
+  }))
+  MiniTest.expect.equality(Validate.validate(schema, {}), {})
+  MiniTest.expect.equality(Validate.validate(schema, { auto = { model = "baseline" } }), {})
+  MiniTest.expect.equality(
+    error_of_type(Validate.validate(schema, { auto = {} }), "missing_required", "auto.model") ~= nil,
+    true
+  )
+end
+
 T["validate"]["collects unknown keys at any nesting depth"] = function()
   local schema = assert(Schema.define({
     agents = {

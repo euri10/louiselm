@@ -5,6 +5,7 @@
 ---@class louiselm.schema.Field
 ---@field type louiselm.schema.Type
 ---@field default? louiselm.schema.Value
+---@field optional? boolean Accept omission without applying a default.
 ---@field description? string
 ---@field validator? louiselm.schema.Validator
 ---@field fields? table<string, louiselm.schema.Field>
@@ -113,6 +114,12 @@ normalize_node = function(description, path)
   local node = { type = type_name }
   if description.default ~= nil then
     node.default = description.default
+  end
+  if description.optional ~= nil then
+    if type(description.optional) ~= "boolean" then
+      return nil, string.format("field '%s' optional must be boolean", path)
+    end
+    node.optional = description.optional
   end
   if description.description ~= nil then
     if type(description.description) ~= "string" then

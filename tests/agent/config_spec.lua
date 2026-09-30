@@ -5,6 +5,29 @@ local T = MiniTest.new_set()
 
 T["validate"] = MiniTest.new_set()
 
+T["validate"]["requires an explicit complete Auto baseline and copies it"] = function()
+  local auto = { model = "baseline", effort = "medium" }
+  local definitions, errors = Config.normalize({
+    on = { provider = "test-service", command = "agent", auto = auto },
+    off = { provider = "test-service", command = "agent" },
+  })
+  MiniTest.expect.equality(errors, {})
+  assert(definitions)
+  MiniTest.expect.equality(definitions.on.auto, auto)
+  MiniTest.expect.equality(definitions.on.auto == auto, false)
+  MiniTest.expect.equality(definitions.off.auto, nil)
+  for _, invalid in ipairs({
+    {},
+    { model = "" },
+    { model = "baseline", effort = false },
+    { model = "baseline", other = "x" },
+  }) do
+    local rejected, issues = Config.normalize({ on = { provider = "test-service", command = "agent", auto = invalid } })
+    MiniTest.expect.equality(rejected, nil)
+    MiniTest.expect.equality(issues[1].path:find("agents.on.auto", 1, true), 1)
+  end
+end
+
 T["validate"]["copies optional upgrade argv and leaves it unset by default"] = function()
   local upgrade = { "npm", "install", "-g", "mock-acp@latest" }
   local normalized, errors = Config.normalize({

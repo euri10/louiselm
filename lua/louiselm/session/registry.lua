@@ -289,7 +289,8 @@ function M.exit_verdict()
       agent = state.agent,
       acp_session_id = state.acp_session_id,
       recoverable = capabilities.loadSession == true,
-      turn_active = state.status == "preparing"
+      turn_active = state.status == "admitting"
+        or state.status == "preparing"
         or state.status == "prompting"
         or state.status == "running"
         or state.status == "waiting_permission"

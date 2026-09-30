@@ -1889,6 +1889,76 @@ T["new"]["tracks supported config options and replaces dependent options after a
   restore_processes(original_system)
 end
 
+T["new"]["holds Auto admission until the baseline pair is confirmed"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({
+    agent = {
+      provider = "test-service",
+      command = "agent",
+      auto = { model = "large", effort = "high" },
+    },
+  }))
+  local events = {}
+  local session = assert(api:create_session("agent", {
+    on_event = function(event)
+      events[#events + 1] = event
+    end,
+  }))
+  local process = processes[#processes]
+  local function options(model, effort)
+    return {
+      {
+        id = "model",
+        name = "Model",
+        category = "model",
+        type = "select",
+        currentValue = model,
+        options = { { value = "small", name = "Small" }, { value = "large", name = "Large" } },
+      },
+      {
+        id = "effort",
+        name = "Effort",
+        category = "thought_level",
+        type = "select",
+        currentValue = effort,
+        options = { { value = "medium", name = "Medium" }, { value = "high", name = "High" } },
+      },
+    }
+  end
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "auto-session", configOptions = options("small", "medium") })
+  local turn_id = assert(session:prompt("hello"))
+  MiniTest.expect.equality(session:inspect().status, "admitting")
+  MiniTest.expect.equality({ session:prompt("again") }, { nil, "session is not ready" })
+  MiniTest.expect.equality({ session:set_config_option("model", "small") }, { nil, "session is not idle" })
+  assert(nvim.wait(6000, function()
+    return #process.writes >= 3
+  end, 10))
+  local first = assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2)))
+  MiniTest.expect.equality(first.method, "session/set_config_option")
+  MiniTest.expect.equality(first.params.configId, "model")
+  respond(process, first.id, { configOptions = options("large", "medium") })
+  local second = assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2)))
+  MiniTest.expect.equality(second.method, "session/set_config_option")
+  MiniTest.expect.equality(second.params.configId, "effort")
+  respond(process, second.id, { configOptions = options("large", "high") })
+  assert(nvim.wait(6000, function()
+    return session:inspect().status == "prompting"
+  end, 10))
+  MiniTest.expect.equality(session:inspect().turn_identity.options, { model = "large", effort = "high" })
+  MiniTest.expect.equality(session:inspect().auto_mode, "auto")
+  local prompt = assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2)))
+  MiniTest.expect.equality(prompt.method, "session/prompt")
+  MiniTest.expect.equality(session:inspect().turn_id, turn_id)
+  local settled
+  for _, event in ipairs(events) do
+    if event.type == "admission_settled" then
+      settled = event.data
+    end
+  end
+  MiniTest.expect.equality(settled and settled.result, "dispatched")
+end
+
 T["new"]["tracks context cost and reported turn usage and ignores malformed telemetry"] = function()
   local processes, original_system = fake_processes()
   local events = {}

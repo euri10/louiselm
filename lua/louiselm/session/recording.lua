@@ -20,6 +20,15 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field observed_at string UTC timestamp.
 ---@field data table Normalized metadata only; see docs/turn-recording.md.
 
+---@class louiselm.session.AdmissionObservation
+---@field kind "admission"
+---@field phase "decision"|"settlement"
+---@field turn_id string Stable admission and eventual turn identity; a prepared turn may never exist.
+---@field agent string Configured Agent.
+---@field acp_session_id string Agent-side Session identity.
+---@field observed_at string UTC timestamp.
+---@field data table Payload-free decision or settlement metadata.
+
 ---@class louiselm.session.OptionRequest
 ---@field id string|number ACP request answered by this response.
 ---@field option string Explicitly requested option ID; other changes are not attributed to this request.
@@ -57,7 +66,7 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field busy boolean Whether a bounded write is scheduled/running.
 ---@field error? louiselm.session.RecordingError Last failed write.
 ---@field changed fun(error: louiselm.session.RecordingError?, pending: boolean) Main-loop observer.
----@field append fun(self: louiselm.session.RecordingStore, record: louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition, callback?: louiselm.session.RecordingCallback)
+---@field append fun(self: louiselm.session.RecordingStore, record: louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition|louiselm.session.AdmissionObservation, callback?: louiselm.session.RecordingCallback)
 ---@field flush fun(self: louiselm.session.RecordingStore, callback: louiselm.session.RecordingCallback)
 ---@field usage_history fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.UsageHistoryCallback)
 ---@field usage_summaries fun(self: louiselm.session.RecordingStore, cohorts: louiselm.session.UsageCohort[], callback: louiselm.session.UsageSummariesCallback)
@@ -107,6 +116,11 @@ CREATE TABLE IF NOT EXISTS option_events (
   UNIQUE(observer_id, sequence)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS option_events_turn ON option_events(turn_id);
+CREATE TABLE IF NOT EXISTS admission_events (
+  turn_id TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('decision','settlement')),
+  agent TEXT NOT NULL, acp_session_id TEXT NOT NULL, observed_at TEXT NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY(turn_id, phase)
+) STRICT;
 ]]
 
 ---@param code louiselm.session.RecordingErrorCode
@@ -202,14 +216,93 @@ local TOKEN_FIELDS = {
   cached_write_tokens = true,
 }
 
----@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition
+---@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition|louiselm.session.AdmissionObservation
 ---@return string?
 local function record_sql(record)
   if type(record) ~= "table" then
     return nil
   end
   local columns, values, table_name, key, equal
-  if record.kind == "options" then
+  if record.kind == "admission" then
+    if
+      not nonempty(record.turn_id)
+      or not nonempty(record.agent)
+      or not nonempty(record.acp_session_id)
+      or not nonempty(record.observed_at)
+      or (record.phase ~= "decision" and record.phase ~= "settlement")
+      or type(record.data) ~= "table"
+    then
+      return nil
+    end
+    local data = record.data
+    if record.phase == "decision" then
+      local pair = data.requested
+      if
+        (data.origin ~= "auto" and data.origin ~= "helper")
+        or type(pair) ~= "table"
+        or (pair.model ~= nil and type(pair.model) ~= "string" and type(pair.model) ~= "boolean")
+        or (pair.effort ~= nil and type(pair.effort) ~= "string" and type(pair.effort) ~= "boolean")
+        or (data.origin == "auto" and (not nonempty(pair.model) or data.reason ~= "baseline"))
+        or (data.origin == "helper" and (data.reason ~= "parent_correlation" or not nonempty(data.parent_turn_id)))
+        or (data.parent_turn_id ~= nil and not nonempty(data.parent_turn_id))
+      then
+        return nil
+      end
+      data = { origin = data.origin, reason = data.reason, requested = pair, parent_turn_id = data.parent_turn_id }
+    else
+      local requests_valid = type(data.requests) == "table"
+      if requests_valid then
+        for option, id in pairs(data.requests) do
+          if not nonempty(option) or not (nonempty(id) or (finite(id) and id % 1 == 0)) then
+            requests_valid = false
+            break
+          end
+        end
+      end
+      if
+        not ({ dispatched = true, not_sent = true, cancelled = true, uncertain = true })[data.result]
+        or type(data.confirmed) ~= "table"
+        or not tuple_valid(data.options)
+        or not requests_valid
+        or not finite(data.elapsed_ms)
+        or data.elapsed_ms % 1 ~= 0
+        or (
+          data.reason ~= nil
+          and not ({
+            admission_rejected = true,
+            attribution_changed = true,
+            baseline_unavailable = true,
+            cancelled = true,
+            configuration_mismatch = true,
+            configuration_unknown = true,
+            delivery_unknown = true,
+            disposed = true,
+            recording_failed = true,
+          })[data.reason]
+        )
+      then
+        return nil
+      end
+      data = {
+        result = data.result,
+        confirmed = data.confirmed,
+        options = data.options,
+        requests = data.requests,
+        reason = data.reason,
+        elapsed_ms = data.elapsed_ms,
+      }
+    end
+    columns = { "turn_id", "phase", "agent", "acp_session_id", "observed_at", "data" }
+    values = {
+      sql_text(record.turn_id),
+      sql_text(record.phase),
+      sql_text(record.agent),
+      sql_text(record.acp_session_id),
+      sql_text(record.observed_at),
+      sql_text(json(data)),
+    }
+    table_name, key = "admission_events", "turn_id,phase"
+  elseif record.kind == "options" then
     if
       not nonempty(record.id)
       or not nonempty(record.observer_id)
@@ -361,6 +454,8 @@ local function record_sql(record)
   local checked = columns[#columns]
   if table_name == "turns" or table_name == "option_events" then
     checked = "options"
+  elseif table_name == "admission_events" then
+    checked = "data"
   end
   return "INSERT INTO "
     .. table_name
@@ -502,9 +597,9 @@ local function drain(self)
         .. " AND (SELECT journal_mode = 'delete' FROM pragma_journal_mode)"
         .. " AND (SELECT synchronous = 3 FROM pragma_synchronous)"
         .. " AND (SELECT foreign_keys = 1 FROM pragma_foreign_keys)"
-        .. " AND (SELECT user_version IN (0,1,2) FROM pragma_user_version);",
+        .. " AND (SELECT user_version IN (0,1,2,3) FROM pragma_user_version);",
       SCHEMA,
-      "PRAGMA user_version=2;",
+      "PRAGMA user_version=3;",
     }
     for index = 1, count do
       sql[#sql + 1] = self.queue[index].sql
@@ -558,7 +653,7 @@ end
 ---Failure retains the encoded write for flush/retry; identical retries are idempotent.
 ---Extra caller fields are omitted, never persisted. No raw ACP payload is accepted.
 ---@param self louiselm.session.RecordingStore
----@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition
+---@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition|louiselm.session.AdmissionObservation
 ---@param callback? louiselm.session.RecordingCallback
 function Store:append(record, callback)
   local ok, sql = pcall(record_sql, record)
@@ -619,7 +714,7 @@ INSERT INTO history_guard SELECT
   (CAST(sqlite_version() AS INTEGER)>3 OR
     (CAST(sqlite_version() AS INTEGER)=3 AND CAST(substr(sqlite_version(),3) AS INTEGER)>=38))
   AND json_valid('{}')
-  AND (SELECT user_version IN (1,2) FROM pragma_user_version)
+  AND (SELECT user_version IN (1,2,3) FROM pragma_user_version)
   AND (SELECT journal_mode='delete' FROM pragma_journal_mode)
   AND (SELECT synchronous=3 FROM pragma_synchronous)
   AND (SELECT foreign_keys=1 FROM pragma_foreign_keys);

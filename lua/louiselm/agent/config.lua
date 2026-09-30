@@ -13,6 +13,7 @@ local Provider = require("louiselm.agent.provider")
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
 ---@field provider louiselm.agent.Provider Explicit access/quota service, exact option routes, or literal option prefixes; required before prompting.
+---@field auto? { model: string, effort?: string } Opt-in baseline Model and optional thought-level value for new Sessions.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options. `options._meta`, when present, is threaded
 ---verbatim into the ACP `session/new`/`session/load` request params (e.g. Claude's
@@ -44,6 +45,7 @@ local M = {}
 
 local allowed_keys = {
   args = true,
+  auto = true,
   capabilities = true,
   command = true,
   env = true,
@@ -428,6 +430,29 @@ function M.normalize(definitions, default_skills_policy)
         end
       end
 
+      local auto
+      if definition.auto ~= nil then
+        local auto_path = child_path(path, "auto")
+        if type(definition.auto) ~= "table" then
+          add_error(errors, auto_path, "wrong_type", "expected table", "table", value_type(definition.auto))
+        else
+          auto = {}
+          for _, key in ipairs(sorted_keys(definition.auto)) do
+            local value = definition.auto[key]
+            if key ~= "model" and key ~= "effort" then
+              add_error(errors, child_path(auto_path, tostring(key)), "unknown_key", "unknown Auto baseline key")
+            elseif type(value) ~= "string" or value == "" then
+              add_error(errors, child_path(auto_path, key), "invalid_value", "must be a non-empty advertised value")
+            else
+              auto[key] = value
+            end
+          end
+          if definition.auto.model == nil then
+            add_error(errors, child_path(auto_path, "model"), "missing_required", "baseline Model is required")
+          end
+        end
+      end
+
       local transcript_layout = definition.transcript_layout
       if transcript_layout ~= nil then
         if type(transcript_layout) ~= "string" then
@@ -481,6 +506,7 @@ function M.normalize(definitions, default_skills_policy)
       normalized[name] = {
         command = process.command,
         provider = provider,
+        auto = auto,
         args = process.args,
         env = process.env,
         options = options,

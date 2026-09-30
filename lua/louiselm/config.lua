@@ -43,6 +43,22 @@ M.schema = assert(Schema.define({
       fields = {
         command = { type = "string", description = "Executable to start." },
         provider = Provider.schema.fields.provider,
+        auto = {
+          type = "table",
+          optional = true,
+          description = "Opt in to submission-time Auto routing for this Agent with an explicit baseline pair. Omit to keep existing submission behavior.",
+          fields = {
+            model = {
+              type = "string",
+              description = "Advertised baseline Model value; checked against the live Session before each Auto submission.",
+            },
+            effort = {
+              type = "string",
+              optional = true,
+              description = "Optional advertised thought-level value. Omit only when the Agent has no effort option.",
+            },
+          },
+        },
         args = {
           type = "array-of",
           items = "string",

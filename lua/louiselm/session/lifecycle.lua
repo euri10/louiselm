@@ -8,7 +8,7 @@ local Provider = require("louiselm.agent.provider")
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
----@alias louiselm.session.Status "starting"|"ready"|"configuring"|"preparing"|"prompting"|"running"|"waiting_permission"|"cancelling"|"error"|"disposed"
+---@alias louiselm.session.Status "starting"|"ready"|"admitting"|"configuring"|"preparing"|"prompting"|"running"|"waiting_permission"|"cancelling"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
 
 ---@class louiselm.session.TurnIdentity
@@ -33,6 +33,8 @@ local nvim = vim
 ---@field recording_error? louiselm.session.RecordingError Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
 ---@field recording_pending boolean Whether the registry has unacknowledged writes.
 ---@field config_options louiselm.session.ConfigOption[] Supported agent-advertised options in priority order.
+---@field auto_mode? "auto"|"manual" Per-Session in-memory authority; absent when the Agent has no Auto baseline.
+---@field manual_pair? { model?: string|boolean, effort?: string|boolean } Whole effective pair protected after an operator option change.
 ---@field context? louiselm.session.ContextUsage Latest agent-reported context state.
 ---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
@@ -71,6 +73,7 @@ local nvim = vim
 ---@field acp_session_id string? Agent-side session identifier.
 ---@field load_session_id string? Agent-side session identifier to load.
 ---@field prompt_callback? fun(result: unknown, error?: string) Current prompt completion callback.
+---@field admission? { id: string, origin: "auto"|"helper", requested: { model?: string|boolean, effort?: string|boolean }, requests: table<string, string|number>, started_at: integer, in_flight: boolean, cancelled: boolean, settled: boolean } Admission ownership until a terminal settlement.
 ---@field recording_turn? { id: string, sequence: integer, finished: boolean, dispatched: boolean } Active recording identity.
 ---@field option_observer_id string Random identity of this live observation stream.
 ---@field option_sequence integer Number of confirmed value transitions observed outside replay.
@@ -99,7 +102,8 @@ local nvim = vim
 ---@field usage_history fun(self: louiselm.session.Session, callback: louiselm.session.UsageHistoryCallback)
 ---@field option_usage fun(self: louiselm.session.Session, option_id: string, callback: louiselm.session.OptionUsageCallback)
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
----@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string)): string?, string?
+---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string), correlation?: { parent_turn_id?: string }): string?, string?
+---@field set_auto fun(self: louiselm.session.Session, enabled: boolean): boolean, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
 ---@field dispose fun(self: louiselm.session.Session): boolean, string?
@@ -223,6 +227,9 @@ local function set_status(self, status)
   emit(self, "state_changed", { status = status, previous_status = previous_status, activity = self.state.activity })
 end
 
+---@type fun(self: louiselm.session.Session, result: "dispatched"|"not_sent"|"cancelled"|"uncertain", reason?: string)
+local settle_admission
+
 ---@param self louiselm.session.Session
 ---@return boolean cleared
 local function clear_session_failure(self)
@@ -261,6 +268,16 @@ end
 local function fail(self, message, peer_response)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
+  end
+  if self.admission ~= nil and not self.admission.settled then
+    settle_admission(
+      self,
+      "uncertain",
+      self.admission.origin == "auto" and "configuration_unknown" or "delivery_unknown"
+    )
+    if self.state.status == "disposed" then
+      return
+    end
   end
   record_observation(self, "outcome", { outcome = "failed", peer_response = peer_response == true })
   clear_session_failure(self)
@@ -340,13 +357,25 @@ end
 
 ---@param self louiselm.session.Session
 ---@param message string Sanitized admission error.
-local function reject_prompt(self, message)
+local function reject_prompt(self, message, reason)
   record_observation(self, "outcome", { outcome = "not_sent", peer_response = false })
+  local admission = self.admission
+  if admission ~= nil and not admission.settled then
+    settle_admission(self, "not_sent", reason or "admission_rejected")
+  end
   local completion = self.prompt_callback
   local turn_id = self.state.turn_id
   self.prompt_callback = nil
-  set_status(self, settled_status(self))
+  if admission == nil then
+    set_status(self, settled_status(self))
+  end
   emit(self, "prompt_rejected", { turn_id = turn_id, message = message })
+  if admission ~= nil then
+    if self.state.status == "disposed" or self.state.status == "error" then
+      return
+    end
+    set_status(self, settled_status(self))
+  end
   if completion then
     completion(nil, message)
   end
@@ -360,6 +389,54 @@ local function option_values(options)
     values[option.id] = option.current_value
   end
   return values
+end
+
+settle_admission = function(self, result, reason)
+  local admission = self.admission
+  if admission == nil or admission.settled then
+    return
+  end
+  admission.settled = true
+  local model, effort
+  for _, option in ipairs(self.state.config_options) do
+    if option.category == "model" then
+      model = option.current_value
+    elseif option.category == "thought_level" then
+      effort = option.current_value
+    end
+  end
+  local data = {
+    result = result,
+    confirmed = { model = model, effort = effort },
+    options = option_values(self.state.config_options),
+    requests = nvim.deepcopy(admission.requests),
+    reason = reason,
+    elapsed_ms = math.max(0, math.floor((nvim.uv.hrtime() - admission.started_at) / 1000000)),
+  }
+  self.state.recording_pending = true
+  self.owner.recording:append({
+    kind = "admission",
+    phase = "settlement",
+    turn_id = admission.id,
+    agent = self.state.agent,
+    acp_session_id = self.acp_session_id,
+    observed_at = tostring(os.date("!%Y-%m-%dT%H:%M:%SZ")),
+    data = data,
+  })
+  emit(
+    self,
+    "admission_settled",
+    nvim.deepcopy({
+      turn_id = admission.id,
+      result = result,
+      requested = admission.requested,
+      confirmed = data.confirmed,
+      options = data.options,
+      requests = data.requests,
+      reason = reason,
+      elapsed_ms = data.elapsed_ms,
+    })
+  )
 end
 
 -- Queue before publishing accepted state: reentrant observers may submit,
@@ -943,6 +1020,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       recording_pending = #owner.recording.queue > 0,
       recording_error = nvim.deepcopy(owner.recording.error),
       config_options = {},
+      auto_mode = definition.auto ~= nil and "auto" or nil,
       commands = {},
       compactions = {},
       skills_policy = definition.skills.policy,
@@ -1157,51 +1235,23 @@ function Session:set_name(name)
   return true
 end
 
----Admit one prompt asynchronously, committing attribution before ACP dispatch.
----Prompt silence has no deadline: await the peer's result, an explicit error,
----or Disposal. Cancellation requests a peer response; quiet work may outlast minutes.
 ---@param self louiselm.session.Session
----@param prompt louiselm.session.Prompt Text or ACP prompt content table.
----@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal. Admission and Agent-reported turn failures leave the connection available to retry; transport/protocol failures terminate the Session.
----@return string? turn_id Stable local turn ID, NOT an ACP request ID or proof of peer receipt.
----@return string? error_message Immediate validation, state, Provider, or random identity error; no prompt is sent.
-function Session:prompt(prompt, callback)
-  if self.state.status ~= "ready" then
-    return nil, "session is not ready"
-  end
-  if type(prompt) == "string" then
-    prompt = { { type = "text", text = prompt } }
-  elseif type(prompt) ~= "table" then
-    return nil, "prompt must be a string or table"
-  end
+---@param prompt table
+---@param turn_id string
+---@param provider string
+local function prepare_prompt(self, prompt, turn_id, provider)
   local client = self.client
   if client == nil then
-    return nil, "session has no ACP client"
+    fail(self, "session has no ACP client")
+    return
   end
   local values = option_values(self.state.config_options)
-  local provider, provider_error = Provider.resolve(self.definition.provider, values)
-  if provider == nil then
-    return nil, "agents." .. self.state.agent .. ".provider: " .. provider_error
-  end
-  local turn_id, identity_error = random_id()
-  if turn_id == nil then
-    return nil, identity_error
-  end
-  prompt = nvim.deepcopy(prompt)
-  clear_session_failure(self)
-  self.codex_turn_failed = nil
-  self.state.current_turn = self.state.current_turn + 1
-  self.state.turn_id = turn_id
-  self.state.turn_options_changed = false
-  self.state.usage = nil
   self.state.turn_identity = {
     agent = self.state.agent,
     provider = provider,
     model = Validation.model_value(self.state.config_options),
     options = values,
   }
-  self.turn_done_turn = nil
-  self.prompt_callback = callback
   self.recording_turn = { id = turn_id, sequence = 0, finished = false, dispatched = false }
   local prepared = nvim.deepcopy(self.state.turn_identity)
   prepared.id, prepared.acp_session_id = turn_id, self.acp_session_id
@@ -1217,7 +1267,7 @@ function Session:prompt(prompt, callback)
       return
     end
     if err ~= nil then
-      reject_prompt(self, err.message)
+      reject_prompt(self, err.message, "recording_failed")
       return
     end
     local turn = self.recording_turn
@@ -1241,7 +1291,7 @@ function Session:prompt(prompt, callback)
       or current_provider ~= prepared.provider
       or not nvim.deep_equal(self.state.cost, prepared.cost_baseline)
     then
-      reject_prompt(self, "Session attribution changed while preparing; submit the prompt again")
+      reject_prompt(self, "Session attribution changed while preparing; submit the prompt again", "attribution_changed")
       return
     end
     local request_id, request_error = client:prompt(
@@ -1258,7 +1308,285 @@ function Session:prompt(prompt, callback)
     turn.dispatched = true
     self.transcript_turn = self.transcript_turn + 1
     record_observation(self, "dispatch", { request_id = request_id, transcript_turn = self.transcript_turn })
+    settle_admission(self, "dispatched")
   end)
+end
+
+---@param options louiselm.session.ConfigOption[]
+---@param category string
+---@return louiselm.session.ConfigOption?
+local function category_option(options, category)
+  for _, option in ipairs(options) do
+    if option.category == category then
+      return option
+    end
+  end
+end
+
+---@param option louiselm.session.ConfigOption?
+---@param value string?
+---@return boolean
+local function advertised(option, value)
+  if option == nil or option.type ~= "select" then
+    return false
+  end
+  for _, choice in ipairs(option.options or {}) do
+    if choice.value == value then
+      return true
+    end
+  end
+  return false
+end
+
+---@param self louiselm.session.Session
+---@param prompt table
+---@param turn_id string
+local function configure_auto(self, prompt, turn_id)
+  local admission = self.admission
+  if admission == nil or admission.origin ~= "auto" or admission.id ~= turn_id or self.state.status ~= "admitting" then
+    return
+  end
+  if
+    type(admission.requested.model) ~= "string"
+    or (admission.requested.effort ~= nil and type(admission.requested.effort) ~= "string")
+  then
+    reject_prompt(self, "Auto baseline configuration is invalid", "baseline_unavailable")
+    return
+  end
+  local requested = admission.requested
+  ---@cast requested { model: string, effort?: string } -- An Auto admission owns the validated Agent baseline.
+  local model = category_option(self.state.config_options, "model")
+  if not advertised(model, requested.model) then
+    reject_prompt(self, "Auto baseline Model is not advertised by this Agent", "baseline_unavailable")
+    return
+  end
+  local function finish()
+    if self.state.status ~= "admitting" or self.admission ~= admission then
+      return
+    end
+    local effort = category_option(self.state.config_options, "thought_level")
+    if (effort == nil and requested.effort ~= nil) or (effort ~= nil and not advertised(effort, requested.effort)) then
+      reject_prompt(self, "Auto baseline effort is not supported by this Agent's current Model", "baseline_unavailable")
+      return
+    end
+    model = category_option(self.state.config_options, "model")
+    if
+      model == nil
+      or model.current_value ~= requested.model
+      or (effort ~= nil and effort.current_value ~= requested.effort)
+    then
+      reject_prompt(self, "Auto baseline configuration is not confirmed", "configuration_mismatch")
+      return
+    end
+    local values = option_values(self.state.config_options)
+    local provider, provider_error = Provider.resolve(self.definition.provider, values)
+    if provider == nil then
+      reject_prompt(self, "agents." .. self.state.agent .. ".provider: " .. provider_error, "baseline_unavailable")
+      return
+    end
+    prepare_prompt(self, prompt, turn_id, provider)
+  end
+  local function set_option(option, value, next_step)
+    if option.current_value == value then
+      next_step()
+      return
+    end
+    local client = self.client
+    if client == nil then
+      fail(self, "session has no ACP client")
+      return
+    end
+    local params = { sessionId = self.acp_session_id, configId = option.id, value = value }
+    admission.in_flight = true
+    local request_id, request_error
+    request_id, request_error = client:set_config_option(params, function(result, rpc_error)
+      if self.state.status == "disposed" or self.state.status == "error" or self.admission ~= admission then
+        return
+      end
+      admission.in_flight = false
+      if rpc_error ~= nil then
+        fail(self, "ACP Auto configuration failed: " .. error_message(rpc_error))
+        return
+      end
+      local options, options_error = Validation.config_options(type(result) == "table" and result.configOptions)
+      if type(result) ~= "table" or result.configOptions == nil then
+        options, options_error = nil, "missing configOptions"
+      end
+      if options == nil then
+        fail(self, "ACP Auto configuration returned malformed configOptions: " .. (options_error or "invalid options"))
+        return
+      end
+      ---@cast request_id string|number
+      accept_options(self, options, { id = request_id, option = option.id, value = value })
+      emit(self, "config_options_changed", nvim.deepcopy(options))
+      if self.state.status == "disposed" or self.state.status == "error" then
+        return
+      end
+      local confirmed = Validation.find_option(options, option.id)
+      if confirmed == nil or confirmed.current_value ~= value then
+        reject_prompt(self, "ACP Auto configuration did not confirm requested " .. option.id, "configuration_mismatch")
+        return
+      end
+      if admission.cancelled then
+        settle_admission(self, "cancelled", "cancelled")
+        set_status(self, settled_status(self))
+        return
+      end
+      next_step()
+    end)
+    if request_id == nil then
+      admission.in_flight = false
+      fail(self, request_error or "ACP Auto configuration request could not be sent")
+    else
+      admission.requests[option.id] = request_id
+    end
+  end
+  set_option(model, requested.model, function()
+    if self.state.status ~= "admitting" then
+      return
+    end
+    local effort = category_option(self.state.config_options, "thought_level")
+    if effort == nil then
+      finish()
+    elseif not advertised(effort, requested.effort) then
+      reject_prompt(self, "Auto baseline effort is not supported by this Agent's current Model", "baseline_unavailable")
+    else
+      set_option(effort, requested.effort, finish)
+    end
+  end)
+end
+
+---Admit a prompt under the current effective options, or the Agent's explicit Auto baseline.
+---Auto and explicitly correlated helper decisions use the returned ID even if no turn dispatches.
+---@param self louiselm.session.Session
+---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
+---@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal.
+---@param correlation? { parent_turn_id?: string } Optional helper ancestry; the parent need not have dispatched.
+---@return string? turn_id Stable local admission and eventual turn ID, never proof of peer receipt.
+---@return string? error_message Immediate validation, state, Provider, or random identity error.
+function Session:prompt(prompt, callback, correlation)
+  if self.state.status ~= "ready" then
+    return nil, "session is not ready"
+  end
+  if type(prompt) == "string" then
+    prompt = { { type = "text", text = prompt } }
+  elseif type(prompt) ~= "table" then
+    return nil, "prompt must be a string or table"
+  end
+  if
+    correlation ~= nil
+    and (
+      type(correlation) ~= "table"
+      or (
+        correlation.parent_turn_id ~= nil
+        and (type(correlation.parent_turn_id) ~= "string" or correlation.parent_turn_id == "")
+      )
+    )
+  then
+    return nil, "invalid prompt correlation"
+  end
+  if self.client == nil then
+    return nil, "session has no ACP client"
+  end
+  local provider, provider_error
+  local auto = self.state.auto_mode == "auto" and self.definition.auto or nil
+  if auto == nil then
+    if self.state.manual_pair ~= nil then
+      local model = category_option(self.state.config_options, "model")
+      local effort = category_option(self.state.config_options, "thought_level")
+      if
+        (model and model.current_value or nil) ~= self.state.manual_pair.model
+        or (effort and effort.current_value or nil) ~= self.state.manual_pair.effort
+      then
+        return nil, "operator-pinned Model/effort pair is no longer confirmed"
+      end
+    end
+    provider, provider_error = Provider.resolve(self.definition.provider, option_values(self.state.config_options))
+    if provider == nil then
+      return nil, "agents." .. self.state.agent .. ".provider: " .. provider_error
+    end
+  end
+  local turn_id, identity_error = random_id()
+  if turn_id == nil then
+    return nil, identity_error
+  end
+  prompt = nvim.deepcopy(prompt)
+  clear_session_failure(self)
+  self.codex_turn_failed = nil
+  self.state.current_turn = self.state.current_turn + 1
+  self.state.turn_id = turn_id
+  self.state.turn_identity = nil
+  self.state.turn_options_changed = false
+  self.state.usage = nil
+  self.turn_done_turn = nil
+  self.prompt_callback = callback
+  self.recording_turn = nil
+  self.admission = nil
+  local origin = auto ~= nil and "auto"
+    or (correlation ~= nil and correlation.parent_turn_id ~= nil and "helper" or nil)
+  if origin ~= nil then
+    local requested
+    if auto ~= nil then
+      requested = nvim.deepcopy(auto)
+    else
+      local model = category_option(self.state.config_options, "model")
+      local effort = category_option(self.state.config_options, "thought_level")
+      requested = { model = model and model.current_value, effort = effort and effort.current_value }
+    end
+    self.admission = {
+      id = turn_id,
+      origin = origin,
+      requested = requested,
+      requests = {},
+      started_at = nvim.uv.hrtime(),
+      in_flight = false,
+      cancelled = false,
+      settled = false,
+    }
+    local decision = {
+      turn_id = turn_id,
+      origin = origin,
+      reason = origin == "auto" and "baseline" or "parent_correlation",
+      requested = requested,
+      parent_turn_id = correlation and correlation.parent_turn_id or nil,
+    }
+    self.state.recording_pending = true
+    self.owner.recording:append({
+      kind = "admission",
+      phase = "decision",
+      turn_id = turn_id,
+      agent = self.state.agent,
+      acp_session_id = self.acp_session_id,
+      observed_at = tostring(os.date("!%Y-%m-%dT%H:%M:%SZ")),
+      data = decision,
+    })
+    -- Reserve the Session before publishing a decision to reentrant listeners.
+    self.state.status = "admitting"
+    emit(self, "admission_decided", nvim.deepcopy(decision))
+    if self.state.status == "admitting" then
+      emit(self, "state_changed", { status = "admitting", previous_status = "ready" })
+    end
+    self.owner.recording:flush(function(err)
+      if self.state.status ~= "admitting" or self.admission == nil or self.admission.id ~= turn_id then
+        return
+      end
+      if err ~= nil then
+        reject_prompt(self, err.message, "recording_failed")
+      elseif auto == nil then
+        local current_provider, current_error =
+          Provider.resolve(self.definition.provider, option_values(self.state.config_options))
+        if current_provider == nil then
+          reject_prompt(self, "agents." .. self.state.agent .. ".provider: " .. current_error, "attribution_changed")
+        else
+          prepare_prompt(self, prompt, turn_id, current_provider)
+        end
+      else
+        configure_auto(self, prompt, turn_id)
+      end
+    end)
+  else
+    prepare_prompt(self, prompt, turn_id, provider)
+  end
   return turn_id
 end
 
@@ -1268,10 +1596,43 @@ end
 ---@return string? error_message ACP write or state error.
 function Session:cancel()
   if
+    self.state.status == "admitting"
+    or (
+      self.state.status == "cancelling"
+      and self.admission ~= nil
+      and not self.admission.settled
+      and self.recording_turn == nil
+    )
+  then
+    local admission = self.admission
+    if admission == nil then
+      return false, "Auto admission is unavailable"
+    end
+    if admission.cancelled then
+      return true
+    end
+    admission.cancelled = true
+    local message = "Admission cancelled; prompt was not sent"
+    local completion = self.prompt_callback
+    self.prompt_callback = nil
+    emit(self, "prompt_rejected", { turn_id = admission.id, message = message })
+    if completion ~= nil then
+      completion(nil, message)
+    end
+    if admission.in_flight then
+      set_status(self, "cancelling")
+    else
+      settle_admission(self, "cancelled", "cancelled")
+      set_status(self, settled_status(self))
+    end
+    return true
+  end
+  if
     self.state.status == "preparing"
     or (self.state.status == "prompting" and self.recording_turn ~= nil and not self.recording_turn.dispatched)
   then
     record_observation(self, "outcome", { outcome = "not_sent", peer_response = false })
+    settle_admission(self, "cancelled", "cancelled")
     complete_turn(self, { stopReason = "cancelled" })
     return true
   end
@@ -1353,6 +1714,13 @@ function Session:set_config_option(id, value, callback)
     end
     if rpc_error ~= nil then
       local message = "ACP session/set_config_option failed: " .. error_message(rpc_error)
+      if self.definition.auto ~= nil then
+        fail(self, message)
+        if callback ~= nil then
+          callback(nil, message)
+        end
+        return
+      end
       set_status(self, settled_status(self))
       if callback ~= nil then
         callback(nil, message)
@@ -1371,6 +1739,21 @@ function Session:set_config_option(id, value, callback)
     end
     ---@cast request_id string|number -- ACP returns the ID before receiving the asynchronous response.
     accept_options(self, options, { id = request_id, option = id, value = value })
+    local confirmed = Validation.find_option(options, id)
+    if self.definition.auto ~= nil and (confirmed == nil or confirmed.current_value ~= value) then
+      local message = "ACP session/set_config_option did not confirm requested " .. id
+      fail(self, message)
+      if callback ~= nil then
+        callback(nil, message)
+      end
+      return
+    end
+    if self.definition.auto ~= nil and (option.category == "model" or option.category == "thought_level") then
+      local model = category_option(options, "model")
+      local effort = category_option(options, "thought_level")
+      self.state.manual_pair = { model = model and model.current_value, effort = effort and effort.current_value }
+      self.state.auto_mode = "manual"
+    end
     set_status(self, settled_status(self))
     emit(self, "config_options_changed", nvim.deepcopy(options))
     if callback ~= nil then
@@ -1384,6 +1767,31 @@ function Session:set_config_option(id, value, callback)
   return request_id
 end
 
+---Select Auto baseline admission or pin the current effective pair in this Session.
+---@param self louiselm.session.Session
+---@param enabled boolean
+---@return boolean changed
+---@return string? error_message
+function Session:set_auto(enabled)
+  if self.state.status ~= "ready" then
+    return false, "session is not idle"
+  end
+  if type(enabled) ~= "boolean" or self.definition.auto == nil then
+    return false, "this Agent has no Auto baseline"
+  end
+  if enabled then
+    self.state.auto_mode = "auto"
+    self.state.manual_pair = nil
+  else
+    local model = category_option(self.state.config_options, "model")
+    local effort = category_option(self.state.config_options, "thought_level")
+    self.state.auto_mode = "manual"
+    self.state.manual_pair = { model = model and model.current_value, effort = effort and effort.current_value }
+  end
+  emit(self, "state_changed", { status = self.state.status })
+  return true
+end
+
 ---Dispose this session, terminate its ACP process, and remove it from its registry.
 ---@param self louiselm.session.Session
 ---@return boolean disposed
@@ -1393,6 +1801,7 @@ function Session:dispose()
     return true
   end
   record_observation(self, "outcome", { outcome = "disposed", peer_response = false })
+  settle_admission(self, "cancelled", "disposed")
   clear_session_failure(self)
   set_status(self, "disposed")
   self.permission_store:clear_session(self.state.id)

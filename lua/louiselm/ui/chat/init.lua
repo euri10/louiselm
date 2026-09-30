@@ -49,6 +49,7 @@ local nvim = vim
 ---@field restored_usage table<integer, louiselm.session.TurnUsage> Persisted presentation usage by historical turn.
 ---@field replay_events? { event: louiselm.session.Event, state: louiselm.session.State? }[] UI events waiting for asynchronous usage history.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
+---@field pending_admission? { turn_id?: string, text: string, contexts: louiselm.ui.ContextItem[], phase?: louiselm.routing.PhaseMetadata, acp_session_id?: string } Draft awaiting confirmed Auto dispatch.
 ---@field unsubscribe fun() Session event listener removal function.
 ---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
 
@@ -263,6 +264,7 @@ local function setup_highlights()
 end
 
 local ACTIVE_TURN_STATUS = {
+  admitting = true,
   preparing = true,
   prompting = true,
   running = true,
@@ -771,11 +773,22 @@ local function submit_prompt(self, view, text)
   end
   local state = view.session:inspect()
   local phase = view.draft.pending_skill and view.draft.pending_skill.phase
+  local auto = state.auto_mode == "auto"
+  if auto then
+    view.pending_admission = { text = text, contexts = contexts, phase = phase, acp_session_id = state.acp_session_id }
+  end
   local request_id, prompt_error = view.session:prompt(content)
   if request_id == nil then
+    view.pending_admission = nil
     local message = prompt_error or "prompt failed"
     notify_prompt_error(message)
     return nil, message
+  end
+  if auto then
+    if view.pending_admission ~= nil then
+      view.pending_admission.turn_id = request_id
+    end
+    return request_id
   end
   if self.attention ~= nil and state.acp_session_id ~= nil then
     self.attention:prompt_started(state.acp_session_id)
@@ -793,6 +806,26 @@ local function submit_prompt(self, view, text)
     end
   end
   return request_id
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param pending { text: string, contexts: louiselm.ui.ContextItem[], phase?: louiselm.routing.PhaseMetadata, acp_session_id?: string }
+local function accept_auto_prompt(self, view, pending)
+  if self.attention ~= nil and pending.acp_session_id ~= nil then
+    self.attention:prompt_started(pending.acp_session_id)
+  end
+  view.transcript:record_user(pending.text)
+  clear_queued_prompt(view)
+  local slash_prompt = pending.text:sub(1, 1) == "/"
+  local next_prefix = slash_prompt and view.draft.context_prefix or ""
+  view.renderer:accept_prompt(pending.text, pending.contexts, next_prefix, true)
+  if not slash_prompt then
+    view.draft:clear_context()
+    if pending.phase ~= nil then
+      view.workflow_phase = pending.phase
+    end
+  end
 end
 
 ---@param view louiselm.ui.ChatView
@@ -1194,6 +1227,14 @@ local function handle_event(self, view, event, completed_state)
   elseif event.type == "compaction_updated" then
     if view.renderer:compaction(event.data) then
       view.replay_user_open = false
+    end
+  elseif event.type == "admission_settled" then
+    local pending = view.pending_admission
+    if pending ~= nil and (pending.turn_id == nil or pending.turn_id == event.data.turn_id) then
+      view.pending_admission = nil
+      if event.data.result == "dispatched" then
+        accept_auto_prompt(self, view, pending)
+      end
     end
   elseif event.type == "prompt_rejected" then
     view.renderer:append({ "Prompt not sent: " .. event.data.message })
@@ -2294,6 +2335,7 @@ function Chat:close_session()
   local has_queued_prompt = view.draft.queued_prompt ~= nil
   if
     has_queued_prompt
+    or status == "admitting"
     or status == "configuring"
     or status == "preparing"
     or status == "prompting"
@@ -2417,6 +2459,9 @@ function Chat:submit(text)
   end
   if view.replay_events ~= nil then
     return nil, "Session history is still loading"
+  end
+  if view.pending_admission ~= nil then
+    return nil, "Auto admission is still settling"
   end
   if text ~= nil and type(text) ~= "string" then
     return nil, "prompt must be a non-empty string"

@@ -12,6 +12,8 @@
 ---| "compaction_updated"
 ---| "recording_changed"
 ---| "prompt_rejected"
+---| "admission_decided"
+---| "admission_settled"
 ---| "state_changed"
 ---| "turn_done"
 ---| "error"
@@ -64,6 +66,14 @@
 ---@field type "prompt_rejected"
 ---@field data { turn_id: string, message: string } Asynchronous admission failure; no ACP prompt was sent.
 
+---@class louiselm.session.AdmissionDecisionEvent: louiselm.session.EventBase
+---@field type "admission_decided"
+---@field data { turn_id: string, origin: "auto"|"helper", reason: "baseline"|"parent_correlation", requested: { model?: string|boolean, effort?: string|boolean }, parent_turn_id?: string } Payload-free selection before configuration.
+
+---@class louiselm.session.AdmissionSettlementEvent: louiselm.session.EventBase
+---@field type "admission_settled"
+---@field data { turn_id: string, result: "dispatched"|"not_sent"|"cancelled"|"uncertain", requested: { model?: string|boolean, effort?: string|boolean }, confirmed: { model?: string|boolean, effort?: string|boolean }, options: table<string, string|boolean>, requests: table<string, string|number>, reason?: string, elapsed_ms: integer } Payload-free terminal admission result and complete confirmed option tuple.
+
 ---@class louiselm.session.PermissionData
 ---@field request_id string|number ACP request identifier.
 ---@field operation louiselm.permission.Request Normalized requested operation.
@@ -95,7 +105,7 @@
 ---back to ready/running/waiting_permission and do not emit "turn_done"; transport/protocol
 ---failures instead leave the Session in error. The prompt callback reports either failure.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

@@ -10,6 +10,7 @@
 
 ---@class louiselm.ConfigAgentsValue
 ---@field args? string[] Arguments passed after the executable.
+---@field auto? louiselm.ConfigAgentsValueAuto Opt in to submission-time Auto routing for this Agent with an explicit baseline pair. Omit to keep existing submission behavior.
 ---@field capabilities? string[] Capability tags this agent declares support for (e.g. "image-generation"), matched against `needs-capability:*` beads labels by the agent selecting work; louiselm does not read beads or route work itself.
 ---@field command string Executable to start.
 ---@field env? table<string, string> Environment variables passed to the process.
@@ -19,6 +20,10 @@
 ---@field transcript_layout? string Optional Provenance layout override for this Agent's historical transcripts: claude, codex, openai-compatible, or copilot; live chat transcripts need no configuration; omission searches all supported layouts.
 ---@field upgrade? string[]|string Optional upgrade executable and arguments (e.g. { 'npm', 'install', '-g', 'my-agent@latest' }), or a nonblank string explaining a manual update (e.g. 'Update and rebuild /path/to/checkout; global npm upgrades do not affect this copy.'). Displayed in outdated-Agent warnings, never executed. Only argv commands are shell-escaped and joined with && when every outdated Agent has one; manual instructions are never included in that command.
 ---@field version? louiselm.ConfigAgentsValueVersion Optional override for querying the installed version, verbatim (nothing is auto-appended). Use when `command args... --version` is not the right invocation, e.g. a subcommand-based CLI wrapped by a debug script.
+
+---@class louiselm.ConfigAgentsValueAuto
+---@field effort? string Optional advertised thought-level value. Omit only when the Agent has no effort option.
+---@field model string Advertised baseline Model value; checked against the live Session before each Auto submission.
 
 ---@class louiselm.ConfigAgentsValueLatest
 ---@field args? string[] Arguments passed after the executable.

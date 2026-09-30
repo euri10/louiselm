@@ -3473,6 +3473,68 @@ T["chat"]["retains a hidden catalog and visible contexts after a local prompt fa
   chat:dispose()
 end
 
+T["chat"]["keeps an Auto draft until dispatch and retains it after rejection"] = function()
+  local session = fake_session("auto-ui", "agent")
+  session.state.auto_mode = "auto"
+  function session:prompt(prompt)
+    self.prompts[#self.prompts + 1] = prompt
+    self.state.status = "admitting"
+    return "attempt-" .. #self.prompts
+  end
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  assert(nvim.wait(1000, function()
+    return chat.views["auto-ui"].replay_events == nil
+  end, 10))
+  assert(chat:queue_context({ label = "file", text = "context body" }))
+  assert(chat:submit("keep this draft"))
+  local view = chat.views["auto-ui"]
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] keep this draft")
+  MiniTest.expect.equality({ chat:submit("racing") }, { nil, "Auto admission is still settling" })
+  session:emit({
+    type = "admission_settled",
+    session_id = "auto-ui",
+    data = {
+      turn_id = "attempt-1",
+      result = "not_sent",
+      requested = { model = "baseline" },
+      confirmed = {},
+    },
+  })
+  session:emit({
+    type = "prompt_rejected",
+    session_id = "auto-ui",
+    data = {
+      turn_id = "attempt-1",
+      message = "baseline unavailable",
+    },
+  })
+  assert(nvim.wait(1000, function()
+    return view.pending_admission == nil
+  end, 10))
+  session.state.status = "ready"
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] keep this draft")
+  MiniTest.expect.equality(view.draft.contexts, { { label = "file", text = "context body" } })
+  assert(chat:submit())
+  session:emit({
+    type = "admission_settled",
+    session_id = "auto-ui",
+    data = {
+      turn_id = "attempt-2",
+      result = "dispatched",
+      requested = { model = "baseline" },
+      confirmed = { model = "baseline" },
+    },
+  })
+  assert(nvim.wait(1000, function()
+    return view.pending_admission == nil
+  end, 10))
+  MiniTest.expect.equality(view.pending_admission, nil)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "")
+  MiniTest.expect.equality(view.draft.contexts, {})
+  chat:dispose()
+end
+
 T["chat"]["does not inject a catalog into an attached existing session"] = function()
   local existing = fake_session("session-1", "claude")
   existing.state.skills_policy = "inject"

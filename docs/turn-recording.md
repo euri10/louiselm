@@ -58,8 +58,35 @@ the new immutable start row. Only its successful acknowledgement permits the
 ACP prompt write. A failed admission leaves the Session `ready`, calls the
 callback with an error, and sends no prompt. Accepted attempts advance the local
 turn ordinal even if admission fails; consumers must use the durable ID for
-identity. Chat shows the submitted attempt and the recording error. Retrying
-the prompt creates another attempt, with another ID.
+identity. Chat shows the submitted attempt and the recording error for ordinary
+submissions. Retrying the prompt creates another attempt, with another ID.
+
+An Agent configured with `auto = { model = "<advertised value>", effort = "<advertised value>" }`
+opts new Sessions into baseline Auto admission. Omit `effort` only when the Agent
+advertises no thought-level option. Unset Agents use the ordinary path. Auto
+holds the Session in `admitting` while it confirms the Model, re-reads the
+Agent's effort choices, confirms the effort, and checks the effective pair.
+It then enters the same durable `preparing` barrier. The operator can pin the
+whole confirmed pair by changing either option with `set_config_option`, and
+`session:set_auto(true)` explicitly returns to Auto. These controls are only
+in memory in this slice. A failed or unknown configuration does not trigger a
+resend; an unresolved request holds or errors the Session. Chat keeps the
+editable prompt and Staged context until dispatch is confirmed, and leaves
+them in place when admission rejects the attempt.
+
+`admission_events` is in the same private SQLite store. It records one
+payload-free `decision` and one terminal `settlement` keyed by the returned
+admission ID, including attempts with no `turns` row. A dispatched admission
+uses that ID as its prepared turn ID. Decision metadata names the pair, origin
+and reason. A headless helper may pass `{ parent_turn_id = id }` as the third
+argument to `session:prompt`, even when its Agent has no Auto baseline. This
+explicitly correlated attempt uses the same admission record and may name a
+parent that never dispatched.
+Settlement metadata names the result, confirmed pair, complete option tuple,
+configuration request IDs, reason code, and elapsed milliseconds. Request IDs
+correlate changed option rows without requiring a prepared turn. The same facts
+are emitted as typed `admission_decided` and `admission_settled` events. No prompt content or tool
+payload is recorded there.
 
 Immediately before the ACP write, the Session checks the options, Model,
 resolved Provider, and cumulative-cost baseline against the committed snapshot.

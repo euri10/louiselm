@@ -30,6 +30,7 @@ local DERIVED_HIGHLIGHT = "LouiselmDerivedValue"
 local STATUS_HIGHLIGHTS = {
   ready = "LouiselmStatusReady",
   preparing = "LouiselmStatusActive",
+  admitting = "LouiselmStatusActive",
   prompting = "LouiselmStatusActive",
   running = "LouiselmStatusActive",
   configuring = "LouiselmStatusActive",
@@ -186,6 +187,9 @@ local function turn_label(state)
   end
   if state.status == "preparing" then
     return "Preparing turn"
+  end
+  if state.status == "admitting" then
+    return "Confirming baseline"
   end
   if state.status == "ready" or state.status == "prompting" or state.status == "running" then
     if state.session_failure ~= nil then
