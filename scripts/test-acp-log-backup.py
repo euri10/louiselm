@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -399,7 +400,9 @@ sys.exit(result.returncode)
                               stderr=subprocess.PIPE, text=True) as copying:
             try:
                 deadline = time.monotonic() + 15
-                while not any((self.destination / "repository/locks").iterdir()):
+                # Ignore Restic's <id>-tmp-* files until the lock is published.
+                while not any(re.fullmatch(r"[0-9a-f]{64}", path.name)
+                              for path in (self.destination / "repository/locks").iterdir()):
                     self.assertIsNone(copying.poll(), "copy ended before source lock was observed")
                     self.assertLess(time.monotonic(), deadline, "copy never acquired source lock")
                     time.sleep(0.02)
@@ -427,11 +430,17 @@ sys.exit(result.returncode)
                               stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL) as holder:
             deadline = time.monotonic() + 15
-            while not any((repository / "locks").iterdir()):
+            # Killing during <id>-tmp-* publication leaves no lock to recover.
+            while not any(re.fullmatch(r"[0-9a-f]{64}", path.name)
+                          for path in (repository / "locks").iterdir()):
                 self.assertIsNone(holder.poll(), "holder ended before its lock was observed")
                 self.assertLess(time.monotonic(), deadline, "holder never acquired a lock")
                 time.sleep(0.02)
             holder.kill()
+        blocked = subprocess.run(
+            ["restic", "--repo", str(repository), "--password-file", str(self.key), "check"],
+            capture_output=True, text=True, timeout=15)
+        self.assertEqual(blocked.returncode, 11, blocked.stderr)
         local = json.loads(self.run_command("run", timeout=150).stdout)
         self.assertEqual(local["last_attempt"]["state"], "verified")
         self.assertFalse(any((repository / "locks").iterdir()))
