@@ -1,0 +1,1 @@
+Use only the supplied availability. State the time zone limitation if none is given.

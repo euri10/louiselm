@@ -1,0 +1,88 @@
+{
+  "schema": "louiselm.qualification-manifest/v1",
+  "routes": {
+    "baseline": {
+      "mode": "direct",
+      "agent": "synthetic-baseline-agent",
+      "provider": "synthetic-baseline-provider",
+      "options": {"model": "synthetic-baseline-model", "reasoning": "standard"}
+    },
+    "candidate": {
+      "mode": "direct",
+      "agent": "synthetic-candidate-agent",
+      "provider": "synthetic-candidate-provider",
+      "options": {"model": "synthetic-candidate-model", "reasoning": "standard"}
+    }
+  },
+  "limits": {
+    "model_requests": 12,
+    "elapsed_seconds": 120,
+    "input_bytes": 10000,
+    "output_bytes": 2000
+  },
+  "disclosure": {
+    "providers": ["synthetic-baseline-provider", "synthetic-candidate-provider"]
+  },
+  "isolation": {
+    "private_snapshot": true,
+    "deny_workspace_writes": true,
+    "deny_tracker_writes": true,
+    "deny_ambient_credentials": true,
+    "deny_ambient_network": true,
+    "provider_egress_only": true
+  },
+  "fixtures": [
+    {
+      "id": "synthetic-bulk-reading",
+      "kind": "bulk_reading",
+      "provenance": {"kind": "synthetic", "reference": "committed qualification example"},
+      "input": {"path": "bulk/input.txt", "sha256": "e6ac250c273b1d3d62edc49e7fa63415b41fafa4032566f7a07d0d162d7fa760"},
+      "snapshots": {
+        "source": [{"path": "bulk/source.txt", "sha256": "b66641e54a702b58cb134c7cc3aaf6c0cfdab3923815271e145cf3056f2f0689"}],
+        "instructions": [{"path": "bulk/instructions.txt", "sha256": "6680c2677d5ee976d6ea7b3a802753cafd520c9e3b156a448b5276958be8ef84"}]
+      },
+      "acceptance": {
+        "reference_checks": [
+          {"source_path": "bulk/source.txt", "answer_contains": "Idle", "citation": "[A]"},
+          {"source_path": "bulk/source.txt", "answer_contains": "Sampling", "citation": "[B]"},
+          {"source_path": "bulk/source.txt", "answer_contains": "Ready", "citation": "[C]"}
+        ],
+        "commands": [],
+        "human_review": null
+      }
+    },
+    {
+      "id": "synthetic-mechanical-change",
+      "kind": "mechanical_change",
+      "provenance": {"kind": "synthetic", "reference": "committed qualification example"},
+      "input": {"path": "mechanical/input.txt", "sha256": "fa267b28a060f27ad9add78f0d87ac9052c74d2170c34c49c0a97754baa4f274"},
+      "snapshots": {
+        "source": [
+          {"path": "mechanical/calculator.py", "sha256": "e1a894022d1a082987b87adecb623438c9e386d86b2b621cff4a5fe7fdf7edc8"},
+          {"path": "mechanical/test_calculator.py", "sha256": "c89af0f6e17b8e496db46806115ccb7aa11d439faadef5e43f6ecd3a8bbb39e5"}
+        ],
+        "instructions": [{"path": "mechanical/instructions.txt", "sha256": "148cf835be02a13edbb6ec87fedf9417ecefb9a1d796ba1561e6ce6470f0a658"}]
+      },
+      "acceptance": {
+        "reference_checks": [],
+        "commands": [["python3", "-m", "unittest", "discover", "-s", "mechanical", "-p", "test_calculator.py"]],
+        "human_review": null
+      }
+    },
+    {
+      "id": "synthetic-reasoning",
+      "kind": "reasoning",
+      "provenance": {"kind": "synthetic", "reference": "committed qualification example"},
+      "input": {"path": "reasoning/input.txt", "sha256": "3b7372bfdeda6cae7375be55a70b24ab2411971505af7ad7c5e6842a5098398a"},
+      "snapshots": {
+        "source": [{"path": "reasoning/source.txt", "sha256": "daa23e781fdfc074f7df324efdeb9262fc113c21ea397ba7892bbfb147ac3105"}],
+        "instructions": [{"path": "reasoning/instructions.txt", "sha256": "bb9dbb266279a3d375cae8efa408710b86550e584381e6c3d69bd49b4019cf7c"}]
+      },
+      "acceptance": {
+        "reference_checks": [],
+        "commands": [],
+        "human_review": "Check the 10:00-11:00 overlap and that no time zone was invented."
+      }
+    }
+  ]
+}

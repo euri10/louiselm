@@ -146,6 +146,11 @@ validation against offline fixtures; it does not certify external project
 claims or make Agent research immune to hostile source text. CI runs the same
 gate without network access from the test command.
 
+The curated qualification preview uses the Python standard-library gate
+`python3 scripts/test-qualification-preview.py`. It checks manifest refusal,
+pinned synthetic snapshots, disclosure selection and read-only preview behavior.
+It does not certify containment or authorize a paid Model run. CI runs this gate.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is

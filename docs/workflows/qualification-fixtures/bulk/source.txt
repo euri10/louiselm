@@ -1,0 +1,3 @@
+[A] Idle means the sensor has no pending sample.
+[B] Sampling means a read is in progress.
+[C] Ready means one sample can be consumed.
