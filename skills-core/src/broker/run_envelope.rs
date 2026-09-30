@@ -307,6 +307,29 @@ impl RunEnvelopeStore {
         Ok(())
     }
 
+    /// Returns current approved Beads authority for one exact Run failure report.
+    /// # Errors
+    /// Refuses absent, stale, expired, foreign or off-list authority.
+    pub fn check_bead_failure(
+        &self,
+        run_id: &str,
+        envelope_digest: &str,
+        bead_id: &str,
+        controller_uid: u32,
+        now_ms: u64,
+    ) -> Result<(ApprovedBeadsMutations, u64), BrokerError> {
+        let _serial = lock(&self.serial);
+        let current = self.current(run_id)?.ok_or(BrokerError::InvalidGrant)?;
+        current.validate(now_ms)?;
+        if current.controller_uid != controller_uid
+            || Digest::of(&current.canonical_bytes()).to_string() != envelope_digest
+            || !current.bead_scope.issue_ids.iter().any(|id| id == bead_id)
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
+        Ok((current.bead_scope, current.envelope_revision))
+    }
+
     fn current(&self, run_id: &str) -> Result<Option<RunEnvelope>, BrokerError> {
         record_name(run_id)?;
         let entries = match fs::read_dir(self.root.join(run_id)) {

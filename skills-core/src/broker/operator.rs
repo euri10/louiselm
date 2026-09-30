@@ -4,7 +4,10 @@ mod wire;
 
 use super::conformance_inspection::{ConformanceInspection, MAX_INSPECTION_BYTES};
 use crate::Digest;
-use crate::beads_mutation::{BeadsControlDecision, BeadsInspection, BeadsInspectionDetail};
+use crate::beads_mutation::{
+    BeadFailureRequest, BeadsControlDecision, BeadsInspection, BeadsInspectionDetail,
+    BeadsMutationStatus,
+};
 use crate::broker::verification::{VerificationRecord, VerificationStatus};
 use crate::broker::{
     GrantRequest,
@@ -310,6 +313,11 @@ pub enum AuthorizationRequest {
         /// Digest returned by the Run approval the controller selected.
         expected_envelope_digest: String,
     },
+    /// Report one failed Bead under the approved Run's exact comment authority.
+    BeadFailure {
+        /// Bounded identifiers; the broker constructs the canonical comment.
+        report: BeadFailureRequest,
+    },
 }
 
 /// The distinct Run and Session digests a controller must retain.
@@ -325,6 +333,11 @@ pub enum AuthorizationResponse {
     Session {
         /// Durable child Session authorization.
         receipt: ChildAuthorization,
+    },
+    /// At-most-once canonical Beads comment outcome.
+    BeadFailure {
+        /// Durable broker mutation status.
+        receipt: BeadsMutationStatus,
     },
 }
 
@@ -374,6 +387,10 @@ pub fn authorization(
                 && receipt.request_digest == grant.request.digest().to_string()
                 && receipt.envelope_digest == *expected_envelope_digest
         }
+        (
+            AuthorizationRequest::BeadFailure { report },
+            AuthorizationResponse::BeadFailure { receipt },
+        ) => report.valid() && receipt.valid() && receipt.request_id == report.request_id,
         _ => false,
     };
     if !matches {

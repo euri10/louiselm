@@ -5,6 +5,7 @@
 //! and its durable, bounded outcome; it performs no I/O and holds no
 //! authority of its own.
 
+use crate::Digest;
 use serde::{Deserialize, Serialize};
 
 mod permission;
@@ -14,6 +15,68 @@ pub use control::{
     BeadsControlDecision, BeadsInspection, BeadsInspectionDetail, BeadsReconciliation,
     BeadsResolution,
 };
+
+/// Operator-controller report of one failed or rejected Bead. Only bounded
+/// identifiers cross this boundary; the broker constructs the comment text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeadFailureRequest {
+    /// Approved Run identity.
+    pub run_id: String,
+    /// Exact approved Run policy digest.
+    pub expected_envelope_digest: String,
+    /// Stable at-most-once request identity for this Bead.
+    pub request_id: String,
+    /// Bead in the approved Run scope.
+    pub bead_id: String,
+    /// Sanitized outcome category.
+    pub outcome: BeadFailureKind,
+    /// Worker and optional verifier broker Session identities.
+    pub observation_ids: Vec<String>,
+}
+
+/// Safe failure categories; arbitrary Agent output is never a comment field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeadFailureKind {
+    /// Worker could not complete its turn.
+    WorkerFailed,
+    /// Fixed verification plan did not pass.
+    VerificationFailed,
+    /// Operator rejected otherwise passing work.
+    Rejected,
+}
+
+impl BeadFailureRequest {
+    /// Checks bounded identifiers without effects.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        identifier(&self.run_id)
+            && identifier(&self.request_id)
+            && issue_identifier(&self.bead_id)
+            && Digest::parse(&self.expected_envelope_digest)
+                .is_ok_and(|digest| digest.to_string() == self.expected_envelope_digest)
+            && (1..=2).contains(&self.observation_ids.len())
+            && self.observation_ids.iter().all(|id| identifier(id))
+            && (self.observation_ids.len() == 1
+                || self.observation_ids[0] != self.observation_ids[1])
+    }
+
+    /// Canonical safe text for broker and host tracker handoff.
+    #[must_use]
+    pub fn comment_text(&self) -> String {
+        let outcome = match self.outcome {
+            BeadFailureKind::WorkerFailed => "worker_failed",
+            BeadFailureKind::VerificationFailed => "verification_failed",
+            BeadFailureKind::Rejected => "rejected",
+        };
+        format!(
+            "Run {}: {outcome}; observations: {}",
+            self.run_id,
+            self.observation_ids.join(", ")
+        )
+    }
+}
 
 /// One canonical Beads mutation a Session may ask the broker to perform.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,7 +391,10 @@ fn canonical_uuid(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BeadsMutationKind, BeadsMutationRequest, BeadsMutationStatus};
+    use super::{
+        BeadFailureKind, BeadFailureRequest, BeadsMutationKind, BeadsMutationRequest,
+        BeadsMutationStatus,
+    };
     use crate::beads_mutation::BeadsMutationOutcome;
 
     fn request(issue_id: &str, text: &str) -> BeadsMutationRequest {
@@ -340,6 +406,27 @@ mod tests {
                 text: text.to_owned(),
             },
         }
+    }
+
+    #[test]
+    fn failure_report_accepts_only_bounded_ids_and_constructs_safe_comment() {
+        let mut report = BeadFailureRequest {
+            run_id: "run-1".into(),
+            expected_envelope_digest: crate::Digest::of(b"envelope").to_string(),
+            request_id: "failure-one".into(),
+            bead_id: "louiselm-a".into(),
+            outcome: BeadFailureKind::VerificationFailed,
+            observation_ids: vec!["worker-1".into(), "verifier-1".into()],
+        };
+        assert!(report.valid());
+        assert_eq!(
+            report.comment_text(),
+            "Run run-1: verification_failed; observations: worker-1, verifier-1"
+        );
+        report.observation_ids[1] = "raw output\nsecret".into();
+        assert!(!report.valid());
+        report.observation_ids[1] = "worker-1".into();
+        assert!(!report.valid());
     }
 
     #[test]

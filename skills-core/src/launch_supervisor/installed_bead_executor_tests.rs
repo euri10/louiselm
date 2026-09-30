@@ -23,7 +23,7 @@ fn privileged_installed_lua_bead_executor() {
         crate::conformance::admission::Enforcement::PreCutover,
         6,
     );
-    let (_, tracker, _) = beads::provision(root.path());
+    let (program, tracker, bead_id) = beads::provision(root.path());
     let manifest = workspace::fixture_manifest();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
     fs::create_dir(SYSTEM_REGISTRY_ROOT).unwrap();
@@ -77,7 +77,7 @@ fn privileged_installed_lua_bead_executor() {
             beads_mutations: Some(crate::beads_mutation::ApprovedBeadsMutations {
                 project_digest: Digest::of(tracker.as_os_str().as_encoded_bytes()).to_string(),
                 role: crate::beads_mutation::BeadsRole::Worker,
-                issue_ids: vec![format!("fixture-{index}")],
+                issue_ids: vec![bead_id.clone()],
                 effects: vec![crate::beads_mutation::BeadsEffect::CommentAdd],
                 max_mutations: 1,
                 expires_at_ms: now + 120_000,
@@ -115,9 +115,11 @@ fn privileged_installed_lua_bead_executor() {
         envelope.bead_scope = grant.beads_mutations.clone().unwrap();
         envelope.bead_scope.role = crate::beads_mutation::BeadsRole::Coordinator;
         envelope.max_sessions = 2;
-        cases.push(serde_json::json!({"envelope":envelope,"grant":grant,
+        cases.push(
+            serde_json::json!({"bead_id":bead_id,"envelope":envelope,"grant":grant,
             "verifier_grant":verifier_grant,"snapshot":snapshot,
-            "snapshot_digest":snapshot_digest,"plan":plan,"plan_digest":plan_digest}));
+            "snapshot_digest":snapshot_digest,"plan":plan,"plan_digest":plan_digest}),
+        );
     }
     let input = root.path().join("controller.json");
     write_json(&input, &serde_json::json!({"cases":cases}));
@@ -162,6 +164,43 @@ fn privileged_installed_lua_bead_executor() {
         status.success(),
         "installed Lua Bead executor case {index} failed"
     );
+    if index > 1 && std::env::var_os("LOUISELM_TEST_BR").is_some() {
+        let read = |arguments: &[&str]| {
+            let output = Command::new("/usr/bin/setpriv")
+                .args([
+                    "--reuid",
+                    &BROKER_UID.to_string(),
+                    "--regid",
+                    &BROKER_UID.to_string(),
+                    "--clear-groups",
+                ])
+                .arg(&program)
+                .args(arguments)
+                .current_dir(&tracker)
+                .env_clear()
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "real Beads readback failed: {output:?}"
+            );
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        };
+        let comments = read(&["comments", "list", &bead_id, "--json"]);
+        let expected = if index == 2 {
+            "verification_failed"
+        } else {
+            "worker_failed"
+        };
+        assert!(comments.as_array().unwrap().iter().any(|comment| {
+            comment["text"].as_str().is_some_and(|text| {
+                text.starts_with(&format!("Run lua-run-{index}: {expected}; observations: "))
+                    && !text.contains("exit 7")
+            })
+        }));
+        let issue = read(&["show", &bead_id, "--json"]);
+        assert_eq!(issue[0]["status"], "open");
+    }
     wait_terminal(&format!("lua-worker-{index}"));
     if index <= 2 {
         wait_terminal(&format!("lua-verifier-{index}"));

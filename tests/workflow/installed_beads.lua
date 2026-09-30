@@ -13,7 +13,7 @@ local completed, failure, observed = false, nil, false
 local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
   envelope = case.envelope,
-  bead_ids = { "fixture-" .. index },
+  bead_ids = { case.bead_id },
   system = function(argv, options, done)
     if argv[1] == "louiselm-capture" then
       nvim.schedule(function()
@@ -24,7 +24,7 @@ local controller = assert(Workflow.new_bead_executor({
     return nvim.system(argv, options, done)
   end,
   prepare = function(id, done)
-    assert(id == "fixture-" .. index)
+    assert(id == case.bead_id)
     nvim.schedule(function()
       done({
         grant = case.grant,
@@ -41,7 +41,7 @@ local controller = assert(Workflow.new_bead_executor({
     return true
   end,
   on_worker = function(result, continue)
-    assert(result.bead_id == "fixture-" .. index)
+    assert(result.bead_id == case.bead_id)
     assert(result.envelope_digest ~= result.request_digest)
     if index == 3 then
       assert(
@@ -67,11 +67,13 @@ local controller = assert(Workflow.new_bead_executor({
     assert(result.session:dispose())
   end,
 }))
-assert(controller:start(function(ok, err)
-  if ok ~= (index == 1) then
+assert(controller:start(function(ok, err, summary)
+  if not ok then
     failure = err or "unexpected Run outcome"
-  elseif index == 2 and err ~= "Run verification did not pass" then
-    failure = "failing plan outcome: " .. tostring(err)
+  end
+  if summary then
+    assert(#summary.accepted == (index == 1 and 1 or 0))
+    assert(#summary.failed == (index == 1 and 0 or 1))
   end
   completed = true
 end))

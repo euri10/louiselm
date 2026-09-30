@@ -26,13 +26,30 @@ local advance, next_bead
 ---@field error? string Worker failure; no retry is made.
 ---@field verification? table Broker-owned durable status, including ordered command results.
 ---@field verification_passed? boolean True only for complete passing broker evidence.
+---@field verifier_session_id? string Distinct verifier's broker Session identity.
+---@field worker_turn_id? string Durable turn observation identity, when prompt was admitted.
+---@field verification_request_id? string Durable fixed-plan observation identity, when available.
+
+---@class louiselm.workflow.BeadFailure
+---@field bead_id string
+---@field outcome "worker_failed"|"verification_failed"|"rejected"
+---@field observation_ids string[] Durable turn or broker identities that locate worker and verifier evidence.
+---@field comment_operation_id? string Durable broker mutation identity, when returned.
+---@field comment_status "unconfirmed"|"confirmed"
+---@field comment_text string Safe comment to copy to a host Beads tracker after a VM Run.
+
+---@class louiselm.workflow.BeadRunSummary
+---@field run_id string
+---@field accepted string[]
+---@field failed louiselm.workflow.BeadFailure[]
+---@field text string Human-readable host handoff, with no worker output.
 
 ---@class louiselm.workflow.BeadExecutorOptions
 ---@field envelope table Closed Rust RunEnvelope explicitly selected by the operator; start authorizes it.
 ---@field bead_ids string[] Execution order, restricted to envelope.bead_scope.issue_ids.
 ---@field agent_id string Installed registered Codex Agent identity.
 ---@field prepare fun(bead_id: string, callback: fun(prepared: louiselm.workflow.BeadPreparation?, error_message?: string)): boolean, string? Stage the next snapshot and return its exact child grant asynchronously.
----@field on_worker fun(result: louiselm.workflow.BeadResult, continue: fun(proceed: boolean, error_message?: string)) Verification/promotion boundary. Only true starts the next Bead.
+---@field on_worker fun(result: louiselm.workflow.BeadResult, continue: fun(accepted: boolean?, error_message?: string)) Operator acceptance. True accepts passing work, false rejects and continues; nil stops the Run.
 ---@field session_api? louiselm.session.Api Testable Session boundary; owned Sessions always join this Run.
 ---@field system? fun(command: string[], options: table, callback: fun(result: table)): unknown Testable subprocess boundary.
 
@@ -44,8 +61,9 @@ local advance, next_bead
 ---@field index integer
 ---@field envelope_digest? string
 ---@field callback? fun(ok: boolean, error_message?: string)
+---@field summary louiselm.workflow.BeadRunSummary
 ---@field owned_api? louiselm.session.Api
----@field start fun(self: louiselm.workflow.BeadExecutor, callback: fun(ok: boolean, error_message?: string)): boolean, string?
+---@field start fun(self: louiselm.workflow.BeadExecutor, callback: fun(ok: boolean, error_message?: string, summary: louiselm.workflow.BeadRunSummary)): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.BeadExecutor): boolean, string?
 
 local function digest(value)
@@ -80,8 +98,29 @@ local function finish(self, ok, err)
     self.status = ok and "completed" or "failed"
   end
   if callback then
+    local summary = self.summary
+    local lines = {
+      "Run " .. summary.run_id,
+      "Accepted: " .. (#summary.accepted > 0 and table.concat(summary.accepted, ", ") or "(none)"),
+    }
+    for _, failure in ipairs(summary.failed) do
+      lines[#lines + 1] = "Failed: "
+        .. failure.bead_id
+        .. " ("
+        .. failure.outcome
+        .. "; observations: "
+        .. table.concat(failure.observation_ids, ", ")
+        .. "; broker comment: "
+        .. (failure.comment_operation_id or failure.comment_status)
+        .. ")"
+      lines[#lines + 1] = "Host comment for " .. failure.bead_id .. ": " .. failure.comment_text
+      if failure.comment_status == "unconfirmed" then
+        lines[#lines + 1] = "Inspect the VM broker operation and tracker before copying this unconfirmed comment."
+      end
+    end
+    summary.text = table.concat(lines, "\n")
     nvim.schedule(function()
-      callback(ok, err)
+      callback(ok, err, nvim.deepcopy(summary))
     end)
   end
 end
@@ -121,11 +160,16 @@ local function authorize(self, request, callback)
   end
   local done = response(self, function(result)
     if result.code ~= 0 then
-      return finish(self, false, "Control broker refused Run authorization")
+      return finish(
+        self,
+        false,
+        request.kind == "bead_failure" and "Control broker refused Bead failure comment"
+          or "Control broker refused Run authorization"
+      )
     end
     local decoded, value = pcall(nvim.json.decode, result.stdout)
     if not decoded or type(value) ~= "table" or value.kind ~= request.kind or type(value.receipt) ~= "table" then
-      return finish(self, false, "Control broker returned invalid authorization")
+      return finish(self, false, "Control broker returned invalid " .. request.kind .. " response")
     end
     callback(value.receipt)
   end)
@@ -185,17 +229,73 @@ end
 local function handoff(self, result)
   self.options.on_worker(
     result,
-    response(self, function(proceed, verification_error)
-      if proceed ~= true then
-        return finish(self, false, verification_error or "verification stopped the Run")
+    response(self, function(accepted, decision_error)
+      if accepted == nil then
+        return finish(self, false, decision_error or "operator stopped the Run")
       end
-      if result.verification_passed ~= true then
-        return finish(self, false, "Run verification did not pass")
+      if result.verification and result.verification.state ~= "completed" then
+        return finish(self, false, "Run verification outcome is uncertain")
       end
-      advance(self, "next", function()
-        self.index = self.index + 1
-        next_bead(self)
-      end)
+      local function proceed()
+        advance(self, "next", function()
+          self.index = self.index + 1
+          next_bead(self)
+        end)
+      end
+      local function reject()
+        local outcome = result.error and "worker_failed"
+          or result.verification_passed ~= true and "verification_failed"
+          or "rejected"
+        local ids = { result.worker_turn_id or result.launch_request.session_id }
+        if result.verifier_session_id then
+          ids[#ids + 1] = result.verification_request_id or result.verifier_session_id
+        end
+        local comment_text = "Run "
+          .. self.summary.run_id
+          .. ": "
+          .. outcome
+          .. "; observations: "
+          .. table.concat(ids, ", ")
+        local request_id = "failure-" .. nvim.fn.sha256(self.summary.run_id .. ":" .. result.bead_id):sub(1, 32)
+        local failure = {
+          bead_id = result.bead_id,
+          outcome = outcome,
+          observation_ids = ids,
+          comment_status = "unconfirmed",
+          comment_text = comment_text,
+        }
+        self.summary.failed[#self.summary.failed + 1] = failure
+        authorize(self, {
+          kind = "bead_failure",
+          report = {
+            run_id = self.summary.run_id,
+            expected_envelope_digest = self.envelope_digest,
+            request_id = request_id,
+            bead_id = result.bead_id,
+            outcome = outcome,
+            observation_ids = ids,
+          },
+        }, function(receipt)
+          if type(receipt.operation_id) == "string" then
+            failure.comment_operation_id = receipt.operation_id
+          end
+          if
+            receipt.request_id ~= request_id
+            or type(receipt.operation_id) ~= "string"
+            or type(receipt.outcome) ~= "table"
+            or receipt.outcome.kind ~= "completed"
+          then
+            return finish(self, false, "broker Bead failure comment is not confirmed")
+          end
+          failure.comment_status = "confirmed"
+          proceed()
+        end)
+      end
+      if accepted == true and not result.error and result.verification_passed == true then
+        self.summary.accepted[#self.summary.accepted + 1] = result.bead_id
+        return proceed()
+      end
+      reject()
     end)
   )
 end
@@ -212,6 +312,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
   local launch = result.launch_request
   local grant = prepared.verification.verifier_grant
   local verifier_launch = grant.request
+  result.verifier_session_id = verifier_launch.session_id
   local expires = self.options.envelope.expires_at_ms
   local reported = false
   local function report(status, passed, message)
@@ -344,6 +445,12 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
                                 function(view, status_error)
                                   if not view then
                                     return unknown(status_error or run_error or "verification outcome is unknown")
+                                  end
+                                  if type(view.status) == "table" and type(view.status.detail) == "table" then
+                                    local execution = view.status.detail.execution
+                                    if type(execution) == "table" and type(execution.request) == "table" then
+                                      result.verification_request_id = execution.request.request_id
+                                    end
                                   end
                                   report(view.status, view.commands_passed == true)
                                 end
@@ -532,6 +639,8 @@ next_bead = function(self)
                   local sent, prompt_error = ready:prompt(prepared.prompt, completed)
                   if not sent then
                     completed(nil, prompt_error or "worker prompt refused")
+                  else
+                    result.worker_turn_id = sent
                   end
                 end
                 if self.index ~= 1 then
@@ -613,6 +722,9 @@ function M.new(options)
   if type(envelope.max_sessions) ~= "number" or envelope.max_sessions < 2 * #options.bead_ids then
     return nil, "Run envelope needs one worker and one verifier Session per Bead"
   end
+  if type(envelope.bead_scope.max_mutations) ~= "number" or envelope.bead_scope.max_mutations < #options.bead_ids then
+    return nil, "Run envelope needs one failure-comment mutation per Bead"
+  end
   if
     type(options.agent_id) ~= "string"
     or options.agent_id == ""
@@ -658,14 +770,25 @@ function M.new(options)
   if not run then
     return nil, run_error
   end
-  local controller =
-    setmetatable({ options = owned, run = run, executor = executor, index = 1, status = "new" }, Controller)
+  local controller = setmetatable({
+    options = owned,
+    run = run,
+    executor = executor,
+    index = 1,
+    status = "new",
+    summary = {
+      run_id = envelope.run_id,
+      accepted = {},
+      failed = {},
+      text = "",
+    },
+  }, Controller)
   return controller
 end
 
 ---Authorize this exact Run, admit its ledger, then execute one worker at a time.
 ---Failures and disposal settle callback once on the main loop; no retries occur.
----@param callback fun(ok: boolean, error_message?: string)
+---@param callback fun(ok: boolean, error_message?: string, summary: louiselm.workflow.BeadRunSummary)
 ---@return boolean started
 ---@return string? error_message Immediate misuse; asynchronous failures reach callback.
 function Controller:start(callback)

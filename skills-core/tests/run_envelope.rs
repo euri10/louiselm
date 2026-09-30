@@ -97,6 +97,39 @@ fn run_approval_persists_and_rejects_widened_child_grants() {
         Digest::of(&envelope().canonical_bytes()).to_string()
     );
     assert!(store.check_child(&grant(), 1_000).is_ok());
+    assert!(
+        store
+            .check_bead_failure(
+                "run-1",
+                &approval.envelope_digest,
+                "louiselm-a",
+                1000,
+                1_000
+            )
+            .is_ok()
+    );
+    for (digest, bead, uid, now) in [
+        (approval.envelope_digest.as_str(), "louiselm-c", 1000, 1_000),
+        (approval.envelope_digest.as_str(), "louiselm-a", 1001, 1_000),
+        (
+            approval.envelope_digest.as_str(),
+            "louiselm-a",
+            1000,
+            10_000,
+        ),
+        (
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "louiselm-a",
+            1000,
+            1_000,
+        ),
+    ] {
+        assert!(
+            store
+                .check_bead_failure("run-1", digest, bead, uid, now)
+                .is_err()
+        );
+    }
 
     let reopened = RunEnvelopeStore::open(root.path()).unwrap();
     assert!(reopened.check_child(&grant(), 1_000).is_ok());

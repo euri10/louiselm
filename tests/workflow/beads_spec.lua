@@ -23,7 +23,7 @@ local function fixture()
       expires_at_ms = 9999999999999,
       verification_plan_digest = DIGEST,
       max_sessions = 4,
-      bead_scope = { issue_ids = { "b-1", "b-2" } },
+      bead_scope = { issue_ids = { "b-1", "b-2" }, max_mutations = 2 },
     },
     bead_ids = { "b-1", "b-2" },
     prepare = function(id, done)
@@ -109,6 +109,7 @@ local function fixture()
                 state = "completed",
                 detail = {
                   execution = {
+                    request = { request_id = "verify-observation-" .. #f.verifiers },
                     steps = { { state = "completed", exit_code = f.fail_verification and 7 or 0, timed_out = false } },
                   },
                 },
@@ -129,6 +130,21 @@ local function fixture()
         }
       elseif argv[2] == "run" then
         local input = nvim.json.decode(options.stdin)
+        if input.kind == "bead_failure" then
+          MiniTest.expect.equality(input.run_id, nil)
+          f.failure_requests = f.failure_requests or {}
+          f.failure_requests[#f.failure_requests + 1] = input.report
+          response = {
+            kind = "bead_failure",
+            receipt = {
+              request_id = input.report.request_id,
+              operation_id = "11111111-2222-4333-8444-555555555555",
+              outcome = { kind = f.unknown_comment and "unknown" or "completed" },
+            },
+          }
+          later(done, { code = 0, stdout = nvim.json.encode(response), stderr = "" })
+          return { kill = function() end }
+        end
         local request = input.grant and input.grant.request
         response = {
           kind = input.kind,
@@ -176,7 +192,7 @@ local function fixture()
             self.status = "ready"
             later(done, { stopReason = "end_turn" }, err)
           end
-          return "prompt"
+          return "turn-" .. #f.workers
         end
         if options.permission_policy.name == "contained-verifier" then
           f.verifiers[#f.verifiers + 1] = worker
@@ -196,9 +212,9 @@ local function fixture()
     MiniTest.finally(function()
       self.runner:dispose()
     end)
-    assert(self.runner:start(function(ok, err)
+    assert(self.runner:start(function(ok, err, summary)
       self.finished = self.finished + 1
-      self.ok, self.error = ok, err
+      self.ok, self.error, self.summary = ok, err, summary
     end))
   end
   return f
@@ -245,6 +261,8 @@ T["sequences contained workers across the verification continuation"] = function
     return f.finished == 1
   end)
   MiniTest.expect.equality(f.ok, true)
+  MiniTest.expect.equality(f.summary.accepted, { "b-1", "b-2" })
+  MiniTest.expect.equality(f.summary.failed, {})
   MiniTest.expect.equality(f.runner.executor:inspect().status, "completed")
   MiniTest.expect.equality(#f.verifiers, 2)
   MiniTest.expect.equality(f.last_run.operation.kind, "run")
@@ -399,7 +417,7 @@ T["real ACP permission requests complete without a human event"] = function()
   MiniTest.expect.equality(permissions, 0)
 end
 
-T["worker failure is handed off once without retry and verification can stop"] = function()
+T["worker failure gets one broker comment and the Run continues"] = function()
   local f = fixture()
   f:start()
   wait(function()
@@ -412,13 +430,30 @@ T["worker failure is handed off once without retry and verification can stop"] =
   MiniTest.expect.equality(f.handoffs[1].error, "worker failed")
   later(f.verify_done, false, "verification refused")
   wait(function()
+    return f.workers[2] and f.workers[2].complete
+  end)
+  MiniTest.expect.equality(f.prepared, { "b-1", "b-2" })
+  MiniTest.expect.equality(#f.failure_requests, 1)
+  MiniTest.expect.equality(f.failure_requests[1].bead_id, "b-1")
+  MiniTest.expect.equality(f.failure_requests[1].observation_ids, { "turn-1" })
+  MiniTest.expect.equality(nvim.inspect(f.failure_requests):find("worker failed", 1, true), nil)
+  f.workers[2].complete()
+  wait(function()
+    return #f.handoffs == 2
+  end)
+  later(f.verify_done, true)
+  wait(function()
     return f.finished == 1
   end)
-  MiniTest.expect.equality(f.error, "verification refused")
-  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(f.ok, true)
+  MiniTest.expect.equality(f.summary.accepted, { "b-2" })
+  MiniTest.expect.equality(f.summary.failed[1].bead_id, "b-1")
+  MiniTest.expect.equality(f.summary.failed[1].comment_operation_id, "11111111-2222-4333-8444-555555555555")
+  MiniTest.expect.equality(f.summary.text:find("b-1", 1, true) ~= nil, true)
+  MiniTest.expect.equality(f.summary.text:find("worker failed", 1, true), nil)
 end
 
-T["failed command is reported and cannot advance the next Bead"] = function()
+T["failed command is reported, commented and advances the next Bead"] = function()
   local f = fixture()
   f.fail_verification = true
   f:start()
@@ -433,10 +468,53 @@ T["failed command is reported and cannot advance the next Bead"] = function()
   MiniTest.expect.equality(f.handoffs[1].verification_passed, false)
   later(f.verify_done, true)
   wait(function()
+    return f.workers[2] and f.workers[2].complete
+  end)
+  MiniTest.expect.equality(f.failure_requests[1].outcome, "verification_failed")
+  MiniTest.expect.equality(f.failure_requests[1].observation_ids, { "turn-1", "verify-observation-1" })
+  f.workers[2].complete()
+  wait(function()
+    return #f.handoffs == 2
+  end)
+  later(f.verify_done, true)
+  wait(function()
     return f.finished == 1
   end)
-  MiniTest.expect.equality(f.error, "Run verification did not pass")
-  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(f.ok, true)
+  MiniTest.expect.equality(f.summary.failed[1].outcome, "verification_failed")
+end
+
+T["operator rejection is commented and a lost comment result stops without retry"] = function()
+  local f = fixture()
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return #f.handoffs == 1
+  end)
+  later(f.verify_done, false)
+  wait(function()
+    return f.workers[2] and f.workers[2].complete
+  end)
+  MiniTest.expect.equality(f.failure_requests[1].outcome, "rejected")
+  f.unknown_comment = true
+  f.workers[2].complete("failed after rejection")
+  wait(function()
+    return #f.handoffs == 2
+  end)
+  later(f.verify_done, false)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.ok, false)
+  MiniTest.expect.equality(f.error, "broker Bead failure comment is not confirmed")
+  MiniTest.expect.equality(#f.failure_requests, 2)
+  MiniTest.expect.equality(f.summary.failed[1].outcome, "rejected")
+  MiniTest.expect.equality(#f.summary.failed, 2)
+  MiniTest.expect.equality(f.summary.failed[2].comment_status, "unconfirmed")
+  MiniTest.expect.equality(f.summary.text:find("unconfirmed comment", 1, true) ~= nil, true)
 end
 
 T["spent verification with a lost reply stays unknown and is not replayed"] = function()
@@ -456,7 +534,7 @@ T["spent verification with a lost reply stays unknown and is not replayed"] = fu
   wait(function()
     return f.finished == 1
   end)
-  MiniTest.expect.equality(f.error, "Run verification did not pass")
+  MiniTest.expect.equality(f.error, "Run verification outcome is uncertain")
 end
 
 return T

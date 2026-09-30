@@ -117,7 +117,8 @@ fn authorize_child(
     };
     match operator_request(root, uid, &request)? {
         crate::broker::operator::AuthorizationResponse::Session { receipt } => Ok(receipt),
-        crate::broker::operator::AuthorizationResponse::Run { .. } => Err(()),
+        crate::broker::operator::AuthorizationResponse::Run { .. }
+        | crate::broker::operator::AuthorizationResponse::BeadFailure { .. } => Err(()),
     }
 }
 
@@ -143,6 +144,9 @@ fn start_operator_server(broker: Arc<InstalledBroker>, root: &Path, uid: u32) {
                             } => broker
                                 .authorize_child(grant, expected_envelope_digest)
                                 .map(|receipt| AuthorizationResponse::Session { receipt }),
+                            AuthorizationRequest::BeadFailure { report } => broker
+                                .record_bead_failure(report)
+                                .map(|receipt| AuthorizationResponse::BeadFailure { receipt }),
                         }
                         .map_err(|_| InspectError::InvalidRequest)
                     },

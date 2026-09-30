@@ -649,6 +649,64 @@ impl InstalledBroker {
         })
     }
 
+    /// Records one bounded failed-Bead comment through the canonical tracker.
+    /// The at-most-once mutation ledger owns uncertain effects; callers must
+    /// inspect the returned status and must never retry with another identity.
+    /// # Errors
+    /// Refuses stale or off-list Run authority, invalid evidence IDs, or tracker failure.
+    pub fn record_bead_failure(
+        &self,
+        report: &crate::beads_mutation::BeadFailureRequest,
+    ) -> Result<crate::beads_mutation::BeadsMutationStatus, BrokerError> {
+        use crate::beads_mutation::{BeadsMutationKind, BeadsMutationRequest};
+        if !report.valid() {
+            return Err(BrokerError::InvalidGrant);
+        }
+        let expected = format!(
+            "failure-{}",
+            &crate::Digest::of(format!("{}:{}", report.run_id, report.bead_id).as_bytes())
+                .to_string()[7..39]
+        );
+        if report.request_id != expected {
+            return Err(BrokerError::InvalidGrant);
+        }
+        let now = now_ms()?;
+        let (permission, revision) = self.run_envelopes.check_bead_failure(
+            &report.run_id,
+            &report.expected_envelope_digest,
+            &report.bead_id,
+            self.verifier.config().operator_uid,
+            now,
+        )?;
+        let tracker = self
+            .service
+            .tracker
+            .as_ref()
+            .ok_or(BrokerError::InvalidGrant)?;
+        let request = BeadsMutationRequest {
+            request_id: report.request_id.clone(),
+            required: true,
+            kind: BeadsMutationKind::CommentAdd {
+                issue_id: report.bead_id.clone(),
+                text: report.comment_text(),
+            },
+        };
+        self.service.beads_mutations.accept(
+            &super::beads_mutation::Binding {
+                session_id: report.run_id.clone(),
+                run_id: report.run_id.clone(),
+                agent_id: "controller".into(),
+                envelope_revision: revision,
+                controller_uid: self.verifier.config().operator_uid,
+            },
+            &request,
+            &permission,
+            now,
+            &super::tracker_runner::SystemTrackerRunner::new(std::time::Duration::from_secs(30)),
+            tracker,
+        )
+    }
+
     /// Persists exact child authority bounded by the current approved Run.
     /// This Rust API is not an Agent-facing approval endpoint.
     ///

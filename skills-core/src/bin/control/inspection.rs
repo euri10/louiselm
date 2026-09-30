@@ -255,6 +255,10 @@ impl Queries {
             .map_err(|_| InspectError::StatusUnavailable)?
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The installed endpoint setup and typed operator handlers share one ownership transaction."
+    )]
     pub(super) fn start(broker: Arc<InstalledBroker>) -> Result<Arc<Self>, BrokerError> {
         let config = louiselm_skills::launcher_install::public_runtime_config(
             &louiselm_skills::launcher_install::LauncherPaths::system(),
@@ -300,6 +304,9 @@ impl Queries {
                                 } => broker
                                     .authorize_child(grant, expected_envelope_digest)
                                     .map(|receipt| AuthorizationResponse::Session { receipt }),
+                                AuthorizationRequest::BeadFailure { report } => broker
+                                    .record_bead_failure(report)
+                                    .map(|receipt| AuthorizationResponse::BeadFailure { receipt }),
                             };
                             result.map_err(|error| match error {
                                 BrokerError::InvalidGrant
