@@ -1,6 +1,7 @@
 ---@class louiselm.routing.Coordinator
 ---@field evidence louiselm.routing.Evidence
 ---@field approval louiselm.routing.Approval
+---@field qualification louiselm.routing.Qualification Durable comparison decisions, separate from phase recommendations.
 ---@field agents louiselm.routing.RoutingAgent[] Configured Agent inventory.
 ---@field recommend fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata, state: louiselm.session.State): louiselm.routing.ApprovalPresentation?, louiselm.routing.Ranking?, string?
 ---@field observe fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata, state: louiselm.session.State, outcome: string): boolean, string?
@@ -9,9 +10,13 @@
 ---@field reject fun(self: louiselm.routing.Coordinator, candidate: unknown): boolean, string?
 ---@field clear_pending fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata): boolean
 ---@field invalidate fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata): boolean
+---@field decide_comparison fun(self: louiselm.routing.Coordinator, input: unknown, callback: fun(result?: louiselm.routing.QualificationResult, error_message?: string))
+---@field qualified fun(self: louiselm.routing.Coordinator, scope: unknown, expected_revision: integer?, callback: fun(result?: louiselm.routing.QualificationResult, error_message?: string))
+---@field approval_revision fun(self: louiselm.routing.Coordinator, callback: fun(revision?: integer, error_message?: string))
 
 local Approval = require("louiselm.routing.approval")
 local Evidence = require("louiselm.routing.evidence")
+local Qualification = require("louiselm.routing.qualification")
 local Routing = require("louiselm.routing.routing")
 
 local M = {}
@@ -131,7 +136,15 @@ function M.new(definitions, evidence_path)
   if evidence == nil then
     return nil, evidence_error
   end
-  return setmetatable({ evidence = evidence, approval = Approval.new(), agents = agents }, Coordinator), nil
+  local qualification, qualification_error = Qualification.new(evidence_path .. ".qualifications.json")
+  if qualification == nil then
+    return nil, qualification_error
+  end
+  return setmetatable(
+    { evidence = evidence, approval = Approval.new(), qualification = qualification, agents = agents },
+    Coordinator
+  ),
+    nil
 end
 
 ---Rank and queue recommendations for a completed, phase-tagged Session turn.
@@ -227,6 +240,30 @@ end
 ---@return boolean invalidated
 function Coordinator:invalidate(phase)
   return self.approval:invalidate(phase)
+end
+
+---Persist an explicit approval or rejection of a selected comparison report.
+---@param self louiselm.routing.Coordinator
+---@param input unknown louiselm.routing.ComparisonDecisionInput
+---@param callback fun(result?: louiselm.routing.QualificationResult, error_message?: string)
+function Coordinator:decide_comparison(input, callback)
+  self.qualification:decide(input, callback)
+end
+
+---Return only a matching approved comparison for the exact route pair and workload.
+---@param self louiselm.routing.Coordinator
+---@param scope unknown { workload: louiselm.routing.ComparisonWorkload, baseline: louiselm.routing.ComparisonRoute, candidate: louiselm.routing.ComparisonRoute, policy_revision: string }
+---@param expected_revision integer? Pending admission's captured approval revision.
+---@param callback fun(result?: louiselm.routing.QualificationResult, error_message?: string)
+function Coordinator:qualified(scope, expected_revision, callback)
+  self.qualification:lookup(scope, expected_revision, callback)
+end
+
+---Read the durable revision for a final pending-admission check.
+---@param self louiselm.routing.Coordinator
+---@param callback fun(revision?: integer, error_message?: string)
+function Coordinator:approval_revision(callback)
+  self.qualification:revision(callback)
 end
 
 return M

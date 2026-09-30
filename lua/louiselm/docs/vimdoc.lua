@@ -348,6 +348,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Inspect an explicitly selected comparison report JSON file, then use :LouiselmApproveComparison {report-file} or :LouiselmRejectComparison {report-file} to record an operator decision. The report identifies exact baseline and candidate Agent/Provider/Model/option tuples, one main or reader workload, selected fixture provenance, acceptance checks, and required human assessment. Only fully accepted reports can be approved; phase recommendations, completed turns and Good feedback never qualify a route. Decisions are private, durable and revisioned. The headless qualification API accepts optional estimated or measured economics and a separate explicit API-for-quota allowance; these never alter factual usage. Approval records alone do not enable Auto or Provider disclosure. See docs/routing-qualification.md for the report and lookup contract.",
+        context
+      )
+      append_prose(
+        lines,
         "Session buffers always install these buffer-local Normal-mode motions, independently of the global keymaps option:",
         context
       )

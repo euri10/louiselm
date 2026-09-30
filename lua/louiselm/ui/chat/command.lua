@@ -8,6 +8,7 @@ local EvidenceExport = require("louiselm.forensics.export")
 local Provenance = require("louiselm.ui.provenance")
 local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.routing")
+local Qualification = require("louiselm.routing.qualification")
 local Paths = require("louiselm.paths")
 local Config = require("louiselm.config")
 local AttentionPaste = require("louiselm.ui.attention_paste")
@@ -189,6 +190,40 @@ end
 local function configured_workflow(definitions)
   local path = nvim.fs.joinpath(Paths.state(), "routing-evidence.json")
   return Workflow.new(definitions, path)
+end
+
+---@param action "approve"|"reject"
+---@param report_path string Explicitly selected comparison report JSON file.
+local function decide_comparison(action, report_path)
+  local stat = nvim.uv.fs_stat(report_path)
+  if stat == nil or stat.type ~= "file" or stat.size > 1024 * 1024 then
+    nvim.notify("louiselm: select a regular comparison report file under 1 MiB", nvim.log.levels.ERROR)
+    return
+  end
+  local read_ok, lines = pcall(nvim.fn.readfile, report_path)
+  if not read_ok then
+    nvim.notify("louiselm: could not read selected comparison report", nvim.log.levels.ERROR)
+    return
+  end
+  local decoded_ok, report = pcall(nvim.json.decode, table.concat(lines, "\n"))
+  if not decoded_ok then
+    nvim.notify("louiselm: selected comparison report is not valid JSON", nvim.log.levels.ERROR)
+    return
+  end
+  local path = nvim.fs.joinpath(Paths.state(), "routing-evidence.json.qualifications.json")
+  local store, store_error = Qualification.new(path)
+  if store == nil then
+    nvim.notify("louiselm: " .. (store_error or "could not open comparison approvals"), nvim.log.levels.ERROR)
+    return
+  end
+  store:decide({ action = action, report = report }, function(result, decision_error)
+    if result == nil then
+      nvim.notify("louiselm: " .. (decision_error or "could not save comparison decision"), nvim.log.levels.ERROR)
+      return
+    end
+    local verb = action == "approve" and "approved" or "rejected"
+    nvim.notify("louiselm: comparison " .. verb .. " at approval revision " .. result.revision)
+  end)
 end
 
 ---Fire a non-blocking latest-version check for every configured agent and
@@ -540,6 +575,14 @@ function M.register()
   nvim.api.nvim_create_user_command("LouiselmChat", function()
     open_chat()
   end, { desc = "Open the louiselm chat buffer", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmApproveComparison", function(options)
+    decide_comparison("approve", options.args)
+  end, { nargs = 1, complete = "file", desc = "Approve one selected comparison report", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmRejectComparison", function(options)
+    decide_comparison("reject", options.args)
+  end, { nargs = 1, complete = "file", desc = "Reject one selected comparison report", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmTutor", open_tutor, {
     desc = "Open the LouiseLM onboarding Tutor",

@@ -1,3 +1,4 @@
+:LouiselmApproveComparison	louiselm.txt	/*:LouiselmApproveComparison*
 :LouiselmAttention	louiselm.txt	/*:LouiselmAttention*
 :LouiselmCancel	louiselm.txt	/*:LouiselmCancel*
 :LouiselmCapture	louiselm.txt	/*:LouiselmCapture*
@@ -26,6 +27,7 @@
 :LouiselmPickSkill	louiselm.txt	/*:LouiselmPickSkill*
 :LouiselmPreflight	louiselm.txt	/*:LouiselmPreflight*
 :LouiselmProvenanceDecisions	louiselm.txt	/*:LouiselmProvenanceDecisions*
+:LouiselmRejectComparison	louiselm.txt	/*:LouiselmRejectComparison*
 :LouiselmResume	louiselm.txt	/*:LouiselmResume*
 :LouiselmResumePark	louiselm.txt	/*:LouiselmResumePark*
 :LouiselmSendSelection	louiselm.txt	/*:LouiselmSendSelection*
