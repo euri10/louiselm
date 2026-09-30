@@ -16,6 +16,7 @@ local advance, next_bead
 ---@field grant table Closed Rust GrantRequest; the broker validates all authority fields.
 ---@field prompt string Worker instruction for this Bead.
 ---@field verification { snapshot: string, snapshot_digest: string, plan: string, plan_digest: string, verifier_grant: table } Controller-owned baseline, plan and separate verifier grant.
+---@field base_commit? string Exact source snapshot HEAD for Run promotion.
 
 ---@class louiselm.workflow.BeadResult
 ---@field bead_id string
@@ -29,6 +30,7 @@ local advance, next_bead
 ---@field verifier_session_id? string Distinct verifier's broker Session identity.
 ---@field worker_turn_id? string Durable turn observation identity, when prompt was admitted.
 ---@field verification_request_id? string Durable fixed-plan observation identity, when available.
+---@field promotion? table Exact accepted Run worktree commit.
 
 ---@class louiselm.workflow.BeadFailure
 ---@field bead_id string
@@ -41,6 +43,8 @@ local advance, next_bead
 ---@class louiselm.workflow.BeadRunSummary
 ---@field run_id string
 ---@field accepted string[]
+---@field commits table<string, string> Accepted Bead to exact Run branch commit, when promotion is enabled.
+---@field branch? string Fetchable Run branch for VM to host handoff.
 ---@field failed louiselm.workflow.BeadFailure[]
 ---@field text string Human-readable host handoff, with no worker output.
 
@@ -48,8 +52,10 @@ local advance, next_bead
 ---@field envelope table Closed Rust RunEnvelope explicitly selected by the operator; start authorizes it.
 ---@field bead_ids string[] Execution order, restricted to envelope.bead_scope.issue_ids.
 ---@field agent_id string Installed registered Codex Agent identity.
----@field prepare fun(bead_id: string, callback: fun(prepared: louiselm.workflow.BeadPreparation?, error_message?: string)): boolean, string? Stage the next snapshot and return its exact child grant asynchronously.
+---@field prepare fun(bead_id: string, callback: fun(prepared: louiselm.workflow.BeadPreparation?, error_message?: string), expected_head?: string): boolean, string? Stage the next snapshot from the current Run branch HEAD.
 ---@field on_worker fun(result: louiselm.workflow.BeadResult, continue: fun(accepted: boolean?, error_message?: string)) Operator acceptance. True accepts passing work, false rejects and continues; nil stops the Run.
+---@field worktree? { path: string, journal_parent: string, head: string } Dedicated clean run/<run-id> checkout and initial HEAD.
+---@field on_promotion? fun(preview: table, decide: fun(accepted: boolean)) Present the exact preview to the maintainer.
 ---@field session_api? louiselm.session.Api Testable Session boundary; owned Sessions always join this Run.
 ---@field system? fun(command: string[], options: table, callback: fun(result: table)): unknown Testable subprocess boundary.
 
@@ -60,6 +66,7 @@ local advance, next_bead
 ---@field status "new"|"active"|"completed"|"failed"|"disposed"
 ---@field index integer
 ---@field envelope_digest? string
+---@field head? string Current committed Run branch HEAD.
 ---@field callback? fun(ok: boolean, error_message?: string)
 ---@field summary louiselm.workflow.BeadRunSummary
 ---@field owned_api? louiselm.session.Api
@@ -103,6 +110,14 @@ local function finish(self, ok, err)
       "Run " .. summary.run_id,
       "Accepted: " .. (#summary.accepted > 0 and table.concat(summary.accepted, ", ") or "(none)"),
     }
+    if summary.branch then
+      lines[#lines + 1] = "Branch: " .. summary.branch
+    end
+    for _, id in ipairs(summary.accepted) do
+      if summary.commits[id] then
+        lines[#lines + 1] = "Commit " .. id .. ": " .. summary.commits[id]
+      end
+    end
     for _, failure in ipairs(summary.failed) do
       lines[#lines + 1] = "Failed: "
         .. failure.bead_id
@@ -225,6 +240,103 @@ local function operation_id(session_id, operation)
 end
 
 ---@param self louiselm.workflow.BeadExecutor
+---@param action string
+---@param request table
+---@param callback fun(value: table?, error_message?: string)
+local function promotion_control(self, action, request, callback)
+  local encoded, bytes = pcall(nvim.json.encode, request)
+  if not encoded then
+    return callback(nil, "promotion request is not JSON")
+  end
+  local done = response(self, function(result)
+    if type(result) ~= "table" or result.code ~= 0 then
+      return callback(nil, "Run promotion " .. action .. " refused; inspect its journal and worktree")
+    end
+    local decoded, value = pcall(nvim.json.decode, result.stdout)
+    if not decoded or type(value) ~= "table" then
+      return callback(nil, "Run promotion returned invalid " .. action)
+    end
+    callback(value)
+  end)
+  local started, err = pcall(
+    self.options.system or nvim.system,
+    { "louiselm-control", "promotion", action, "--json" },
+    { stdin = bytes, text = true, cwd = "/" },
+    done
+  )
+  if not started then
+    done({ code = 1, stderr = tostring(err) })
+  end
+end
+
+---@param self louiselm.workflow.BeadExecutor
+---@param result louiselm.workflow.BeadResult
+---@param callback fun(accepted: boolean?, error_message?: string)
+local function promote(self, result, callback)
+  local launch = result.launch_request
+  local selection = {
+    schema = "louiselm.run-promotion-selection/1",
+    run_id = launch.run_id,
+    bead_id = result.bead_id,
+    producer_session_id = launch.session_id,
+    verifier_session_id = result.verifier_session_id,
+    request_id = operation_id(launch.session_id, "promotion"),
+    checkout = self.options.worktree.path,
+    journal_parent = self.options.worktree.journal_parent,
+    expected_head = self.head,
+  }
+  promotion_control(self, "preview", { selection = selection }, function(preview, preview_error)
+    if not preview then
+      return callback(nil, preview_error)
+    end
+    if
+      preview.schema ~= "louiselm.run-promotion-preview/1"
+      or type(preview.changes) ~= "table"
+      or not digest(preview.approval_digest)
+      or type(preview.selection) ~= "table"
+      or preview.selection.run_id ~= selection.run_id
+      or preview.selection.bead_id ~= selection.bead_id
+      or preview.selection.producer_session_id ~= selection.producer_session_id
+      or preview.selection.verifier_session_id ~= selection.verifier_session_id
+      or preview.selection.request_id ~= selection.request_id
+      or preview.selection.expected_head ~= self.head
+    then
+      return callback(nil, "Run promotion returned a mismatched preview")
+    end
+    self.options.on_promotion(
+      preview,
+      response(self, function(accepted)
+        if accepted ~= true then
+          return callback(false)
+        end
+        promotion_control(
+          self,
+          "commit",
+          { selection = preview.selection, approval_digest = preview.approval_digest },
+          function(committed, commit_error)
+            if not committed then
+              return callback(nil, commit_error)
+            end
+            if
+              committed.schema ~= "louiselm.run-promotion-commit/1"
+              or committed.bead_id ~= result.bead_id
+              or type(committed.commit) ~= "string"
+              or not committed.commit:match("^[0-9a-f]+$")
+              or (#committed.commit ~= 40 and #committed.commit ~= 64)
+            then
+              return callback(nil, "Run promotion returned an invalid commit")
+            end
+            self.head = committed.commit
+            result.promotion = committed
+            callback(true)
+          end
+        )
+      end)
+    )
+  end)
+end
+
+---@param self louiselm.workflow.BeadExecutor
 ---@param result louiselm.workflow.BeadResult
 local function handoff(self, result)
   self.options.on_worker(
@@ -292,6 +404,27 @@ local function handoff(self, result)
         end)
       end
       if accepted == true and not result.error and result.verification_passed == true then
+        if self.options.worktree then
+          return promote(
+            self,
+            result,
+            response(self, function(promoted, promotion_error)
+              if promoted == nil then
+                return finish(self, false, promotion_error)
+              end
+              if promoted == false then
+                return reject()
+              end
+              self.summary.commits[result.bead_id] = result.promotion.commit
+              self.summary.accepted[#self.summary.accepted + 1] = result.bead_id
+              local disposed, dispose_error = result.session:dispose()
+              if not disposed then
+                return finish(self, false, dispose_error or "promoted worker disposal failed")
+              end
+              proceed()
+            end)
+          )
+        end
         self.summary.accepted[#self.summary.accepted + 1] = result.bead_id
         return proceed()
       end
@@ -536,6 +669,9 @@ local function check_prepared(self, id, prepared)
   then
     return nil, "verification requires the approved plan, baseline and verifier grant"
   end
+  if self.options.worktree and prepared.base_commit ~= self.head then
+    return nil, "next Bead snapshot does not match the Run branch HEAD"
+  end
   local verifier = verification.verifier_grant
   local verifier_bytes = Launch.encode(verifier.request)
   if
@@ -582,6 +718,7 @@ next_bead = function(self)
         input_id = input_id,
         snapshot = prepared.verification.snapshot,
         snapshot_digest = prepared.verification.snapshot_digest,
+        expected_base_commit = self.head,
         plan = prepared.verification.plan,
         plan_digest = prepared.verification.plan_digest,
       },
@@ -676,7 +813,7 @@ next_bead = function(self)
       end
     )
   end)
-  local started, err = self.options.prepare(id, prepared_callback)
+  local started, err = self.options.prepare(id, prepared_callback, self.head)
   if not started then
     prepared_callback(nil, err or "could not prepare worker")
   end
@@ -693,10 +830,17 @@ function M.new(options)
   end
   for key in pairs(options) do
     if
-      not nvim.tbl_contains(
-        { "envelope", "bead_ids", "agent_id", "prepare", "on_worker", "session_api", "system" },
-        key
-      )
+      not nvim.tbl_contains({
+        "envelope",
+        "bead_ids",
+        "agent_id",
+        "prepare",
+        "on_worker",
+        "worktree",
+        "on_promotion",
+        "session_api",
+        "system",
+      }, key)
     then
       return nil, "unknown Bead executor option: " .. tostring(key)
     end
@@ -735,6 +879,24 @@ function M.new(options)
   end
   if options.system ~= nil and type(options.system) ~= "function" then
     return nil, "system must be a function"
+  end
+  if options.worktree ~= nil then
+    local worktree = options.worktree
+    if
+      type(worktree) ~= "table"
+      or type(worktree.path) ~= "string"
+      or worktree.path == ""
+      or type(worktree.journal_parent) ~= "string"
+      or worktree.journal_parent == ""
+      or type(worktree.head) ~= "string"
+      or not worktree.head:match("^[0-9a-f]+$")
+      or (#worktree.head ~= 40 and #worktree.head ~= 64)
+      or type(options.on_promotion) ~= "function"
+    then
+      return nil, "Run worktree needs a path, journal, HEAD and promotion decision callback"
+    end
+  elseif options.on_promotion ~= nil then
+    return nil, "promotion decision requires a Run worktree"
   end
   if
     options.session_api ~= nil
@@ -776,9 +938,12 @@ function M.new(options)
     executor = executor,
     index = 1,
     status = "new",
+    head = options.worktree and options.worktree.head,
     summary = {
       run_id = envelope.run_id,
       accepted = {},
+      commits = {},
+      branch = options.worktree and "run/" .. envelope.run_id or nil,
       failed = {},
       text = "",
     },

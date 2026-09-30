@@ -256,7 +256,7 @@ jobs:
             library_test=$(cargo test --manifest-path /home/vm/skills-core/Cargo.toml --lib --all-features --locked --no-run --message-format=json |
               jq -r '\''select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'\'')
             test -x "$library_test"
-            for bead_case in 1 2 3; do
+            for bead_case in 1 2 3 4; do
               sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
                 LOUISELM_TEST_LUA_ROOT=/home/vm \
                 LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \

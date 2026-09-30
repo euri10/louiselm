@@ -24,6 +24,8 @@ mod beads;
 mod dependencies;
 #[path = "control/inspection.rs"]
 mod inspection;
+#[path = "control/promotion.rs"]
+mod promotion;
 #[path = "control/provider_extension.rs"]
 mod provider_extension;
 #[path = "control/run_authorization.rs"]
@@ -58,6 +60,9 @@ fn main() -> ExitCode {
     }
     if collected.first().is_some_and(|verb| verb == "verification") {
         return ExitCode::from(verification::cli(&collected[1..]));
+    }
+    if collected.first().is_some_and(|verb| verb == "promotion") {
+        return ExitCode::from(promotion::cli(&collected[1..]));
     }
     if collected
         .first()

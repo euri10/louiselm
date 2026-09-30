@@ -15,6 +15,28 @@ use std::{
     path::Path,
 };
 
+/// Inspects a clean dedicated Run worktree and returns its exact HEAD.
+/// # Errors
+/// Refuses a dirty index, untracked bytes, wrong branch or unsafe source tree.
+pub fn clean_run_head(path: &Path, run_id: &str) -> Result<String, WorkspaceError> {
+    super::git::clean_run_head(path, run_id)
+}
+
+/// Commits the exact promoted inventory on `run/<run_id>` with a Bead reference.
+/// This is a blocking operator action. A failed Git step leaves the promoted bytes
+/// visible for inspection; the caller must not advance the Run.
+/// # Errors
+/// Refuses a changed branch/index/tree, invalid identity or failed Git operation.
+pub fn commit_run(
+    path: &Path,
+    run_id: &str,
+    bead_id: &str,
+    expected_head: &str,
+    result_digest: &str,
+) -> Result<String, WorkspaceError> {
+    super::git::commit_run(path, run_id, bead_id, expected_head, result_digest)
+}
+
 /// Identity of the opened operator destination, never an arbitrary privileged path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

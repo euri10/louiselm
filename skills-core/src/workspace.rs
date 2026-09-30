@@ -443,3 +443,13 @@ fn load_snapshot(
     }
     Ok((record, files))
 }
+
+/// Validates a frozen snapshot and returns the exact source commit it captured.
+/// This blocks on filesystem I/O; callers must protect the snapshot store.
+/// # Errors
+/// Refuses changed, malformed or substituted snapshot bytes.
+pub fn snapshot_base_commit(snapshot: &Path, expected: &Digest) -> Result<String, WorkspaceError> {
+    let snapshot = fs::canonicalize(snapshot)?;
+    let (record, _) = load_snapshot(&snapshot, expected)?;
+    Ok(record.base_commit)
+}

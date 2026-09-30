@@ -89,13 +89,17 @@ pub(in crate::launch_supervisor) fn stage_manifest(
     config: &LauncherConfig,
     inputs: &SessionInputManifest,
 ) {
+    stage_manifest_with_snapshot(config, inputs, &snapshot_bytes());
+}
+
+pub(in crate::launch_supervisor) fn stage_manifest_with_snapshot(
+    config: &LauncherConfig,
+    inputs: &SessionInputManifest,
+    snapshot: &[u8],
+) {
     let staging = tempfile::tempdir().unwrap();
     fs::create_dir_all(staging.path().join("snapshot/files")).unwrap();
-    fs::write(
-        staging.path().join("snapshot/snapshot.json"),
-        snapshot_bytes(),
-    )
-    .unwrap();
+    fs::write(staging.path().join("snapshot/snapshot.json"), snapshot).unwrap();
     fs::create_dir(staging.path().join("cache")).unwrap();
     assert_eq!(
         CacheBase::capture(&staging.path().join("cache"))

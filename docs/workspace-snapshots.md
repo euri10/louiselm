@@ -477,3 +477,15 @@ preview without effects, changed selections and destination refusal, replay,
 quarantine, failed/timed-out verification and preservation of a host-hook sentinel.
 This does not activate the user-visible installed Verified cutover, which remains
 `louiselm-d6fv.9`.
+
+For sequential Bead Runs, `louiselm-control promotion preview --json` and
+`promotion commit --json` use the installed operator socket to hand an
+authenticated stream to the original producer worker. The preview operation
+returns changed paths, an exact approval digest and the selection with its
+four-minute expiry. It closes without any checkout effect. Commit opens a fresh
+stream, rechecks the exact selection and digest, then applies the existing
+promotion protocol. LouiseLM writes a Git commit on `run/<run-id>` only after
+the broker reports complete application. The checkout must start clean, with
+no staged, untracked or ignored source bytes; the next snapshot reads the new
+commit. An interrupted promotion or failed Git commit stops the Run for
+journal and worktree inspection rather than repeating effects.

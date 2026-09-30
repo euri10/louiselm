@@ -14,6 +14,14 @@ local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
   envelope = case.envelope,
   bead_ids = { case.bead_id },
+  worktree = index == 4 and { path = case.worktree, journal_parent = case.journal_parent, head = case.base_commit }
+    or nil,
+  on_promotion = index == 4 and function(preview, decide)
+    assert(preview.schema == "louiselm.run-promotion-preview/1")
+    assert(preview.selection.expected_head == case.base_commit)
+    assert(nvim.deep_equal(preview.changes.added, { "accepted.txt" }))
+    decide(true)
+  end or nil,
   system = function(argv, options, done)
     if argv[1] == "louiselm-capture" then
       nvim.schedule(function()
@@ -23,12 +31,18 @@ local controller = assert(Workflow.new_bead_executor({
     end
     return nvim.system(argv, options, done)
   end,
-  prepare = function(id, done)
+  prepare = function(id, done, expected_head)
     assert(id == case.bead_id)
+    if index == 4 then
+      assert(expected_head == case.base_commit)
+    end
     nvim.schedule(function()
       done({
         grant = case.grant,
-        prompt = index == 3 and "unapprovable" or "Complete this offline fixture turn.",
+        base_commit = index == 4 and case.base_commit or nil,
+        prompt = index == 3 and "unapprovable"
+          or index == 4 and "promote-fixture"
+          or "Complete this offline fixture turn.",
         verification = {
           snapshot = case.snapshot,
           snapshot_digest = case.snapshot_digest,
@@ -59,12 +73,14 @@ local controller = assert(Workflow.new_bead_executor({
       assert(result.verification and result.verification.state == "completed")
       local step = result.verification.detail.execution.steps[1]
       assert(step.state == "completed")
-      assert(step.exit_code == (index == 1 and 0 or 7))
-      assert(result.verification_passed == (index == 1))
+      assert(step.exit_code == (index == 2 and 7 or 0))
+      assert(result.verification_passed == (index ~= 2))
       continue(true)
     end
     observed = true
-    assert(result.session:dispose())
+    if index ~= 4 then
+      assert(result.session:dispose())
+    end
   end,
 }))
 assert(controller:start(function(ok, err, summary)
@@ -72,8 +88,13 @@ assert(controller:start(function(ok, err, summary)
     failure = err or "unexpected Run outcome"
   end
   if summary then
-    assert(#summary.accepted == (index == 1 and 1 or 0))
-    assert(#summary.failed == (index == 1 and 0 or 1))
+    if
+      #summary.accepted ~= ((index == 1 or index == 4) and 1 or 0)
+      or #summary.failed ~= ((index == 1 or index == 4) and 0 or 1)
+      or (index == 4 and not (summary.commits[case.bead_id] or ""):match("^[0-9a-f]+$"))
+    then
+      failure = failure or nvim.inspect({ err = err, summary = summary })
+    end
   end
   completed = true
 end))

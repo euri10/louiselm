@@ -29,6 +29,8 @@ use std::{
 
 /// Fixed installed operator endpoint, distinct from the supervisor rendezvous.
 pub const SOCKET: &str = "/run/louiselm-operator/inspect.sock";
+/// Direct operator-to-producer stream for reviewed workspace promotion.
+pub const PROMOTION_SOCKET: &str = "/run/louiselm-operator/promotion.sock";
 /// Total budget for one authenticated inspection exchange.
 pub const TIMEOUT: Duration = Duration::from_secs(35);
 /// Upper bound for an exact installed verification exchange.
@@ -93,6 +95,8 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-promotion/1")]
+    Promotion { session_id: String },
     #[serde(rename = "louiselm.operator-verification/1")]
     Verification {
         request: Box<VerificationControlRequest>,
@@ -137,6 +141,32 @@ enum Request {
     },
 }
 
+/// Opens an authenticated stream that the broker hands to the producing Session.
+/// The caller then uses `PromotionClient` on this same stream; no Agent handles it.
+/// # Errors
+/// Refuses an untrusted endpoint, invalid Session or unavailable broker.
+pub fn promotion_stream(
+    path: &Path,
+    broker_uid: u32,
+    session_id: &str,
+) -> Result<UnixStream, InspectError> {
+    validate_subject(session_id)?;
+    let deadline = Instant::now() + TIMEOUT;
+    let mut stream = wire::connect(path).map_err(|_| InspectError::BrokerUnavailable)?;
+    if peer_uid(&stream)? != broker_uid {
+        return Err(InspectError::AuthenticationRefused);
+    }
+    if wire::read(&mut stream, deadline).map_err(|_| InspectError::BrokerUnavailable)? != READY {
+        return Err(InspectError::BrokerUnavailable);
+    }
+    let request = Request::Promotion {
+        session_id: session_id.to_owned(),
+    };
+    let bytes = serde_json::to_vec(&request).map_err(|_| InspectError::InvalidRequest)?;
+    wire::write(&mut stream, &bytes, deadline).map_err(|_| InspectError::BrokerUnavailable)?;
+    Ok(stream)
+}
+
 /// Operator-owned verification operations. Session channel operations are routed
 /// to the one broker worker that owns that channel.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -150,6 +180,8 @@ pub enum VerificationControlRequest {
         snapshot: PathBuf,
         /// Exact baseline snapshot digest.
         snapshot_digest: String,
+        /// When set, the snapshot must derive from this exact Run branch HEAD.
+        expected_base_commit: Option<String>,
         /// Selected fixed plan file.
         plan: PathBuf,
         /// Exact plan digest approved in the Run envelope.
@@ -837,6 +869,41 @@ pub struct OperatorServer {
 }
 
 impl OperatorServer {
+    /// Hands one kernel-authenticated operator stream to the producing worker.
+    /// The worker owns the stream and its complete preview/commit transaction.
+    /// # Errors
+    /// Returns listener failure; malformed or disconnected clients are isolated.
+    pub fn serve_promotion_once(
+        &self,
+        handoff: impl FnOnce(&str, UnixStream) -> Result<(), InspectError>,
+    ) -> io::Result<()> {
+        let (mut stream, _) = self.listener.accept()?;
+        let deadline = Instant::now() + TIMEOUT;
+        let result = (|| {
+            if peer_uid(&stream)? != self.operator_uid {
+                return Err(InspectError::AuthenticationRefused);
+            }
+            wire::write(&mut stream, READY, deadline).map_err(|_| InspectError::InvalidRequest)?;
+            let bytes =
+                wire::read(&mut stream, deadline).map_err(|_| InspectError::InvalidRequest)?;
+            let Request::Promotion { session_id } =
+                serde_json::from_slice(&bytes).map_err(|_| InspectError::InvalidRequest)?
+            else {
+                return Err(InspectError::InvalidRequest);
+            };
+            validate_subject(&session_id)?;
+            handoff(
+                &session_id,
+                stream
+                    .try_clone()
+                    .map_err(|_| InspectError::StatusUnavailable)?,
+            )
+        })();
+        if let Err(error) = result {
+            let _ = wire::write(&mut stream, &error.canonical_bytes(), deadline);
+        }
+        Ok(())
+    }
     /// Binds below an existing directory owned by this broker and not writable
     /// by other identities. Under the caller's singleton state lock, a refused
     /// stale socket may be removed; live listeners and foreign paths are preserved.
@@ -945,6 +1012,7 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::Promotion { .. } => Err(InspectError::InvalidRequest),
                 Request::Verification { request } => {
                     serde_json::to_vec(&verification(&request, deadline)?)
                         .map_err(|_| InspectError::StatusUnavailable)
@@ -1041,5 +1109,37 @@ impl Drop for OperatorServer {
             // failure cannot authorize a peer or permit concurrent state ownership.
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+#[cfg(test)]
+mod promotion_tests {
+    #![allow(clippy::unwrap_used, reason = "Fixture failures abort tests.")]
+
+    use super::*;
+    use std::{os::unix::fs::PermissionsExt, thread};
+
+    #[test]
+    fn authenticated_promotion_stream_reaches_exact_session_worker() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("promotion.sock");
+        let uid = rustix::process::geteuid().as_raw();
+        let server = OperatorServer::bind(&path, uid).unwrap();
+        let worker = thread::spawn(move || {
+            server
+                .serve_promotion_once(|id, mut stream| {
+                    assert_eq!(id, "worker-one");
+                    wire::write(&mut stream, b"exact-preview", Instant::now() + TIMEOUT)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                })
+                .unwrap();
+        });
+        let mut stream = promotion_stream(&path, uid, "worker-one").unwrap();
+        assert_eq!(
+            wire::read(&mut stream, Instant::now() + TIMEOUT).unwrap(),
+            b"exact-preview"
+        );
+        worker.join().unwrap();
     }
 }

@@ -1,6 +1,15 @@
 //! Installed broker/launcher and real Lua Sessions; offline measured ACP peer.
 use super::*;
 
+fn own(path: &Path, uid: u32) {
+    if path.is_dir() {
+        for entry in fs::read_dir(path).unwrap() {
+            own(&entry.unwrap().path(), uid);
+        }
+    }
+    chown(path, Some(uid), Some(uid)).unwrap();
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -26,6 +35,70 @@ fn privileged_installed_lua_bead_executor() {
     let (program, tracker, bead_id) = beads::provision(root.path());
     let manifest = workspace::fixture_manifest();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let operator = root.path().join("operator");
+    fs::create_dir(&operator).unwrap();
+    chown(
+        &operator,
+        Some(config.operator_uid),
+        Some(config.operator_uid),
+    )
+    .unwrap();
+    let checkout = operator.join("run");
+    fs::create_dir(&checkout).unwrap();
+    for arguments in [
+        vec!["init", "--quiet", "--initial-branch=run/lua-run-4"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "Base",
+        ],
+    ] {
+        assert!(
+            Command::new("/usr/bin/git")
+                .args(arguments)
+                .current_dir(&checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let promotion_snapshot = operator.join("snapshot-4");
+    let promotion_preview = crate::workspace::prepare(&checkout, &[], &promotion_snapshot).unwrap();
+    let mut promotion_manifest = manifest.clone();
+    promotion_manifest.source_snapshot_digest = promotion_preview.snapshot_digest.clone();
+    promotion_manifest.source_base_digest = promotion_preview.base_digest.clone();
+    workspace::stage_manifest_with_snapshot(
+        &config,
+        &promotion_manifest,
+        &fs::read(promotion_snapshot.join("snapshot.json")).unwrap(),
+    );
+    let journal = operator.join("journals");
+    fs::create_dir(&journal).unwrap();
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+    own(&checkout, config.operator_uid);
+    own(&promotion_snapshot, config.operator_uid);
+    for directory in [&promotion_snapshot, &promotion_snapshot.join("files")] {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::set_permissions(
+        promotion_snapshot.join("snapshot.json"),
+        fs::Permissions::from_mode(0o444),
+    )
+    .unwrap();
+    chown(
+        &journal,
+        Some(config.operator_uid),
+        Some(config.operator_uid),
+    )
+    .unwrap();
     fs::create_dir(SYSTEM_REGISTRY_ROOT).unwrap();
     for name in ["agents.json", "runtimes.json", "envelopes.json"] {
         fs::copy(
@@ -59,10 +132,16 @@ fn privileged_installed_lua_bead_executor() {
     )
     .unwrap();
     let snapshot_digest = Digest::of(snapshot_bytes.as_bytes()).to_string();
-    for index in 1..=3 {
+    for index in 1..=4 {
         let mut launch = named_request(&format!("lua-worker-{index}"));
         launch.run_id = format!("lua-run-{index}");
-        launch.session_input_manifest_id = manifest.digest().to_string();
+        launch.session_input_manifest_id = if index == 4 {
+            &promotion_manifest
+        } else {
+            &manifest
+        }
+        .digest()
+        .to_string();
         let grant = GrantRequest {
             request: launch,
             controller_uid: config.operator_uid,
@@ -85,7 +164,7 @@ fn privileged_installed_lua_bead_executor() {
         };
         let mut verifier_launch = named_request(&format!("lua-verifier-{index}"));
         verifier_launch.run_id = grant.request.run_id.clone();
-        verifier_launch.session_input_manifest_id = manifest.digest().to_string();
+        verifier_launch.session_input_manifest_id = grant.request.session_input_manifest_id.clone();
         let verifier_grant = GrantRequest {
             request: verifier_launch,
             controller_uid: config.operator_uid,
@@ -117,15 +196,17 @@ fn privileged_installed_lua_bead_executor() {
         envelope.max_sessions = 2;
         cases.push(
             serde_json::json!({"bead_id":bead_id,"envelope":envelope,"grant":grant,
-            "verifier_grant":verifier_grant,"snapshot":snapshot,
-            "snapshot_digest":snapshot_digest,"plan":plan,"plan_digest":plan_digest}),
+            "verifier_grant":verifier_grant,"snapshot":if index == 4 { &promotion_snapshot } else { &snapshot },
+            "snapshot_digest":if index == 4 { &promotion_preview.snapshot_digest } else { &snapshot_digest },
+            "base_commit":if index == 4 { Some(&promotion_preview.base_commit) } else { None },
+            "worktree":if index == 4 { Some(&checkout) } else { None },
+            "journal_parent":if index == 4 { Some(&journal) } else { None },
+            "plan":plan,"plan_digest":plan_digest}),
         );
     }
     let input = root.path().join("controller.json");
     write_json(&input, &serde_json::json!({"cases":cases}));
-    let state = root.path().join("operator");
-    fs::create_dir(&state).unwrap();
-    chown(&state, Some(config.operator_uid), Some(config.operator_uid)).unwrap();
+    let state = operator;
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
@@ -134,7 +215,7 @@ fn privileged_installed_lua_bead_executor() {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=3).contains(&index));
+    assert!((1..=4).contains(&index));
     let status = Command::new("/usr/bin/setpriv")
         .args([
             "--reuid",
@@ -164,6 +245,37 @@ fn privileged_installed_lua_bead_executor() {
         status.success(),
         "installed Lua Bead executor case {index} failed"
     );
+    if index == 4 {
+        let git = |arguments: &[&str]| {
+            let output = Command::new("/usr/bin/setpriv")
+                .args([
+                    "--reuid",
+                    &config.operator_uid.to_string(),
+                    "--regid",
+                    &config.operator_uid.to_string(),
+                    "--clear-groups",
+                ])
+                .arg("/usr/bin/git")
+                .args(arguments)
+                .current_dir(&checkout)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "operator Git readback failed: {output:?}"
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let head = git(&["rev-parse", "HEAD"]);
+        assert_ne!(head, promotion_preview.base_commit);
+        assert_eq!(git(&["rev-parse", "HEAD^"]), promotion_preview.base_commit);
+        assert_eq!(git(&["status", "--porcelain"]), "");
+        assert_eq!(
+            fs::read(checkout.join("accepted.txt")).unwrap(),
+            b"accepted Bead output\n"
+        );
+        assert!(git(&["show", "-s", "--format=%B", &head]).contains(&format!("Refs {bead_id}")));
+    }
     if index > 1 && std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let read = |arguments: &[&str]| {
             let output = Command::new("/usr/bin/setpriv")

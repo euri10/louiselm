@@ -1,7 +1,10 @@
 //! Deterministic ACP peer for the installed Lua-controller gate, never a vendor wrapper.
 
 use serde_json::{Value, json};
-use std::io::{self, BufRead, Write};
+use std::{
+    fs,
+    io::{self, BufRead, Write},
+};
 
 fn send(output: &mut impl Write, value: &Value) -> io::Result<()> {
     serde_json::to_writer(&mut *output, value)?;
@@ -11,6 +14,7 @@ fn send(output: &mut impl Write, value: &Value) -> io::Result<()> {
 
 pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()> {
     let mut pending = None;
+    let mut write_promoted_file = false;
     for line in input.lines() {
         let message: Value = serde_json::from_str(&line?)?;
         let id = message["id"].clone();
@@ -18,6 +22,7 @@ pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()>
             Some("initialize") => json!({"protocolVersion":1,"agentCapabilities":{}}),
             Some("session/new") => json!({"sessionId":"fixture-acp"}),
             Some("session/prompt") => {
+                write_promoted_file = message["params"]["prompt"][0]["text"] == "promote-fixture";
                 let options = if message["params"]["prompt"][0]["text"] == "unapprovable" {
                     json!([{"optionId":"deny","kind":"reject_once"}])
                 } else {
@@ -46,6 +51,10 @@ pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()>
             None if id == "permission" => {
                 if message["result"]["outcome"]["optionId"] != "allow" {
                     return Err(io::Error::other("fixture permission was not approved"));
+                }
+                if write_promoted_file {
+                    fs::write("accepted.txt", b"accepted Bead output\n")?;
+                    write_promoted_file = false;
                 }
                 let id = pending
                     .take()

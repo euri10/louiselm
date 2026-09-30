@@ -16,6 +16,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     io::{self, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::net::UnixStream,
     path::Path,
     sync::{
         Arc, Mutex,
@@ -137,6 +138,7 @@ struct Query {
 }
 
 enum WorkerQuery {
+    Promotion(UnixStream),
     Verification {
         expires: Instant,
         request: Box<operator::VerificationControlRequest>,
@@ -166,6 +168,42 @@ pub(super) struct Queries {
 }
 
 impl Queries {
+    fn start_promotion_listener(queries: &Arc<Self>, operator_uid: u32) -> Result<(), BrokerError> {
+        let promotion = OperatorServer::bind(Path::new(operator::PROMOTION_SOCKET), operator_uid)
+            .map_err(BrokerError::Storage)?;
+        let owner = Arc::clone(queries);
+        thread::Builder::new()
+            .name("louiselm-operator-promotion".into())
+            .spawn(move || {
+                loop {
+                    if let Err(error) =
+                        promotion.serve_promotion_once(|id, stream| owner.promotion(id, stream))
+                    {
+                        if error.kind() == io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        eprintln!("louiselm-control: promotion listener unavailable");
+                        break;
+                    }
+                }
+            })
+            .map_err(|_| BrokerError::Transport(TransportError::WorkerUnavailable))?;
+        Ok(())
+    }
+
+    fn promotion(&self, id: &str, stream: UnixStream) -> Result<(), InspectError> {
+        let sender = self
+            .sessions
+            .lock()
+            .map_err(|_| InspectError::StatusUnavailable)?
+            .get(id)
+            .cloned()
+            .ok_or(InspectError::UnknownSession)?;
+        sender
+            .try_send(WorkerQuery::Promotion(stream))
+            .map_err(|_| InspectError::StatusUnavailable)
+    }
+
     fn verification(
         &self,
         broker: &InstalledBroker,
@@ -180,6 +218,7 @@ impl Queries {
                 input_id,
                 snapshot,
                 snapshot_digest,
+                expected_base_commit,
                 plan,
                 plan_digest,
             } => {
@@ -187,6 +226,16 @@ impl Queries {
                     .map_err(|_| InspectError::InvalidRequest)?;
                 let plan_digest = louiselm_skills::Digest::parse(plan_digest)
                     .map_err(|_| InspectError::InvalidRequest)?;
+                if let Some(expected) = expected_base_commit {
+                    let actual = louiselm_skills::workspace::snapshot_base_commit(
+                        snapshot,
+                        &snapshot_digest,
+                    )
+                    .map_err(|_| InspectError::InvalidRequest)?;
+                    if actual != *expected {
+                        return Err(InspectError::InvalidRequest);
+                    }
+                }
                 broker
                     .stage_verification(input_id, snapshot, &snapshot_digest, plan, &plan_digest)
                     .map(|digest| Response::Staged {
@@ -284,6 +333,7 @@ impl Queries {
             sessions: Mutex::new(HashMap::new()),
         });
         let owner = Arc::clone(&queries);
+        Self::start_promotion_listener(&queries, config.operator_uid)?;
         thread::Builder::new()
             .name("louiselm-operator-inspect".into())
             .spawn(move || {
@@ -472,6 +522,10 @@ impl Queries {
     /// Answers one operator query on the Session's own worker turn.
     fn answer(&self, broker: &InstalledBroker, session: &mut BrokerSession, query: WorkerQuery) {
         match query {
+            WorkerQuery::Promotion(stream) => {
+                // The original authenticated worker owns the full operator transaction.
+                let _ = broker.serve_promotion(session, stream);
+            }
             WorkerQuery::Verification {
                 expires,
                 request,

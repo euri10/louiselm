@@ -26,9 +26,13 @@ local function fixture()
       bead_scope = { issue_ids = { "b-1", "b-2" }, max_mutations = 2 },
     },
     bead_ids = { "b-1", "b-2" },
-    prepare = function(id, done)
+    prepare = function(id, done, expected_head)
       MiniTest.expect.equality(nvim.in_fast_event(), false)
       f.prepared[#f.prepared + 1] = id
+      if expected_head then
+        f.prepared_heads = f.prepared_heads or {}
+        f.prepared_heads[#f.prepared_heads + 1] = expected_head
+      end
       local index = #f.prepared
       local grant = {
         request = {
@@ -59,6 +63,7 @@ local function fixture()
         later(done, {
           grant = grant,
           prompt = "Work on " .. id,
+          base_commit = f.snapshot_wrong and string.rep("f", 40) or expected_head,
           verification = {
             snapshot = "/fixture/snapshot",
             snapshot_digest = DIGEST,
@@ -84,6 +89,8 @@ local function fixture()
       if argv[2] == "verification" then
         local input = nvim.json.decode(options.stdin)
         if input.kind == "stage" then
+          f.stage_requests = f.stage_requests or {}
+          f.stage_requests[#f.stage_requests + 1] = input
           response = { kind = "staged", input_digest = DIGEST }
         elseif input.kind == "park" then
           response = { kind = "parked", head = { sequence = 2, digest = DIGEST } }
@@ -128,6 +135,29 @@ local function fixture()
             digest = DIGEST,
           },
         }
+      elseif argv[2] == "promotion" then
+        local input = nvim.json.decode(options.stdin)
+        if argv[3] == "preview" then
+          f.preview_calls = (f.preview_calls or 0) + 1
+          input.selection.expires_at_ms = 9999999999999
+          response = {
+            schema = "louiselm.run-promotion-preview/1",
+            selection = input.selection,
+            changes = { added = { "file" }, modified = {}, deleted = {} },
+            approval_digest = DIGEST,
+          }
+        else
+          f.commit_calls = (f.commit_calls or 0) + 1
+          if f.fail_promotion_commit then
+            later(done, { code = 1, stdout = "", stderr = "" })
+            return { kill = function() end }
+          end
+          response = {
+            schema = "louiselm.run-promotion-commit/1",
+            bead_id = input.selection.bead_id,
+            commit = string.rep("b", 40),
+          }
+        end
       elseif argv[2] == "run" then
         local input = nvim.json.decode(options.stdin)
         if input.kind == "bead_failure" then
@@ -535,6 +565,118 @@ T["spent verification with a lost reply stays unknown and is not replayed"] = fu
     return f.finished == 1
   end)
   MiniTest.expect.equality(f.error, "Run verification outcome is uncertain")
+end
+
+T["accepted promotion commits before the next Bead snapshots the new HEAD"] = function()
+  local f = fixture()
+  local first_head = string.rep("a", 40)
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = first_head }
+  f.options.on_promotion = function(preview, decide)
+    f.preview = preview
+    f.decide = decide
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.decide ~= nil
+  end)
+  MiniTest.expect.equality(f.commit_calls, nil)
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(f.preview.changes.added, { "file" })
+  f.decide(true)
+  wait(function()
+    return f.workers[2] and f.workers[2].complete
+  end)
+  MiniTest.expect.equality(f.commit_calls, 1)
+  MiniTest.expect.equality(f.workers[1].disposed, 1)
+  MiniTest.expect.equality(f.stage_requests[1].expected_base_commit, first_head)
+  MiniTest.expect.equality(f.stage_requests[2].expected_base_commit, string.rep("b", 40))
+  MiniTest.expect.equality(f.prepared_heads, { first_head, string.rep("b", 40) })
+  f.decide = nil
+  f.workers[2].complete()
+  wait(function()
+    return #f.handoffs == 2
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.decide ~= nil
+  end)
+  f.decide(true)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.summary.branch, "run/" .. f.options.envelope.run_id)
+  MiniTest.expect.equality(f.summary.commits["b-1"], string.rep("b", 40))
+  MiniTest.expect.equality(f.summary.text:find("Commit b-1: " .. string.rep("b", 40), 1, true) ~= nil, true)
+end
+
+T["rejected promotion does not commit and a stale next snapshot refuses"] = function()
+  local f = fixture()
+  local head = string.rep("a", 40)
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = head }
+  f.options.on_promotion = function(_, decide)
+    f.decide = decide
+  end
+  f.snapshot_wrong = true
+  f:start()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "next Bead snapshot does not match the Run branch HEAD")
+  MiniTest.expect.equality(#f.workers, 0)
+  local rejected = fixture()
+  rejected.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = head }
+  rejected.options.on_promotion = function(_, decide)
+    rejected.decide = decide
+  end
+  rejected:start()
+  wait(function()
+    return rejected.workers[1] and rejected.workers[1].complete
+  end)
+  rejected.workers[1].complete()
+  wait(function()
+    return rejected.verify_done ~= nil
+  end)
+  rejected.verify_done(true)
+  wait(function()
+    return rejected.decide ~= nil
+  end)
+  rejected.decide(false)
+  wait(function()
+    return #rejected.prepared == 2
+  end)
+  MiniTest.expect.equality(rejected.commit_calls, nil)
+  MiniTest.expect.equality(rejected.prepared_heads, { head, head })
+end
+
+T["uncertain promotion commit stops the Run before another snapshot"] = function()
+  local f = fixture()
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = function(_, decide)
+    decide(true)
+  end
+  f.fail_promotion_commit = true
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "Run promotion commit refused; inspect its journal and worktree")
+  MiniTest.expect.equality(f.prepared, { "b-1" })
 end
 
 return T
