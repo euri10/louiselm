@@ -243,8 +243,11 @@ jobs:
           version: stable
       - name: Run the installed Lua controller gate
         run: |
-          git archive HEAD lua tests/workflow/installed_beads.lua scripts/install-broker-beads.py scripts/install-broker-attention.py |
+          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua scripts/install-broker-beads.py scripts/install-broker-attention.py |
             ./scripts/launcher-vm exec tar -x -C /home/vm
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          cargo +"$RUST_VERSION" build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
+          ./scripts/launcher-vm put capture-service/target/debug/louiselm-capture /var/tmp/louiselm-test-capture
           nvim_root=$(nvim --headless --noplugin -u NONE -c 'lua io.write(vim.fs.dirname(vim.fs.dirname(vim.v.progpath)))' -c 'qa!')
           test -x "$nvim_root/bin/nvim" && test -d "$nvim_root/share/nvim/runtime"
           ./scripts/launcher-vm exec mkdir -p /var/tmp/louiselm-test-nvim
@@ -256,10 +259,11 @@ jobs:
             library_test=$(cargo test --manifest-path /home/vm/skills-core/Cargo.toml --lib --all-features --locked --no-run --message-format=json |
               jq -r '\''select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'\'')
             test -x "$library_test"
-            for bead_case in 1 2 3 4; do
+            for bead_case in 1 2 3 4 5; do
               sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
                 LOUISELM_TEST_LUA_ROOT=/home/vm \
                 LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+                LOUISELM_TEST_CAPTURE=/var/tmp/louiselm-test-capture \
                 LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 120 \
                 unshare --mount --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture'\'' bash "$library_test"
             done

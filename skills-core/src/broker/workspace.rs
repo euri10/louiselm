@@ -41,6 +41,26 @@ impl BrokerService {
 }
 
 impl InstalledBroker {
+    /// Validates the operator's current Run HEAD before immutable input staging.
+    /// This copies only exact manifest-bound bytes and grants no launch authority.
+    /// # Errors
+    /// Refuses malformed requests, stale source HEAD, changed/unsafe inputs,
+    /// duplicate publication and storage failure.
+    pub fn stage_operator_launch_inputs(
+        &self,
+        request: &super::operator::LaunchInputsRequest,
+    ) -> Result<super::operator::LaunchInputBinding, BrokerError> {
+        request.validate().map_err(|_| BrokerError::InvalidGrant)?;
+        let digest = crate::Digest::parse(&request.manifest.source_snapshot_digest)
+            .map_err(|_| BrokerError::InvalidGrant)?;
+        let actual = crate::workspace::snapshot_base_commit(&request.snapshot, &digest)?;
+        if actual != request.expected_base_commit {
+            return Err(BrokerError::InvalidGrant);
+        }
+        self.stage_launch_inputs(&request.manifest, &request.snapshot, &request.cache)
+            .map(super::operator::LaunchInputBinding::from_preview)
+    }
+
     /// Stages a manifest and exact source/cache bytes on the installed broker worker.
     /// This grants no launch authority; the operator reviews the returned preview
     /// before authorizing the exact request through the existing launch boundary.

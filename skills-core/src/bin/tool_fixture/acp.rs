@@ -14,7 +14,7 @@ fn send(output: &mut impl Write, value: &Value) -> io::Result<()> {
 
 pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()> {
     let mut pending = None;
-    let mut write_promoted_file = false;
+    let mut promoted_file = None;
     for line in input.lines() {
         let message: Value = serde_json::from_str(&line?)?;
         let id = message["id"].clone();
@@ -22,7 +22,13 @@ pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()>
             Some("initialize") => json!({"protocolVersion":1,"agentCapabilities":{}}),
             Some("session/new") => json!({"sessionId":"fixture-acp"}),
             Some("session/prompt") => {
-                write_promoted_file = message["params"]["prompt"][0]["text"] == "promote-fixture";
+                promoted_file = match message["params"]["prompt"][0]["text"].as_str() {
+                    Some("promote-fixture") => Some("accepted.txt"),
+                    Some("promote-fixture-1") => Some("accepted-1.txt"),
+                    Some("promote-fixture-2") => Some("accepted-2.txt"),
+                    Some("promote-fixture-3") => Some("accepted-3.txt"),
+                    _ => None,
+                };
                 let options = if message["params"]["prompt"][0]["text"] == "unapprovable" {
                     json!([{"optionId":"deny","kind":"reject_once"}])
                 } else {
@@ -52,9 +58,8 @@ pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()>
                 if message["result"]["outcome"]["optionId"] != "allow" {
                     return Err(io::Error::other("fixture permission was not approved"));
                 }
-                if write_promoted_file {
-                    fs::write("accepted.txt", b"accepted Bead output\n")?;
-                    write_promoted_file = false;
+                if let Some(file) = promoted_file.take() {
+                    fs::write(file, b"accepted Bead output\n")?;
                 }
                 let id = pending
                     .take()

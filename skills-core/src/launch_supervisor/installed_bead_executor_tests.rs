@@ -21,6 +21,11 @@ fn privileged_installed_lua_bead_executor() {
         return;
     }
     assert!(rustix::process::geteuid().is_root());
+    let index: usize = std::env::var("LOUISELM_BEAD_EXECUTOR_CASE")
+        .expect("explicit installed case")
+        .parse()
+        .unwrap();
+    assert!((1..=5).contains(&index));
     let root = tempfile::Builder::new()
         .prefix("louiselm-lua-beads-")
         .tempdir_in("/var/lib")
@@ -75,16 +80,14 @@ fn privileged_installed_lua_bead_executor() {
     let mut promotion_manifest = manifest.clone();
     promotion_manifest.source_snapshot_digest = promotion_preview.snapshot_digest.clone();
     promotion_manifest.source_base_digest = promotion_preview.base_digest.clone();
-    workspace::stage_manifest_with_snapshot(
-        &config,
-        &promotion_manifest,
-        &fs::read(promotion_snapshot.join("snapshot.json")).unwrap(),
-    );
+    let promotion_cache = operator.join("cache-4");
+    fs::create_dir(&promotion_cache).unwrap();
     let journal = operator.join("journals");
     fs::create_dir(&journal).unwrap();
     fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
     own(&checkout, config.operator_uid);
     own(&promotion_snapshot, config.operator_uid);
+    own(&promotion_cache, config.operator_uid);
     for directory in [&promotion_snapshot, &promotion_snapshot.join("files")] {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -200,30 +203,47 @@ fn privileged_installed_lua_bead_executor() {
             "snapshot_digest":if index == 4 { &promotion_preview.snapshot_digest } else { &snapshot_digest },
             "base_commit":if index == 4 { Some(&promotion_preview.base_commit) } else { None },
             "worktree":if index == 4 { Some(&checkout) } else { None },
+            "stage_inputs":if index == 4 { Some(crate::broker::operator::LaunchInputsRequest {
+                manifest: Box::new(promotion_manifest.clone()), snapshot: promotion_snapshot.clone(),
+                cache: promotion_cache.clone(), expected_base_commit: promotion_preview.base_commit.clone(),
+            }) } else { None },
             "journal_parent":if index == 4 { Some(&journal) } else { None },
             "plan":plan,"plan_digest":plan_digest}),
         );
     }
     let input = root.path().join("controller.json");
-    write_json(&input, &serde_json::json!({"cases":cases}));
+    let selected = if index == 5 {
+        operator_selection(
+            &config,
+            &operator,
+            &checkout,
+            &journal,
+            &promotion_preview,
+            &promotion_manifest,
+            &cases[3],
+        )
+    } else {
+        serde_json::json!({"cases":cases})
+    };
+    write_json(&input, &selected);
     let state = operator;
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit stable Neovim executable");
-    let index: usize = std::env::var("LOUISELM_BEAD_EXECUTOR_CASE")
-        .expect("explicit installed case")
-        .parse()
-        .unwrap();
-    assert!((1..=4).contains(&index));
+    let groups = if index == 5 {
+        vec!["--groups".to_owned(), config.broker_uid.to_string()]
+    } else {
+        vec!["--clear-groups".to_owned()]
+    };
     let status = Command::new("/usr/bin/setpriv")
         .args([
             "--reuid",
             &config.operator_uid.to_string(),
             "--regid",
             &config.operator_uid.to_string(),
-            "--clear-groups",
         ])
+        .args(groups)
         .arg(&neovim)
         .args([
             "--headless",
@@ -231,12 +251,18 @@ fn privileged_installed_lua_bead_executor() {
             "-u",
             "NONE",
             "-l",
-            "tests/workflow/installed_beads.lua",
+            if index == 5 {
+                "tests/workflow/installed_operator.lua"
+            } else {
+                "tests/workflow/installed_beads.lua"
+            },
         ])
         .current_dir(&project)
         .env_clear()
         .env("PATH", "/usr/local/lib/louiselm/current/bin:/usr/bin:/bin")
         .env("XDG_STATE_HOME", &state)
+        .env("XDG_CONFIG_HOME", state.join("config"))
+        .env("XDG_DATA_HOME", state.join("data"))
         .env("LOUISELM_BEADS_FIXTURE", &input)
         .env("LOUISELM_BEADS_CASE", index.to_string())
         .status()
@@ -246,6 +272,22 @@ fn privileged_installed_lua_bead_executor() {
         "installed Lua Bead executor case {index} failed"
     );
     if index == 4 {
+        let staged = config
+            .broker_socket_path
+            .parent()
+            .unwrap()
+            .join("workspace-inputs")
+            .join(promotion_manifest.digest().hex());
+        let metadata = fs::metadata(&staged).unwrap();
+        assert_eq!(metadata.uid(), config.broker_uid);
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        let staged_preview =
+            crate::workspace::launch_inputs::inspect(&staged, &promotion_manifest.digest())
+                .unwrap();
+        assert_eq!(
+            staged_preview.source.base_commit,
+            promotion_preview.base_commit
+        );
         let git = |arguments: &[&str]| {
             let output = Command::new("/usr/bin/setpriv")
                 .args([
@@ -276,7 +318,7 @@ fn privileged_installed_lua_bead_executor() {
         );
         assert!(git(&["show", "-s", "--format=%B", &head]).contains(&format!("Refs {bead_id}")));
     }
-    if index > 1 && std::env::var_os("LOUISELM_TEST_BR").is_some() {
+    if (2..=3).contains(&index) && std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let read = |arguments: &[&str]| {
             let output = Command::new("/usr/bin/setpriv")
                 .args([
@@ -313,12 +355,89 @@ fn privileged_installed_lua_bead_executor() {
         let issue = read(&["show", &bead_id, "--json"]);
         assert_eq!(issue[0]["status"], "open");
     }
-    wait_terminal(&format!("lua-worker-{index}"));
-    if index <= 2 {
-        wait_terminal(&format!("lua-verifier-{index}"));
+    if index == 5 {
+        let run_id = selected["envelope"]["run_id"].as_str().unwrap();
+        for bead in 1..=3 {
+            wait_terminal(&format!("{run_id}-worker-{bead}"));
+            wait_terminal(&format!("{run_id}-verifier-{bead}"));
+        }
+    } else {
+        wait_terminal(&format!("lua-worker-{index}"));
+        if index <= 2 || index == 4 {
+            wait_terminal(&format!("lua-verifier-{index}"));
+        }
     }
     eprintln!("installed Lua workers and verifiers: durable terminal cleanup receipts");
     terminate(&mut daemon);
+}
+
+fn operator_selection(
+    config: &LauncherConfig,
+    operator: &Path,
+    checkout: &Path,
+    journal: &Path,
+    preview: &crate::workspace::SnapshotPreview,
+    manifest: &crate::session_manifest::SessionInputManifest,
+    case: &serde_json::Value,
+) -> serde_json::Value {
+    let capture = std::env::var_os("LOUISELM_TEST_CAPTURE").expect("explicit real capture CLI");
+    let destination = Path::new("/usr/local/lib/louiselm/current/bin/louiselm-capture");
+    fs::copy(capture, destination).unwrap();
+    fs::set_permissions(destination, fs::Permissions::from_mode(0o755)).unwrap();
+    // Failed fixtures may retain poisoned kernel cgroups beyond their private
+    // mount namespace. A new Run must never reuse those Session identities.
+    let run_id = fs::read_to_string("/proc/sys/kernel/random/uuid")
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert!(
+        Command::new("/usr/bin/setpriv")
+            .args([
+                "--reuid",
+                &config.operator_uid.to_string(),
+                "--regid",
+                &config.operator_uid.to_string(),
+                "--clear-groups",
+                "/usr/bin/git",
+                "branch",
+                "-m",
+                &format!("run/{run_id}"),
+            ])
+            .current_dir(checkout)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let snapshots = operator.join("shared-inputs");
+    let cache = operator.join("shared-cache");
+    for directory in [&snapshots, &cache] {
+        fs::create_dir(directory).unwrap();
+        chown(
+            directory,
+            Some(config.operator_uid),
+            Some(config.broker_uid),
+        )
+        .unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o750)).unwrap();
+    }
+    let mut envelope = case["envelope"].clone();
+    envelope["run_id"] = serde_json::json!(run_id);
+    envelope["max_sessions"] = serde_json::json!(6);
+    envelope["bead_scope"]["issue_ids"] =
+        serde_json::json!(["operator-1", "operator-2", "operator-3"]);
+    envelope["bead_scope"]["max_mutations"] = serde_json::json!(3);
+    envelope["provider_requests"]["models"] = serde_json::json!(["gpt-5.6-luna"]);
+    envelope["provider_requests"]["max_effort"] = serde_json::json!("high");
+    envelope["provider_requests"]["max_run_requests"] = serde_json::json!(6);
+    serde_json::json!({
+        "schema":"louiselm.operator.bead-run/1", "envelope":envelope,
+        "beads":[{"id":"operator-1","prompt":"promote-fixture-1"},
+            {"id":"operator-2","prompt":"promote-fixture-2"},
+            {"id":"operator-3","prompt":"promote-fixture-3"}],
+        "manifest":manifest, "cache":cache, "plan":case["plan"],
+        "snapshot_parent":snapshots, "input_group":config.broker_uid,
+        "worktree":{"path":checkout,"journal_parent":journal,"head":preview.base_commit},
+    })
 }
 
 fn wait_terminal(id: &str) {

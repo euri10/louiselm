@@ -55,6 +55,7 @@ fn operator_authorization_checks_peer_identity_and_exact_run_digest() {
         let worker = thread::spawn(move || {
             server
                 .serve_once(
+                    |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |request| {
                         let AuthorizationRequest::Run { envelope } = request else {
@@ -96,6 +97,7 @@ fn operator_authorization_checks_peer_identity_and_exact_run_digest() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("foreign peer reached authorization"),
                 |_, _| panic!("foreign peer reached dependencies"),

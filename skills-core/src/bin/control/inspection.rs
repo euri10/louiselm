@@ -339,6 +339,14 @@ impl Queries {
             .spawn(move || {
                 loop {
                     if let Err(error) = endpoint.serve_once(
+                        |request| {
+                            broker.stage_operator_launch_inputs(request).map_err(
+                                |error| match error {
+                                    BrokerError::InvalidGrant => InspectError::InvalidRequest,
+                                    _ => InspectError::StatusUnavailable,
+                                },
+                            )
+                        },
                         |request, deadline| owner.verification(&broker, request, deadline),
                         |request| {
                             use louiselm_skills::broker::operator::{

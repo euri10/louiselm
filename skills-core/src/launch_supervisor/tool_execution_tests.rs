@@ -121,7 +121,7 @@ fn privileged_confined_lua_gates_from_clean_snapshot() {
             "{gate} > /tmp/louiselm-verifier-gate.log 2>&1 || {{ status=$?; tail -n 80 /tmp/louiselm-verifier-gate.log; exit \"$status\"; }}"
         );
         let output =
-            command_with_plan(&backend, &verifier, &observed, Duration::from_secs(180)).unwrap();
+            command_with_plan(&backend, &verifier, &observed, Duration::from_mins(3)).unwrap();
         assert_eq!(
             output.exit_code, 0,
             "{gate}: stdout={} stderr={}",

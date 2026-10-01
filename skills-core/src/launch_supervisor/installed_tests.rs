@@ -270,6 +270,7 @@ fn install_fixture_at(
     let mut manifest = super::tool_integration_tests::manifest(&agent);
     manifest.policy.digest = crate::policy::Policy::embedded().digest().to_string();
     for name in [
+        "louiselm-skills",
         "louiselm-launch",
         "louiselm-tool-test-helper",
         "louiselm-control",

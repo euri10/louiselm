@@ -17,6 +17,7 @@ fn dependency_operator_requires_exact_durable_batch_acknowledgement() {
             thread::spawn(move || {
                 server
                 .serve_once(
+                    |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |_| panic!("authorization request not expected"),
                     |session_id, approve| {

@@ -111,6 +111,34 @@ broker-owned staging, matching Agent/runtime/Generation/envelope bindings and
 remeasured source/cache bytes. Missing inputs refuse startup before allocation
 of a Session directory. The operator checkout is never a launch mount or Git store.
 
+The installed operator CLI exposes that same broker-owned staging operation:
+
+```sh
+louiselm-control launch-inputs stage --json < /private/operator-inputs.json
+```
+
+The closed request contains `manifest` (the complete resolved Session manifest),
+absolute `snapshot` and `cache` paths, and `expected_base_commit` (the current
+Run branch HEAD). Requests are bounded to the operator protocol's 64 KiB frame.
+The configured operator UID alone can invoke staging; the broker UID alone owns
+the published tree. Input directories and their files must be broker-readable,
+operator-controlled and inaccessible to Session writers. Use deliberate private
+sharing permissions; never expose credential stores or make sensitive Agent
+configuration world-readable to satisfy this prerequisite.
+
+The payload-free `louiselm.launch-inputs.staged/1` reply binds `manifest_digest`,
+`source_snapshot_digest`, `source_base_digest`, `cache_base_digest` and
+`base_commit`. The client checks every binding against the exact selection.
+The broker checks the snapshot's HEAD and remeasures source/cache bytes before
+publication. Staging neither approves a Run nor authorizes a Session.
+
+Publication is immutable: a duplicate request refuses rather than overwriting.
+After an uncertain exchange, stop for operator inspection of the original
+manifest-digest publication; do not automatically retry or select a new identity.
+A controller may reuse its previously confirmed
+binding for an identical manifest within the same Run. Every launch independently
+remeasures the private broker staging before starting an Agent.
+
 Before any Agent starts, the supervisor creates a fresh root-owned barrier,
 independent source/Git metadata and a writable cache overlay. It assigns only
 the private workspace, home and cache contents to the allocated Session identity.

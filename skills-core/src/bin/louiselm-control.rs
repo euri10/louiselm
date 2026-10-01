@@ -24,6 +24,8 @@ mod beads;
 mod dependencies;
 #[path = "control/inspection.rs"]
 mod inspection;
+#[path = "control/launch_inputs.rs"]
+mod launch_inputs;
 #[path = "control/promotion.rs"]
 mod promotion;
 #[path = "control/provider_extension.rs"]
@@ -58,6 +60,12 @@ fn main() -> ExitCode {
     if collected.first().is_some_and(|verb| verb == "run") {
         return ExitCode::from(run_authorization::cli(&collected[1..]));
     }
+    if collected
+        .first()
+        .is_some_and(|verb| verb == "launch-inputs")
+    {
+        return ExitCode::from(launch_inputs::cli(&collected[1..]));
+    }
     if collected.first().is_some_and(|verb| verb == "verification") {
         return ExitCode::from(verification::cli(&collected[1..]));
     }
@@ -82,7 +90,7 @@ fn main() -> ExitCode {
             adopt_state()
         }
         _ => Err(
-            "expected 'serve', 'adopt-state --confirm', 'run authorize --json', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
+            "expected 'serve', 'adopt-state --confirm', 'run authorize --json', 'launch-inputs stage --json', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
         ),
     };
     match result {

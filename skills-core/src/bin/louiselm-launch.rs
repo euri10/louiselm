@@ -216,7 +216,12 @@ fn run() -> Result<i32, &'static str> {
     let session = receiver
         .recv()
         .map_err(|_| "launch supervisor unavailable")?
-        .map_err(|_| "authorized launch failed")?;
+        .map_err(|error| {
+            // SupervisorError Display is deliberately payload-free; preserve its
+            // actionable category instead of hiding every failed launch alike.
+            eprintln!("louiselm-launch: {error}");
+            "authorized launch failed"
+        })?;
     session
         .relay_stdio(
             RelayStdio::new(input, File::from(output))

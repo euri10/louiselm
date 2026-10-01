@@ -36,7 +36,7 @@ local controller = assert(Workflow.new_bead_executor({
     if index == 4 then
       assert(expected_head == case.base_commit)
     end
-    nvim.schedule(function()
+    local function prepared()
       done({
         grant = case.grant,
         base_commit = index == 4 and case.base_commit or nil,
@@ -51,6 +51,45 @@ local controller = assert(Workflow.new_bead_executor({
           verifier_grant = case.verifier_grant,
         },
       })
+    end
+    if index ~= 4 then
+      nvim.schedule(prepared)
+      return true
+    end
+    local request = nvim.deepcopy(case.stage_inputs)
+    request.expected_base_commit = (case.base_commit:sub(1, 1) == "a" and "b" or "a") .. case.base_commit:sub(2)
+    local function stage(input, callback)
+      nvim.system({ "louiselm-control", "launch-inputs", "stage", "--json" }, {
+        stdin = nvim.json.encode(input),
+        text = true,
+        cwd = "/",
+      }, function(result)
+        nvim.schedule(function()
+          callback(result)
+        end)
+      end)
+    end
+    stage(request, function(stale)
+      assert(stale.code == 2, "stale HEAD must refuse before publication")
+      assert(nvim.json.decode(stale.stderr).error == "invalid_request")
+      stage(case.stage_inputs, function(result)
+        if result.code ~= 0 then
+          done(nil, "installed broker source staging failed")
+          return
+        end
+        local binding = nvim.json.decode(result.stdout)
+        assert(binding.schema == "louiselm.launch-inputs.staged/1")
+        assert(binding.manifest_digest == case.grant.request.session_input_manifest_id)
+        assert(binding.source_snapshot_digest == case.snapshot_digest)
+        assert(binding.source_base_digest == case.stage_inputs.manifest.source_base_digest)
+        assert(binding.cache_base_digest == case.stage_inputs.manifest.cache_base_digest)
+        assert(binding.base_commit == case.base_commit)
+        stage(case.stage_inputs, function(duplicate)
+          assert(duplicate.code == 6, "immutable staging must refuse duplicate publication")
+          assert(nvim.json.decode(duplicate.stderr).error == "status_unavailable")
+          prepared()
+        end)
+      end)
     end)
     return true
   end,

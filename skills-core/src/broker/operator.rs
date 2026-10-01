@@ -1,6 +1,8 @@
 //! Bounded local operator inspection and skill decisions, authenticated before lookup.
 
+mod launch_inputs;
 mod wire;
+pub use launch_inputs::{LaunchInputBinding, LaunchInputsRequest, stage_launch_inputs};
 
 use super::conformance_inspection::{ConformanceInspection, MAX_INSPECTION_BYTES};
 use crate::Digest;
@@ -95,6 +97,8 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-launch-inputs/1")]
+    LaunchInputs { request: Box<LaunchInputsRequest> },
     #[serde(rename = "louiselm.operator-promotion/1")]
     Promotion { session_id: String },
     #[serde(rename = "louiselm.operator-verification/1")]
@@ -955,10 +959,12 @@ impl OperatorServer {
     /// Returns listener failure; refused or disconnected clients are isolated.
     #[expect(
         clippy::too_many_arguments,
-        reason = "Each existing operator operation has a distinct typed handler; keep explicit authentication routing without a mutable handler registry."
+        clippy::too_many_lines,
+        reason = "One bounded authenticated exchange explicitly routes each typed operation; keep the security boundary together without a mutable handler registry."
     )]
     pub fn serve_once(
         &self,
+        launch_inputs: impl FnOnce(&LaunchInputsRequest) -> Result<LaunchInputBinding, InspectError>,
         verification: impl FnOnce(
             &VerificationControlRequest,
             Instant,
@@ -1012,6 +1018,11 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::LaunchInputs { request } => {
+                    request.validate()?;
+                    serde_json::to_vec(&launch_inputs(&request)?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
                 Request::Promotion { .. } => Err(InspectError::InvalidRequest),
                 Request::Verification { request } => {
                     serde_json::to_vec(&verification(&request, deadline)?)

@@ -6,6 +6,9 @@ the operator-selected Run envelope through `louiselm-control run authorize --jso
 admits its capture-service ledger, and starts one Contained Session at a time.
 It requires an installed launcher and broker, their registered Codex runtime,
 and previously staged source/cache inputs. It does not install those components.
+The trusted preparation callback can stage those inputs through the authenticated
+`louiselm-control launch-inputs stage --json` command; its exact binding response
+does not authorize a launch. Each snapshot must retain the supplied current HEAD.
 
 The `envelope` is the complete closed `RunEnvelope` defined in
 `skills-core/src/broker/run_envelope.rs`. Its Bead scope, Provider cap, fixed
@@ -119,18 +122,81 @@ the Run envelope and spends verifier authority once. Promotion when configured,
 failure recording and Run summary are part of this controller. This does not claim Verified
 posture or complete the first live Run.
 
-## Acceptance
+## Real VM operator entrypoint
+
+`scripts/bead-run.lua` is the concrete caller for a reviewed first Run of three
+to five Beads. In an interactive VM Neovim using the approved LouiseLM checkout,
+invoke it with a private selection file:
+
+```sh
+nvim --noplugin -u NONE --cmd 'set runtimepath^=/approved/louiselm' \
+  --cmd 'let g:louiselm_bead_run_selection="/private/selection.json"' \
+  -c 'luafile /approved/louiselm/scripts/bead-run.lua'
+```
+
+The file must be operator-owned mode 0600 and at most 64KiB. Review it before
+invocation: starting it approves the exact envelope and admits the real capture
+ledger. No API key belongs in it. The closed `louiselm.operator.bead-run/1` object
+contains:
+
+- `envelope`: complete `RunEnvelope`, with a fresh UUID Run ID, exact ordered
+  Bead scope, two Sessions per Bead, one failure comment per Bead, fixed plan
+  digest, finite expiry and explicit finite shared Provider request cap. This
+  first-Run caller permits only `gpt-5.6-luna`, with an at-most-high reasoning cap;
+  the registered runtime must select the approved low-effort default.
+- `beads`: exactly the same ordered IDs, as `{id, prompt}` records containing
+  individually reviewed worker instructions.
+- `manifest`: complete resolved `SessionInputManifest` from trusted provisioning,
+  naming the measured installed Agent, current Generation/view, policy and
+  explicit input categories. Do not invent placeholder identities or treat a
+  parsed record as provenance. Only source snapshot/base identities are refreshed;
+  retain the selected Agent/supply/instruction configuration for the entire Run.
+- `worktree`: `{path, journal_parent, head}` naming the dedicated clean
+  `run/<run-id>` checkout, private journal directory and exact initial commit.
+- `plan`: broker-readable fixed verification-plan file; its bytes must match the
+  envelope's approved digest. `cache`: broker-readable immutable cache directory
+  whose digest matches the manifest. No candidate installer is invoked.
+- `snapshot_parent` and `input_group`: existing operator-owned mode-0750
+  snapshot directory and its numeric trusted sharing GID. Trusted VM provisioning
+  must make **only** the operator and broker members, never Session identities,
+  and make all ancestors traversable by those accounts. This is not permission to
+  share keys, Agent config or credential stores. The caller changes group/read
+  permissions only on each newly created frozen source snapshot; immutable
+  broker copies remain broker-owned mode 0700.
+
+The installed signed launcher/broker/runtime, canonical broker Beads tracker,
+trusted verifier tools, current supply and compatible `louiselm-capture` CLI are
+prerequisites. The caller installs none of them and reads no credential store.
+The broker retains its credential and validates the full envelope and grants.
+No Verified cutover or recovery exception is enabled: grants explicitly use
+unattended conformance with no waiver and do not require cold recovery for this
+first Contained Run. Deployment must retain its selected pre-cutover posture;
+an enforced installation can refuse this caller without being weakened.
+
+Each preparation captures the current accepted HEAD through the existing workspace
+CLI, refuses unaccepted working-copy changes, shares that new snapshot privately,
+and uses authenticated broker staging. Fresh worker and verifier identities are
+derived from the fresh Run ID and Bead index. A previously confirmed identical
+snapshot binding within this same Run may be reused after rejection; an uncertain
+staging result is never resent. Construction owns no process; disposal kills
+pending preparation and ignores late callbacks. Promotion remains the real
+manual UI. `q` stops the Run; its buffer presents the payload-free host handoff.
+Copy it before closing, fetch the named branch, and update the host tracker by
+hand only after checking the accepted commits and any unconfirmed failure.
+
+## Acceptance gates
 
 The normal Lua suite covers list and grant refusal, sequencing, permission
 policy, ledger admission, cancellation and fast-event callbacks. The installed
 gate is required in the `sender-guard-vm` CI job:
 
 ```sh
-for bead_case in 1 2 3 4; do
+for bead_case in 1 2 3 4 5; do
   ./scripts/launcher-vm exec sudo -n env \
     LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
     LOUISELM_TEST_LUA_ROOT=/home/vm \
     LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+    LOUISELM_TEST_CAPTURE=/path/to/current/louiselm-capture \
     LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim \
     timeout 120 unshare --mount --propagation private -- \
     /bin/bash -c 'umask 022; exec "$1" \
@@ -140,7 +206,8 @@ done
 ```
 
 The guest must contain the current Rust build, `lua/`,
-`tests/workflow/installed_beads.lua`, stable Neovim and SQLite. The VM provisioner
+`tests/workflow/installed_beads.lua`, `tests/workflow/installed_operator.lua`,
+the real capture CLI, stable Neovim and SQLite. The VM provisioner
 includes SQLite; CI copies its stable Neovim distribution into the guest. The
 distro Neovim is too old for the plugin's supported APIs. This gate uses the real
 operator CLI, installed launcher, headless Lua Sessions and durable terminal
@@ -148,6 +215,8 @@ cleanup receipts. Operator inspection is live-only, so it cannot prove cleanup
 after its worker disappears. The measured ACP peer and tracker are offline
 fixtures; the gate runs a passing plan, a failing plan, an unapprovable
 worker and accepted promotion into a dedicated Run worktree. No Provider requests are issued. Capture
-admission/attachment is doubled, with separate real capture-service integration
-coverage in the normal suite. Live Codex/Provider acceptance remains the
+admission/attachment is doubled in cases 1–4. Case 5 runs the actual operator
+caller with the real capture CLI, three separately promoted commits, next-HEAD
+snapshots and six durable terminal cleanup receipts. Its ACP peer and verification
+plan remain offline fixtures, not live acceptance. Live Codex/Provider acceptance remains the
 persistent-VM Run's responsibility.

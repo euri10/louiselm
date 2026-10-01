@@ -84,6 +84,7 @@ fn operator_reads_exact_large_report_or_absence_without_a_live_supervisor() {
             for _ in 0..2 {
                 server
                     .serve_once(
+                    |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |_| panic!("authorization request not expected"),
                         |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),

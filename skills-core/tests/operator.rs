@@ -12,6 +12,8 @@ use std::{os::unix::fs::PermissionsExt, thread, time::Duration};
 mod authorization;
 #[path = "operator/dependencies.rs"]
 mod dependencies;
+#[path = "operator/launch_inputs.rs"]
+mod launch_inputs;
 #[path = "operator/provider_extension.rs"]
 mod provider_extension;
 #[path = "operator/waiver.rs"]
@@ -46,6 +48,7 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
         let worker = thread::spawn(move || {
             server
                 .serve_once(
+                    |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |_| panic!("authorization request not expected"),
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
@@ -118,6 +121,7 @@ fn beads_operator_request_reaches_authenticated_control() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("authorization request not expected"),
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
@@ -188,6 +192,7 @@ fn wrong_uid_is_refused_before_session_lookup() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("authorization request not expected"),
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
@@ -217,6 +222,7 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("authorization request not expected"),
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
@@ -300,6 +306,7 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
             ] {
                 server
                 .serve_once(
+                    |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |_| panic!("authorization request not expected"),
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
@@ -369,6 +376,7 @@ fn conformance_inspection_distinguishes_an_unknown_session() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("authorization request not expected"),
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
@@ -415,6 +423,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
         for _ in 0..count {
             server
                 .serve_once(
+                    |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |_| panic!("authorization request not expected"),
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
@@ -432,6 +441,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
         }
         server
             .serve_once(
+                |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("authorization request not expected"),
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
