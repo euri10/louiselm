@@ -175,6 +175,11 @@ local function emit_overview(lines, context)
     "Then use :LouiselmChat to start a Session, or |louiselm-api| to drive an Agent without the chat UI. Use |:checkhealth| louiselm to discover optional capabilities and validate the prerequisites of explicitly enabled integrations. Ordinary chat requires an authenticated Agent and sqlite3 >= 3.38 with JSON support.",
     context
   )
+  append_prose(
+    lines,
+    "Opening :LouiselmChat or creating a Session with :LouiselmSessionNew refreshes Agent version checks asynchronously. Agents with a configured latest check warn when their installed version differs, including major releases, and show their configured upgrade guidance. Upgrade commands are never executed automatically.",
+    context
+  )
 end
 
 ---@param lines string[]

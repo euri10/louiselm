@@ -525,6 +525,9 @@ function M.register()
 
   ---@return louiselm.ui.Chat? value
   local function open_chat()
+    if chat ~= nil then
+      check_agent_staleness(require_configured_agents() or {})
+    end
     local current = ensure_chat()
     if current == nil then
       return nil
@@ -632,6 +635,7 @@ function M.register()
       open_chat()
       return
     end
+    check_agent_staleness(require_configured_agents() or {})
     local _, session_error = chat:new_session()
     report_error(session_error)
   end, { desc = "Create a separate louiselm session", force = true })

@@ -1460,6 +1460,55 @@ T["command"]["ignores a stale health result after a newer chat check starts"] = 
   MiniTest.expect.equality(notifications, {})
 end
 
+T["command"]["refreshes upgrade checks when reopening chat or creating another Session"] = function()
+  local Agent = require("louiselm.agent")
+  local original_check, original_notify, original_select = Agent.check, nvim.notify, nvim.ui.select
+  local _, original_system = fake_process()
+  local callbacks, notifications = {}, {}
+  MiniTest.finally(function()
+    rawset(Agent, "check", original_check)
+    rawset(nvim, "notify", original_notify)
+    rawset(nvim.ui, "select", original_select)
+    rawset(nvim, "system", original_system)
+    Session.dispose_all()
+    Command.configure(nil)
+    delete_chat_buffers()
+  end)
+  rawset(Agent, "check", function(_, callback)
+    callbacks[#callbacks + 1] = callback
+  end)
+  rawset(nvim, "notify", function(message)
+    notifications[#notifications + 1] = message
+  end)
+  rawset(nvim.ui, "select", function(items, _, callback)
+    callback(items[1], 1)
+  end)
+  local definition = mock_definition()
+  definition.latest = { command = "npm", args = { "view", "mock-acp", "version" } }
+  definition.upgrade = "Prepare, verify, then promote the managed runtime."
+  Command.configure({ agents = { mock = definition } })
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat" }, {})
+  callbacks[1]({ ok = true, command = definition.command, available = true, outdated = false })
+  MiniTest.expect.equality(notifications, {})
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat" }, {})
+  MiniTest.expect.equality(#callbacks, 2)
+  callbacks[2]({
+    ok = true,
+    command = definition.command,
+    available = true,
+    version = "1.13.1",
+    latest_version = "2.1.0",
+    outdated = true,
+  })
+  MiniTest.expect.equality(notifications, {
+    "louiselm: mock is outdated (1.13.1 installed, 2.1.0 upstream)\n  Manual update: Prepare, verify, then promote the managed runtime.",
+  })
+  nvim.api.nvim_cmd({ cmd = "LouiselmSessionNew" }, {})
+  MiniTest.expect.equality(#callbacks, 3)
+end
+
 T["command"]["groups upgrade guidance after async checks in either completion order"] = function()
   local Agent = require("louiselm.agent")
   local original_check, original_notify = Agent.check, nvim.notify
