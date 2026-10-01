@@ -70,7 +70,7 @@ fn serve_requires_explicit_capabilities_before_creating_storage() {
     let state = root.path().join("state");
     let mut child = command(&data, &state)
         .arg("serve")
-        .env("OPENAI_API_KEY", "unused-test-credential")
+        .env("LOUISELM_CAPTURE_OPENAI_API_KEY", "unused-test-credential")
         .env(
             "GOOGLE_APPLICATION_CREDENTIALS",
             root.path().join("absent.json"),
@@ -98,6 +98,37 @@ fn serve_requires_explicit_capabilities_before_creating_storage() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("no capabilities enabled"));
     assert!(!data.exists());
     assert!(!state.exists());
+}
+
+#[test]
+fn transcription_uses_only_the_capture_key() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let state = root.path().join("state");
+
+    let legacy = command(&data, &state)
+        .arg("transcribe-once")
+        .env("OPENAI_API_KEY", "unused-test-credential")
+        .env_remove("LOUISELM_CAPTURE_OPENAI_API_KEY")
+        .output()
+        .unwrap();
+    assert!(!legacy.status.success());
+    assert!(
+        String::from_utf8_lossy(&legacy.stderr)
+            .contains("LOUISELM_CAPTURE_OPENAI_API_KEY is required")
+    );
+
+    let capture = command(&data, &state)
+        .arg("serve")
+        .env_remove("OPENAI_API_KEY")
+        .env("LOUISELM_CAPTURE_OPENAI_API_KEY", "unused-test-credential")
+        .env("LOUISELM_TRANSCRIPTION_ENABLED", "true")
+        .env("LOUISELM_RUNS_ENABLED", "true")
+        .env_remove("LOUISELM_BEADS_WORKSPACE")
+        .output()
+        .unwrap();
+    assert!(!capture.status.success());
+    assert!(String::from_utf8_lossy(&capture.stderr).contains("LOUISELM_BEADS_WORKSPACE"));
 }
 
 #[cfg(unix)]

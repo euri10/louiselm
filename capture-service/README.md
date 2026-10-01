@@ -29,8 +29,8 @@ while undisposed Runs remain is refused; settle those Runs first. Toggles never
 delete durable records or pairing state.
 
 Enable the receiver separately before the phone setup below. Transcription
-requires its own opt-in and `OPENAI_API_KEY`; it sends pending audio to the
-OpenAI API. Push requires its own opt-in, Attention, and
+requires its own opt-in and `LOUISELM_CAPTURE_OPENAI_API_KEY`; it sends pending
+audio to the OpenAI API. Push requires its own opt-in, Attention, and
 `GOOGLE_APPLICATION_CREDENTIALS`; pairing credentials alone never authorize
 outbound delivery. Explicit one-shot CLI commands such as `transcribe-once`
 remain deliberate operator actions.
@@ -162,13 +162,69 @@ appends `louiselm/...`.
 
 ## Transcription
 
-Set `LOUISELM_TRANSCRIPTION_ENABLED=true` and supply `OPENAI_API_KEY` to enable
+Set `LOUISELM_TRANSCRIPTION_ENABLED=true` and supply
+`LOUISELM_CAPTURE_OPENAI_API_KEY` to enable
 the background worker, and optionally set
 `LOUISELM_TRANSCRIPTION_MODEL` (default `gpt-4o-transcribe`). Transient network,
 rate-limit, and server failures use durable exponential backoff. Authentication,
 configuration, and rejected-input failures stop until `retry CAPTURE_UUID`.
 Errors are sanitized before persistence and responses never include credentials,
 audio, prompts, or provider response bodies.
+
+Set up a separate OpenAI project for capture transcription before supplying the
+key. In that project's settings:
+
+1. Create a project-owned service account for `louiselm-capture`, rather than a
+   personal or organization-wide key. Give it a custom project role with only
+   **Model capabilities: Request**; remove any default Member or Owner role.
+   Create a **Restricted** service-account key with that permission and every
+   other permission set to **None**. Do not add
+   Models Read or Files Write: the worker only posts a multipart audio file to
+   `/v1/audio/transcriptions`; it never lists models or uses `/v1/files`. If the
+   service-account creation flow issues an unrestricted key first, restrict it
+   in the project's API Keys settings before installing it. A key's permissions
+   cannot exceed its owner's project role.
+2. Under **Project settings → Limits → Spend**, set a monthly spend limit and
+   enable **Enforce a hard limit**; an alert alone does not stop requests. For
+   the default model, estimate `$0.006 × expected audio minutes/month`, then
+   round up about twice that amount for a working cap (for example, $5 for
+   roughly 400 minutes/month). Review the price and limit when changing models
+   or usage. Enforcement can lag slightly, so this is not an exact ceiling.
+3. Set an expiry date and schedule replacement before it. Create the replacement
+   with the same restrictions, install it as
+   `LOUISELM_CAPTURE_OPENAI_API_KEY` in the service's private environment, and
+   restart the active capture service at a safe point.
+   Verify one short real capture reaches `completed` for its UUID in
+   `louiselm-capture list`, then revoke the old key. Do not copy that command's
+   transcript output into an issue. Never put key bytes in an issue, command
+   argument, log, or transcript.
+
+There is no free positive probe for this minimal key: `GET /v1/models` needs a
+separate permission and does not exercise transcription. A few seconds of test
+audio makes one tiny paid request. Before enabling the worker, check
+`louiselm-capture status`: it immediately processes all pending captures and
+due retries, which can make the first test larger than one request. A too-narrow
+or invalid key yields an authentication/permission failure; that capture
+remains failed until the key is corrected and
+`louiselm-capture retry CAPTURE_UUID` is run. A reached hard
+spend limit instead returns HTTP 429 and follows the worker's transient retry
+path; fix the limit or wait for its monthly reset before retrying.
+
+Permission and billing basis, checked 2026-10-01: OpenAI's
+[permission guide](https://developers.openai.com/api/docs/guides/rbac) assigns
+`/v1/audio` to Model capabilities Request, and its
+[spend-limit guide](https://developers.openai.com/api/docs/guides/spend-limits)
+describes hard enforcement. The
+[pricing page](https://developers.openai.com/api/docs/pricing) estimates
+`gpt-4o-transcribe` at $0.006/minute. Model capabilities Request also covers
+other model endpoints; the separate project and enforced cap bound that broader
+permission. Recheck the dashboard labels and these sources when rotating.
+
+The installed systemd unit reads `capture.env` directly; it does not source
+`~/.zsh.secrets` or expand a value like `$LOUISELM_CAPTURE_OPENAI_API_KEY`.
+Put the capture key's literal value in the owner-only `capture.env`. Pointing
+the unit at a shell secrets file containing other keys would expose those keys
+to the capture process too.
 
 No API key is required for recording, pairing, upload, listing, or retention.
 

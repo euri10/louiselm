@@ -65,7 +65,7 @@ impl Features {
             ));
         }
         if features.transcription {
-            required_environment("OPENAI_API_KEY")?;
+            required_environment("LOUISELM_CAPTURE_OPENAI_API_KEY")?;
         }
         if features.push {
             required_environment("GOOGLE_APPLICATION_CREDENTIALS")?;

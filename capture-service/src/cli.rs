@@ -560,8 +560,10 @@ fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
 }
 
 fn openai_provider() -> Result<OpenAiTranscriber, CliError> {
-    let api_key = env::var("OPENAI_API_KEY").map_err(|_| {
-        CliError::Invalid("OPENAI_API_KEY is required for transcription".to_owned())
+    let api_key = env::var("LOUISELM_CAPTURE_OPENAI_API_KEY").map_err(|_| {
+        CliError::Invalid(
+            "LOUISELM_CAPTURE_OPENAI_API_KEY is required for transcription".to_owned(),
+        )
     })?;
     let model =
         env::var("LOUISELM_TRANSCRIPTION_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
