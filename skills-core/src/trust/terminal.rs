@@ -45,6 +45,11 @@ impl Terminal {
         Ok(terminal)
     }
 
+    #[cfg(test)]
+    pub(crate) fn fixture(file: File) -> Result<Self, RecoveryError> {
+        Self::from_file(file)
+    }
+
     pub(crate) fn write(&mut self, text: &str) -> Result<(), RecoveryError> {
         self.file.write_all(text.as_bytes())?;
         self.file.flush()?;
@@ -250,7 +255,7 @@ pub(crate) fn require_production(store: &Store) -> Result<(), RecoveryError> {
 
 pub(crate) fn require_production_root(store: &Store) -> Result<(), RecoveryError> {
     if !crate::release::running_identity().verified
-        || !store.provenance()?.trusted
+        || !store.existing_provenance()?.trusted
         || rustix::process::geteuid().as_raw() != 0
     {
         return Err(RecoveryError::UntrustedAuthority);

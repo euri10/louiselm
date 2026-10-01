@@ -131,6 +131,30 @@ verifiers. `recovery_ready=true` additionally requires the installed executable,
 protected production store and strict policy on both distinct signing roles.
 It is not a claim of actual Android acceptance or Verified posture.
 
+## Check an existing paper without replacing it
+
+Use the trusted installed tool in your private foreground terminal:
+
+```sh
+sudo "$skills" recovery check-paper --store /var/lib/louiselm/skills
+```
+
+The command displays the trust domain and snapshot, then accepts the current
+24 words with input hidden. A successful result means the complete checksummed
+phrase matches that store's current enrollment. It does not consume the paper,
+generate a replacement, change trust/history, open a browser, or require a token.
+Wrong, retired, invalid or another domain's paper is refused without echoing it.
+Ctrl-C cancels; the check has a five-minute deadline and restores terminal modes.
+It holds an existing read-only shared trust lock, so concurrent trust mutations
+refuse as busy until the check finishes. Missing enrollment or lock is not repaired.
+
+Never supply words as arguments, stdin, robot input, screenshots or chat. This
+uses the same installed/root-owned production-store boundary as recovery changes;
+a development executable or provisional store cannot open the secret prompt.
+On an isolated archived VM copy, success applies only to the displayed archived
+snapshot, not a different or newer store. Do not restore or promote that authority
+into another VM as part of the check.
+
 ## Recovery and method management
 
 Only explicitly named replacements change. Replacement signing credentials must

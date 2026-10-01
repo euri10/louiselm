@@ -66,6 +66,7 @@ trust show
 trust reset --confirm  # development stores only
 
 recovery setup --store PATH --primary PRIVATE_KEY --release PRIVATE_KEY
+recovery check-paper --store PATH
 recovery status --store PATH
 recovery change --store PATH --via primary|release|paper|passkey
                 [--authorizer PRIVATE_KEY] [--primary NEW_PRIVATE_KEY]
@@ -213,6 +214,13 @@ on the private operator terminal while the helper is running. They are not copie
 into captured errors or Agent logs. Noninteractive calls retain escaped failure
 diagnostics. Signing deadlines, process cleanup and foreground restoration still
 apply; a signing refusal does not trigger an automatic retry.
+
+`recovery check-paper --store PATH` checks an existing paper phrase using hidden
+private foreground-TTY input, without consuming/replacing it or changing trust.
+It requires the trusted installed executable and protected production store,
+reports the checked domain/snapshot, and holds the existing read-only trust lock.
+No words in arguments, stdin, robot output or Agent terminals; see the
+[private check recipe](../docs/recovery-ceremony.md#check-an-existing-paper-without-replacing-it).
 
 Normal Admission and `release sign` record exact approved payload digests under
 the trust mutation lock. Retired keys verify only that recorded history, never

@@ -22,6 +22,49 @@ use louiselm_skills::{
 use support::{Fixture, SshKey};
 
 #[test]
+fn paper_check_requires_installed_authority_without_creating_a_store() {
+    let fixture = Fixture::new();
+    let absent = fixture.path("must-not-create");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
+        .args(["recovery", "check-paper", "--store"])
+        .arg(&absent)
+        .output()
+        .expect("CLI runs");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("trusted installed tool"));
+    assert!(output.stdout.is_empty());
+    assert!(!absent.exists());
+}
+
+#[test]
+fn paper_check_rejects_secret_and_mutation_arguments_without_echoing_them() {
+    for arguments in [
+        vec!["--phrase", "never-echo-this-fixture"],
+        vec!["--paper", "replace"],
+        vec!["--via", "paper"],
+        vec!["--robot-json", "true"],
+        vec!["never-echo-this-fixture"],
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
+            .args(["recovery", "check-paper", "--store", "/absent-fixture"])
+            .args(arguments)
+            .output()
+            .expect("CLI runs");
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("invalid recovery arguments"));
+        assert!(!error.contains("never-echo"));
+        assert!(output.stdout.is_empty());
+    }
+    let help = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
+        .args(["recovery", "--help"])
+        .output()
+        .expect("CLI runs");
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("check-paper"));
+}
+
+#[test]
 fn cli_refuses_development_authority_before_opening_a_secret_channel() {
     let fixture = Fixture::new();
     let absent = fixture.path("must-not-create");

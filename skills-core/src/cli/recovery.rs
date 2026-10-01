@@ -18,11 +18,13 @@ use crate::{
     },
 };
 use std::{collections::BTreeMap, fs, path::Path, time::Instant};
+mod check;
 mod setup;
 type Flags<'a> = BTreeMap<&'a str, &'a str>;
 
 const HELP: &str = "recovery setup --store PATH --primary PRIVATE_KEY --release PRIVATE_KEY [--trust-domain DOMAIN]
 recovery status --store PATH
+recovery check-paper --store PATH
 recovery change --store PATH --via primary|release|paper|passkey [--authorizer PRIVATE_KEY]
                 [--primary NEW_PRIVATE_KEY] [--release NEW_PRIVATE_KEY] [--paper replace] [--passkey replace]
 recovery reset --store PATH
@@ -31,6 +33,7 @@ Setup confirms BOTH signing keys, a password-manager-backed passkey and written 
 --via primary/release requires --authorizer. --via paper requires --paper replace (single-use).
 Only explicitly named replacements change. A new passkey never authorizes itself.
 Status is public JSON; no mutation accepts robot output, phrase arguments, stdin or development overrides.
+check-paper uses hidden local TTY input, checks current enrollment only, and changes nothing.
 Reset discards ALL trust and history authorization; use only after losing every usable method.
 Do not run secret ceremonies in an Agent terminal, recorded terminal or screen-sharing session.
 Open the ephemeral localhost URL in your normal browser, never a root browser.
@@ -47,7 +50,7 @@ fn parse(arguments: &[String]) -> Result<(&str, Flags<'_>), CliError> {
     let command = arguments.first().map(String::as_str).ok_or_else(invalid)?;
     let allowed: &[&str] = match command {
         "setup" => &["--store", "--primary", "--release", "--trust-domain"],
-        "status" | "reset" => &["--store"],
+        "status" | "reset" | "check-paper" => &["--store"],
         "change" => &[
             "--store",
             "--via",
@@ -116,7 +119,11 @@ pub(super) fn run(arguments: &[String]) -> Result<i32, CliError> {
     }
     // Includes existing provenance/trust paths; runs BEFORE Store::open can write.
     terminal::require_store_path(path)?;
-    let store = Store::open(path)?;
+    let store = if command == "check-paper" {
+        Store::open_existing(path)?
+    } else {
+        Store::open(path)?
+    };
     terminal::require_production_root(&store)?;
     rustix::process::setrlimit(
         rustix::process::Resource::Core,
@@ -130,6 +137,9 @@ pub(super) fn run(arguments: &[String]) -> Result<i32, CliError> {
         return setup::enroll(&store, &flags);
     }
     terminal::require_production(&store)?;
+    if command == "check-paper" {
+        return check::run(&store);
+    }
     let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
     if command == "reset" {
         return setup::reset(&store, &trust);
