@@ -29,27 +29,21 @@ use std::{
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_SLICE: Duration = Duration::from_millis(50);
 
-pub(super) fn cli(arguments: &[std::ffi::OsString]) -> u8 {
+pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let result = (|| {
-        let [verb, id, format] = arguments else {
-            return Err(InspectError::InvalidRequest);
-        };
-        if !matches!(
-            verb.to_str(),
-            Some("inspect" | "conformance" | "retention" | "pin" | "unpin")
-        ) || format != "--json"
-        {
-            return Err(InspectError::InvalidRequest);
-        }
-        let id = id.to_str().ok_or(InspectError::InvalidRequest)?;
+        let (verb, args) =
+            super::arguments::operation(arguments).map_err(|()| InspectError::InvalidRequest)?;
+        let id = args
+            .get_one::<String>("subject")
+            .ok_or(InspectError::InvalidRequest)?;
         operator::validate_subject(id)?;
         let paths = super::installed_paths().map_err(|_| InspectError::BrokerUnavailable)?;
         let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
             .map_err(|_| InspectError::BrokerUnavailable)?;
-        if matches!(verb.to_str(), Some("retention" | "pin" | "unpin")) {
-            let pin = match verb.to_str() {
-                Some("pin") => Some(true),
-                Some("unpin") => Some(false),
+        if matches!(verb, "retention" | "pin" | "unpin") {
+            let pin = match verb {
+                "pin" => Some(true),
+                "unpin" => Some(false),
                 _ => None,
             };
             let inspection = operator::workspace_retention(
@@ -92,22 +86,20 @@ pub(super) fn cli(arguments: &[std::ffi::OsString]) -> u8 {
     }
 }
 
-pub(super) fn skill_cli(arguments: &[std::ffi::OsString]) -> u8 {
+pub(super) fn skill_cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     use louiselm_skills::skill_request::SkillRequestOutcome;
     let result = (|| {
-        let [verb, id, format] = arguments else {
-            return Err(InspectError::InvalidRequest);
-        };
-        if format != "--json" {
-            return Err(InspectError::InvalidRequest);
-        }
-        let outcome = match verb.to_str() {
-            Some("inspect") => None,
-            Some("reject") => Some(SkillRequestOutcome::Rejected),
-            Some("cancel") => Some(SkillRequestOutcome::Cancelled),
+        let (verb, args) =
+            super::arguments::operation(arguments).map_err(|()| InspectError::InvalidRequest)?;
+        let outcome = match verb {
+            "inspect" => None,
+            "reject" => Some(SkillRequestOutcome::Rejected),
+            "cancel" => Some(SkillRequestOutcome::Cancelled),
             _ => return Err(InspectError::InvalidRequest),
         };
-        let id = id.to_str().ok_or(InspectError::InvalidRequest)?;
+        let id = args
+            .get_one::<String>("subject")
+            .ok_or(InspectError::InvalidRequest)?;
         let paths = super::installed_paths().map_err(|_| InspectError::BrokerUnavailable)?;
         let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
             .map_err(|_| InspectError::BrokerUnavailable)?;

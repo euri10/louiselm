@@ -7,6 +7,24 @@
 use std::process::Command;
 
 #[test]
+fn generated_help_needs_no_installed_authority_or_stdin_payload() {
+    for args in [
+        vec!["--help"],
+        vec!["session", "inspect", "--help"],
+        vec!["run", "authorize", "--help"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
+            .args(args)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
 fn validates_verbs_confirmation_and_socket_activation() {
     for arguments in [
         vec![],

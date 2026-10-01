@@ -17,7 +17,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use clap::{Args, FromArgMatches};
 use serde::Serialize;
+
+mod grammar;
 use thiserror::Error;
 
 mod linked_admission;
@@ -141,27 +144,67 @@ struct VerifyResult {
 /// # Errors
 /// Returns argument/configuration errors or the selected command's storage, trust, signing, registry, release, or launch failures.
 pub fn run() -> Result<i32, CliError> {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
-    let Some(command) = arguments.first().map(String::as_str) else {
-        print_help();
+    let matches = match grammar::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error
+                .print()
+                .map_err(|_| CliError::Invalid("cannot write help".into()))?;
+            return Ok(0);
+        }
+        Err(_) if env::args_os().nth(1).is_some_and(|verb| verb == "recovery") => {
+            return Err(recovery::invalid());
+        }
+        Err(error) => return Err(argument_error(&error)),
+    };
+    let Some((command, matches)) = matches.subcommand() else {
+        grammar::command()
+            .print_help()
+            .map_err(|_| CliError::Invalid("cannot write help".into()))?;
+        println!();
         return Ok(0);
     };
-    if matches!(command, "help" | "--help" | "-h") {
-        print_help();
-        return Ok(0);
+    match command {
+        "recovery" => return recovery::run(matches),
+        "preflight" => return preflight::run(matches),
+        "workspace" => return workspace::run(matches),
+        _ => (),
     }
-    // Secret-channel commands have a closed parser whose diagnostics never
-    // repeat unknown arguments, even when someone mistakenly supplies a phrase.
-    if command == "recovery" {
-        return recovery::run(&arguments[1..]);
+    let (verb, leaf) = matches
+        .subcommand()
+        .map_or((None, matches), |(verb, leaf)| (Some(verb), leaf));
+    let mut options = Options::from_arg_matches(leaf)
+        .map_err(|_| CliError::Invalid("invalid command options; use --help".into()))?;
+    if let Some(verb) = verb {
+        options.positional.push(verb.to_owned());
     }
-    if command == "preflight" {
-        return preflight::run(&arguments[1..]);
+    if options.policy.is_some() && options.policy_digest.is_none() {
+        return Err(CliError::Invalid(
+            "--policy requires --policy-digest".into(),
+        ));
     }
-    if command == "workspace" {
-        return workspace::run(&arguments[1..]);
+    if matches!(command, "package" | "verify" | "inspect" | "dossier")
+        || (command == "generation"
+            && matches!(
+                options.positional.first().map(String::as_str),
+                Some("witness" | "activate")
+            ))
+        || (command == "quarantine"
+            && options
+                .positional
+                .first()
+                .is_some_and(|verb| verb == "exclude"))
+    {
+        let subjects = leaf
+            .get_many::<String>("subjects")
+            .ok_or_else(|| CliError::Invalid("missing command subject; use --help".into()))?;
+        options.positional.extend(subjects.cloned());
     }
-    let options = Options::parse(&arguments[1..])?;
     if options.skill_request.is_some()
         && (command != "generation" || options.subject("generation")? != "admit")
     {
@@ -187,257 +230,107 @@ pub fn run() -> Result<i32, CliError> {
     }
 }
 
+/// Only missing-required context is rendered: these labels come from our schema,
+/// whereas unknown arguments and invalid values can contain supplied secrets.
+fn argument_error(error: &clap::Error) -> CliError {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    let message = match error.kind() {
+        ErrorKind::InvalidSubcommand => "unknown command; use --help".into(),
+        ErrorKind::MissingRequiredArgument => match error.get(ContextKind::InvalidArg) {
+            Some(ContextValue::Strings(arguments)) => format!(
+                "missing required argument: {}; use --help",
+                arguments.join(", ")
+            ),
+            _ => "missing required argument; use --help".into(),
+        },
+        _ => "invalid command or argument; use --help".into(),
+    };
+    CliError::Invalid(message)
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "Independent command-line switches mirror the grammar; they are not exclusive states."
 )]
+#[derive(Args)]
 struct Options {
+    #[arg(skip)]
     positional: Vec<String>,
+    #[arg(long = "member")]
     members: Vec<String>,
+    #[arg(long)]
     all_agents: bool,
+    #[arg(long)]
     registry: Option<PathBuf>,
+    #[arg(long)]
     primary: Option<String>,
+    #[arg(long = "release")]
     release_key: Option<String>,
+    #[arg(long)]
     trust_domain: Option<String>,
+    #[arg(long)]
     key: Option<String>,
+    #[arg(long)]
     skill_request: Option<String>,
+    #[arg(long)]
     remote: Option<PathBuf>,
+    #[arg(long)]
     branch: Option<String>,
+    #[arg(long)]
     workdir: Option<PathBuf>,
+    #[arg(long)]
     reason: Option<String>,
+    #[arg(long)]
     output: Option<PathBuf>,
+    #[arg(long)]
     source: Option<PathBuf>,
+    #[arg(long)]
     bundle: Option<PathBuf>,
+    #[arg(long)]
     prefix: Option<PathBuf>,
+    #[arg(long)]
     operator: Option<String>,
+    #[arg(long)]
     broker_uid: Option<u32>,
+    #[arg(long)]
     broker_gid: Option<u32>,
+    #[arg(long)]
     uid_start: Option<u32>,
+    #[arg(long)]
     gid_start: Option<u32>,
+    #[arg(long)]
     slots: Option<u32>,
+    #[arg(long)]
     rotation_id: Option<String>,
+    #[arg(long)]
     expected_key_id: Option<String>,
+    #[arg(long)]
     require_hardware: bool,
+    #[arg(long)]
     confirm: bool,
+    #[arg(long)]
     store: Option<PathBuf>,
+    #[arg(long)]
     policy: Option<PathBuf>,
+    #[arg(long)]
     policy_digest: Option<String>,
+    #[arg(long)]
     against: Option<String>,
+    #[arg(long, default_value = "unstated", value_parser = parse_review_depth)]
     review_depth: ReviewDepth,
+    #[arg(long)]
     assessment_model: Option<String>,
+    #[arg(long)]
     assessment_prompt: Option<String>,
+    #[arg(long)]
     captured_at: Option<u64>,
+    #[arg(long = "robot-json")]
     robot: bool,
+    #[arg(long = "digest")]
     digest_only: bool,
 }
 
 impl Options {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "One flat CLI grammar table keeps flag spelling, parsing and duplicate checks together."
-    )]
-    fn parse(arguments: &[String]) -> Result<Self, CliError> {
-        let mut parsed = Self {
-            positional: Vec::new(),
-            members: Vec::new(),
-            all_agents: false,
-            registry: None,
-            primary: None,
-            release_key: None,
-            trust_domain: None,
-            key: None,
-            skill_request: None,
-            remote: None,
-            branch: None,
-            workdir: None,
-            reason: None,
-            output: None,
-            source: None,
-            bundle: None,
-            prefix: None,
-            operator: None,
-            broker_uid: None,
-            broker_gid: None,
-            uid_start: None,
-            gid_start: None,
-            slots: None,
-            rotation_id: None,
-            expected_key_id: None,
-            require_hardware: false,
-            confirm: false,
-            store: None,
-            policy: None,
-            policy_digest: None,
-            against: None,
-            review_depth: ReviewDepth::Unstated,
-            assessment_model: None,
-            assessment_prompt: None,
-            captured_at: None,
-            robot: false,
-            digest_only: false,
-        };
-        let mut index = 0;
-        while index < arguments.len() {
-            let argument = arguments[index].as_str();
-            let value = |name: &str| -> Result<String, CliError> {
-                arguments
-                    .get(index + 1)
-                    .cloned()
-                    .ok_or_else(|| CliError::Invalid(format!("{name} needs a value")))
-            };
-            match argument {
-                "--skill-request" => {
-                    if parsed.skill_request.is_some() {
-                        return Err(CliError::Invalid("duplicate --skill-request".into()));
-                    }
-                    parsed.skill_request = Some(value("--skill-request")?);
-                    index += 1;
-                }
-                "--robot-json" => parsed.robot = true,
-                "--digest" => parsed.digest_only = true,
-                "--require-hardware" => parsed.require_hardware = true,
-                "--confirm" => parsed.confirm = true,
-                "--member" => {
-                    parsed.members.push(value("--member")?);
-                    index += 1;
-                }
-                "--all-agents" => parsed.all_agents = true,
-                "--registry" => {
-                    parsed.registry = Some(PathBuf::from(value("--registry")?));
-                    index += 1;
-                }
-                "--primary" => {
-                    parsed.primary = Some(value("--primary")?);
-                    index += 1;
-                }
-                "--release" => {
-                    parsed.release_key = Some(value("--release")?);
-                    index += 1;
-                }
-                "--trust-domain" => {
-                    parsed.trust_domain = Some(value("--trust-domain")?);
-                    index += 1;
-                }
-                "--key" => {
-                    parsed.key = Some(value("--key")?);
-                    index += 1;
-                }
-                "--remote" => {
-                    parsed.remote = Some(PathBuf::from(value("--remote")?));
-                    index += 1;
-                }
-                "--branch" => {
-                    parsed.branch = Some(value("--branch")?);
-                    index += 1;
-                }
-                "--workdir" => {
-                    parsed.workdir = Some(PathBuf::from(value("--workdir")?));
-                    index += 1;
-                }
-                "--reason" => {
-                    parsed.reason = Some(value("--reason")?);
-                    index += 1;
-                }
-                "--output" => {
-                    parsed.output = Some(PathBuf::from(value("--output")?));
-                    index += 1;
-                }
-                "--source" => {
-                    parsed.source = Some(PathBuf::from(value("--source")?));
-                    index += 1;
-                }
-                "--bundle" => {
-                    parsed.bundle = Some(PathBuf::from(value("--bundle")?));
-                    index += 1;
-                }
-                "--prefix" => {
-                    parsed.prefix = Some(PathBuf::from(value("--prefix")?));
-                    index += 1;
-                }
-                "--operator" => {
-                    parsed.operator = Some(value("--operator")?);
-                    index += 1;
-                }
-                "--broker-uid" => {
-                    parsed.broker_uid = Some(parse_u32("--broker-uid", &value("--broker-uid")?)?);
-                    index += 1;
-                }
-                "--broker-gid" => {
-                    parsed.broker_gid = Some(parse_u32("--broker-gid", &value("--broker-gid")?)?);
-                    index += 1;
-                }
-                "--uid-start" => {
-                    parsed.uid_start = Some(parse_u32("--uid-start", &value("--uid-start")?)?);
-                    index += 1;
-                }
-                "--gid-start" => {
-                    parsed.gid_start = Some(parse_u32("--gid-start", &value("--gid-start")?)?);
-                    index += 1;
-                }
-                "--slots" => {
-                    parsed.slots = Some(parse_u32("--slots", &value("--slots")?)?);
-                    index += 1;
-                }
-                "--rotation-id" => {
-                    parsed.rotation_id = Some(value("--rotation-id")?);
-                    index += 1;
-                }
-                "--expected-key-id" => {
-                    parsed.expected_key_id = Some(value("--expected-key-id")?);
-                    index += 1;
-                }
-                "--store" => {
-                    parsed.store = Some(PathBuf::from(value("--store")?));
-                    index += 1;
-                }
-                "--policy" => {
-                    parsed.policy = Some(PathBuf::from(value("--policy")?));
-                    index += 1;
-                }
-                "--policy-digest" => {
-                    parsed.policy_digest = Some(value("--policy-digest")?);
-                    index += 1;
-                }
-                "--against" => {
-                    parsed.against = Some(value("--against")?);
-                    index += 1;
-                }
-                "--review-depth" => {
-                    let raw = value("--review-depth")?;
-                    parsed.review_depth = ReviewDepth::parse(&raw).ok_or_else(|| {
-                        CliError::Invalid(format!(
-                            "--review-depth must be unstated, skimmed, read, or reproduced, not '{raw}'"
-                        ))
-                    })?;
-                    index += 1;
-                }
-                "--assessment-model" => {
-                    parsed.assessment_model = Some(value("--assessment-model")?);
-                    index += 1;
-                }
-                "--assessment-prompt" => {
-                    parsed.assessment_prompt = Some(value("--assessment-prompt")?);
-                    index += 1;
-                }
-                "--captured-at" => {
-                    let raw = value("--captured-at")?;
-                    parsed.captured_at = Some(raw.parse().map_err(|_| {
-                        CliError::Invalid(format!(
-                            "--captured-at must be milliseconds, not '{raw}'"
-                        ))
-                    })?);
-                    index += 1;
-                }
-                other if other.starts_with('-') => {
-                    return Err(CliError::Invalid(format!("unknown option '{other}'")));
-                }
-                other => parsed.positional.push(other.to_owned()),
-            }
-            index += 1;
-        }
-        Ok(parsed)
-    }
-
     fn subject(&self, command: &str) -> Result<&str, CliError> {
         self.positional
             .first()
@@ -1270,10 +1163,8 @@ fn required<'a, T>(value: Option<&'a T>, flag: &str) -> Result<&'a T, CliError> 
     value.ok_or_else(|| CliError::Invalid(format!("{flag} is required")))
 }
 
-fn parse_u32(flag: &str, value: &str) -> Result<u32, CliError> {
-    value.parse().map_err(|_| {
-        CliError::Invalid(format!("{flag} must be an unsigned integer, not '{value}'"))
-    })
+fn parse_review_depth(value: &str) -> Result<ReviewDepth, &'static str> {
+    ReviewDepth::parse(value).ok_or("use unstated, skimmed, read or reproduced")
 }
 
 fn default_store_root() -> Result<PathBuf, CliError> {
@@ -1298,78 +1189,6 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn print_help() {
-    println!(
-        "louiselm-skills — package Skill candidates, admit Skill Generations
-
-Packaging and review:
-  louiselm-skills package <candidate-dir> [--captured-at <ms>]
-  louiselm-skills verify <digest>
-  louiselm-skills inspect <digest>
-  louiselm-skills dossier <digest> [--against <digest>] [--review-depth <depth>]
-                                   [--assessment-model <m> --assessment-prompt <p>]
-  louiselm-skills list
-  louiselm-skills policy [--digest]
-  louiselm-skills preflight --help   (prospective artifact snapshot, never launch authority)
-  louiselm-skills workspace --help   (freeze source and materialize private Git)
-
-Trust roles:
-  louiselm-skills recovery --help     (local-only paper/passkey recovery)
-  louiselm-skills trust bootstrap --primary <key> --release <key>
-                                  [--trust-domain <d>] [--require-hardware]
-  louiselm-skills trust show
-  louiselm-skills trust reset --confirm
-
-Skill Generations:
-  louiselm-skills generation admit --member <digest>[:<depth>][=<agent>,...] ... [--skill-request <operation-uuid>]
-                                   --key <privkey>
-                                   [--all-agents --registry <dir>]
-  louiselm-skills generation witness <digest> --remote <url> [--branch <b>]
-  louiselm-skills generation activate <digest>
-  louiselm-skills generation status
-  louiselm-skills generation list
-  louiselm-skills view materialize --registry <dir>
-  louiselm-skills view empty
-
-Trusted release:
-  louiselm-skills release build --output <dir> [--source <dir>]
-  louiselm-skills release sign --bundle <dir> --key <privkey>
-  louiselm-skills release verify --bundle <dir>
-  louiselm-skills release install --bundle <dir> [--prefix <dir>]
-  louiselm-skills release status [--prefix <dir>]
-  louiselm-skills release identity
-
-Privileged launcher authority (mutations require current verified release):
-  louiselm-skills launcher install --operator <user> --broker-uid <id>
-                                    --broker-gid <id> --uid-start <id>
-                                    --gid-start <id> --slots <count>
-  louiselm-skills launcher rotate-key --rotation-id <id> --expected-key-id <id>
-  louiselm-skills launcher revoke-key --expected-key-id <id>
-  louiselm-skills launcher cleanup-key --expected-key-id <id>
-  louiselm-skills launcher status
-
-Emergency quarantine (narrows only; no token needed):
-  louiselm-skills quarantine exclude <digest>... --reason <text>
-  louiselm-skills quarantine all --reason <text>
-  louiselm-skills quarantine show
-
-Options:
-  --store <dir>          Store root; defaults to $LOUISELM_SKILLS_STORE, then
-                         $XDG_STATE_HOME/louiselm/skills, then ~/.local/state/louiselm/skills.
-  --policy <file>        Replacement Inspection policy. Requires --policy-digest.
-  --policy-digest <d>    The digest the replacement policy must have.
-  --review-depth <d>     unstated | skimmed | read | reproduced. A recorded claim, not a proof.
-  --require-hardware     Enrolled keys must be FIDO keys that report touch and user verification.
-  --robot-json           Emit the machine-readable view instead of the human one.
-
-Exit status:
-  0  succeeded; the subject is admissible
-  1  failed; nothing was published and nothing is claimed
-  2  succeeded; the subject is NOT admissible (verification failed, a fatal finding,
-     or no Skill Generation is in force)"
-    );
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1386,22 +1205,28 @@ mod tests {
 
     #[test]
     fn launcher_install_options_are_explicit_and_numeric() {
-        let options = Options::parse(&arguments(&[
-            "install",
-            "--operator",
-            "louise",
-            "--broker-uid",
-            "1500",
-            "--broker-gid",
-            "1500",
-            "--uid-start",
-            "200000",
-            "--gid-start",
-            "300000",
-            "--slots",
-            "4",
-        ]))
-        .expect("launcher options parse");
+        let matches = grammar::command()
+            .try_get_matches_from(arguments(&[
+                "louiselm-skills",
+                "launcher",
+                "install",
+                "--operator",
+                "louise",
+                "--broker-uid",
+                "1500",
+                "--broker-gid",
+                "1500",
+                "--uid-start",
+                "200000",
+                "--gid-start",
+                "300000",
+                "--slots",
+                "4",
+            ]))
+            .expect("launcher options parse");
+        let options =
+            Options::from_arg_matches(matches.subcommand().unwrap().1.subcommand().unwrap().1)
+                .unwrap();
 
         let request = options.launcher_install_request().unwrap();
         assert_eq!(request.operator, "louise");
@@ -1411,14 +1236,26 @@ mod tests {
         assert_eq!(request.pool.gid_start, 300_000);
         assert_eq!(request.pool.slots, 4);
 
-        let error = Options::parse(&arguments(&["install", "--slots", "many"]))
-            .err()
-            .expect("non-numeric pool size is refused");
-        assert!(
-            error
-                .to_string()
-                .contains("--slots must be an unsigned integer")
-        );
+        let error = grammar::command()
+            .try_get_matches_from(arguments(&[
+                "louiselm-skills",
+                "launcher",
+                "install",
+                "--operator",
+                "louise",
+                "--broker-uid",
+                "1500",
+                "--broker-gid",
+                "1500",
+                "--uid-start",
+                "200000",
+                "--gid-start",
+                "300000",
+                "--slots",
+                "many",
+            ]))
+            .expect_err("a non-numeric slot count is refused");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]

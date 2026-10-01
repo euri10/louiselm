@@ -8,65 +8,82 @@ use crate::{Digest, robot, workspace};
 mod launch_inputs;
 mod verification;
 
-pub(super) fn run(args: &[String]) -> Result<i32, CliError> {
-    if args.first().is_some_and(|arg| arg == "launch-inputs") {
-        return launch_inputs::run(&args[1..]);
-    }
-    if args.first().is_some_and(|arg| arg == "verification") {
-        return verification::run(&args[1..]);
-    }
-    if args == ["--help"] {
-        println!("Verification inputs: louiselm-skills workspace verification --help");
-        println!("Launch inputs: louiselm-skills workspace launch-inputs --help");
-        println!(
-            "louiselm-skills workspace prepare --repository DIR --output NEW_DIR\n  [--include RELATIVE_FILE ...] [--robot-json]\nlouiselm-skills workspace materialize --snapshot DIR --digest SHA256\n  --output NEW_DIR [--robot-json]\nlouiselm-skills workspace export --snapshot DIR --digest SHA256\n  --workspace DIR --output NEW_DIR [--robot-json]\nlouiselm-skills workspace apply --snapshot DIR --digest SHA256\n  --bundle DIR --bundle-digest SHA256 --output NEW_DIR [--robot-json]\nPrepare freezes HEAD plus explicitly selected working-copy files.\nExport compares actual workspace bytes; apply writes a fresh integration tree.\nInspect preview digests before use. Local bytes only; no launch or promotion authority.\nExit 0: complete. Exit 1: refused or failed; inspect output after persistence errors."
-        );
-        return Ok(0);
-    }
-    let Some(operation @ ("prepare" | "materialize" | "export" | "apply")) =
-        args.first().map(String::as_str)
-    else {
-        return Err(invalid(
-            "workspace requires prepare, materialize, export or apply",
-        ));
-    };
-    let mut values = BTreeMap::new();
-    let mut included = Vec::new();
-    let mut robot = false;
-    let mut args = args[1..].iter();
-    while let Some(flag) = args.next() {
-        if flag == "--robot-json" && !robot {
-            robot = true;
-            continue;
-        }
-        let allowed = match operation {
-            "prepare" => ["--repository", "--output", "--include"].contains(&flag.as_str()),
-            "export" => {
-                ["--snapshot", "--digest", "--workspace", "--output"].contains(&flag.as_str())
-            }
-            "apply" => [
+pub(super) fn command() -> clap::Command {
+    let mut root = clap::Command::new("workspace")
+        .about("Freeze source and prepare local bytes; no launch or promotion authority")
+        .subcommand_required(true);
+    for (name, flags) in [
+        ("prepare", &["--repository", "--output"][..]),
+        ("materialize", &["--snapshot", "--digest", "--output"]),
+        (
+            "export",
+            &["--snapshot", "--digest", "--workspace", "--output"],
+        ),
+        (
+            "apply",
+            &[
                 "--snapshot",
                 "--digest",
                 "--bundle",
                 "--bundle-digest",
                 "--output",
-            ]
-            .contains(&flag.as_str()),
-            _ => ["--snapshot", "--digest", "--output"].contains(&flag.as_str()),
-        };
-        if !allowed {
-            return Err(invalid("invalid or duplicate workspace option"));
+            ],
+        ),
+    ] {
+        let mut command = clap::Command::new(name)
+            .args(flags.iter().map(|&flag| value(flag)))
+            .arg(robot_flag());
+        if name == "prepare" {
+            command = command.arg(
+                value("--include")
+                    .required(false)
+                    .action(clap::ArgAction::Append),
+            );
         }
-        let value = args
-            .next()
-            .filter(|value| !value.is_empty() && !value.starts_with("--"))
-            .ok_or_else(|| invalid("workspace option requires a value"))?;
-        if flag == "--include" {
-            included.push(value.clone());
-        } else if values.insert(flag.as_str(), value.as_str()).is_some() {
-            return Err(invalid("duplicate workspace option"));
-        }
+        root = root.subcommand(command);
     }
+    root.subcommand(launch_inputs::command())
+        .subcommand(verification::command())
+}
+
+pub(super) fn value(name: &'static str) -> clap::Arg {
+    clap::Arg::new(name)
+        .long(&name[2..])
+        .required(true)
+        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+}
+
+pub(super) fn robot_flag() -> clap::Arg {
+    clap::Arg::new("robot")
+        .long("robot-json")
+        .action(clap::ArgAction::SetTrue)
+}
+
+pub(super) fn run(args: &clap::ArgMatches) -> Result<i32, CliError> {
+    let (operation, args) = args
+        .subcommand()
+        .ok_or_else(|| invalid("workspace requires a subcommand"))?;
+    match operation {
+        "launch-inputs" => return launch_inputs::run(args),
+        "verification" => return verification::run(args),
+        _ => (),
+    }
+    let robot = args.get_flag("robot");
+    let included = if operation == "prepare" {
+        args.get_many::<String>("--include")
+            .map(|values| values.cloned().collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let values: BTreeMap<_, _> = args
+        .ids()
+        .filter(|id| !matches!(id.as_str(), "robot" | "--include"))
+        .filter_map(|id| {
+            args.get_one::<String>(id.as_str())
+                .map(|value| (id.as_str(), value.as_str()))
+        })
+        .collect();
     if operation == "export" || operation == "apply" {
         return run_bundle(operation, &values, robot);
     }

@@ -5,49 +5,46 @@ use std::{collections::BTreeMap, path::Path};
 use super::{CliError, invalid};
 use crate::{Digest, robot, workspace::verification};
 
-pub(super) fn run(args: &[String]) -> Result<i32, CliError> {
-    if args == ["--help"] {
-        println!(
-            "louiselm-skills workspace verification prepare\n  --snapshot DIR --digest SHA256 --bundle DIR --bundle-digest SHA256\n  --plan FILE --plan-digest SHA256 --output NEW_DIR [--robot-json]\nlouiselm-skills workspace verification inspect\n  --job DIR --digest SHA256 [--robot-json]\nPrepared bytes only; not verification or promotion authority. No command executes."
-        );
-        return Ok(0);
-    }
-    let Some(operation @ ("prepare" | "inspect")) = args.first().map(String::as_str) else {
-        return Err(invalid("verification requires prepare or inspect"));
-    };
-    let mut options = BTreeMap::new();
-    let mut robot = false;
-    let mut args = args[1..].iter();
-    while let Some(flag) = args.next() {
-        if flag == "--robot-json" && !robot {
-            robot = true;
-            continue;
-        }
-        let allowed = if operation == "prepare" {
-            [
-                "--snapshot",
-                "--digest",
-                "--bundle",
-                "--bundle-digest",
-                "--plan",
-                "--plan-digest",
-                "--output",
-            ]
-            .contains(&flag.as_str())
-        } else {
-            ["--job", "--digest"].contains(&flag.as_str())
-        };
-        if !allowed {
-            return Err(invalid("invalid or duplicate verification option"));
-        }
-        let value = args
-            .next()
-            .filter(|value| !value.is_empty() && !value.starts_with("--"))
-            .ok_or_else(|| invalid("verification option requires a value"))?;
-        if options.insert(flag.as_str(), value.as_str()).is_some() {
-            return Err(invalid("duplicate verification option"));
-        }
-    }
+pub(super) fn command() -> clap::Command {
+    clap::Command::new("verification")
+        .about("Prepare and inspect verification bytes; no command executes")
+        .subcommand_required(true)
+        .subcommand(
+            clap::Command::new("prepare")
+                .args(
+                    [
+                        "--snapshot",
+                        "--digest",
+                        "--bundle",
+                        "--bundle-digest",
+                        "--plan",
+                        "--plan-digest",
+                        "--output",
+                    ]
+                    .map(super::value),
+                )
+                .arg(super::robot_flag()),
+        )
+        .subcommand(
+            clap::Command::new("inspect")
+                .args(["--job", "--digest"].map(super::value))
+                .arg(super::robot_flag()),
+        )
+}
+
+pub(super) fn run(args: &clap::ArgMatches) -> Result<i32, CliError> {
+    let (operation, args) = args
+        .subcommand()
+        .ok_or_else(|| invalid("verification requires prepare or inspect"))?;
+    let robot = args.get_flag("robot");
+    let options: BTreeMap<_, _> = args
+        .ids()
+        .filter(|id| id.as_str() != "robot")
+        .filter_map(|id| {
+            args.get_one::<String>(id.as_str())
+                .map(|value| (id.as_str(), value.as_str()))
+        })
+        .collect();
     let required = |flag| {
         options
             .get(flag)

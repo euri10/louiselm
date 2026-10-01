@@ -277,6 +277,58 @@ fn an_unknown_command_is_refused_rather_than_guessed() {
 }
 
 #[test]
+fn malformed_arguments_are_redacted_before_store_creation() {
+    for args in [
+        vec!["list", "private-argument"],
+        vec!["policy", "--robot-json", "--robot-json"],
+        vec!["trust", "--robot-json", "show", "--robot-json"],
+        vec!["generation", "admit", "--key", "private-argument"],
+        vec!["trust", "bootstrap", "--primary", "private-argument"],
+        vec!["quarantine", "all"],
+        vec![
+            "package",
+            "private-argument",
+            "--captured-at",
+            "private-number",
+        ],
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("absent");
+        let output = Command::new(BINARY)
+            .args(args)
+            .env("LOUISELM_SKILLS_STORE", &store)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-"));
+        assert!(!store.exists());
+    }
+}
+
+#[test]
+fn subcommand_help_succeeds_without_a_store() {
+    for args in [
+        vec!["generation", "admit", "--help"],
+        vec!["recovery", "change", "--help"],
+        vec!["workspace", "prepare", "--help"],
+        vec!["preflight", "--help"],
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("absent");
+        let output = Command::new(BINARY)
+            .args(args)
+            .env("LOUISELM_SKILLS_STORE", &store)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+        assert!(output.stderr.is_empty());
+        assert!(!store.exists());
+    }
+}
+
+#[test]
 fn launcher_status_has_a_robot_view() {
     let fixture = Fixture::new();
 

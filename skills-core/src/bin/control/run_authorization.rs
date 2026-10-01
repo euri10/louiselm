@@ -2,14 +2,12 @@
 
 use louiselm_skills::broker::operator::{self, AuthorizationRequest, InspectError};
 use std::{
-    ffi::OsString,
     io::{self, Read, Write},
     path::Path,
 };
 
-fn parse(arguments: &[OsString], bytes: &[u8]) -> Result<AuthorizationRequest, InspectError> {
-    if arguments != ["authorize", "--json"]
-        || bytes.is_empty()
+fn parse(bytes: &[u8]) -> Result<AuthorizationRequest, InspectError> {
+    if bytes.is_empty()
         || bytes.len() > louiselm_skills::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES
     {
         return Err(InspectError::InvalidRequest);
@@ -17,14 +15,15 @@ fn parse(arguments: &[OsString], bytes: &[u8]) -> Result<AuthorizationRequest, I
     serde_json::from_slice(bytes).map_err(|_| InspectError::InvalidRequest)
 }
 
-pub(super) fn cli(arguments: &[OsString]) -> u8 {
+pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let result = (|| {
+        arguments.map_err(|()| InspectError::InvalidRequest)?;
         let mut bytes = Vec::new();
         io::stdin()
             .take((louiselm_skills::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| InspectError::InvalidRequest)?;
-        let request = parse(arguments, &bytes)?;
+        let request = parse(&bytes)?;
         let paths = super::installed_paths().map_err(|_| InspectError::BrokerUnavailable)?;
         let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
             .map_err(|_| InspectError::BrokerUnavailable)?;
@@ -51,6 +50,17 @@ pub(super) fn cli(arguments: &[OsString]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    fn parse(args: &[OsString], bytes: &[u8]) -> Result<(), InspectError> {
+        super::super::arguments::command()
+            .try_get_matches_from(
+                [OsString::from("louiselm-control"), OsString::from("run")]
+                    .into_iter()
+                    .chain(args.iter().cloned()),
+            )
+            .map_err(|_| InspectError::InvalidRequest)?;
+        super::parse(bytes).map(|_| ())
+    }
 
     #[test]
     fn cli_rejects_unknown_fields_and_unbounded_input_before_installation() {

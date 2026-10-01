@@ -22,13 +22,7 @@ mod check;
 mod setup;
 type Flags<'a> = BTreeMap<&'a str, &'a str>;
 
-const HELP: &str = "recovery setup --store PATH --primary PRIVATE_KEY --release PRIVATE_KEY [--trust-domain DOMAIN]
-recovery status --store PATH
-recovery check-paper --store PATH
-recovery change --store PATH --via primary|release|paper|passkey [--authorizer PRIVATE_KEY]
-                [--primary NEW_PRIVATE_KEY] [--release NEW_PRIVATE_KEY] [--paper replace] [--passkey replace]
-recovery reset --store PATH
-Mutations require the trusted installed tool, protected production store and local foreground TTY.
+const HELP: &str = "Mutations require the trusted installed tool, protected production store and local foreground TTY.
 Setup confirms BOTH signing keys, a password-manager-backed passkey and written paper before enrollment.
 --via primary/release requires --authorizer. --via paper requires --paper replace (single-use).
 Only explicitly named replacements change. A new passkey never authorizes itself.
@@ -39,45 +33,57 @@ Do not run secret ceremonies in an Agent terminal, recorded terminal or screen-s
 Open the ephemeral localhost URL in your normal browser, never a root browser.
 Software readiness is not personal-hardware acceptance or Verified posture.";
 
-fn invalid() -> CliError {
+pub(super) fn invalid() -> CliError {
     CliError::Invalid(
         "invalid recovery arguments; use recovery --help (never pass a phrase as an argument)"
             .to_owned(),
     )
 }
 
-fn parse(arguments: &[String]) -> Result<(&str, Flags<'_>), CliError> {
-    let command = arguments.first().map(String::as_str).ok_or_else(invalid)?;
-    let allowed: &[&str] = match command {
-        "setup" => &["--store", "--primary", "--release", "--trust-domain"],
-        "status" | "reset" | "check-paper" => &["--store"],
-        "change" => &[
-            "--store",
-            "--via",
-            "--authorizer",
-            "--primary",
-            "--release",
-            "--paper",
-            "--passkey",
-        ],
-        _ => return Err(invalid()),
-    };
-    let mut flags = Flags::new();
-    for pair in arguments[1..].chunks(2) {
-        let [flag, value] = pair else {
-            return Err(invalid());
-        };
-        if !allowed.contains(&flag.as_str())
-            || value.is_empty()
-            || value.starts_with("--")
-            || flags.insert(flag.as_str(), value.as_str()).is_some()
-        {
-            return Err(invalid());
+pub(super) fn command() -> clap::Command {
+    let mut root = clap::Command::new("recovery")
+        .about("Local operator ceremonies; never pass secret phrases in argv")
+        .after_help(HELP)
+        .subcommand_required(true);
+    for (name, flags) in [
+        (
+            "setup",
+            &["--store", "--primary", "--release", "--trust-domain"][..],
+        ),
+        ("status", &["--store"]),
+        ("check-paper", &["--store"]),
+        ("reset", &["--store"]),
+        (
+            "change",
+            &[
+                "--store",
+                "--via",
+                "--authorizer",
+                "--primary",
+                "--release",
+                "--paper",
+                "--passkey",
+            ],
+        ),
+    ] {
+        let mut command = clap::Command::new(name).after_help(HELP);
+        for &flag in flags {
+            let required = flag == "--store"
+                || (name == "setup" && matches!(flag, "--primary" | "--release"))
+                || (name == "change" && flag == "--via");
+            command = command.arg(
+                clap::Arg::new(flag)
+                    .long(&flag[2..])
+                    .required(required)
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new()),
+            );
         }
+        root = root.subcommand(command);
     }
-    if !flags.contains_key("--store") {
-        return Err(invalid());
-    }
+    root
+}
+
+fn validate(command: &str, flags: &Flags<'_>) -> Result<(), CliError> {
     if command == "setup" && (!flags.contains_key("--primary") || !flags.contains_key("--release"))
     {
         return Err(invalid());
@@ -102,15 +108,20 @@ fn parse(arguments: &[String]) -> Result<(&str, Flags<'_>), CliError> {
             return Err(invalid());
         }
     }
-    Ok((command, flags))
+    Ok(())
 }
 
-pub(super) fn run(arguments: &[String]) -> Result<i32, CliError> {
-    if arguments == ["--help"] {
-        println!("{HELP}");
-        return Ok(0);
-    }
-    let (command, flags) = parse(arguments)?;
+pub(super) fn run(matches: &clap::ArgMatches) -> Result<i32, CliError> {
+    let (command, matches) = matches.subcommand().ok_or_else(invalid)?;
+    let flags: Flags<'_> = matches
+        .ids()
+        .filter_map(|id| {
+            matches
+                .get_one::<String>(id.as_str())
+                .map(|value| (id.as_str(), value.as_str()))
+        })
+        .collect();
+    validate(command, &flags)?;
     let path = Path::new(flags.get("--store").ok_or_else(invalid)?);
     if command == "status" {
         // Do not manufacture provenance for an absent store.

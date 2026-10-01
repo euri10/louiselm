@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use clap::{CommandFactory, FromArgMatches, Parser};
 use serde::Serialize;
 
 use super::{CliError, EXIT_NOT_ADMISSIBLE, default_store_root};
@@ -18,87 +19,42 @@ use crate::{
     session_manifest::{MAX_INPUT_MANIFEST_BYTES, SessionInputManifest},
 };
 
-#[derive(Default)]
+#[derive(Parser)]
+#[command(
+    name = "preflight",
+    about = "Inspect prospective artifacts without launch or approval authority",
+    after_help = "Inputs must be canonical launch request/2 and Session input-manifest/1 bytes. Exit 2: snapshot produced, enforcement unproven. Exit 1: invalid command/input."
+)]
 struct Options {
+    #[arg(long, required_unless_present = "direct")]
     request: Option<PathBuf>,
+    #[arg(long)]
     manifest: Option<PathBuf>,
+    #[arg(long, requires = "previous_manifest")]
     previous_request: Option<PathBuf>,
+    #[arg(long, requires = "previous_request")]
     previous_manifest: Option<PathBuf>,
+    #[arg(long)]
     registry: Option<PathBuf>,
+    #[arg(long)]
     store: Option<PathBuf>,
+    #[arg(long = "robot-json")]
     robot: bool,
+    #[arg(long, conflicts_with_all = ["request", "manifest", "previous_request", "previous_manifest", "registry", "store"])]
     direct: bool,
 }
 
-impl Options {
-    fn parse(args: &[String]) -> Result<Self, CliError> {
-        let mut options = Self::default();
-        let mut args = args.iter();
-        while let Some(arg) = args.next() {
-            let target = match arg.as_str() {
-                "--request" => &mut options.request,
-                "--manifest" => &mut options.manifest,
-                "--previous-request" => &mut options.previous_request,
-                "--previous-manifest" => &mut options.previous_manifest,
-                "--registry" => &mut options.registry,
-                "--store" => &mut options.store,
-                "--robot-json" if !options.robot => {
-                    options.robot = true;
-                    continue;
-                }
-                "--direct" if !options.direct => {
-                    options.direct = true;
-                    continue;
-                }
-                _ => return Err(invalid("invalid or duplicate preflight option")),
-            };
-            if target.is_some() {
-                return Err(invalid("duplicate preflight option"));
-            }
-            let value = args
-                .next()
-                .filter(|value| !value.is_empty() && !value.starts_with("--"))
-                .ok_or_else(|| invalid("preflight option requires a file or directory"))?;
-            *target = Some(PathBuf::from(value));
-        }
-        if options.direct {
-            if [
-                &options.request,
-                &options.manifest,
-                &options.previous_request,
-                &options.previous_manifest,
-                &options.registry,
-                &options.store,
-            ]
-            .iter()
-            .any(|value| value.is_some())
-            {
-                return Err(invalid("direct preflight does not accept artifact options"));
-            }
-        } else if options.request.is_none() {
-            return Err(invalid("preflight requires --request or --direct"));
-        }
-        if options.previous_request.is_some() != options.previous_manifest.is_some() {
-            return Err(invalid(
-                "prior comparison requires both --previous-request and --previous-manifest",
-            ));
-        }
-        Ok(options)
-    }
+pub(super) fn command() -> clap::Command {
+    Options::command()
 }
 
 fn invalid(message: &str) -> CliError {
     CliError::Invalid(message.to_owned())
 }
 
-pub(super) fn run(args: &[String]) -> Result<i32, CliError> {
-    if args == ["--help"] {
-        println!(
-            "louiselm-skills preflight --request FILE [--manifest FILE]\n  [--previous-request FILE --previous-manifest FILE]\n  [--store DIR] [--registry DIR] [--robot-json]\nlouiselm-skills preflight --direct [--robot-json]\nInputs must be canonical launch request/2 and Session input-manifest/1 bytes.\nUses the embedded supply policy and root-trusted registry. No launch or approval.\nExit 2: snapshot produced, enforcement unproven. Exit 1: invalid command/input."
-        );
-        return Ok(0);
-    }
-    let options = Options::parse(args)?;
+pub(super) fn run(matches: &clap::ArgMatches) -> Result<i32, CliError> {
+    let options =
+        Options::from_arg_matches(matches).map_err(|_| invalid("invalid preflight options"))?;
     if options.direct {
         #[derive(Serialize)]
         struct Direct {

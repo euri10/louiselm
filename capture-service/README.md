@@ -43,6 +43,13 @@ or restart the service. Editor choices (`attention.enabled`, `capture.enabled`,
 
 ## Commands
 
+Commands use clap-generated help. Run `louiselm-capture --help` or append
+`--help` to a subcommand, such as `louiselm-capture run reserve --help`.
+Help needs no configured storage. Unknown flags, duplicate single-value options,
+invalid values and extra positionals fail with exit 1 before operational effects;
+diagnostics do not repeat supplied arguments. Arguments after `run generate --`
+are forwarded to Beads unchanged.
+
 `louiselm-capture --version` reports the compiled Cargo version. `metadata`
 returns bounded package and interface identity without opening any state.
 Plugin clients prefix commands with `--require-interface=1`; incompatible
@@ -64,7 +71,7 @@ status
 retry CAPTURE_UUID
 transcribe-once
 run list
-run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N
+run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS
 attention list
 attention status
 ```

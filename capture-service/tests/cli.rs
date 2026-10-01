@@ -19,6 +19,51 @@ use std::os::unix::fs::PermissionsExt;
 use louiselm_capture::PairingRegistry;
 
 #[test]
+fn argument_errors_are_redacted_and_do_not_create_storage() {
+    for args in [
+        vec!["list", "private-argument"],
+        vec!["status", "--private-argument"],
+        vec!["run", "admit", "--id", "private-argument", "--id", "other"],
+        vec![
+            "ingest-local",
+            "--file",
+            "private-argument",
+            "--duration-ms",
+            "0",
+        ],
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let state = root.path().join("state");
+        let output = command(&data, &state).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-argument"));
+        assert!(!data.exists());
+        assert!(!state.exists());
+    }
+}
+
+#[test]
+fn nested_help_succeeds_without_creating_storage() {
+    for args in [
+        vec!["--help"],
+        vec!["run", "admit", "--help"],
+        vec!["pair", "--help"],
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let state = root.path().join("state");
+        let output = command(&data, &state).args(args).output().unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+        assert!(output.stderr.is_empty());
+        assert!(!data.exists());
+        assert!(!state.exists());
+    }
+}
+
+#[test]
 fn serve_requires_explicit_capabilities_before_creating_storage() {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("data");

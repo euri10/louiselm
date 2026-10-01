@@ -2,16 +2,13 @@
 
 use louiselm_skills::broker::operator::{self, InspectError, VerificationControlRequest};
 use std::{
-    ffi::OsString,
     io::{self, Read, Write},
     path::Path,
 };
 
-pub(super) fn cli(arguments: &[OsString]) -> u8 {
+pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let result = (|| {
-        if arguments != ["--json"] {
-            return Err(InspectError::InvalidRequest);
-        }
+        arguments.map_err(|()| InspectError::InvalidRequest)?;
         let mut bytes = Vec::new();
         io::stdin()
             .take((louiselm_skills::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES + 1) as u64)

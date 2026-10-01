@@ -1,5 +1,10 @@
 //! Privileged Session launcher command-line entrypoint.
 
+use clap::Parser;
+#[path = "launch/arguments.rs"]
+mod arguments;
+use arguments::{Cli, Command};
+
 use std::{
     ffi::OsStr,
     fs::File,
@@ -25,29 +30,40 @@ use louiselm_skills::{
 const BROKER_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
-    let mut arguments = std::env::args_os().skip(1);
-    let verb = arguments.next();
-    // Internal bootstrap/probe verbs use inherited authority only. Sudoers
-    // grants exactly run/prepare/certify, never these internal worker verbs.
-    if verb.as_deref() == Some(OsStr::new(bootstrap::ARGUMENT)) {
-        if bootstrap::run(&arguments.collect::<Vec<_>>()).is_ok() {
-            return ExitCode::SUCCESS;
+    let args: Vec<_> = std::env::args_os().collect();
+    let command = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli.command,
+        Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => {
+            return if error.print().is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
         }
-        eprintln!("louiselm-launch: sandbox bootstrap failed");
-        return ExitCode::FAILURE;
-    }
-    if arguments.next().is_some() {
-        eprintln!("louiselm-launch: unexpected arguments");
-        return ExitCode::FAILURE;
-    }
-    let result = match verb.as_deref() {
-        Some(value) if value == OsStr::new("run") => run(),
-        Some(value) if value == OsStr::new("prepare") => preparation(),
-        Some(value) if value == OsStr::new("certify") => certification(false),
-        Some(value) if value == OsStr::new("cleanup") => cleanup(),
-        // Read-only artifact inspection. No root authority, input path, load,
-        // or attachment; the disposable VM gate consumes exactly these bytes.
-        Some(value) if value == OsStr::new("__sender-guard-object") => {
+        Err(_) => {
+            let message = if args.len() > 2 {
+                "unexpected arguments"
+            } else {
+                "expected exactly 'run', 'prepare', 'certify' or root-only 'cleanup'"
+            };
+            eprintln!("louiselm-launch: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = match command {
+        Command::Bootstrap { arguments } => {
+            // The inherited-capability bootstrap is never granted by sudoers.
+            if bootstrap::run(&arguments).is_ok() {
+                return ExitCode::SUCCESS;
+            }
+            eprintln!("louiselm-launch: sandbox bootstrap failed");
+            return ExitCode::FAILURE;
+        }
+        Command::Run => run(),
+        Command::Prepare => preparation(),
+        Command::Certify => certification(false),
+        Command::Cleanup => cleanup(),
+        Command::SenderGuardObject => {
             use std::io::Write;
             io::stdout()
                 .lock()
@@ -55,18 +71,15 @@ fn main() -> ExitCode {
                 .map(|()| 0)
                 .map_err(|_| "Sender guard artifact output failed")
         }
-        Some(value) if value == OsStr::new("__conformance-worker") => certification(true),
-        Some(value) if value == OsStr::new("__conformance-probe") => {
-            louiselm_skills::conformance::installed::serve_probe()
-                .map(|()| 0)
-                .map_err(|_| "probe failed")
-        }
-        Some(value) if value == OsStr::new("__conformance-guard-probe") => {
+        Command::ConformanceWorker => certification(true),
+        Command::ConformanceProbe => louiselm_skills::conformance::installed::serve_probe()
+            .map(|()| 0)
+            .map_err(|_| "probe failed"),
+        Command::ConformanceGuardProbe => {
             louiselm_skills::conformance::installed::serve_guard_probe()
                 .map(|()| 0)
                 .map_err(|_| "guard probe failed")
         }
-        _ => Err("expected exactly 'run', 'prepare', 'certify' or root-only 'cleanup'"),
     };
     match result {
         Ok(code) => u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from),

@@ -16,6 +16,8 @@ use louiselm_skills::{
     release,
 };
 
+#[path = "control/arguments.rs"]
+mod arguments;
 #[path = "control/attention.rs"]
 mod attention;
 #[path = "control/beads.rs"]
@@ -38,60 +40,49 @@ mod verification;
 mod waiver;
 
 fn main() -> ExitCode {
-    let collected: Vec<_> = std::env::args_os().skip(1).collect();
-    if collected.first().is_some_and(|verb| verb == "waiver") {
-        return ExitCode::from(waiver::cli(&collected[1..]));
-    }
-    if collected
-        .first()
-        .is_some_and(|verb| verb == "provider-extend")
-    {
-        return ExitCode::from(provider_extension::cli(&collected[1..]));
-    }
-    if collected.first().is_some_and(|verb| verb == "dependencies") {
-        return ExitCode::from(dependencies::cli(&collected[1..]));
-    }
-    if collected.first().is_some_and(|verb| verb == "session") {
-        return ExitCode::from(inspection::cli(&collected[1..]));
-    }
-    if collected.first().is_some_and(|verb| verb == "beads") {
-        return ExitCode::from(beads::cli(&collected[1..]));
-    }
-    if collected.first().is_some_and(|verb| verb == "run") {
-        return ExitCode::from(run_authorization::cli(&collected[1..]));
-    }
-    if collected
-        .first()
-        .is_some_and(|verb| verb == "launch-inputs")
-    {
-        return ExitCode::from(launch_inputs::cli(&collected[1..]));
-    }
-    if collected.first().is_some_and(|verb| verb == "verification") {
-        return ExitCode::from(verification::cli(&collected[1..]));
-    }
-    if collected.first().is_some_and(|verb| verb == "promotion") {
-        return ExitCode::from(promotion::cli(&collected[1..]));
-    }
-    if collected
-        .first()
-        .is_some_and(|verb| verb == "skill-request")
-    {
-        return ExitCode::from(inspection::skill_cli(&collected[1..]));
-    }
-    let mut arguments = collected.into_iter();
-    let verb = arguments.next();
-    let result = match verb.as_deref() {
-        Some(value) if value == OsStr::new("serve") && arguments.next().is_none() => start(),
-        Some(value)
-            if value == OsStr::new("adopt-state")
-                && arguments.next().as_deref() == Some(OsStr::new("--confirm"))
-                && arguments.next().is_none() =>
-        {
-            adopt_state()
+    let args: Vec<_> = std::env::args_os().collect();
+    let parsed = match arguments::command().try_get_matches_from(&args) {
+        Ok(matches) => Some(matches),
+        Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => {
+            return if error.print().is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
         }
-        _ => Err(
-            "expected 'serve', 'adopt-state --confirm', 'run authorize --json', 'launch-inputs stage --json', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
-        ),
+        Err(_) => None,
+    };
+    // Syntax refusals retain the selected operation's machine error schema.
+    // The raw argument is used only to select a static handler, never displayed.
+    let (verb, input) = parsed
+        .as_ref()
+        .and_then(clap::ArgMatches::subcommand)
+        .map_or_else(
+            || {
+                (
+                    args.get(1).and_then(|arg| arg.to_str()).unwrap_or(""),
+                    Err(()),
+                )
+            },
+            |(verb, matches)| (verb, Ok(matches)),
+        );
+    match verb {
+        "waiver" => return ExitCode::from(waiver::cli(input)),
+        "provider-extend" => return ExitCode::from(provider_extension::cli(input)),
+        "dependencies" => return ExitCode::from(dependencies::cli(input)),
+        "session" => return ExitCode::from(inspection::cli(input)),
+        "beads" => return ExitCode::from(beads::cli(input)),
+        "run" => return ExitCode::from(run_authorization::cli(input)),
+        "launch-inputs" => return ExitCode::from(launch_inputs::cli(input)),
+        "verification" => return ExitCode::from(verification::cli(input)),
+        "promotion" => return ExitCode::from(promotion::cli(input)),
+        "skill-request" => return ExitCode::from(inspection::skill_cli(input)),
+        _ => (),
+    }
+    let result = match verb {
+        "serve" if input.is_ok() => start(),
+        "adopt-state" if input.is_ok() => adopt_state(),
+        _ => Err("expected 'serve', 'adopt-state --confirm', 'run authorize --json', 'launch-inputs stage --json', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -2,20 +2,17 @@
 
 use louiselm_skills::broker::operator::{self, InspectError};
 use std::{
-    ffi::OsString,
     io::{self, Write},
     path::Path,
 };
 
-pub(super) fn cli(arguments: &[OsString]) -> u8 {
+pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let result = (|| {
-        let [verb, operation_id, format] = arguments else {
-            return Err(InspectError::InvalidRequest);
-        };
-        if verb != "inspect" || format != "--json" {
-            return Err(InspectError::InvalidRequest);
-        }
-        let operation_id = operation_id.to_str().ok_or(InspectError::InvalidRequest)?;
+        let (_, args) =
+            super::arguments::operation(arguments).map_err(|()| InspectError::InvalidRequest)?;
+        let operation_id = args
+            .get_one::<String>("subject")
+            .ok_or(InspectError::InvalidRequest)?;
         let paths = super::installed_paths().map_err(|_| InspectError::BrokerUnavailable)?;
         let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
             .map_err(|_| InspectError::BrokerUnavailable)?;
@@ -62,9 +59,24 @@ mod tests {
         ] {
             let arguments = arguments
                 .into_iter()
-                .map(OsString::from)
+                .map(std::ffi::OsString::from)
                 .collect::<Vec<_>>();
-            assert_eq!(cli(&arguments), InspectError::InvalidRequest.exit_code());
+            let matches = super::super::arguments::command().try_get_matches_from(
+                [
+                    std::ffi::OsString::from("louiselm-control"),
+                    std::ffi::OsString::from("beads"),
+                ]
+                .into_iter()
+                .chain(arguments),
+            );
+            assert_eq!(
+                cli(matches
+                    .as_ref()
+                    .ok()
+                    .and_then(|m| m.subcommand().map(|(_, m)| m))
+                    .ok_or(())),
+                InspectError::InvalidRequest.exit_code()
+            );
         }
     }
 }

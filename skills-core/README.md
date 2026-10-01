@@ -42,6 +42,21 @@ refuses Brokered. These checks do not confer Verified posture. See the
 
 ## Commands
 
+`louiselm-skills`, `louiselm-launch` and `louiselm-control` use clap-generated
+help at every public command level, for example
+`louiselm-skills generation admit --help` and
+`louiselm-control session inspect --help`. Help needs no installed authority,
+storage or stdin payload. Internal launcher verbs remain hidden; bootstrap
+arguments retain their original bytes and boundaries.
+
+Argument failures do not repeat supplied values or secrets. Skills and launcher
+syntax failures keep exit 1; control operations retain their machine-readable
+error schemas and exit codes. Exit 2 from the skills tool still means a completed
+operation whose subject is not admissible. Unknown flags, duplicate single-value
+options and extra positionals are refused before operational effects.
+Place options after the concrete operation, for example
+`trust show --store DIR --robot-json`; parent command groups accept no options.
+
 ```text
 package <candidate-dir> [--captured-at MS]
 verify <digest>

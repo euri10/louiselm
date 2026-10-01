@@ -8,12 +8,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use clap::{CommandFactory, Parser};
 use qrcode::{
     QrCode,
     render::{svg, unicode},
 };
 use serde::Serialize;
 use thiserror::Error;
+
+mod arguments;
+use arguments::{Attention, Cli, Command, Run};
 
 #[path = "notification_worker.rs"]
 mod notification_worker;
@@ -93,71 +97,81 @@ pub enum CliError {
 ///
 /// Returns explicit command, configuration, storage, identity, and service errors.
 pub async fn run() -> Result<(), CliError> {
-    let mut arguments = env::args().skip(1).collect::<Vec<_>>();
-    if let Some(required) = arguments
-        .first()
-        .and_then(|value| value.strip_prefix("--require-interface="))
-    {
-        if required
-            != crate::compatibility::metadata()
-                .interfaces
-                .capture
-                .to_string()
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
         {
-            return Err(CliError::Invalid(format!(
-                "louiselm-capture {}: incompatible capture interface; install the capture release required by the plugin",
-                env!("CARGO_PKG_VERSION")
-            )));
+            error.print()?;
+            return Ok(());
         }
-        arguments.remove(0);
+        Err(_) => {
+            return Err(CliError::Invalid(
+                "invalid command or argument; use --help".into(),
+            ));
+        }
+    };
+    if cli
+        .require_interface
+        .is_some_and(|required| required != crate::compatibility::metadata().interfaces.capture)
+    {
+        return Err(CliError::Invalid(format!(
+            "louiselm-capture {}: incompatible capture interface; install the capture release required by the plugin",
+            env!("CARGO_PKG_VERSION")
+        )));
     }
-    let Some(command) = arguments.first().map(String::as_str) else {
-        print_help();
+    let Some(command) = cli.command else {
+        Cli::command().print_help()?;
+        println!();
         return Ok(());
     };
-    if command == "help" || command == "--help" || command == "-h" {
-        print_help();
-        return Ok(());
-    }
-    let options = &arguments[1..];
-    if command == "metadata" || command == "--version" {
-        no_arguments(options, command)?;
-        if command == "metadata" {
-            println!(
-                "{}",
-                serde_json::to_string(&crate::compatibility::metadata())?
-            );
-        } else {
-            println!("louiselm-capture {}", env!("CARGO_PKG_VERSION"));
-        }
+    if matches!(command, Command::Metadata) {
+        println!(
+            "{}",
+            serde_json::to_string(&crate::compatibility::metadata())?
+        );
         return Ok(());
     }
     let paths = Paths::discover()?;
     match command {
-        "ingest-local" => ingest_local(&Store::new(paths.captures())?, options),
-        "list" => list(&Store::new(paths.captures())?),
-        "status" => status(
+        Command::IngestLocal {
+            file,
+            id,
+            recorded_at_ms,
+            duration_ms,
+            mime,
+        } => ingest_local(
+            &Store::new(paths.captures())?,
+            &file,
+            id,
+            recorded_at_ms,
+            duration_ms,
+            mime,
+        ),
+        Command::List => list(&Store::new(paths.captures())?),
+        Command::Status => status(
             &Store::new(paths.captures())?,
             &attention_store(&paths)?,
             &paths,
         ),
-        "attention" => attention_command(&attention_store(&paths)?, options),
-        "retry" => retry(&Store::new(paths.captures())?, options),
-        "transcribe-once" => transcribe_once(&Store::new(paths.captures())?),
-        "run" => run_command(&paths, options),
-        "configure-network" => configure_network(&paths, options),
-        "pair" => pair(&paths, options),
-        "revoke-device" => revoke_device(&paths, options),
-        "retry-notifications" => {
-            no_arguments(options, "retry-notifications")?;
+        Command::Attention { command } => attention_command(&attention_store(&paths)?, command),
+        Command::Retry { id } => retry(&Store::new(paths.captures())?, &id),
+        Command::TranscribeOnce => transcribe_once(&Store::new(paths.captures())?),
+        Command::Run { command } => run_command(&paths, command),
+        Command::ConfigureNetwork { profile, bind, url } => {
+            configure_network(&paths, &profile, bind, &url)
+        }
+        Command::Pair { svg } => pair(&paths, svg.as_deref()),
+        Command::RevokeDevice { id } => revoke_device(&paths, &id),
+        Command::RetryNotifications => {
             PairingRegistry::open(paths.pairing())?.retry_notifications()?;
             Ok(())
         }
-        "serve" => {
-            no_arguments(options, "serve")?;
-            service::serve(paths).await
-        }
-        other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
+        Command::Serve => service::serve(paths).await,
+        Command::Metadata => Ok(()),
     }
 }
 
@@ -170,159 +184,131 @@ fn attention_store(paths: &Paths) -> Result<AttentionStore, CliError> {
     Ok(AttentionStore::new(paths.attention(), runs)?)
 }
 
-fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    let Some((command, options)) = arguments.split_first() else {
-        return Err(CliError::Invalid("run requires a subcommand".to_owned()));
-    };
-    if command == "list" {
-        let runs = RunStore::new(paths.runs())?.list_resumable(now_ms())?;
-        println!("{}", serde_json::to_string(&runs)?);
-        return Ok(());
+fn run_command(paths: &Paths, command: Run) -> Result<(), CliError> {
+    match command {
+        Run::List => {
+            let runs = RunStore::new(paths.runs())?.list_resumable(now_ms())?;
+            println!("{}", serde_json::to_string(&runs)?);
+        }
+        Run::Admit {
+            id,
+            generated_work_max,
+            park_ttl_ms,
+        } => {
+            let token = uuid::Uuid::new_v4().to_string();
+            let admission = RunAdmission {
+                id,
+                generated_work_ceiling: generated_work_max,
+                park_ttl_ms,
+            };
+            RunStore::new(paths.runs())?.admit(admission.clone(), &token)?;
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "id": admission.id, "state": "active", "token": token,
+                    "generated_work": {"ceiling": admission.generated_work_ceiling, "consumed": 0, "reserved": 0}
+                }))?
+            );
+        }
+        Run::Attach(session) => {
+            let session = RunSession {
+                id: session.id,
+                session_id: session.session_id,
+                agent: session.agent,
+                acp_session_id: session.acp_session_id,
+                working_dir: session.cwd,
+                load_session: session.load_session,
+            };
+            RunStore::new(paths.runs())?.attach(session.clone())?;
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({"id": session.id, "state": "active"}))?
+            );
+        }
+        Run::Generate { command, arguments } => return generate(paths, command, arguments),
+        Run::Park { session, claims } => {
+            let draft = RunDraft {
+                id: session.id,
+                session_id: session.session_id,
+                agent: session.agent,
+                acp_session_id: session.acp_session_id,
+                working_dir: session.cwd,
+                load_session: session.load_session,
+                claimed_issue_ids: claims
+                    .split(',')
+                    .filter(|claim| !claim.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            };
+            RunStore::new(paths.runs())?.park_cold(draft.clone(), now_ms())?;
+            println!(
+                "{}",
+                serde_json::to_string(
+                    &serde_json::json!({"id": draft.id, "state": "cold_parked"})
+                )?
+            );
+        }
+        command @ (Run::Reserve { .. } | Run::Confirm { .. } | Run::Release { .. }) => {
+            return reservation(paths, command);
+        }
     }
-    if command == "admit" {
-        let token = uuid::Uuid::new_v4().to_string();
-        let admission = RunAdmission {
-            id: required_option(options, "--id")?.to_owned(),
-            generated_work_ceiling: positive_integer(options, "--generated-work-max")?,
-            park_ttl_ms: positive_integer(options, "--park-ttl-ms")?,
-        };
-        RunStore::new(paths.runs())?.admit(admission.clone(), &token)?;
-        println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({
-                "id": admission.id,
-                "state": "active",
-                "token": token,
-                "generated_work": {
-                    "ceiling": admission.generated_work_ceiling,
-                    "consumed": 0,
-                    "reserved": 0
-                }
-            }))?
-        );
-        return Ok(());
-    }
-    if command == "attach" {
-        let session = RunSession {
-            id: required_option(options, "--id")?.to_owned(),
-            session_id: required_option(options, "--session-id")?.to_owned(),
-            agent: required_option(options, "--agent")?.to_owned(),
-            acp_session_id: required_option(options, "--acp-session-id")?.to_owned(),
-            working_dir: required_option(options, "--cwd")?.to_owned(),
-            load_session: required_option(options, "--load-session")? == "true",
-        };
-        RunStore::new(paths.runs())?.attach(session.clone())?;
-        println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({"id": session.id, "state": "active"}))?
-        );
-        return Ok(());
-    }
-    if command == "generate" {
-        return generate(paths, options);
-    }
-    if matches!(command.as_str(), "reserve" | "confirm" | "release") {
-        return reservation(paths, command, options);
-    }
-    if command != "park" {
-        return Err(CliError::Invalid(
-            "run supports only admit, attach, confirm, generate, list, park, release, and reserve"
-                .to_owned(),
-        ));
-    }
-    let claims = required_option(options, "--claims")?
-        .split(',')
-        .filter(|claim| !claim.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let draft = RunDraft {
-        id: required_option(options, "--id")?.to_owned(),
-        session_id: required_option(options, "--session-id")?.to_owned(),
-        agent: required_option(options, "--agent")?.to_owned(),
-        acp_session_id: required_option(options, "--acp-session-id")?.to_owned(),
-        working_dir: required_option(options, "--cwd")?.to_owned(),
-        load_session: required_option(options, "--load-session")? == "true",
-        claimed_issue_ids: claims,
-    };
-    RunStore::new(paths.runs())?.park_cold(draft.clone(), now_ms())?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({"id": draft.id, "state": "cold_parked"}))?
-    );
     Ok(())
 }
 
 /// Drive one generated-work reservation against the Run ledger.
-///
-/// The Run id and generate token arrive through the environment rather than as
-/// arguments, matching `run generate`: a token in argv is readable from the
-/// process table by every other user on the host. Every outcome the ledger can
-/// legitimately report — including `exhausted` — succeeds and is named in the
-/// JSON `state`, because exhaustion is a Park awaiting an operator decision and
-/// not a failure of the command. Each response carries the resulting budget so
-/// a caller never has to re-read the Run to learn what its request did.
-fn reservation(paths: &Paths, command: &str, arguments: &[String]) -> Result<(), CliError> {
+/// Credentials arrive through the environment, never argv.
+/// Exhaustion is a successful Park outcome named in JSON.
+fn reservation(paths: &Paths, command: Run) -> Result<(), CliError> {
     let run_id = required_environment("LOUISELM_RUN_ID")?;
     let token = required_environment("LOUISELM_RUN_TOKEN")?;
-    let mutation_id = required_option(arguments, "--mutation-id")?.to_owned();
     let store = RunStore::new(paths.runs())?;
     let state = match command {
-        "reserve" => {
-            let result = store.reserve_generated_work(
+        Run::Reserve {
+            mutation_id,
+            kind,
+            units,
+        } => {
+            match store.reserve_generated_work(
                 GeneratedWorkReservation {
                     run_id: run_id.clone(),
                     token: token.clone(),
                     mutation_id,
-                    kind: required_option(arguments, "--kind")?.to_owned(),
-                    units: positive_integer(arguments, "--units")?,
+                    kind,
+                    units,
                 },
                 now_ms(),
-            )?;
-            match result {
+            )? {
                 ReserveResult::Reserved => "reserved",
                 ReserveResult::Pending => "pending",
                 ReserveResult::Consumed => "consumed",
                 ReserveResult::Exhausted => "exhausted",
             }
         }
-        "confirm" => {
-            store.confirm_generated_work(
-                &run_id,
-                &token,
-                &mutation_id,
-                required_option(arguments, "--issue-id")?,
-            )?;
+        Run::Confirm {
+            mutation_id,
+            issue_id,
+        } => {
+            store.confirm_generated_work(&run_id, &token, &mutation_id, &issue_id)?;
             "confirmed"
         }
-        _ => {
+        Run::Release { mutation_id } => {
             store.release_generated_work(&run_id, &token, &mutation_id)?;
             "released"
         }
+        _ => return Err(CliError::Invalid("expected a reservation command".into())),
     };
     let budget = store.run(&run_id)?.generated_work;
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
-            "id": run_id,
-            "state": state,
-            "generated_work": {
-                "ceiling": budget.ceiling,
-                "consumed": budget.consumed,
-                "reserved": budget.reserved
-            }
+            "id": run_id, "state": state,
+            "generated_work": {"ceiling": budget.ceiling, "consumed": budget.consumed, "reserved": budget.reserved}
         }))?
     );
     Ok(())
 }
 
-fn generate(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    let separator = arguments
-        .iter()
-        .position(|argument| argument == "--")
-        .ok_or_else(|| {
-            CliError::Invalid("run generate requires '--' before br arguments".to_owned())
-        })?;
-    let options = &arguments[..separator];
+fn generate(paths: &Paths, command: String, arguments: Vec<String>) -> Result<(), CliError> {
     let mutation_id = env::var("LOUISELM_MUTATION_ID")
         .ok()
         .filter(|value| !value.is_empty())
@@ -331,8 +317,8 @@ fn generate(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
         run_id: required_environment("LOUISELM_RUN_ID")?,
         token: required_environment("LOUISELM_RUN_TOKEN")?,
         mutation_id: mutation_id.clone(),
-        command: required_option(options, "--command")?.to_owned(),
-        arguments: arguments[separator + 1..].to_vec(),
+        command,
+        arguments,
     };
     let generator = BeadsGenerator::new(
         required_environment("LOUISELM_REAL_BR")?,
@@ -366,13 +352,15 @@ fn required_environment(name: &str) -> Result<String, CliError> {
         .ok_or_else(|| CliError::Invalid(format!("{name} must be set")))
 }
 
-fn ingest_local(store: &Store, arguments: &[String]) -> Result<(), CliError> {
-    let path = PathBuf::from(required_option(arguments, "--file")?);
-    let id =
-        option(arguments, "--id").map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
-    let recorded_at_ms = positive_integer(arguments, "--recorded-at-ms")?;
-    let duration_ms = positive_integer(arguments, "--duration-ms")?;
-    let mime_type = required_option(arguments, "--mime")?.to_owned();
+fn ingest_local(
+    store: &Store,
+    path: &Path,
+    id: Option<String>,
+    recorded_at_ms: u64,
+    duration_ms: u64,
+    mime_type: String,
+) -> Result<(), CliError> {
+    let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let outcome = store.ingest(
         &CaptureDraft {
             id: id.clone(),
@@ -479,27 +467,15 @@ fn status(store: &Store, attention: &AttentionStore, paths: &Paths) -> Result<()
     Ok(())
 }
 
-fn attention_command(store: &AttentionStore, arguments: &[String]) -> Result<(), CliError> {
-    let Some(command) = arguments.first().map(String::as_str) else {
-        return Err(CliError::Invalid(
-            "attention requires list or status".to_owned(),
-        ));
-    };
-    if arguments.len() != 1 || !matches!(command, "list" | "status") {
-        return Err(CliError::Invalid(
-            "attention supports only list and status".to_owned(),
-        ));
-    }
-    if command == "list" {
-        println!("{}", serde_json::to_string_pretty(&store.snapshot()?)?);
-    } else {
-        println!("{}", serde_json::to_string_pretty(&store.summary()?)?);
+fn attention_command(store: &AttentionStore, command: Attention) -> Result<(), CliError> {
+    match command {
+        Attention::List => println!("{}", serde_json::to_string_pretty(&store.snapshot()?)?),
+        Attention::Status => println!("{}", serde_json::to_string_pretty(&store.summary()?)?),
     }
     Ok(())
 }
 
-fn retry(store: &Store, arguments: &[String]) -> Result<(), CliError> {
-    let id = positional(arguments, 0, "capture UUID")?;
+fn retry(store: &Store, id: &str) -> Result<(), CliError> {
     store.retry_transcription(id)?;
     println!("{id}");
     Ok(())
@@ -512,27 +488,19 @@ fn transcribe_once(store: &Store) -> Result<(), CliError> {
     Ok(())
 }
 
-fn configure_network(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    let profile = required_option(arguments, "--profile")?.parse::<NetworkProfileKind>()?;
-    let bind = required_option(arguments, "--bind")?
-        .parse::<SocketAddr>()
-        .map_err(|_| CliError::Invalid("--bind must be an explicit IP:port".to_owned()))?;
-    let network = NetworkProfile::new(profile, bind, required_option(arguments, "--url")?)?;
+fn configure_network(
+    paths: &Paths,
+    profile: &str,
+    bind: SocketAddr,
+    url: &str,
+) -> Result<(), CliError> {
+    let network = NetworkProfile::new(profile.parse::<NetworkProfileKind>()?, bind, url)?;
     network.save(&paths.network())?;
     println!("{}", serde_json::to_string_pretty(&network)?);
     Ok(())
 }
 
-fn pair(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    let svg_path = match arguments {
-        [] => None,
-        [flag, path] if flag == "--svg" && !path.is_empty() => Some(PathBuf::from(path)),
-        _ => {
-            return Err(CliError::Invalid(
-                "pair accepts either no arguments or --svg PATH".to_owned(),
-            ));
-        }
-    };
+fn pair(paths: &Paths, svg_path: Option<&Path>) -> Result<(), CliError> {
     let network = NetworkProfile::load_or_default(&paths.network())?;
     let receiver_url = network.receiver_url().ok_or_else(|| {
         CliError::Invalid(
@@ -555,7 +523,7 @@ fn pair(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
             .quiet_zone(true)
             .min_dimensions(1024, 1024)
             .build();
-        write_pairing_svg(&path, rendered.as_bytes())?;
+        write_pairing_svg(path, rendered.as_bytes())?;
         println!("{}", path.display());
         return Ok(());
     }
@@ -585,8 +553,7 @@ fn write_pairing_svg(path: &Path, contents: &[u8]) -> Result<(), std::io::Error>
     result
 }
 
-fn revoke_device(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    let id = positional(arguments, 0, "device UUID")?;
+fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
     PairingRegistry::open(paths.pairing())?.revoke(id)?;
     println!("{id}");
     Ok(())
@@ -599,47 +566,6 @@ fn openai_provider() -> Result<OpenAiTranscriber, CliError> {
     let model =
         env::var("LOUISELM_TRANSCRIPTION_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
     OpenAiTranscriber::new(api_key, model).map_err(CliError::Invalid)
-}
-
-fn required_option<'a>(arguments: &'a [String], name: &str) -> Result<&'a str, CliError> {
-    option(arguments, name)
-        .ok_or_else(|| CliError::Invalid(format!("required option is missing: {name}")))
-}
-
-fn option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
-    arguments
-        .windows(2)
-        .find(|pair| pair[0] == name)
-        .map(|pair| pair[1].as_str())
-}
-
-fn positive_integer(arguments: &[String], name: &str) -> Result<u64, CliError> {
-    let value = required_option(arguments, name)?
-        .parse::<u64>()
-        .map_err(|_| CliError::Invalid(format!("{name} must be a positive integer")))?;
-    if value == 0 {
-        return Err(CliError::Invalid(format!(
-            "{name} must be a positive integer"
-        )));
-    }
-    Ok(value)
-}
-
-fn positional<'a>(arguments: &'a [String], index: usize, label: &str) -> Result<&'a str, CliError> {
-    arguments
-        .get(index)
-        .map(String::as_str)
-        .filter(|value| !value.starts_with('-'))
-        .ok_or_else(|| CliError::Invalid(format!("{label} is required")))
-}
-
-fn no_arguments(arguments: &[String], command: &str) -> Result<(), CliError> {
-    if arguments.is_empty() {
-        return Ok(());
-    }
-    Err(CliError::Invalid(format!(
-        "{command} takes no arguments; use configure-network"
-    )))
 }
 
 #[derive(Serialize)]
@@ -728,10 +654,4 @@ fn configured_root(
             CliError::Invalid(format!("{override_name}, {xdg_name}, or HOME is required"))
         })?;
     Ok(Path::new(&home).join(fallback))
-}
-
-fn print_help() {
-    println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  attention list|status\n  retry-notifications\n  run admit --id UUID --generated-work-max N --park-ttl-ms N\n  run attach --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false\n  run generate --command create|q -- BR_ARGS\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
-    );
 }

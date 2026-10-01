@@ -5,12 +5,11 @@ use louiselm_skills::broker::{
     provider_extension::{ExtensionError, ExtensionOutcome, ExtensionRequest},
 };
 use std::{
-    ffi::OsString,
     io::{self, Write},
     path::Path,
 };
 
-pub(super) fn cli(arguments: &[OsString]) -> u8 {
+pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let (bytes, code) = match execute(arguments) {
         Ok(outcome) => match serde_json::to_vec(&outcome) {
             Ok(bytes) => (bytes, 0),
@@ -32,34 +31,20 @@ pub(super) fn cli(arguments: &[OsString]) -> u8 {
     if written.is_ok() { code } else { 3 }
 }
 
-fn execute(arguments: &[OsString]) -> Result<ExtensionOutcome, ExtensionError> {
-    let args: Vec<&str> = arguments
-        .iter()
-        .map(|arg| arg.to_str().ok_or(ExtensionError::InvalidRequest))
-        .collect::<Result<_, _>>()?;
-    let number = |value: &str| value.parse().map_err(|_| ExtensionError::InvalidRequest);
-    let (id, request) = match args.as_slice() {
-        [id, request_id, requests, "--json"] => (
-            *id,
-            ExtensionRequest {
-                request_id: (*request_id).into(),
-                additional_requests: number(requests)?,
-                expires_at_ms: None,
-            },
-        ),
-        [id, request_id, requests, expires_at_ms, "--json"] => (
-            *id,
-            ExtensionRequest {
-                request_id: (*request_id).into(),
-                additional_requests: number(requests)?,
-                expires_at_ms: Some(
-                    expires_at_ms
-                        .parse()
-                        .map_err(|_| ExtensionError::InvalidRequest)?,
-                ),
-            },
-        ),
-        _ => return Err(ExtensionError::InvalidRequest),
+fn execute(arguments: Result<&clap::ArgMatches, ()>) -> Result<ExtensionOutcome, ExtensionError> {
+    let args = arguments.map_err(|()| ExtensionError::InvalidRequest)?;
+    let id = args
+        .get_one::<String>("subject")
+        .ok_or(ExtensionError::InvalidRequest)?;
+    let request = ExtensionRequest {
+        request_id: args
+            .get_one::<String>("request_id")
+            .ok_or(ExtensionError::InvalidRequest)?
+            .clone(),
+        additional_requests: *args
+            .get_one::<u32>("requests")
+            .ok_or(ExtensionError::InvalidRequest)?,
+        expires_at_ms: args.get_one::<u64>("expires_at_ms").copied(),
     };
     operator::validate_subject(id).map_err(|_| ExtensionError::InvalidRequest)?;
     let paths = super::installed_paths().map_err(|_| ExtensionError::Unavailable)?;

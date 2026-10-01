@@ -11,7 +11,6 @@ use louiselm_skills::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::OsString,
     io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -217,14 +216,10 @@ fn approval_digest(
     Ok(Digest::of(&serde_json::to_vec(&(selection, request, changes, review))?).to_string())
 }
 
-pub(super) fn cli(arguments: &[OsString]) -> u8 {
+pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let result = (|| {
-        let [verb, format] = arguments else {
-            return Err("expected promotion preview|commit --json");
-        };
-        if format != "--json" || !matches!(verb.to_str(), Some("preview" | "commit")) {
-            return Err("expected promotion preview|commit --json");
-        }
+        let (verb, _) = super::arguments::operation(arguments)
+            .map_err(|()| "expected promotion preview|commit --json")?;
         let mut bytes = Vec::new();
         io::stdin()
             .take((louiselm_skills::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES + 1) as u64)
@@ -237,7 +232,7 @@ pub(super) fn cli(arguments: &[OsString]) -> u8 {
         }
         let command: Command =
             serde_json::from_slice(&bytes).map_err(|_| "invalid promotion input")?;
-        operation(verb.to_str().ok_or("invalid promotion verb")?, command)
+        operation(verb, command)
     })();
     match result {
         Ok(bytes) => match io::stdout().lock().write_all(&bytes) {

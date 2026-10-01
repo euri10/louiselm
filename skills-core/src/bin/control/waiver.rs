@@ -5,12 +5,11 @@ use louiselm_skills::broker::{
     waiver::{Request, WaiverError},
 };
 use std::{
-    ffi::OsString,
     io::{self, Read, Write},
     path::Path,
 };
 
-pub(super) fn cli(arguments: &[OsString]) -> u8 {
+pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let result = execute(arguments);
     let (bytes, code) = match result {
         Ok(outcome) => match serde_json::to_vec(&outcome) {
@@ -34,15 +33,16 @@ pub(super) fn cli(arguments: &[OsString]) -> u8 {
 }
 
 fn execute(
-    arguments: &[OsString],
+    arguments: Result<&clap::ArgMatches, ()>,
 ) -> Result<louiselm_skills::broker::waiver::Outcome, WaiverError> {
-    let args: Vec<&str> = arguments
-        .iter()
-        .map(|arg| arg.to_str().ok_or(WaiverError::InvalidRequest))
-        .collect::<Result<_, _>>()?;
-    let (id, request) = match args.as_slice() {
-        ["inspect", id, "--json"] => (*id, Request::Inspect),
-        ["plan", id, "--json"] => {
+    let (verb, args) =
+        super::arguments::operation(arguments).map_err(|()| WaiverError::InvalidRequest)?;
+    let id = args
+        .get_one::<String>("subject")
+        .ok_or(WaiverError::InvalidRequest)?;
+    let request = match verb {
+        "inspect" => Request::Inspect,
+        "plan" => {
             let mut bytes = Vec::new();
             io::stdin()
                 .lock()
@@ -54,26 +54,26 @@ fn execute(
             }
             let proposal =
                 serde_json::from_slice(&bytes).map_err(|_| WaiverError::InvalidRequest)?;
-            (*id, Request::Plan { proposal })
+            Request::Plan { proposal }
         }
-        ["apply", id, digest, "--json"] => (
-            *id,
-            Request::Apply {
-                plan_digest: (*digest).into(),
-            },
-        ),
-        ["result", id, digest, "--json"] => (
-            *id,
-            Request::Result {
-                plan_digest: (*digest).into(),
-            },
-        ),
-        ["revoke", id, digest, "--json"] => (
-            *id,
-            Request::Revoke {
-                receipt_digest: (*digest).into(),
-            },
-        ),
+        "apply" => Request::Apply {
+            plan_digest: args
+                .get_one::<String>("digest")
+                .ok_or(WaiverError::InvalidRequest)?
+                .clone(),
+        },
+        "result" => Request::Result {
+            plan_digest: args
+                .get_one::<String>("digest")
+                .ok_or(WaiverError::InvalidRequest)?
+                .clone(),
+        },
+        "revoke" => Request::Revoke {
+            receipt_digest: args
+                .get_one::<String>("digest")
+                .ok_or(WaiverError::InvalidRequest)?
+                .clone(),
+        },
         _ => return Err(WaiverError::InvalidRequest),
     };
     operator::validate_subject(id).map_err(|_| WaiverError::InvalidRequest)?;

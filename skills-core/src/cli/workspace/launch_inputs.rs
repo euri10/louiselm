@@ -4,40 +4,35 @@ use super::{CliError, Digest, Path, invalid, robot, workspace};
 use crate::session_manifest::{MAX_INPUT_MANIFEST_BYTES, SessionInputManifest};
 use std::{collections::BTreeMap, io::Read as _};
 
-pub(super) fn run(args: &[String]) -> Result<i32, CliError> {
-    if args == ["--help"] {
-        println!(
-            "louiselm-skills workspace launch-inputs stage --manifest FILE --snapshot DIR\n  --cache DIR --output NEW_DIR [--robot-json]\nlouiselm-skills workspace launch-inputs inspect --input DIR --digest SHA256 [--robot-json]\nThe manifest must bind exact source snapshot/base and cache digests.\nInspect included/excluded paths before authorizing launch. Local staging grants no authority."
-        );
-        return Ok(0);
-    }
-    let Some(operation @ ("stage" | "inspect")) = args.first().map(String::as_str) else {
-        return Err(invalid("launch-inputs requires stage or inspect"));
-    };
-    let mut values = BTreeMap::new();
-    let mut robot = false;
-    let mut args = args[1..].iter();
-    while let Some(flag) = args.next() {
-        if flag == "--robot-json" && !robot {
-            robot = true;
-            continue;
-        }
-        let allowed = if operation == "stage" {
-            ["--manifest", "--snapshot", "--cache", "--output"].contains(&flag.as_str())
-        } else {
-            ["--input", "--digest"].contains(&flag.as_str())
-        };
-        if !allowed {
-            return Err(invalid("invalid or duplicate launch-inputs option"));
-        }
-        let value = args
-            .next()
-            .filter(|v| !v.is_empty() && !v.starts_with("--"))
-            .ok_or_else(|| invalid("launch-inputs option requires a value"))?;
-        if values.insert(flag.as_str(), value.as_str()).is_some() {
-            return Err(invalid("duplicate launch-inputs option"));
-        }
-    }
+pub(super) fn command() -> clap::Command {
+    clap::Command::new("launch-inputs")
+        .about("Stage exact source/cache inputs; launch authorization stays separate")
+        .subcommand_required(true)
+        .subcommand(
+            clap::Command::new("stage")
+                .args(["--manifest", "--snapshot", "--cache", "--output"].map(super::value))
+                .arg(super::robot_flag()),
+        )
+        .subcommand(
+            clap::Command::new("inspect")
+                .args(["--input", "--digest"].map(super::value))
+                .arg(super::robot_flag()),
+        )
+}
+
+pub(super) fn run(args: &clap::ArgMatches) -> Result<i32, CliError> {
+    let (operation, args) = args
+        .subcommand()
+        .ok_or_else(|| invalid("launch-inputs requires stage or inspect"))?;
+    let robot = args.get_flag("robot");
+    let values: BTreeMap<_, _> = args
+        .ids()
+        .filter(|id| id.as_str() != "robot")
+        .filter_map(|id| {
+            args.get_one::<String>(id.as_str())
+                .map(|value| (id.as_str(), value.as_str()))
+        })
+        .collect();
     let required = |flag| {
         values
             .get(flag)

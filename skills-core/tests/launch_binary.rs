@@ -10,6 +10,23 @@
 use std::process::{Command, Stdio};
 
 #[test]
+fn generated_help_is_public_and_does_not_acquire_authority() {
+    for args in [vec!["--help"], vec!["run", "--help"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_louiselm-launch"))
+            .args(args)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("Usage:"));
+        assert!(!help.contains("__sandbox_bootstrap"));
+        assert!(!help.contains("__conformance"));
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
 fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
     // Only exact run/prepare/certify are operator verbs; no caller-selected commands.
     let binary = env!("CARGO_BIN_EXE_louiselm-launch");
