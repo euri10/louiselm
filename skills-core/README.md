@@ -187,6 +187,14 @@ tiny: no `SKILL.md` at the root, `SKILL.md` without usable frontmatter, or a
 file that is neither binary nor valid UTF-8. Growing this class moves judgement
 from the reviewer to a scanner that cannot read prose.
 
+`SKILL.md` frontmatter is YAML, not a line-oriented `key: value` subset. Folded
+and literal descriptions, quoted scalars, aliases, and nested extension metadata
+are parsed by `serde-saphyr` with its bounded nesting/alias budgets and duplicate
+key rejection. Inspection consumes only nonempty string `name` and `description`
+fields; unknown extension fields remain uninterpreted. Includes and property
+interpolation are not enabled, and diagnostics and decoded metadata are escaped
+before display. Frontmatter delimiters are exact `---` lines (LF or CRLF).
+
 Everything else is a _mandatory Dossier finding_ — a fact the reviewer must be
 shown, never a verdict: hidden and bidirectional code points, ASCII homoglyphs,
 terminal control sequences, URLs, credential references, encoded payloads and

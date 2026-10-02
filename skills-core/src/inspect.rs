@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     canonical::{CanonicalPath, Digest},
@@ -628,35 +628,56 @@ fn scan_text(text: &str, policy: &Policy, is_svg: bool, collector: &mut Collecto
     }
 }
 
+// Skill frontmatter is extensible: only these fields affect Inspection.
+// Values retain YAML types so numbers/bools cannot masquerade as strings.
+#[derive(Deserialize)]
+struct SkillMetadata {
+    name: Option<serde_json::Value>,
+    description: Option<serde_json::Value>,
+}
+
 fn frontmatter(text: &str) -> Result<(String, String), String> {
-    let Some(body) = text.strip_prefix("---\n") else {
+    let Some((opening, body)) = text.split_once('\n') else {
         return Err(format!(
             "{SKILL_FILE} does not open with a `---` frontmatter block"
         ));
     };
-    let Some(end) = body.find("\n---") else {
-        return Err(format!("{SKILL_FILE} frontmatter is never closed"));
-    };
-    let mut fields = BTreeMap::new();
-    for line in body[..end].lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            return Err(format!(
-                "{SKILL_FILE} frontmatter line is not `key: value`: {}",
-                scan::escape(line.trim())
-            ));
-        };
-        fields.insert(key.trim().to_ascii_lowercase(), value.trim().to_owned());
+    if opening.trim_end_matches('\r') != "---" {
+        return Err(format!(
+            "{SKILL_FILE} does not open with a `---` frontmatter block"
+        ));
     }
+    let end: usize = body
+        .split_inclusive('\n')
+        .take_while(|line| line.trim_end_matches(['\r', '\n']) != "---")
+        .map(str::len)
+        .sum();
+    if end == body.len() {
+        return Err(format!("{SKILL_FILE} frontmatter is never closed"));
+    }
+    // Default budgets bound nesting and alias replay; duplicate keys are errors.
+    // Includes and property interpolation are not compiled into this dependency.
+    let options = serde_saphyr::options! { strict_booleans: true, with_snippet: false };
+    let fields: SkillMetadata = serde_saphyr::from_str_with_options(&body[..end], options)
+        .map_err(|error| {
+            format!(
+                "{SKILL_FILE} frontmatter is invalid YAML: {}",
+                scan::escape(&error.to_string())
+            )
+        })?;
     let name = fields
-        .get("name")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{SKILL_FILE} frontmatter declares no name"))?;
+        .name
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{SKILL_FILE} frontmatter name must be a nonempty YAML string"))?;
     let description = fields
-        .get("description")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{SKILL_FILE} frontmatter declares no description"))?;
-    Ok((name.clone(), description.clone()))
+        .description
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            format!("{SKILL_FILE} frontmatter description must be a nonempty YAML string")
+        })?;
+    Ok((name.to_owned(), description.to_owned()))
 }

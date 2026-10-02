@@ -310,6 +310,153 @@ fn a_valid_skill_package_has_no_fatal_findings() {
 }
 
 #[test]
+fn yaml_frontmatter_supports_the_installed_br_and_ponytail_headers() {
+    // louiselm-ysltu: observed headers in the actual Run VM, release 3b91af8.
+    // br uses a folded description plus extension sequences/nested metadata;
+    // ponytail uses a folded description with the default trailing newline.
+    let fixture = Fixture::new();
+    for (name, header, description) in [
+        (
+            "br",
+            "name: br\ndescription: >-\n  Official skill for beads_rust (`br`), a local-first, dependency-aware issue\n  tracker for AI agents. Use when creating issues, triaging backlogs, managing\n  dependencies, finding ready work, updating status, or syncing to git via JSONL.\nlicense: MIT\ntriggers:\n  - br\n  - beads\nmetadata:\n  author: Dicklesworthstone\n  version: 1.0.0\n",
+            "Official skill for beads_rust (`br`), a local-first, dependency-aware issue tracker for AI agents. Use when creating issues, triaging backlogs, managing dependencies, finding ready work, updating status, or syncing to git via JSONL.",
+        ),
+        (
+            "ponytail",
+            "name: ponytail\ndescription: >\n  Forces the laziest solution that actually works, simplest, shortest, most\n  minimal. Channels a senior dev who has seen everything.\nargument-hint: \"[lite|full|ultra]\"\nlicense: MIT\n",
+            "Forces the laziest solution that actually works, simplest, shortest, most minimal. Channels a senior dev who has seen everything.\\u{a}",
+        ),
+    ] {
+        let candidate = fixture.candidate(name);
+        write_file(
+            &candidate.join("SKILL.md"),
+            &format!("---\n{header}---\n\nSee https://example.invalid/review.\n"),
+        );
+        let inspection = inspect(&fixture, &candidate);
+        assert!(!inspection.is_fatal(), "{name}: {:?}", inspection.fatal);
+        assert_eq!(inspection.skill_name.as_deref(), Some(name));
+        assert_eq!(inspection.skill_description.as_deref(), Some(description));
+        finding(&inspection, FindingKind::Url, "SKILL.md");
+    }
+}
+
+#[test]
+fn yaml_frontmatter_preserves_scalar_semantics_and_line_endings() {
+    let fixture = Fixture::new();
+    for (index, header, description) in [
+        (
+            "literal",
+            "name: demo\ndescription: |-\n  First line\n  Second line\n",
+            "First line\\u{a}Second line",
+        ),
+        (
+            "quoted",
+            "name: 'demo'\ndescription: \"Run: carefully # literal\" # comment\n",
+            "Run: carefully # literal",
+        ),
+        (
+            "anchored",
+            "name: demo\nsummary: &summary Reviewed bytes\ndescription: *summary\n",
+            "Reviewed bytes",
+        ),
+        (
+            "crlf",
+            "name: demo\r\ndescription: Reviewed bytes\r\n",
+            "Reviewed bytes",
+        ),
+        (
+            "escaped",
+            "name: demo\ndescription: \"Safe \\u001b[31mtext\"\n",
+            "Safe \\u{1b}[31mtext",
+        ),
+    ] {
+        let candidate = fixture.candidate(index);
+        let newline = if index == "crlf" { "\r\n" } else { "\n" };
+        write_file(
+            &candidate.join("SKILL.md"),
+            &format!("---{newline}{header}---{newline}Body"),
+        );
+        let inspection = inspect(&fixture, &candidate);
+        assert!(!inspection.is_fatal(), "{index}: {:?}", inspection.fatal);
+        assert_eq!(inspection.skill_name.as_deref(), Some("demo"));
+        assert_eq!(inspection.skill_description.as_deref(), Some(description));
+    }
+}
+
+#[test]
+fn yaml_frontmatter_refuses_malformed_or_ambiguous_required_metadata() {
+    let fixture = Fixture::new();
+    for (index, header) in [
+        ("malformed", "name: demo\ndescription: [unterminated\n"),
+        ("duplicate", "name: demo\nname: other\ndescription: Text\n"),
+        (
+            "nested_duplicate",
+            "name: demo\ndescription: Text\nmetadata: {author: one, author: two}\n",
+        ),
+        ("missing", "name: demo\n"),
+        ("null", "name: demo\ndescription: null\n"),
+        ("empty", "name: demo\ndescription: ''\n"),
+        ("blank", "name: demo\ndescription: '   '\n"),
+        ("numeric", "name: 42\ndescription: Text\n"),
+        ("boolean", "name: demo\ndescription: true\n"),
+        ("sequence", "name: demo\ndescription: [one, two]\n"),
+        ("mapping", "name: demo\ndescription: {text: content}\n"),
+        (
+            "nested_name",
+            "metadata:\n  name: demo\ndescription: Text\n",
+        ),
+        ("root_sequence", "- demo\n- Text\n"),
+    ] {
+        let candidate = fixture.candidate(index);
+        write_file(
+            &candidate.join("SKILL.md"),
+            &format!("---\n{header}---\nBody"),
+        );
+        let inspection = inspect(&fixture, &candidate);
+        assert_eq!(inspection.fatal.len(), 1, "{index}: {:?}", inspection.fatal);
+        assert_eq!(
+            inspection.fatal[0].kind,
+            FatalKind::SkillFileFrontmatter,
+            "{index}"
+        );
+        assert_eq!(inspection.skill_name, None, "{index}");
+    }
+}
+
+#[test]
+fn yaml_frontmatter_requires_an_exact_closing_delimiter() {
+    let fixture = Fixture::new();
+    let candidate = fixture.candidate("not_closed");
+    write_file(
+        &candidate.join("SKILL.md"),
+        "---\nname: demo\ndescription: Text\n---not-a-delimiter\nBody",
+    );
+    let inspection = inspect(&fixture, &candidate);
+    assert_eq!(inspection.fatal.len(), 1);
+    assert_eq!(inspection.fatal[0].kind, FatalKind::SkillFileFrontmatter);
+    assert!(inspection.fatal[0].message.contains("never closed"));
+}
+
+#[test]
+fn yaml_frontmatter_bounds_nested_extension_metadata() {
+    let fixture = Fixture::new();
+    let candidate = fixture.candidate("deep");
+    let nested = format!("{}0{}", "[".repeat(100), "]".repeat(100));
+    write_file(
+        &candidate.join("SKILL.md"),
+        &format!("---\nname: demo\ndescription: Text\nmetadata: {nested}\n---\nBody"),
+    );
+    let inspection = inspect(&fixture, &candidate);
+    assert_eq!(inspection.fatal.len(), 1);
+    assert_eq!(inspection.fatal[0].kind, FatalKind::SkillFileFrontmatter);
+    assert!(
+        inspection.fatal[0].message.contains("depth"),
+        "{:?}",
+        inspection.fatal
+    );
+}
+
+#[test]
 fn evidence_never_carries_a_control_sequence_through() {
     let fixture = Fixture::new();
     let candidate = fixture.candidate("candidate");
