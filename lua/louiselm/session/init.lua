@@ -1,4 +1,5 @@
 ---@class louiselm.session.Api
+---@field read_selected_content fun(self: louiselm.session.Api, job: louiselm.routing.ReaderJob, callback: fun(result?: louiselm.routing.ReaderResult, error?: louiselm.routing.ReaderError)): louiselm.routing.Reader?, louiselm.routing.ReaderError?
 ---@field create_session fun(self: louiselm.session.Api, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field load_session fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field discover_sessions fun(self: louiselm.session.Api, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?

@@ -9,6 +9,7 @@ local Provenance = require("louiselm.output_provenance")
 local Recording = require("louiselm.session.recording")
 local Paths = require("louiselm.paths")
 local Qualification = require("louiselm.routing.qualification")
+local SelectedContent = require("louiselm.session.selected_content")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -35,6 +36,7 @@ local nvim = vim
 ---@class louiselm.session.Registry: louiselm.session.Api
 ---@field definitions louiselm.agent.Definitions Normalized named definitions.
 ---@field sessions table<string, louiselm.session.Session> Live sessions by local id.
+---@field readers table<louiselm.routing.Reader, boolean> Owned reading jobs, including pending qualification reads.
 ---@field order string[] Session ids in creation order.
 ---@field next_id integer Next local session number.
 ---@field next_discovery_id integer Next discovery operation number.
@@ -65,6 +67,18 @@ local nvim = vim
 local M = {}
 local Registry = {}
 Registry.__index = Registry
+
+---Run one explicit, qualified selected-content question in a distinct tool-less Session.
+---The caller owns selected snapshots, parent allowance and cancellation; no paid trial
+---authority is inferred. Unsupported Agent runtimes fail before sending content.
+---@param self louiselm.session.Registry
+---@param job louiselm.routing.ReaderJob
+---@param callback fun(result?: louiselm.routing.ReaderResult, error?: louiselm.routing.ReaderError)
+---@return louiselm.routing.Reader? reader
+---@return louiselm.routing.ReaderError? error
+function Registry:read_selected_content(job, callback)
+  return require("louiselm.routing.reader").start(self, job, callback)
+end
 local registries = {} ---@type louiselm.session.Registry[]
 
 ---@class louiselm.session.ExitVerdict
@@ -174,6 +188,7 @@ local function valid_options(value)
       and key ~= "start_timeout_ms"
       and key ~= "broker_session_id"
       and key ~= "launch_request"
+      and key ~= "selected_content"
     then
       return false
     end
@@ -230,6 +245,7 @@ function M.new(definitions, default_skills_policy, options)
   local registry = setmetatable({
     definitions = normalized,
     sessions = {},
+    readers = {},
     order = {},
     next_id = 1,
     next_discovery_id = 1,
@@ -542,6 +558,13 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
   if options.on_event ~= nil and type(options.on_event) ~= "function" then
     return nil, "session option on_event must be a function"
   end
+  if options.selected_content ~= nil then
+    if load_id ~= nil or not SelectedContent.valid(options.selected_content) then
+      return nil, "selected-content Sessions require valid new-session limits"
+    end
+    definition = nvim.deepcopy(definition)
+    definition.auto = nil
+  end
   if options.schedule ~= nil and type(options.schedule) ~= "function" then
     return nil, "session option schedule must be a function"
   end
@@ -572,6 +595,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     on_event = options.on_event,
     broker_session_id = options.broker_session_id,
     launch_request = options.launch_request and nvim.deepcopy(options.launch_request) or nil,
+    selected_content = options.selected_content and nvim.deepcopy(options.selected_content) or nil,
     permission_policy = permission_policy,
     permission_store = self.permission_store,
     schedule = options.schedule,
@@ -1110,6 +1134,12 @@ function Registry:dispose()
   end
   self.agent_limits_listeners = {}
   local first_error
+  for reader in pairs(self.readers) do
+    local _, close_error = reader:dispose()
+    if first_error == nil and close_error ~= nil then
+      first_error = close_error
+    end
+  end
   for id, discovery in pairs(self.discoveries) do
     discovery.done = true
     for name, client in pairs(discovery.clients) do

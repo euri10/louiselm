@@ -5,6 +5,7 @@ local Validation = require("louiselm.session.validation")
 local Compaction = require("louiselm.session.compaction")
 local Provider = require("louiselm.agent.provider")
 local Routing = require("louiselm.routing.routing")
+local SelectedContent = require("louiselm.session.selected_content")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -58,6 +59,7 @@ local nvim = vim
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field broker_session_id? string Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 ---@field launch_request? louiselm.acp.LaunchRequest Launch through the installed supervisor instead of the configured command.
+---@field selected_content? louiselm.session.SelectedContentLimits Immutable tool-less one-attempt contract; unsupported Agents fail before session/new.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store? louiselm.permission.Store Remembered-permission owner.
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -1103,6 +1105,15 @@ local function handle_initialized(self, result, rpc_error)
     return
   end
   local prompt_capabilities = client.agent_capabilities.promptCapabilities
+  local selected_content = self.options.selected_content
+  if selected_content ~= nil then
+    local meta = client.agent_capabilities._meta
+    local capability = type(meta) == "table" and meta[SelectedContent.key] or nil
+    if type(capability) ~= "table" or capability.version ~= 1 then
+      fail(self, "Agent does not enforce selected-content Sessions")
+      return
+    end
+  end
   self.state.embedded_context = type(prompt_capabilities) == "table" and prompt_capabilities.embeddedContext == true
   local method = self.load_session_id == nil and "new" or "load"
   local request_id, request_error
@@ -1136,6 +1147,13 @@ local function handle_initialized(self, result, rpc_error)
       fail(self, "ACP session/load returned a malformed result")
       return
     end
+    if selected_content ~= nil then
+      local meta = session_result._meta
+      if type(meta) ~= "table" or not nvim.deep_equal(meta[SelectedContent.key], selected_content) then
+        fail(self, "Agent did not confirm selected-content limits")
+        return
+      end
+    end
     local options, options_error
     if self.load_session_id ~= nil and session_result.configOptions == nil then
       options = nvim.deepcopy(self.state.config_options)
@@ -1166,6 +1184,10 @@ local function handle_initialized(self, result, rpc_error)
     end)
   end
   local meta = session_meta(self.definition)
+  if selected_content ~= nil then
+    meta = nvim.deepcopy(meta or {})
+    meta[SelectedContent.key] = nvim.deepcopy(selected_content)
+  end
   if self.load_session_id == nil then
     local params = { cwd = self.state.working_dir, mcpServers = {} }
     if meta ~= nil then

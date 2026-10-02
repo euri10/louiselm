@@ -229,6 +229,11 @@ end
 local function emit_api(lines, context)
   append_prose(
     lines,
+    "api:read_selected_content(job, callback) answers one explicit question about selected line snapshots in a separate tool-less Session. A current approved reader comparison and the maintained adapter's selectedContent/1 contract are required. Unsupported Agents fail before receiving content. Input, output, one request and the local/parent deadline are bounded; cancellation does not imply zero billing. References establish source membership, not semantic truth. Main Session options and history are untouched. See docs/selected-content-reader.md for the job and result contract.",
+    context
+  )
+  append_prose(
+    lines,
     "The headless Session API drives Agents without the chat UI. It takes the same Agent definitions as |louiselm-config-agents|, returns the definitions it rejected instead of raising, and hands back Sessions the caller owns and disposes.",
     context
   )

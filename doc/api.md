@@ -25,6 +25,7 @@ API reference.
 - `list_sessions: fun(self: louiselm.session.Api):string[]`
 - `load_session: fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session?: louiselm.session.Session, error?: string)):(louiselm.session.Session)?, string?`
 - `on_agent_limits: fun(self: louiselm.session.Api, callback: fun(state: louiselm.session.LimitsState)):fun()?, string?`
+- `read_selected_content: fun(self: louiselm.session.Api, job: louiselm.routing.ReaderJob, callback: fun(result?: louiselm.routing.ReaderResult, error?: louiselm.routing.ReaderError)):(louiselm.routing.Reader)?, (louiselm.routing.ReaderError)?`
 - `refresh_agent_limits: fun(self: louiselm.session.Api, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)):boolean, string?`
 - `revoke_permission: fun(self: louiselm.session.Api, id: string):boolean, string?`
 
@@ -136,6 +137,7 @@ string|table
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
 - `schedule: fun(delay_ms: integer, callback: fun())?` -- Testable scheduling boundary; defaults to `vim.defer_fn`.
+- `selected_content: (louiselm.session.SelectedContentLimits)?` -- Immutable tool-less one-attempt contract; unsupported Agents fail before session/new.
 - `start_timeout_ms: integer?` -- Milliseconds to wait for the ACP handshake before failing a Session stuck "starting"; defaults to 20000.
 
 ### louiselm.session.PermissionEntry
@@ -267,6 +269,8 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `order: string[]` -- Session ids in creation order.
 - `permission_store: louiselm.permission.Store` -- Remembered rules owned by this registry.
 - `qualification: louiselm.routing.Qualification` -- Durable comparison approvals used by Auto admission.
+- `read_selected_content: fun(self: louiselm.session.Api, job: louiselm.routing.ReaderJob, callback: fun(result?: louiselm.routing.ReaderResult, error?: louiselm.routing.ReaderError)):(louiselm.routing.Reader)?, (louiselm.routing.ReaderError)?`
+- `readers: table<louiselm.routing.Reader, boolean>` -- Owned reading jobs, including pending qualification reads.
 - `recording: louiselm.session.RecordingStore` -- Shared durable writer; failed writes gate subsequent prompts.
 - `refresh_agent_limits: fun(self: louiselm.session.Registry, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)):boolean, string?`
 - `remove_session: fun(self: louiselm.session.Registry, id: string)`
@@ -479,6 +483,70 @@ string
 ```lua
 fun(page?: louiselm.session.UsagePage, error?: louiselm.session.RecordingError)
 ```
+
+### louiselm.session.SelectedContentLimits
+
+- `input_bytes: integer` -- 1..131072, complete encoded prompt bytes.
+- `max_tokens: integer` -- 1..8192, upstream output cap.
+- `output_bytes: integer` -- 1..65536, combined answer and thought bytes.
+- `timeout_ms: integer` -- 1..30000, local streaming deadline.
+- `version: integer` -- Exactly 1.
+
+### louiselm.routing.ReaderSource
+
+- `first_line: integer` -- First selected line, 1-based.
+- `id: string` -- Unique selected source identifier.
+- `lines: string[]` -- Complete selected lines, without embedded newlines.
+- `path: string` -- Display path; never opened by this API.
+- `provenance: string` -- Caller-selected snapshot provenance.
+
+### louiselm.routing.ReaderJob
+
+- `limits: (louiselm.session.SelectedContentLimits)?` -- Defaults to 128KiB input, 64KiB output, 4096 output tokens and 30 seconds; one request only.
+- `parent_allowance_ms: integer` -- Caller-owned remaining parent allowance; job timeout cannot exceed it.
+- `parent_turn_id: string` -- Admission identity; parent may never dispatch.
+- `question: string` -- Explicit question, at most 4096 bytes.
+- `scope: { workload: louiselm.routing.ComparisonWorkload, baseline: louiselm.routing.ComparisonRoute, candidate: louiselm.routing.ComparisonRoute, policy_revision: string }` -- Exact approved reader comparison; candidate is the worker.
+- `sources: louiselm.routing.ReaderSource[]` -- At most 16 complete selected snapshots.
+
+### louiselm.routing.ReaderError
+
+- `code: string` -- Stable refusal/cancellation code.
+- `message: string` -- Payload-free failure description.
+
+### louiselm.routing.ReaderResult
+
+- `answer: string` -- Bounded answer, never proof of semantic truth.
+- `identity: louiselm.session.TurnIdentity` -- Confirmed worker option/Provider attribution.
+- `missing_context: string[]` -- Explicit missing evidence; never fetched automatically.
+- `parent_turn_id: string` -- Parent admission identity.
+- `qualification: { report_id: string, revision: integer }` -- Exact comparison approval used.
+- `references: { source_id: string, first_line: integer, last_line: integer, path: string, provenance: string, digest: string }[]` -- References validated against selected snapshots.
+- `turn_id: string` -- Worker admission identity.
+- `usage: (louiselm.session.TurnUsage)?` -- Observed usage; missing is unknown, including after cancellation.
+
+### louiselm.routing.Reader
+
+- `api: louiselm.session.Registry`
+- `callback: fun(result?: louiselm.routing.ReaderResult, error?: louiselm.routing.ReaderError)`
+- `cleanup_error: string?` -- Retained disposal failure.
+- `deadline_ns: number` -- Monotonic whole-job deadline, checked again before dispatch and success.
+- `dispose: fun(self: louiselm.routing.Reader):boolean, string?` -- Cancel owned work; never infer zero billing.
+- `done: boolean` -- Terminal callback/cleanup guard.
+- `job: louiselm.routing.ReaderJob` -- Owned detached job.
+- `output: string` -- Memory-only answer chunks.
+- `output_bytes: integer` -- Answer plus thought bytes.
+- `prompt: string` -- Complete bounded encoded input, memory only.
+- `report_id: string?` -- Captured report identifier.
+- `revision: integer?` -- Captured qualification revision.
+- `session: (louiselm.session.Session)?` -- Owned distinct worker.
+- `sources: table<string, louiselm.routing.ReaderSource>`
+- `timer: (louiselm.routing.ReaderTimer)?`
+
+### louiselm.routing.ReaderTimer
+
+- `close: fun(self: louiselm.routing.ReaderTimer)`
+- `stop: fun(self: louiselm.routing.ReaderTimer)`
 
 ## Typed Events
 
