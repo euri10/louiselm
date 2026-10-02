@@ -323,7 +323,7 @@ impl AuthorizationStore {
     /// one slot from the installed pool. It is durable before this returns.
     ///
     /// # Errors
-    /// Returns [`BrokerError::InvalidGrant`] for a malformed request or expiry,
+    /// Returns [`BrokerError::InvalidGrant`] for malformed launch authority, request or expiry,
     /// [`BrokerError::DuplicateAuthorization`] when the identity is already in
     /// use, [`BrokerError::IdentityExhausted`] when no slot is free, and
     /// [`BrokerError::Storage`] when the record cannot be made durable.
@@ -406,6 +406,10 @@ impl AuthorizationStore {
             beads_mutations: grant.beads_mutations.clone(),
             provider_requests: grant.provider_requests.clone(),
         };
+        pending
+            .launch_authorization()
+            .validate()
+            .map_err(|_| BrokerError::InvalidGrant)?;
         self.retention_store()?.register(&grant.request, now_ms)?;
         write_new_record(&self.pending_path(&record_name), &pending)?;
         drop(assignment);
