@@ -1200,8 +1200,8 @@ function M.new(state, options)
     end)
   end
   nvim.api.nvim_buf_attach(buffer, false, {
-    on_lines = function(_, _, _, first_line, last_line)
-      if first_line <= view.prompt_line and last_line > view.prompt_line then
+    on_lines = function(_, _, _, _, last_line)
+      if last_line > view.prompt_line then
         options.on_prompt_edit()
       end
     end,

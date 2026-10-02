@@ -72,8 +72,8 @@
 
 ---@class louiselm.session.AdmissionDecisionData
 ---@field turn_id string
----@field origin "auto"|"helper"
----@field reason "baseline"|"qualified"|"parent_correlation"
+---@field origin "auto"|"helper"|"manual"
+---@field reason "baseline"|"qualified"|"parent_correlation"|"current_pair"
 ---@field requested { model?: string|boolean, effort?: string|boolean }
 ---@field parent_turn_id? string
 ---@field selection? louiselm.routing.SelectionDecision Exact Auto baseline, workload, approval and separate economic provenance.

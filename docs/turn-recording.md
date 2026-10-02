@@ -90,13 +90,20 @@ baseline to remain configured. These controls do not change reading workers.
 A failed or unknown configuration does not trigger a
 resend; an unresolved request holds or errors the Session. Chat keeps the
 editable prompt and Staged context until dispatch is confirmed, and leaves
-them in place when admission rejects the attempt.
+them in place when admission rejects the attempt. This also applies when Auto
+is unset or the current pair is pinned. Dispatch consumes only that input's
+captured context; edits and newly staged context remain in the next draft.
+Editing any line of a queued prompt cancels automatic release until Enter
+recommits it. A queued replacement is selected at actual release under the
+current configuration and approval evidence, not when it was first queued.
 
 `admission_events` is in the same private SQLite store. It records one
 payload-free `decision` and one terminal `settlement` keyed by the returned
-admission ID, including attempts with no `turns` row. A dispatched admission
-uses that ID as its prepared turn ID. Decision metadata names the pair, origin
-and reason. Auto also records payload-free `selection` provenance: baseline
+admission ID for every submission, including attempts with no `turns` row.
+A dispatched admission uses that ID as its prepared turn ID. Decision metadata names the pair, origin
+and reason. Ordinary and pinned submissions use `manual` / `current_pair`,
+without selecting or changing their configuration. Auto also records payload-free
+`selection` provenance: baseline
 and requested pairs, resolved rule/workload, exact approval and global revisions,
 labelled economic basis and allowance, or a typed fallback reason. These
 figures describe approved comparisons, never factual billing or usage. See

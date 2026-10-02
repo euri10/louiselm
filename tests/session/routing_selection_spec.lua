@@ -260,6 +260,61 @@ T["uncertainty and missing approvals dispatch the baseline with a recorded reaso
   MiniTest.expect.equality(nvim.json.decode(rows[2].data).selection.fallback_reason, "workload_unknown")
 end
 
+T["queued replacement uses current approval and dispatches its own Skill context once"] = function()
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    nvim.schedule(function()
+      callback(nil)
+    end)
+  end
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+  end)
+  local session = start(true)
+  assert(session:prompt("first turn"))
+  local active = latest("session/prompt")
+  local Chat = require("louiselm.ui.chat")
+  local chat = assert(Chat.new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  local view = chat.views[session:inspect().id]
+  view.draft:select_skill({
+    name = "implementation",
+    description = "Implement",
+    explicit_only = false,
+    path = "/not-read/SKILL.md",
+    content = "selected Skill body",
+  }, false)
+  view.renderer:replace_prompt(view.draft.context_prefix)
+  assert(chat:submit("replaced text"))
+  assert(chat:submit("latest text"))
+  decide("reject")
+  respond(active.id, { stopReason = "end_turn" })
+  wait_for(function()
+    return #process.writes >= 4 and view.pending_admission == nil
+  end)
+  local request = process.writes[#process.writes]
+  MiniTest.expect.equality(request.method, "session/prompt")
+  MiniTest.expect.equality(request.params.prompt, {
+    { type = "text", text = "selected Skill body" },
+    { type = "text", text = "latest text" },
+  })
+  MiniTest.expect.equality(observed_decision.selection.fallback_reason, "unqualified")
+  MiniTest.expect.equality(observed_decision.requested, { model = "large", effort = "high" })
+  MiniTest.expect.equality(view.renderer:prompt_text(), "")
+  MiniTest.expect.equality(view.draft.contexts, {})
+  respond(request.id, { stopReason = "end_turn" })
+  local count = 0
+  for _, write in ipairs(process.writes) do
+    if write.method == "session/prompt" then
+      count = count + 1
+    end
+  end
+  MiniTest.expect.equality(count, 2)
+end
+
 T["revoked approval during option preparation cannot dispatch the candidate"] = function()
   local session = start(true)
   local error_message
@@ -296,7 +351,11 @@ T["manual pair wins over a matching qualification"] = function()
     nvim.json.decode(query("SELECT options FROM turns")[1].options),
     { model = "large", effort = "high" }
   )
-  MiniTest.expect.equality(#query("SELECT data FROM admission_events"), 0)
+  local rows = query("SELECT phase,data FROM admission_events ORDER BY phase")
+  MiniTest.expect.equality(#rows, 2)
+  MiniTest.expect.equality(nvim.json.decode(rows[1].data).origin, "manual")
+  MiniTest.expect.equality(nvim.json.decode(rows[1].data).selection, nil)
+  MiniTest.expect.equality(nvim.json.decode(rows[2].data).result, "dispatched")
 end
 
 T["approval is rechecked after durable preparation and before the ACP write"] = function()

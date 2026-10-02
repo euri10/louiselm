@@ -15,6 +15,16 @@ local OutputProvenance = require("louiselm.output_provenance")
 local PrivateFile = require("louiselm.private_file")
 local Usage = require("louiselm.routing.usage")
 
+---@class louiselm.ui.PendingPrompt
+---@field turn_id? string Stable Session submission ID, assigned when prompt returns.
+---@field text string Submitted text, excluding context chips.
+---@field contexts louiselm.ui.ContextItem[] Exact resolved context for the submission.
+---@field draft louiselm.ui.ChatDraft Captured staged ownership.
+---@field revision integer Input revision before admission began.
+---@field phase? louiselm.routing.PhaseMetadata Explicit phase for this submission.
+---@field acp_session_id? string
+---@field settlement? louiselm.session.AdmissionSettlementEvent Settlement observed before prompt returns.
+
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
@@ -49,7 +59,8 @@ local nvim = vim
 ---@field restored_usage table<integer, louiselm.session.TurnUsage> Persisted presentation usage by historical turn.
 ---@field replay_events? { event: louiselm.session.Event, state: louiselm.session.State? }[] UI events waiting for asynchronous usage history.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
----@field pending_admission? { turn_id?: string, text: string, contexts: louiselm.ui.ContextItem[], phase?: louiselm.routing.PhaseMetadata, acp_session_id?: string } Draft awaiting confirmed Auto dispatch.
+---@field input_revision integer Revision of the editable input, including staged-context changes.
+---@field pending_admission? louiselm.ui.PendingPrompt Captured input awaiting local dispatch settlement.
 ---@field unsubscribe fun() Session event listener removal function.
 ---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
 
@@ -763,6 +774,42 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
+---@param pending louiselm.ui.PendingPrompt
+local function accept_prompt(self, view, pending)
+  local edited = view.input_revision ~= pending.revision
+  local next_text = edited and view.draft:reconcile_skills(view.renderer:prompt_text()) or ""
+  if self.attention ~= nil and pending.acp_session_id ~= nil then
+    self.attention:prompt_started(pending.acp_session_id)
+  end
+  view.transcript:record_user(pending.text)
+  clear_queued_prompt(view)
+  if pending.text:sub(1, 1) ~= "/" then
+    view.draft:consume(pending.draft)
+    if pending.phase ~= nil then
+      view.workflow_phase = pending.phase
+    end
+  end
+  view.renderer:accept_prompt(pending.text, pending.contexts, view.draft.context_prefix, not edited)
+  if edited then
+    set_prompt_line(view, next_text)
+  end
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param event louiselm.session.AdmissionSettlementEvent
+local function settle_prompt(self, view, event)
+  local pending = view.pending_admission
+  if pending ~= nil and pending.turn_id == event.data.turn_id then
+    view.pending_admission = nil
+    if event.data.result == "dispatched" then
+      accept_prompt(self, view, pending)
+    end
+  end
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
 ---@param text string
 ---@return string|number? request_id
 ---@return string? error_message
@@ -773,12 +820,16 @@ local function submit_prompt(self, view, text)
     return nil, resolve_error
   end
   local state = view.session:inspect()
-  local phase = view.draft.pending_skill and view.draft.pending_skill.phase
-  local auto = state.auto_mode == "auto"
-  if auto then
-    view.pending_admission = { text = text, contexts = contexts, phase = phase, acp_session_id = state.acp_session_id }
-  end
   local metadata = text:sub(1, 1) ~= "/" and view.draft:submission_metadata() or nil
+  local pending = {
+    text = text,
+    contexts = contexts,
+    draft = view.draft:snapshot(),
+    revision = view.input_revision,
+    phase = metadata and metadata.phase,
+    acp_session_id = state.acp_session_id,
+  }
+  view.pending_admission = pending
   local request_id, prompt_error = view.session:prompt(content, nil, metadata)
   if request_id == nil then
     view.pending_admission = nil
@@ -786,48 +837,12 @@ local function submit_prompt(self, view, text)
     notify_prompt_error(message)
     return nil, message
   end
-  if auto then
-    if view.pending_admission ~= nil then
-      view.pending_admission.turn_id = request_id
-    end
-    return request_id
-  end
-  if self.attention ~= nil and state.acp_session_id ~= nil then
-    self.attention:prompt_started(state.acp_session_id)
-  end
-  view.transcript:record_user(text)
-
-  clear_queued_prompt(view)
-  local slash_prompt = text:sub(1, 1) == "/"
-  local next_prefix = slash_prompt and view.draft.context_prefix or ""
-  view.renderer:accept_prompt(text, contexts, next_prefix, true)
-  if not slash_prompt then
-    view.draft:clear_context()
-    if phase ~= nil then
-      view.workflow_phase = phase
-    end
+  pending.turn_id = request_id
+  if not self.disposed and self.views[state.id] == view and pending.settlement ~= nil then
+    settle_prompt(self, view, pending.settlement)
+    pending.settlement = nil
   end
   return request_id
-end
-
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
----@param pending { text: string, contexts: louiselm.ui.ContextItem[], phase?: louiselm.routing.PhaseMetadata, acp_session_id?: string }
-local function accept_auto_prompt(self, view, pending)
-  if self.attention ~= nil and pending.acp_session_id ~= nil then
-    self.attention:prompt_started(pending.acp_session_id)
-  end
-  view.transcript:record_user(pending.text)
-  clear_queued_prompt(view)
-  local slash_prompt = pending.text:sub(1, 1) == "/"
-  local next_prefix = slash_prompt and view.draft.context_prefix or ""
-  view.renderer:accept_prompt(pending.text, pending.contexts, next_prefix, true)
-  if not slash_prompt then
-    view.draft:clear_context()
-    if pending.phase ~= nil then
-      view.workflow_phase = pending.phase
-    end
-  end
 end
 
 ---@param view louiselm.ui.ChatView
@@ -853,7 +868,7 @@ end
 ---@param view louiselm.ui.ChatView
 local function release_queued_prompt(self, view)
   local queued = view.draft.queued_prompt
-  if queued == nil then
+  if queued == nil or view.pending_admission ~= nil or view.session:inspect().status ~= "ready" then
     return
   end
   clear_queued_prompt(view)
@@ -1251,13 +1266,7 @@ local function handle_event(self, view, event, completed_state)
       view.replay_user_open = false
     end
   elseif event.type == "admission_settled" then
-    local pending = view.pending_admission
-    if pending ~= nil and (pending.turn_id == nil or pending.turn_id == event.data.turn_id) then
-      view.pending_admission = nil
-      if event.data.result == "dispatched" then
-        accept_auto_prompt(self, view, pending)
-      end
-    end
+    settle_prompt(self, view, event)
   elseif event.type == "prompt_rejected" then
     view.renderer:append({ "Prompt not sent: " .. event.data.message })
   elseif event.type == "recording_changed" then
@@ -1333,6 +1342,10 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param event louiselm.session.Event
 local function observe_view_event(self, view, event)
+  if event.type == "admission_settled" and view.pending_admission ~= nil and view.pending_admission.turn_id == nil then
+    -- A synchronous completion still needs the returned ID before it may touch input.
+    view.pending_admission.settlement = event
+  end
   -- Recording is a pure data transform, not an editor/UI operation, so it can run
   -- directly in this fast-event callback instead of waiting for the scheduled turn.
   view.transcript:record(event)
@@ -1717,6 +1730,7 @@ local function attach_session(self, session, event_relay)
     session = session,
     source_buffer = source_buffer,
     draft = Draft.new(),
+    input_revision = 0,
     setup_shown = false,
     unread_turn = false,
     replay_active = replay_active,
@@ -1731,6 +1745,7 @@ local function attach_session(self, session, event_relay)
   view.renderer = ChatBuffer.new(state, {
     markdown_highlighting = self.markdown_highlighting,
     on_prompt_edit = function()
+      view.input_revision = view.input_revision + 1
       clear_queued_prompt(view)
     end,
     prompt_prefix = function()
@@ -2500,7 +2515,7 @@ function Chat:submit(text)
     return nil, "Session history is still loading"
   end
   if view.pending_admission ~= nil then
-    return nil, "Auto admission is still settling"
+    return nil, "Prompt admission is still settling"
   end
   if text ~= nil and type(text) ~= "string" then
     return nil, "prompt must be a non-empty string"

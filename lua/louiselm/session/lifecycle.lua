@@ -131,7 +131,7 @@ Session.__index = Session
 
 ---@class louiselm.session.Admission
 ---@field id string
----@field origin "auto"|"helper"
+---@field origin "auto"|"helper"|"manual"
 ---@field requested { model?: string|boolean, effort?: string|boolean }
 ---@field requests table<string, string|number>
 ---@field started_at integer
@@ -1535,6 +1535,9 @@ local function prepare_prompt(self, prompt, turn_id, provider)
   -- cannot overtake it. flush also retries any earlier failed registry writes.
   self.owner.recording:append(prepared)
   set_status(self, "preparing")
+  if self.admission ~= nil then
+    record_decision(self, self.admission)
+  end
   self.owner.recording:flush(function(err)
     if self.state.status ~= "preparing" or self.state.turn_id ~= turn_id then
       return
@@ -1809,7 +1812,7 @@ local function select_auto(self, metadata, callback)
 end
 
 ---Admit a prompt under the current pair or exact approved Auto workload rule.
----Auto and explicitly correlated helper decisions use the returned ID even if no turn dispatches.
+---Every submission settles under the returned ID even if no turn dispatches.
 ---@param self louiselm.session.Session
 ---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
 ---@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal.
@@ -1861,42 +1864,44 @@ function Session:prompt(prompt, callback, correlation)
   self.recording_turn = nil
   self.admission = nil
   local origin = auto ~= nil and "auto"
-    or (correlation ~= nil and correlation.parent_turn_id ~= nil and "helper" or nil)
-  if origin ~= nil then
-    local requested
-    if auto ~= nil then
-      requested = { model = auto.model, effort = auto.effort }
-    else
-      local model = category_option(self.state.config_options, "model")
-      local effort = category_option(self.state.config_options, "thought_level")
-      requested = { model = model and model.current_value, effort = effort and effort.current_value }
-    end
-    local decision = {
-      turn_id = turn_id,
-      origin = origin,
-      reason = origin == "auto" and "baseline" or "parent_correlation",
+    or (correlation ~= nil and correlation.parent_turn_id ~= nil and "helper" or "manual")
+  local requested
+  if auto ~= nil then
+    requested = { model = auto.model, effort = auto.effort }
+  else
+    local model = category_option(self.state.config_options, "model")
+    local effort = category_option(self.state.config_options, "thought_level")
+    requested = { model = model and model.current_value, effort = effort and effort.current_value }
+  end
+  local decision = {
+    turn_id = turn_id,
+    origin = origin,
+    reason = origin == "auto" and "baseline" or (origin == "helper" and "parent_correlation" or "current_pair"),
+    requested = requested,
+    parent_turn_id = correlation and correlation.parent_turn_id or nil,
+    selection = auto and {
+      reason = "baseline",
       requested = requested,
-      parent_turn_id = correlation and correlation.parent_turn_id or nil,
-      selection = auto and {
-        reason = "baseline",
-        requested = requested,
-        baseline = requested,
-        fallback_reason = "selection_incomplete",
-      } or nil,
-    }
-    local admission = {
-      id = turn_id,
-      origin = origin,
-      requested = requested,
-      requests = {},
-      started_at = nvim.uv.hrtime(),
-      in_flight = false,
-      cancelled = false,
-      settled = false,
-      decision = decision,
-      decision_recorded = false,
-    }
-    self.admission = admission
+      baseline = requested,
+      fallback_reason = "selection_incomplete",
+    } or nil,
+  }
+  local admission = {
+    id = turn_id,
+    origin = origin,
+    requested = requested,
+    requests = {},
+    started_at = nvim.uv.hrtime(),
+    in_flight = false,
+    cancelled = false,
+    settled = false,
+    decision = decision,
+    decision_recorded = false,
+  }
+  self.admission = admission
+  if origin == "manual" then
+    prepare_prompt(self, prompt, turn_id, provider)
+  else
     -- Reserve the Session before publishing a decision to reentrant listeners.
     self.state.status = "admitting"
     local function publish(selection)
@@ -1935,8 +1940,6 @@ function Session:prompt(prompt, callback, correlation)
     else
       select_auto(self, nvim.deepcopy(correlation), publish)
     end
-  else
-    prepare_prompt(self, prompt, turn_id, provider)
   end
   return turn_id
 end

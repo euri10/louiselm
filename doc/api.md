@@ -196,7 +196,7 @@ string|table
 - `guard: { definition: louiselm.agent.Definition, revision: integer, expected_options: table<string, boolean|string> }?` -- Owned Auto selection snapshot; never persisted.
 - `id: string`
 - `in_flight: boolean`
-- `origin: "auto"|"helper"`
+- `origin: "auto"|"helper"|"manual"`
 - `requested: { model: boolean|string, effort: boolean|string }`
 - `requests: table<string, string|number>`
 - `settled: boolean`
@@ -581,9 +581,9 @@ louiselm.session.EventType:
 
 ### louiselm.session.AdmissionDecisionData
 
-- `origin: "auto"|"helper"`
+- `origin: "auto"|"helper"|"manual"`
 - `parent_turn_id: string?`
-- `reason: "baseline"|"parent_correlation"|"qualified"`
+- `reason: "baseline"|"current_pair"|"parent_correlation"|"qualified"`
 - `requested: { model: boolean|string, effort: boolean|string }`
 - `selection: (louiselm.routing.SelectionDecision)?` -- Exact Auto baseline, workload, approval and separate economic provenance.
 - `turn_id: string`

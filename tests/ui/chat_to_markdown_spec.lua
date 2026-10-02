@@ -40,6 +40,11 @@ local function fake_session(id, agent)
 
   function session:prompt(prompt)
     self.prompts[#self.prompts + 1] = prompt
+    self:emit({
+      type = "admission_settled",
+      session_id = self.state.id,
+      data = { turn_id = #self.prompts, result = "dispatched" },
+    })
     return #self.prompts
   end
 

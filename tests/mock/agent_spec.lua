@@ -290,7 +290,13 @@ T["mock agent"]["completes a prompt after a permission response"] = function()
       meaningful[#meaningful + 1] = event.type
     end
   end
-  MiniTest.expect.equality(meaningful, { "permission_requested", "chunk", "turn_done" })
+  MiniTest.expect.equality(meaningful, {
+    "admission_decided",
+    "admission_settled",
+    "permission_requested",
+    "chunk",
+    "turn_done",
+  })
 
   assert(api:dispose())
 end

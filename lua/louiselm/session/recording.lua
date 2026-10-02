@@ -256,7 +256,7 @@ local function record_sql(record)
     if record.phase == "decision" then
       local pair = data.requested
       if
-        (data.origin ~= "auto" and data.origin ~= "helper")
+        (data.origin ~= "auto" and data.origin ~= "helper" and data.origin ~= "manual")
         or type(pair) ~= "table"
         or (pair.model ~= nil and type(pair.model) ~= "string" and type(pair.model) ~= "boolean")
         or (pair.effort ~= nil and type(pair.effort) ~= "string" and type(pair.effort) ~= "boolean")
@@ -264,6 +264,7 @@ local function record_sql(record)
         or (data.reason == "qualified" and data.selection == nil)
         or (data.selection ~= nil and (data.origin ~= "auto" or not Routing.valid_selection(data.selection) or data.selection.reason ~= data.reason or data.selection.requested.model ~= pair.model or data.selection.requested.effort ~= pair.effort))
         or (data.origin == "helper" and (data.reason ~= "parent_correlation" or not nonempty(data.parent_turn_id)))
+        or (data.origin == "manual" and (data.reason ~= "current_pair" or data.parent_turn_id ~= nil))
         or (data.parent_turn_id ~= nil and not nonempty(data.parent_turn_id))
       then
         return nil

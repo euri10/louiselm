@@ -491,6 +491,67 @@ T["helper correlation does not require Auto, a Model option, or an existing pare
   MiniTest.expect.equality(query("SELECT id FROM turns")[1].id, id)
 end
 
+T["unset Auto publishes correlated settlement only after the recorded local dispatch"] = function()
+  local session = start()
+  local settlements = {}
+  session:on(function(event)
+    if event.type == "admission_settled" then
+      settlements[#settlements + 1] = event.data
+      MiniTest.expect.equality(process.writes[#process.writes].method, "session/prompt")
+    end
+  end)
+  local id = assert(session:prompt("ordinary draft"))
+  MiniTest.expect.equality(session:inspect().status, "preparing")
+  MiniTest.expect.equality(settlements, {})
+  wait_for(function()
+    return session:inspect().status == "prompting"
+  end)
+  MiniTest.expect.equality(#settlements, 1)
+  MiniTest.expect.equality({ settlements[1].turn_id, settlements[1].result }, { id, "dispatched" })
+  MiniTest.expect.equality(settlements[1].options, { model = "model-a", reasoning_effort = "medium" })
+  MiniTest.expect.equality(flush(), nil)
+  local decision = nvim.json.decode(query("SELECT data FROM admission_events WHERE phase='decision'")[1].data)
+  MiniTest.expect.equality({ decision.origin, decision.reason }, { "manual", "current_pair" })
+end
+
+T["ordinary Chat retains unsent text and context when the real recording barrier fails"] = function()
+  local session = start()
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    nvim.schedule(function()
+      callback(nil)
+    end)
+  end
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+    assert(nvim.uv.fs_chmod(directory, 448))
+  end)
+  local chat = assert(require("louiselm.ui.chat").new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:queue_context({ label = "file", text = "unsent context" }))
+  MiniTest.expect.equality(flush(), nil)
+  assert(nvim.uv.fs_chmod(directory, 320))
+  local sent = #process.writes
+  local id = assert(chat:submit("unsent draft"))
+  local view = chat.views[session:inspect().id]
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] unsent draft")
+  wait_for(function()
+    return session:inspect().status == "ready" and view.pending_admission == nil
+  end)
+  MiniTest.expect.equality(#process.writes, sent)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] unsent draft")
+  MiniTest.expect.equality(view.draft.contexts, { { label = "file", text = "unsent context" } })
+  MiniTest.expect.equality(view.transcript:snapshot(), {})
+  assert(nvim.uv.fs_chmod(directory, 448))
+  MiniTest.expect.equality(flush(), nil)
+  local rows = query("SELECT turn_id,data FROM admission_events WHERE phase='settlement'")
+  MiniTest.expect.equality(rows[1].turn_id, id)
+  MiniTest.expect.equality(nvim.json.decode(rows[1].data).result, "not_sent")
+end
+
 T["Auto keeps an unsent attempt recoverable when the recording barrier fails"] = function()
   local session = start(nil, nil, { model = "model-a", effort = "medium" })
   MiniTest.expect.equality(flush(), nil)

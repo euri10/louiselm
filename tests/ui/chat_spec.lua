@@ -82,6 +82,11 @@ local function fake_session(id, agent)
     if self.prompt_sets_status then
       self.state.status = "prompting"
     end
+    self:emit({
+      type = "admission_settled",
+      session_id = self.state.id,
+      data = { turn_id = #self.prompts, result = "dispatched" },
+    })
     return #self.prompts
   end
 
@@ -3515,7 +3520,7 @@ T["chat"]["keeps an Auto draft until dispatch and retains it after rejection"] =
   assert(chat:submit("keep this draft"))
   local view = chat.views["auto-ui"]
   MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] keep this draft")
-  MiniTest.expect.equality({ chat:submit("racing") }, { nil, "Auto admission is still settling" })
+  MiniTest.expect.equality({ chat:submit("racing") }, { nil, "Prompt admission is still settling" })
   session:emit({
     type = "admission_settled",
     session_id = "auto-ui",
@@ -3558,6 +3563,131 @@ T["chat"]["keeps an Auto draft until dispatch and retains it after rejection"] =
   MiniTest.expect.equality(view.renderer:prompt_text(), "")
   MiniTest.expect.equality(view.draft.contexts, {})
   chat:dispose()
+end
+
+T["chat"]["delayed Auto dispatch preserves later edits and context without resending"] = function()
+  local session = fake_session("auto-edit", "agent")
+  session.state.auto_mode = "auto"
+  function session:prompt(prompt, _, metadata)
+    self.prompts[#self.prompts + 1] = prompt
+    self.prompt_metadata = nvim.deepcopy(metadata)
+    self.state.status = "admitting"
+    return "attempt-" .. #self.prompts
+  end
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:queue_context({ label = "first", text = "submitted body" }))
+  assert(chat:submit("submitted text"))
+  local view = chat.views["auto-edit"]
+  view.renderer:replace_prompt("[context: first] newer text\nsecond line")
+  assert(chat:queue_context({ label = "second", text = "new body" }))
+  session.state.status = "prompting"
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    timer:close()
+    assert(nvim.in_fast_event())
+    session:emit({
+      type = "admission_settled",
+      session_id = "auto-edit",
+      data = { turn_id = "attempt-1", result = "dispatched" },
+    })
+  end)
+  assert(nvim.wait(1000, function()
+    return view.pending_admission == nil
+  end, 10))
+
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: second] newer text\nsecond line")
+  MiniTest.expect.equality(view.draft.contexts, { { label = "second", text = "new body" } })
+  MiniTest.expect.equality(#session.prompts, 1)
+  session.state.status = "ready"
+  session:emit({ type = "state_changed", session_id = "auto-edit", data = { status = "ready" } })
+  nvim.wait(20)
+  MiniTest.expect.equality(#session.prompts, 1)
+end
+
+T["chat"]["delayed dispatch preserves edits confined to continuation lines"] = function()
+  local session = fake_session("continuation-edit", "agent")
+  function session:prompt(prompt)
+    self.prompts[#self.prompts + 1] = prompt
+    self.state.status = "preparing"
+    return "attempt"
+  end
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:submit("first line\nold second line"))
+  local view = chat.views["continuation-edit"]
+  local last = nvim.api.nvim_buf_line_count(chat:buffer())
+  nvim.api.nvim_buf_set_lines(chat:buffer(), last - 1, last, false, { "new second line" })
+  session:emit({
+    type = "admission_settled",
+    session_id = "continuation-edit",
+    data = { turn_id = "attempt", result = "dispatched" },
+  })
+  assert(nvim.wait(1000, function()
+    return view.pending_admission == nil
+  end, 10))
+  MiniTest.expect.equality(view.renderer:prompt_text(), "first line\nnew second line")
+end
+
+T["chat"]["late settlement cannot consume a newer attempt and cancellation retains context"] = function()
+  local session = fake_session("settlement-race", "agent")
+  function session:prompt(prompt)
+    self.prompts[#self.prompts + 1] = prompt
+    self.state.status = "preparing"
+    return "attempt-" .. #self.prompts
+  end
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:queue_context({ label = "file", text = "retained body" }))
+  assert(chat:submit("first draft"))
+  local view = chat.views["settlement-race"]
+  session:emit({
+    type = "admission_settled",
+    session_id = "settlement-race",
+    data = { turn_id = "attempt-1", result = "not_sent" },
+  })
+  assert(nvim.wait(1000, function()
+    return view.pending_admission == nil
+  end, 10))
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] first draft")
+  session.state.status = "ready"
+  assert(chat:submit("second draft"))
+  session:emit({
+    type = "admission_settled",
+    session_id = "settlement-race",
+    data = { turn_id = "attempt-1", result = "dispatched" },
+  })
+  nvim.wait(20)
+  MiniTest.expect.equality(view.pending_admission.turn_id, "attempt-2")
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] second draft")
+  session:emit({
+    type = "admission_settled",
+    session_id = "settlement-race",
+    data = { turn_id = "attempt-2", result = "cancelled" },
+  })
+  assert(nvim.wait(1000, function()
+    return view.pending_admission == nil
+  end, 10))
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] second draft")
+  MiniTest.expect.equality(view.draft.contexts, { { label = "file", text = "retained body" } })
+  MiniTest.expect.equality(view.transcript:snapshot(), {})
+  session:emit({
+    type = "admission_settled",
+    session_id = "settlement-race",
+    data = { turn_id = "attempt-2", result = "dispatched" },
+  })
+  chat:dispose()
+  nvim.wait(20)
+  MiniTest.expect.equality(#session.prompts, 2)
 end
 
 T["chat"]["does not inject a catalog into an attached existing session"] = function()

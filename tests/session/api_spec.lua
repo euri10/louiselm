@@ -2211,13 +2211,22 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
       streamed[#streamed + 1] = event
     end
   end
-  MiniTest.expect.equality({ streamed[1].type, streamed[2].type, streamed[3].type, streamed[4].type }, {
-    "chunk",
-    "tool_call_started",
-    "tool_call_finished",
-    "turn_done",
-  })
-  MiniTest.expect.equality(streamed[1].data.content.text, "hello")
+  MiniTest.expect.equality(
+    nvim.tbl_map(function(event)
+      return event.type
+    end, streamed),
+    {
+      "admission_decided",
+      "admission_settled",
+      "chunk",
+      "tool_call_started",
+      "tool_call_finished",
+      "turn_done",
+    }
+  )
+  MiniTest.expect.equality(streamed[2].data.turn_id, request_id)
+  MiniTest.expect.equality(streamed[2].data.result, "dispatched")
+  MiniTest.expect.equality(streamed[3].data.content.text, "hello")
   MiniTest.expect.equality(completed, { result = { stopReason = "end_turn" }, error = nil })
   MiniTest.expect.equality(session:inspect().status, "ready")
 

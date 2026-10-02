@@ -106,6 +106,40 @@ T["queue cancellation retains staged material until accepted context is consumed
   MiniTest.expect.equality(other:content("independent"), "independent")
 end
 
+T["settlement consumes only its captured contexts and Skill selection"] = function()
+  local draft = Draft.new()
+  draft:add_context({ label = "first", text = "first body" })
+  local skill =
+    { name = "review", description = "Review", explicit_only = false, path = "/not-read/SKILL.md", content = "body" }
+  draft:select_skill(skill, true)
+  draft:set_catalog("catalog")
+  local submitted = draft:snapshot()
+  draft:add_context({ label = "second", text = "second body" })
+  draft:select_skill(
+    { name = "rename", description = "Rename", explicit_only = false, path = "/other/SKILL.md", content = "other" },
+    true
+  )
+
+  draft:consume(submitted)
+
+  MiniTest.expect.equality(draft.contexts, { { label = "second", text = "second body" } })
+  MiniTest.expect.equality(draft.pending_skill.name, "rename")
+  MiniTest.expect.equality(draft.context_prefix, "[context: second] [context: skill: rename] ")
+  MiniTest.expect.equality(draft.skill_catalog, nil)
+  MiniTest.expect.equality(submitted.contexts, { { label = "first", text = "first body" } })
+  submitted = draft:snapshot()
+  draft:select_skill({
+    name = "rename",
+    description = "Rename again",
+    explicit_only = false,
+    path = "/new/SKILL.md",
+    content = "new selection",
+  }, true)
+  draft:consume(submitted)
+  MiniTest.expect.equality(draft.pending_skill.content, "new selection")
+  MiniTest.expect.equality(draft.context_prefix, "[context: skill: rename] ")
+end
+
 T["skill reconciliation requires an intact leading chip and preserves literal edits"] = function()
   for _, case in ipairs({
     { visible = "ordinary task", task = "ordinary task", pending = false },

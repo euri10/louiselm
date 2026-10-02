@@ -16,6 +16,8 @@
 ---@field with_context fun(self: louiselm.ui.ChatDraft, content: string|table[], embedded_context?: boolean): string|table[], louiselm.ui.ContextItem[]
 ---@field content fun(self: louiselm.ui.ChatDraft, text: string, command_name?: string, embedded_context?: boolean): string|table[], louiselm.ui.ContextItem[]
 ---@field clear_context fun(self: louiselm.ui.ChatDraft)
+---@field snapshot fun(self: louiselm.ui.ChatDraft): louiselm.ui.ChatDraft
+---@field consume fun(self: louiselm.ui.ChatDraft, submitted: louiselm.ui.ChatDraft)
 ---@field queue fun(self: louiselm.ui.ChatDraft, text?: string)
 ---@field staged_context fun(self: louiselm.ui.ChatDraft): louiselm.ui.StagedContext
 
@@ -40,6 +42,21 @@ local function add_chip(self, label)
   self.context_prefix = self.context_prefix .. "[context: " .. label .. "] "
 end
 
+---@param label string
+---@return string
+local function chip(label)
+  return "[context: " .. label .. "]"
+end
+
+---@param self louiselm.ui.ChatDraft
+---@param label string
+local function remove_chip(self, label)
+  local first, last = self.context_prefix:find(chip(label) .. " ", 1, true)
+  if first ~= nil then
+    self.context_prefix = self.context_prefix:sub(1, first - 1) .. self.context_prefix:sub(last + 1)
+  end
+end
+
 ---Snapshot one validated context and append its presentation marker.
 ---@param self louiselm.ui.ChatDraft
 ---@param item louiselm.ui.ContextItem Validated at the Chat input boundary.
@@ -56,6 +73,9 @@ end
 ---@return string? error_message A missing injected body is staged but needs a read before submission.
 function Draft:select_skill(skill, native)
   local label = "skill: " .. skill.name
+  if native and self.pending_skill ~= nil then
+    remove_chip(self, "skill: " .. self.pending_skill.name)
+  end
   add_chip(self, label)
   if native then
     self.pending_skill = skill
@@ -110,21 +130,6 @@ end
 ---@param content string Resolved skill body.
 function Draft:cache_context_content(index, content)
   self.contexts[index].text = content
-end
-
----@param label string
----@return string
-local function chip(label)
-  return "[context: " .. label .. "]"
-end
-
----@param self louiselm.ui.ChatDraft
----@param label string
-local function remove_chip(self, label)
-  local first, last = self.context_prefix:find(chip(label) .. " ", 1, true)
-  if first ~= nil then
-    self.context_prefix = self.context_prefix:sub(1, first - 1) .. self.context_prefix:sub(last + 1)
-  end
 end
 
 ---Reconcile skill selections with the visible draft before submission or staging.
@@ -285,6 +290,42 @@ function Draft:clear_context()
   self.context_prefix = ""
   self.skill_catalog = nil
   self.pending_skill = nil
+end
+
+---Capture staged ownership without consuming it or copying immutable context entries.
+---@param self louiselm.ui.ChatDraft
+---@return louiselm.ui.ChatDraft submitted Read-only selection for one pending input.
+function Draft:snapshot()
+  local submitted = M.new()
+  for index, item in ipairs(self.contexts) do
+    submitted.contexts[index] = item
+  end
+  submitted.pending_skill = self.pending_skill
+  submitted.skill_catalog = self.skill_catalog
+  submitted.context_prefix = self.context_prefix
+  return submitted
+end
+
+---Consume an accepted input's captured selection while retaining later additions.
+---@param self louiselm.ui.ChatDraft
+---@param submitted louiselm.ui.ChatDraft Snapshot taken after resolving context bodies.
+function Draft:consume(submitted)
+  for _, accepted in ipairs(submitted.contexts) do
+    for index, item in ipairs(self.contexts) do
+      if item == accepted then
+        remove_chip(self, item.label)
+        table.remove(self.contexts, index)
+        break
+      end
+    end
+  end
+  if submitted.pending_skill ~= nil and self.pending_skill == submitted.pending_skill then
+    remove_chip(self, "skill: " .. submitted.pending_skill.name)
+    self.pending_skill = nil
+  end
+  if self.skill_catalog == submitted.skill_catalog then
+    self.skill_catalog = nil
+  end
 end
 
 ---Replace or cancel the one committed next-turn prompt; does not consume contexts.
