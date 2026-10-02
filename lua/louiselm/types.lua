@@ -22,8 +22,16 @@
 ---@field version? louiselm.ConfigAgentsValueVersion Optional override for querying the installed version, verbatim (nothing is auto-appended). Use when `command args... --version` is not the right invocation, e.g. a subcommand-based CLI wrapped by a debug script.
 
 ---@class louiselm.ConfigAgentsValueAuto
+---@field default? boolean New Sessions start in Auto unless false; false pins the current pair. Resumed Sessions retain their saved authority.
 ---@field effort? string Optional advertised thought-level value. Omit only when the Agent has no effort option.
 ---@field model string Advertised baseline Model value; checked against the live Session before each Auto submission.
+---@field rules? table<string, louiselm.ConfigAgentsValueAutoRulesValue> Exact workload keys mapped to candidate pairs. Selection requires a matching approved comparison and comparable economics; explicit workload, selected Skill, then explicit phase resolve the key.
+
+---@class louiselm.ConfigAgentsValueAutoRulesValue
+---@field effort? string Candidate advertised thought level; omission requires no effort option.
+---@field model string Candidate advertised Model value.
+---@field policy_revision string Exact approved comparison policy revision.
+---@field require_traits? string[] Configured Agent capabilities required for this rule; they never establish Model quality.
 
 ---@class louiselm.ConfigAgentsValueLatest
 ---@field args? string[] Arguments passed after the executable.

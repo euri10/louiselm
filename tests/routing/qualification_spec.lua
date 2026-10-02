@@ -86,6 +86,33 @@ end
 
 T["approval"] = MiniTest.new_set()
 
+T["approval"]["economics retains route attribution and refuses arbitrary route labels"] = function()
+  local path = nvim.fn.tempname()
+  MiniTest.finally(function()
+    nvim.fn.delete(path)
+  end)
+  local value = store(path)
+  local input = {
+    report = report(),
+    action = "approve",
+    economics = {
+      { route = "baseline", kind = "estimated", metric = "api_cost", value = 1, unit = "USD", provenance = "operator" },
+      {
+        route = "candidate",
+        kind = "estimated",
+        metric = "api_cost",
+        value = 0.25,
+        unit = "USD",
+        provenance = "operator",
+      },
+    },
+  }
+  assert(decide(value, input))
+  MiniTest.expect.equality(assert(lookup(value, request(input.report))).economics, input.economics)
+  input.economics[2].route = "tool"
+  MiniTest.expect.equality(select(2, decide(value, input)), "comparison economics or allowance has invalid schema")
+end
+
 T["approval"]["explicit approval survives reload and matches only its complete scope"] = function()
   local path = nvim.fn.tempname()
   local selected = report()

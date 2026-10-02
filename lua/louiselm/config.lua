@@ -1,5 +1,6 @@
 local Schema = require("louiselm.schema")
 local Provider = require("louiselm.agent.provider")
+local Routing = require("louiselm.routing.routing")
 
 local M = {}
 
@@ -48,6 +49,12 @@ M.schema = assert(Schema.define({
           optional = true,
           description = "Opt in to submission-time Auto routing for this Agent with an explicit baseline pair. Omit to keep existing submission behavior.",
           fields = {
+            default = {
+              type = "boolean",
+              optional = true,
+              description = "New Sessions start in Auto unless false; false pins the current pair. Resumed Sessions retain their saved authority.",
+            },
+            rules = Routing.rules_schema.fields.rules,
             model = {
               type = "string",
               description = "Advertised baseline Model value; checked against the live Session before each Auto submission.",

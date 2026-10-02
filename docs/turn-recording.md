@@ -96,7 +96,15 @@ them in place when admission rejects the attempt.
 payload-free `decision` and one terminal `settlement` keyed by the returned
 admission ID, including attempts with no `turns` row. A dispatched admission
 uses that ID as its prepared turn ID. Decision metadata names the pair, origin
-and reason. A headless helper may pass `{ parent_turn_id = id }` as the third
+and reason. Auto also records payload-free `selection` provenance: baseline
+and requested pairs, resolved rule/workload, exact approval and global revisions,
+labelled economic basis and allowance, or a typed fallback reason. These
+figures describe approved comparisons, never factual billing or usage. See
+[routing qualification](routing-qualification.md) for `auto.rules` and explicit
+submission metadata. The Session rechecks approvals and configuration after
+confirmation and immediately before the ACP write; stale selection rejects
+admission without retrying.
+A headless helper may pass `{ parent_turn_id = id }` as the third
 argument to `session:prompt`, even when its Agent has no Auto baseline. This
 explicitly correlated attempt uses the same admission record and may name a
 parent that never dispatched.

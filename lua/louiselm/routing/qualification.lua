@@ -34,6 +34,7 @@ local PrivateFile = require("louiselm.private_file")
 ---@field fixtures louiselm.routing.ComparisonFixture[] Selected evidence and acceptance results.
 
 ---@class louiselm.routing.ComparisonEconomics
+---@field route? "baseline"|"candidate" Required for comparable automatic selection; absent figures remain unassigned observations.
 ---@field kind "estimated"|"measured" Estimate or observation; never a factual usage row.
 ---@field metric "api_cost"|"quota"|"latency"
 ---@field value number Nonnegative quantity.
@@ -234,7 +235,8 @@ local function economics(value)
   end
   for _, entry in ipairs(value) do
     if
-      not exact(entry, { kind = true, metric = true, value = true, unit = true, provenance = true })
+      not exact(entry, { route = true, kind = true, metric = true, value = true, unit = true, provenance = true })
+      or (entry.route ~= nil and entry.route ~= "baseline" and entry.route ~= "candidate")
       or (entry.kind ~= "estimated" and entry.kind ~= "measured")
       or (entry.metric ~= "api_cost" and entry.metric ~= "quota" and entry.metric ~= "latency")
       or type(entry.value) ~= "number"
@@ -280,6 +282,15 @@ local function valid_decision(value, revision)
   )) and economics(value.economics) and allowance(value.api_for_quota) and value.revision == revision and type(
     value.decided_at
   ) == "number" and value.decided_at % 1 == 0
+end
+
+---Validate payload-free planning figures and the distinct API-for-quota allowance.
+---Pure structural checking; passing does not establish quality, savings or authority.
+---@param figures unknown Optional comparison economics.
+---@param permitted_extra unknown Optional operator allowance.
+---@return boolean valid False for unknown fields, malformed quantities or provenance.
+function M.valid_economics(figures, permitted_extra)
+  return economics(figures) and allowance(permitted_extra)
 end
 
 local function empty_state()

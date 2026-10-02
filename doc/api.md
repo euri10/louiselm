@@ -32,7 +32,15 @@ API reference.
 
 - `forensics_directory: string?` -- Override the private Session Forensics directory.
 - `permission_store: (louiselm.permission.Store)?` -- Explicit remembered-permission store.
+- `qualification_path: string?` -- Private comparison approval path; defaults to the shared routing qualification store.
 - `usage_directory: string?` -- Absolute private directory for durable turn recording; defaults to usage/ in the shared LouiseLM state directory.
+
+### louiselm.routing.SubmissionMetadata
+
+- `parent_turn_id: string?` -- Helper ancestry; independent of routing.
+- `phase: (louiselm.routing.PhaseMetadata)?` -- Explicit phase; inferred names cannot select a route.
+- `skill: string?` -- Explicit selected Skill name.
+- `workload: string?` -- Explicit exact workload key.
 
 ### louiselm.session.ForensicsOptions
 
@@ -139,7 +147,7 @@ string|table
 ### louiselm.session.Session
 
 - `acp_session_id: string?` -- Agent-side session identifier.
-- `admission: { id: string, origin: "auto"|"helper", requested: { model: boolean|string, effort: boolean|string }, requests: table<string, string|number>, started_at: integer, in_flight: boolean, cancelled: boolean, settled: boolean }?` -- Admission ownership until a terminal settlement.
+- `admission: (louiselm.session.Admission)?` -- Admission ownership until a terminal settlement.
 - `agent_running: boolean?` -- Agent-reported processing, independent of the client prompt response; nil until observed.
 - `attribution_error: (louiselm.session.RecordingError)?` -- Unresolved current Provider; cleared only by a confirmed correction.
 - `cancel: fun(self: louiselm.session.Session):boolean, string?`
@@ -161,7 +169,7 @@ string|table
 - `permission_policy: louiselm.permission.Policy` -- Policy for agent-requested operations.
 - `permission_queue: louiselm.session.PermissionEntry[]` -- Permission requests waiting for the active one.
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
-- `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string), correlation?: { parent_turn_id: string }):string?, string?`
+- `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata):string?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
@@ -179,6 +187,20 @@ string|table
 - `transcript_turn: integer` -- Observed replay turns plus locally dispatched prompts, excluding unsent attempts.
 - `turn_done_turn: integer?` -- Turn for which the completion event was emitted.
 - `usage_history: fun(self: louiselm.session.Session, callback: fun(records?: louiselm.session.ReplayUsage[], error?: louiselm.session.RecordingError))`
+
+### louiselm.session.Admission
+
+- `cancelled: boolean`
+- `decision: louiselm.session.AdmissionDecisionData` -- Owned pending or final decision.
+- `decision_recorded: boolean` -- Whether its immutable decision has been published.
+- `guard: { definition: louiselm.agent.Definition, revision: integer, expected_options: table<string, boolean|string> }?` -- Owned Auto selection snapshot; never persisted.
+- `id: string`
+- `in_flight: boolean`
+- `origin: "auto"|"helper"`
+- `requested: { model: boolean|string, effort: boolean|string }`
+- `requests: table<string, string|number>`
+- `settled: boolean`
+- `started_at: integer`
 
 ### louiselm.session.OptionUsage
 
@@ -244,6 +266,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `on_agent_limits: fun(self: louiselm.session.Registry, callback: fun(state: louiselm.session.LimitsState)):fun()?, string?`
 - `order: string[]` -- Session ids in creation order.
 - `permission_store: louiselm.permission.Store` -- Remembered rules owned by this registry.
+- `qualification: louiselm.routing.Qualification` -- Durable comparison approvals used by Auto admission.
 - `recording: louiselm.session.RecordingStore` -- Shared durable writer; failed writes gate subsequent prompts.
 - `refresh_agent_limits: fun(self: louiselm.session.Registry, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)):boolean, string?`
 - `remove_session: fun(self: louiselm.session.Registry, id: string)`
@@ -552,9 +575,30 @@ louiselm.session.EventType:
 
 ### louiselm.session.AdmissionDecisionEvent
 
-- `data: { turn_id: string, origin: "auto"|"helper", reason: "baseline"|"parent_correlation", requested: { model: boolean|string, effort: boolean|string }, parent_turn_id: string }` -- Payload-free selection before configuration.
+- `data: louiselm.session.AdmissionDecisionData` -- Payload-free selection before configuration, or the incomplete choice when admission terminates early.
 - `session_id: string` -- Local session identifier.
 - `type: "admission_decided"`
+
+### louiselm.session.AdmissionDecisionData
+
+- `origin: "auto"|"helper"`
+- `parent_turn_id: string?`
+- `reason: "baseline"|"parent_correlation"|"qualified"`
+- `requested: { model: boolean|string, effort: boolean|string }`
+- `selection: (louiselm.routing.SelectionDecision)?` -- Exact Auto baseline, workload, approval and separate economic provenance.
+- `turn_id: string`
+
+### louiselm.routing.SelectionDecision
+
+- `api_for_quota: (louiselm.routing.ApiForQuotaAllowance)?`
+- `baseline: { model: string, effort: string }`
+- `economic_basis: louiselm.routing.ComparisonEconomics[]?` -- Approved figures, not factual usage.
+- `fallback_reason: string?` -- Typed reason a configured candidate was not selected.
+- `qualification: { report_id: string, policy_revision: string, revision: integer, approval_revision: integer }?`
+- `reason: "baseline"|"qualified"`
+- `requested: { model: string, effort: string }`
+- `rule: string?` -- Exact rule/workload key, when resolved.
+- `workload: (louiselm.routing.ComparisonWorkload)?`
 
 ### louiselm.session.AdmissionSettlementEvent
 
@@ -690,6 +734,13 @@ louiselm.permission.Lifetime:
 
 ## Agent Configuration
 
+### louiselm.routing.SelectionRule
+
+- `effort: string?` -- Candidate advertised thought level.
+- `model: string` -- Candidate advertised Model.
+- `policy_revision: string` -- Exact comparison policy version.
+- `require_traits: string[]?` -- Required configured Agent capabilities, never quality evidence.
+
 ### louiselm.agent.SkillConfig
 
 - `policy: ("inject"|"native"|"off")?` -- Agent-specific policy override.
@@ -703,8 +754,8 @@ louiselm.permission.Lifetime:
 ### louiselm.agent.Definition
 
 - `args: string[]` -- Arguments passed after the command.
-- `auto: { model: string, effort: string, default: boolean }?` -- Baseline pair; new Sessions default to Auto unless default=false. Resumed choices are retained.
-- `capabilities: string[]?` -- Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
+- `auto: { model: string, effort: string, default: boolean, rules: table<string, louiselm.routing.SelectionRule> }?` -- Baseline pair and qualified rules; new Sessions default to Auto unless default=false. Resumed choices are retained.
+- `capabilities: string[]?` -- Declared Agent traits, matched against `needs-capability:*` beads labels by the Agent selecting work and explicit Auto rule constraints by LouiseLM. Never Model-quality evidence; LouiseLM does not read Beads or choose work.
 - `command: string` -- Executable to start.
 - `env: table<string, string>?` -- Environment variables for the process.
 - `latest: (louiselm.agent.CommandCheck)?` -- Optional command that resolves the latest available version.

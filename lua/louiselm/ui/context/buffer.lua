@@ -3,6 +3,7 @@
 ---@field text? string ACP text content; required unless uri is present.
 ---@field uri? string Resource URI; queued items emit resource_link blocks. Submitted skill catalogs also carry text for local inspection.
 ---@field skill_path? string Selected SKILL.md path retried when its selection-time read failed.
+---@field skill_metadata? { name: string, phase?: louiselm.routing.PhaseMetadata } Metadata owned by an explicit Skill selection, never inferred from context text.
 
 local M = {}
 

@@ -266,6 +266,20 @@ T["incomplete turns have no invented terminal or telemetry facts"] = function()
   MiniTest.expect.equality(rejected.code, "invalid")
 end
 
+T["a qualified admission cannot be persisted without its selection proof"] = function()
+  local writer = store()
+  local record = {
+    kind = "admission",
+    turn_id = "one",
+    agent = "mock",
+    acp_session_id = "session",
+    observed_at = "2026-09-07T12:00:00Z",
+    phase = "decision",
+    data = { origin = "auto", reason = "qualified", requested = { model = "small" } },
+  }
+  MiniTest.expect.equality(append(writer, record).code, "invalid")
+end
+
 T["refuses unsafe journals and future schemas before adding facts"] = function()
   local writer = store()
   MiniTest.expect.equality(append(writer, prepared()), nil)

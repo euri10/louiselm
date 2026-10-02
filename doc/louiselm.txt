@@ -160,6 +160,17 @@ Workflow                                                   *louiselm-workflow*
   Approval records alone do not enable Auto or Provider disclosure. See
   docs/routing-qualification.md for the report and lookup contract.
 
+  An Agent's auto.rules maps exact workload keys to candidate Model/effort
+  pairs and comparison policy revisions. Auto resolves explicit workload
+  metadata, a selected Skill with a matching rule, then an explicitly declared
+  phase; it never classifies prompt prose. Only a matching approved
+  main-workload comparison with supported options, required Agent capabilities
+  and comparable approved economics can select the candidate. Unknown evidence
+  keeps the configured baseline; a manual pin wins. Approval or configuration
+  changes during preparation prevent stale dispatch. Admission records retain
+  payload-free selection provenance. See docs/routing-qualification.md for
+  configuration, headless metadata and allowance semantics.
+
   Session buffers always install these buffer-local Normal-mode motions,
   independently of the global keymaps option:
 
@@ -455,6 +466,12 @@ agents.<name>.auto                          *louiselm-config-agents-name-auto*
     explicit baseline pair. Omit to keep existing submission behavior.
 
 ------------------------------------------------------------------------------
+agents.<name>.auto.default          *louiselm-config-agents-name-auto-default*
+    Type: boolean
+    Description: New Sessions start in Auto unless false; false pins the
+    current pair. Resumed Sessions retain their saved authority.
+
+------------------------------------------------------------------------------
 agents.<name>.auto.effort            *louiselm-config-agents-name-auto-effort*
     Type: string
     Description: Optional advertised thought-level value. Omit only when the
@@ -465,6 +482,39 @@ agents.<name>.auto.model              *louiselm-config-agents-name-auto-model*
     Type: string
     Description: Advertised baseline Model value; checked against the live
     Session before each Auto submission.
+
+------------------------------------------------------------------------------
+agents.<name>.auto.rules              *louiselm-config-agents-name-auto-rules*
+    Type: string-keyed map of table
+    Description: Exact workload keys mapped to candidate pairs. Selection
+    requires a matching approved comparison and comparable economics; explicit
+    workload, selected Skill, then explicit phase resolve the key.
+
+------------------------------------------------------------------------------
+                          *louiselm-config-agents-name-auto-rules-name-effort*
+agents.<name>.auto.rules.<name>.effort
+    Type: string
+    Description: Candidate advertised thought level; omission requires no
+    effort option.
+
+------------------------------------------------------------------------------
+                           *louiselm-config-agents-name-auto-rules-name-model*
+agents.<name>.auto.rules.<name>.model
+    Type: string
+    Description: Candidate advertised Model value.
+
+------------------------------------------------------------------------------
+                 *louiselm-config-agents-name-auto-rules-name-policy-revision*
+agents.<name>.auto.rules.<name>.policy_revision
+    Type: string
+    Description: Exact approved comparison policy revision.
+
+------------------------------------------------------------------------------
+                  *louiselm-config-agents-name-auto-rules-name-require-traits*
+agents.<name>.auto.rules.<name>.require_traits
+    Type: array of string
+    Description: Configured Agent capabilities required for this rule; they
+    never establish Model quality.
 
 ------------------------------------------------------------------------------
 agents.<name>.capabilities          *louiselm-config-agents-name-capabilities*

@@ -48,7 +48,68 @@
 ---@field rejected louiselm.routing.RoutingRejection[] Near misses with the constraints they failed.
 
 local Phase = require("louiselm.routing.phase")
+local Provider = require("louiselm.agent.provider")
+local Schema = require("louiselm.schema")
+local Qualification = require("louiselm.routing.qualification")
 local M = {}
+
+---@class louiselm.routing.SelectionScope
+---@field workload louiselm.routing.ComparisonWorkload
+---@field baseline louiselm.routing.ComparisonRoute
+---@field candidate louiselm.routing.ComparisonRoute
+---@field policy_revision string
+---@field effort_option_id? string
+
+---Shared closed rule schema for setup and headless Agent configuration.
+---@type louiselm.schema.Schema
+M.rules_schema = assert(Schema.define({
+  rules = {
+    type = "map-of",
+    optional = true,
+    description = "Exact workload keys mapped to candidate pairs. Selection requires a matching approved comparison and comparable economics; explicit workload, selected Skill, then explicit phase resolve the key.",
+    validator = function(value)
+      return value[""] == nil, "rule workload keys must be non-empty"
+    end,
+    items = {
+      type = "table",
+      fields = {
+        model = {
+          type = "string",
+          validator = function(value)
+            return value ~= "", "must be non-empty"
+          end,
+          description = "Candidate advertised Model value.",
+        },
+        effort = {
+          type = "string",
+          optional = true,
+          validator = function(value)
+            return value ~= "", "must be non-empty"
+          end,
+          description = "Candidate advertised thought level; omission requires no effort option.",
+        },
+        policy_revision = {
+          type = "string",
+          validator = function(value)
+            return value ~= "", "must be non-empty"
+          end,
+          description = "Exact approved comparison policy revision.",
+        },
+        require_traits = {
+          type = "array-of",
+          optional = true,
+          items = {
+            type = "string",
+            validator = function(value)
+              return value ~= "", "must be non-empty"
+            end,
+          },
+          description = "Configured Agent capabilities required for this rule; they never establish Model quality.",
+        },
+      },
+    },
+  },
+}))
 
 --- Built-in phase profiles. They express traits and headroom requirements rather
 --- than named models, so an agent inventory that changes underneath does not
@@ -382,6 +443,384 @@ function M.rank(request)
   table.sort(candidates, before)
   table.sort(rejected, rejected_before)
   return { candidates = candidates, rejected = rejected }
+end
+
+local function category(options, name)
+  for _, option in ipairs(options) do
+    if option.category == name then
+      return option
+    end
+  end
+end
+
+local function only(value, keys)
+  if type(value) ~= "table" then
+    return false
+  end
+  for key in pairs(value) do
+    if not keys[key] then
+      return false
+    end
+  end
+  return true
+end
+
+local function nonempty(value)
+  return type(value) == "string" and value ~= ""
+end
+
+---Validate explicit, payload-free submission metadata without inferring from prose.
+---@param value unknown Optional submission metadata.
+---@return boolean valid False for unknown fields or contradictory phase metadata.
+function M.valid_metadata(value)
+  if value == nil then
+    return true
+  end
+  if not only(value, { parent_turn_id = true, workload = true, skill = true, phase = true }) then
+    return false
+  end
+  for _, key in ipairs({ "parent_turn_id", "workload", "skill" }) do
+    if value[key] ~= nil and not nonempty(value[key]) then
+      return false
+    end
+  end
+  local phase = value.phase
+  if phase == nil then
+    return true
+  end
+  if not only(phase, { primary = true, secondary = true, source = true, confidence = true }) then
+    return false
+  end
+  local parsed, parse_error = Phase.parse({ primary = phase.primary, secondary = phase.secondary })
+  return parsed ~= nil
+    and parse_error == nil
+    and (phase.source == "explicit" or phase.source == "inferred")
+    and type(phase.confidence) == "number"
+    and phase.confidence >= 0
+    and phase.confidence <= 1
+    and (phase.source ~= "explicit" or phase.confidence == 1)
+end
+
+local function supports(option, value)
+  if option == nil or option.type ~= "select" then
+    return false
+  end
+  for _, choice in ipairs(option.options or {}) do
+    if choice.value == value then
+      return true
+    end
+  end
+  return false
+end
+
+---Resolve a rule from explicit metadata and the current advertised authority.
+---Pure: neither prompt prose, legacy scores nor Account limits are consulted.
+---@param request { agent: string, definition: louiselm.agent.Definition, options: louiselm.session.ConfigOption[], metadata?: louiselm.routing.SubmissionMetadata }
+---@return louiselm.routing.SelectionScope? scope Nil selects the baseline.
+---@return string? reason Typed fallback reason.
+function M.scope(request)
+  local definition, metadata = request.definition, request.metadata or {}
+  local auto = definition.auto
+  local rules = auto and auto.rules or {}
+  local key = metadata.workload
+  if key == nil and metadata.skill ~= nil and rules[metadata.skill] ~= nil then
+    key = metadata.skill
+  end
+  if
+    key == nil
+    and metadata.phase ~= nil
+    and metadata.phase.source == "explicit"
+    and Phase.is_canonical(metadata.phase.primary)
+  then
+    key = metadata.phase.primary
+  end
+  if key == nil then
+    return nil, "workload_unknown"
+  end
+  local rule = rules[key]
+  if auto == nil or rule == nil then
+    return nil, "rule_missing"
+  end
+  local declared = set_of(definition.capabilities)
+  for _, trait in ipairs(rule.require_traits or {}) do
+    if not declared[trait] then
+      return nil, "capability_unavailable"
+    end
+  end
+  local model, effort = category(request.options, "model"), category(request.options, "thought_level")
+  if
+    not supports(model, rule.model)
+    or not supports(model, auto.model)
+    or (effort == nil and rule.effort ~= nil)
+    or (effort ~= nil and not supports(effort, rule.effort))
+    or (effort == nil and auto.effort ~= nil)
+    or (effort ~= nil and not supports(effort, auto.effort))
+  then
+    return nil, "option_unsupported"
+  end
+  if model == nil then
+    return nil, "option_unsupported"
+  end
+  local function route(pair)
+    local values = {}
+    for _, option in ipairs(request.options) do
+      values[option.id] = option.current_value
+    end
+    values[model.id] = pair.model
+    if effort ~= nil then
+      values[effort.id] = pair.effort
+    end
+    local provider = Provider.resolve(definition.provider, values)
+    if provider == nil then
+      return nil
+    end
+    return {
+      agent = request.agent,
+      provider = provider,
+      model = pair.model,
+      model_option_id = model.id,
+      options = values,
+    }
+  end
+  local baseline, candidate = route(auto), route(rule)
+  if baseline == nil or candidate == nil then
+    return nil, "provider_unresolved"
+  end
+  return {
+    workload = { kind = "main", id = key },
+    baseline = baseline,
+    candidate = candidate,
+    policy_revision = rule.policy_revision,
+    effort_option_id = effort and effort.id,
+  },
+    nil
+end
+
+local function same_route(left, right)
+  if type(left) ~= "table" or type(left.options) ~= "table" then
+    return false
+  end
+  for _, key in ipairs({ "agent", "provider", "model", "model_option_id" }) do
+    if left[key] ~= right[key] then
+      return false
+    end
+  end
+  for key, value in pairs(left.options) do
+    if right.options[key] ~= value then
+      return false
+    end
+  end
+  for key, value in pairs(right.options) do
+    if left.options[key] ~= value then
+      return false
+    end
+  end
+  return true
+end
+
+local function economic_reason(approved)
+  local groups, costs = {}, false
+  for _, entry in ipairs(approved.economics or {}) do
+    if entry.metric == "api_cost" or entry.metric == "quota" then
+      if entry.route ~= "baseline" and entry.route ~= "candidate" then
+        return "economics_unknown"
+      end
+      local key = entry.metric .. ":" .. entry.unit
+      local group = groups[key] or { metric = entry.metric, unit = entry.unit }
+      if group[entry.route] ~= nil then
+        return "economics_unknown"
+      end
+      group[entry.route], groups[key] = entry, group
+      if entry.metric == "api_cost" then
+        costs = true
+      end
+    end
+  end
+  if not costs then
+    return "economics_unknown"
+  end
+  local extra, cheaper, quota_better = {}, false, false
+  for _, group in pairs(groups) do
+    local baseline, candidate = group.baseline, group.candidate
+    if baseline == nil or candidate == nil or baseline.kind ~= candidate.kind then
+      return "economics_unknown"
+    end
+    if group.metric == "api_cost" then
+      if candidate.value > baseline.value then
+        extra[group.unit] = candidate.value - baseline.value
+      end
+      if candidate.value < baseline.value then
+        cheaper = true
+      end
+    else
+      if candidate.value > baseline.value then
+        return "economics_worse"
+      end
+      if candidate.value < baseline.value then
+        quota_better = true
+      end
+    end
+  end
+  if next(extra) ~= nil then
+    if not quota_better then
+      return "no_economic_benefit"
+    end
+    local allowance = approved.api_for_quota
+    if allowance == nil then
+      return "allowance_missing"
+    end
+    for currency, value in pairs(extra) do
+      if allowance.max_extra_cost.currency ~= currency or value > allowance.max_extra_cost.value then
+        return "allowance_insufficient"
+      end
+    end
+  elseif not cheaper and not quota_better then
+    return "no_economic_benefit"
+  end
+end
+
+---Select a same-Agent pair only from an exact approved comparison and economics.
+---Figures are operator-approved workload quantities, separated by metric, currency
+---and observation kind. The allowance bounds this workload's extra planned cost;
+---neither estimates nor selection establish actual billing or remaining quota.
+---@param scope louiselm.routing.SelectionScope Validated live scope.
+---@param approved? louiselm.routing.QualificationResult Validated durable lookup result.
+---@return louiselm.routing.SelectionDecision decision Baseline for absent or ineligible evidence.
+function M.select(scope, approved)
+  local function pair(route)
+    return { model = route.model, effort = scope.effort_option_id and route.options[scope.effort_option_id] or nil }
+  end
+  local decision = {
+    reason = "baseline",
+    requested = pair(scope.baseline),
+    baseline = pair(scope.baseline),
+    rule = scope.workload.id,
+    workload = scope.workload,
+  }
+  if approved == nil then
+    decision.fallback_reason = "unqualified"
+    return decision
+  end
+  local report = approved.report
+  if
+    report == nil
+    or report.workload.kind ~= scope.workload.kind
+    or report.workload.id ~= scope.workload.id
+    or report.policy_revision ~= scope.policy_revision
+    or not same_route(report.baseline, scope.baseline)
+    or not same_route(report.candidate, scope.candidate)
+  then
+    decision.fallback_reason = "unqualified"
+    return decision
+  end
+  decision.qualification =
+    { report_id = approved.report_id, policy_revision = approved.policy_revision, revision = approved.revision }
+  decision.economic_basis, decision.api_for_quota = approved.economics, approved.api_for_quota
+  decision.fallback_reason = economic_reason(approved)
+  if decision.fallback_reason == nil then
+    decision.reason, decision.requested = "qualified", pair(scope.candidate)
+  end
+  return decision
+end
+
+---Check the closed, payload-free decision before durable recording.
+---@param value unknown Selection provenance supplied by admission.
+---@return boolean valid Structural validity, never a substitute for live approval lookup.
+function M.valid_selection(value)
+  if
+    not only(value, {
+      reason = true,
+      requested = true,
+      baseline = true,
+      rule = true,
+      workload = true,
+      fallback_reason = true,
+      qualification = true,
+      economic_basis = true,
+      api_for_quota = true,
+    })
+  then
+    return false
+  end
+  for _, pair in ipairs({ value.requested, value.baseline }) do
+    if
+      not only(pair, { model = true, effort = true })
+      or not nonempty(pair.model)
+      or (pair.effort ~= nil and not nonempty(pair.effort))
+    then
+      return false
+    end
+  end
+  if type(value.requested) ~= "table" or type(value.baseline) ~= "table" then
+    return false
+  end
+  if value.rule ~= nil and not nonempty(value.rule) then
+    return false
+  end
+  if
+    value.workload ~= nil
+    and (
+      not only(value.workload, { kind = true, id = true })
+      or value.workload.kind ~= "main"
+      or value.workload.id ~= value.rule
+    )
+  then
+    return false
+  end
+  if
+    value.fallback_reason ~= nil
+    and not ({
+      workload_unknown = true,
+      rule_missing = true,
+      capability_unavailable = true,
+      option_unsupported = true,
+      provider_unresolved = true,
+      unqualified = true,
+      economics_unknown = true,
+      economics_worse = true,
+      no_economic_benefit = true,
+      allowance_missing = true,
+      allowance_insufficient = true,
+      approval_unavailable = true,
+      selection_incomplete = true,
+    })[value.fallback_reason]
+  then
+    return false
+  end
+  local approved = value.qualification
+  if approved ~= nil then
+    if
+      not only(approved, { report_id = true, policy_revision = true, revision = true, approval_revision = true })
+      or not nonempty(approved.report_id)
+      or not nonempty(approved.policy_revision)
+      or type(approved.revision) ~= "number"
+      or approved.revision < 1
+      or approved.revision % 1 ~= 0
+      or (
+        approved.approval_revision ~= nil
+        and (
+          type(approved.approval_revision) ~= "number"
+          or approved.approval_revision < approved.revision
+          or approved.approval_revision % 1 ~= 0
+        )
+      )
+    then
+      return false
+    end
+  end
+  if not Qualification.valid_economics(value.economic_basis, value.api_for_quota) then
+    return false
+  end
+  if value.reason == "qualified" then
+    return value.rule ~= nil
+      and value.workload ~= nil
+      and approved ~= nil
+      and value.fallback_reason == nil
+      and economic_reason({ economics = value.economic_basis, api_for_quota = value.api_for_quota }) == nil
+  end
+  return value.reason == "baseline"
+    and value.requested.model == value.baseline.model
+    and value.requested.effort == value.baseline.effort
 end
 
 return M

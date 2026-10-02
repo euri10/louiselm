@@ -6,6 +6,7 @@
 ---@field queued_prompt? string Text committed for the next turn, without context markers.
 ---@field add_context fun(self: louiselm.ui.ChatDraft, item: louiselm.ui.ContextItem)
 ---@field select_skill fun(self: louiselm.ui.ChatDraft, skill: louiselm.skills.Skill, native: boolean): string?
+---@field submission_metadata fun(self: louiselm.ui.ChatDraft): louiselm.routing.SubmissionMetadata? Explicit metadata for exactly one staged Skill.
 ---@field set_catalog fun(self: louiselm.ui.ChatDraft, catalog: string)
 ---@field cache_native_content fun(self: louiselm.ui.ChatDraft, content: string)
 ---@field cache_context_content fun(self: louiselm.ui.ChatDraft, index: integer, content: string)
@@ -59,12 +60,34 @@ function Draft:select_skill(skill, native)
   if native then
     self.pending_skill = skill
   else
-    self.contexts[#self.contexts + 1] = { label = label, text = skill.content, skill_path = skill.path }
+    self.contexts[#self.contexts + 1] = {
+      label = label,
+      text = skill.content,
+      skill_path = skill.path,
+      skill_metadata = { name = skill.name, phase = skill.phase },
+    }
     if skill.content == nil then
       return "could not read selected skill: " .. skill.path
     end
   end
   return nil
+end
+
+---Resolve explicit selection metadata; multiple Skills or cleared context is uncertain.
+---Pure: it reads neither Skill bytes nor prompt prose, and preserves the draft.
+---@param self louiselm.ui.ChatDraft
+---@return louiselm.routing.SubmissionMetadata? metadata Nil when no single workload is declared.
+function Draft:submission_metadata()
+  local selected = self.pending_skill and { name = self.pending_skill.name, phase = self.pending_skill.phase }
+  for _, item in ipairs(self.contexts) do
+    if item.skill_metadata ~= nil then
+      if selected ~= nil then
+        return nil
+      end
+      selected = item.skill_metadata
+    end
+  end
+  return selected and { skill = selected.name, phase = selected.phase } or nil
 end
 
 ---Hold the hidden catalog for a newly created inject Session.

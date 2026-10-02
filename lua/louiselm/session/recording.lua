@@ -94,6 +94,7 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field costs louiselm.session.UsageCurrency[] Complete reported deltas in currency order.
 ---@alias louiselm.session.UsageSummariesCallback fun(summaries: louiselm.session.CohortSummary[]?, error?: louiselm.session.RecordingError)
 
+local Routing = require("louiselm.routing.routing")
 local M = {}
 local Store = {}
 Store.__index = Store
@@ -167,6 +168,13 @@ end
 local function json(value)
   if type(value) ~= "table" then
     return nvim.json.encode(value)
+  end
+  if #value > 0 and nvim.islist(value) then
+    local items = {}
+    for index, item in ipairs(value) do
+      items[index] = json(item)
+    end
+    return "[" .. table.concat(items, ",") .. "]"
   end
   local keys = {}
   for key in pairs(value) do
@@ -252,13 +260,21 @@ local function record_sql(record)
         or type(pair) ~= "table"
         or (pair.model ~= nil and type(pair.model) ~= "string" and type(pair.model) ~= "boolean")
         or (pair.effort ~= nil and type(pair.effort) ~= "string" and type(pair.effort) ~= "boolean")
-        or (data.origin == "auto" and (not nonempty(pair.model) or data.reason ~= "baseline"))
+        or (data.origin == "auto" and (not nonempty(pair.model) or (data.reason ~= "baseline" and data.reason ~= "qualified")))
+        or (data.reason == "qualified" and data.selection == nil)
+        or (data.selection ~= nil and (data.origin ~= "auto" or not Routing.valid_selection(data.selection) or data.selection.reason ~= data.reason or data.selection.requested.model ~= pair.model or data.selection.requested.effort ~= pair.effort))
         or (data.origin == "helper" and (data.reason ~= "parent_correlation" or not nonempty(data.parent_turn_id)))
         or (data.parent_turn_id ~= nil and not nonempty(data.parent_turn_id))
       then
         return nil
       end
-      data = { origin = data.origin, reason = data.reason, requested = pair, parent_turn_id = data.parent_turn_id }
+      data = {
+        origin = data.origin,
+        reason = data.reason,
+        requested = pair,
+        parent_turn_id = data.parent_turn_id,
+        selection = data.selection,
+      }
     else
       local requests_valid = type(data.requests) == "table"
       if requests_valid then
@@ -288,6 +304,7 @@ local function record_sql(record)
             delivery_unknown = true,
             disposed = true,
             recording_failed = true,
+            selection_changed = true,
           })[data.reason]
         )
       then

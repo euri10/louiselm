@@ -358,6 +358,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "An Agent's auto.rules maps exact workload keys to candidate Model/effort pairs and comparison policy revisions. Auto resolves explicit workload metadata, a selected Skill with a matching rule, then an explicitly declared phase; it never classifies prompt prose. Only a matching approved main-workload comparison with supported options, required Agent capabilities and comparable approved economics can select the candidate. Unknown evidence keeps the configured baseline; a manual pin wins. Approval or configuration changes during preparation prevent stale dispatch. Admission records retain payload-free selection provenance. See docs/routing-qualification.md for configuration, headless metadata and allowance semantics.",
+        context
+      )
+      append_prose(
+        lines,
         "Session buffers always install these buffer-local Normal-mode motions, independently of the global keymaps option:",
         context
       )

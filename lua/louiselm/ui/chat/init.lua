@@ -778,7 +778,8 @@ local function submit_prompt(self, view, text)
   if auto then
     view.pending_admission = { text = text, contexts = contexts, phase = phase, acp_session_id = state.acp_session_id }
   end
-  local request_id, prompt_error = view.session:prompt(content)
+  local metadata = text:sub(1, 1) ~= "/" and view.draft:submission_metadata() or nil
+  local request_id, prompt_error = view.session:prompt(content, nil, metadata)
   if request_id == nil then
     view.pending_admission = nil
     local message = prompt_error or "prompt failed"

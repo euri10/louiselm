@@ -3,6 +3,36 @@ local Draft = require("louiselm.ui.chat.draft")
 
 local T = MiniTest.new_set()
 
+T["routing metadata belongs to exactly one selected Skill and never to stale context"] = function()
+  local phase = assert(require("louiselm.routing.phase").parse("mechanical"))
+  local skill = {
+    name = "rename",
+    description = "Rename",
+    explicit_only = false,
+    path = "/not-read/SKILL.md",
+    content = "body",
+    phase = phase,
+  }
+  for _, native in ipairs({ true, false }) do
+    local draft = Draft.new()
+    draft:select_skill(skill, native)
+    MiniTest.expect.equality(draft:submission_metadata(), { skill = "rename", phase = phase })
+    draft:clear_context()
+    MiniTest.expect.equality(draft:submission_metadata(), nil)
+  end
+  local draft = Draft.new()
+  draft:select_skill(skill, false)
+  draft:select_skill(skill, true)
+  MiniTest.expect.equality(draft:submission_metadata(), nil)
+  draft = Draft.new()
+  draft:add_context({
+    label = "skill: rename",
+    text = "forged phase",
+    skill_metadata = { name = "rename", phase = phase },
+  })
+  MiniTest.expect.equality(draft:submission_metadata(), nil)
+end
+
 T["assembles resolved input in order without consuming it or requiring a buffer or Session"] = function()
   local draft = Draft.new()
   local item = { label = "notes", text = "original notes" }
@@ -35,7 +65,12 @@ T["assembles resolved input in order without consuming it or requiring a buffer 
   MiniTest.expect.equality(contexts, {
     { label = "skill-index", text = "hidden catalog", uri = "louiselm://skills/index" },
     { label = "notes", text = "original notes" },
-    { label = "skill: review", text = "skill body", skill_path = "/not-read/SKILL.md" },
+    {
+      label = "skill: review",
+      text = "skill body",
+      skill_path = "/not-read/SKILL.md",
+      skill_metadata = { name = "review" },
+    },
     { label = "AGENTS.md", uri = "file:///repo/AGENTS.md" },
   })
   local retry, retry_contexts = draft:content(text, "$review", false)

@@ -8,6 +8,7 @@ local ForensicsStore = require("louiselm.forensics.store")
 local Provenance = require("louiselm.output_provenance")
 local Recording = require("louiselm.session.recording")
 local Paths = require("louiselm.paths")
+local Qualification = require("louiselm.routing.qualification")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -44,6 +45,7 @@ local nvim = vim
 ---@field forensics_store louiselm.forensics.Store Immutable Session Forensics records.
 ---@field forensics_reads table<fun(), boolean> Owned current-provenance reads awaiting collection.
 ---@field recording louiselm.session.RecordingStore Shared durable writer; failed writes gate subsequent prompts.
+---@field qualification louiselm.routing.Qualification Durable comparison approvals used by Auto admission.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field load_session fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
@@ -107,7 +109,12 @@ end
 ---@return boolean
 local function has_only_permission_store(value)
   for key in pairs(value) do
-    if key ~= "permission_store" and key ~= "forensics_directory" and key ~= "usage_directory" then
+    if
+      key ~= "permission_store"
+      and key ~= "forensics_directory"
+      and key ~= "usage_directory"
+      and key ~= "qualification_path"
+    then
       return false
     end
   end
@@ -212,6 +219,14 @@ function M.new(definitions, default_skills_policy, options)
   if forensics_store == nil then
     return nil, { { path = "session.forensics_directory", message = forensics_error or "invalid directory" } }
   end
+  local qualification, qualification_error = Qualification.new(
+    options and options.qualification_path
+      or nvim.fs.joinpath(Paths.state(), "routing-evidence.json.qualifications.json")
+  )
+  if qualification == nil then
+    return nil,
+      { { path = "session.qualification_path", message = qualification_error or "invalid qualification path" } }
+  end
   local registry = setmetatable({
     definitions = normalized,
     sessions = {},
@@ -223,6 +238,7 @@ function M.new(definitions, default_skills_policy, options)
     agent_limits_listeners = {},
     permission_store = permission_store,
     forensics_store = forensics_store,
+    qualification = qualification,
     forensics_reads = {},
     disposed = false,
   }, Registry)

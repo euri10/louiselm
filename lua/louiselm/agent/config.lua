@@ -1,5 +1,13 @@
 local Policy = require("louiselm.skills.policy")
 local Provider = require("louiselm.agent.provider")
+local Routing = require("louiselm.routing.routing")
+local Schema = require("louiselm.schema")
+
+---@class louiselm.routing.SelectionRule
+---@field model string Candidate advertised Model.
+---@field effort? string Candidate advertised thought level.
+---@field policy_revision string Exact comparison policy version.
+---@field require_traits? string[] Required configured Agent capabilities, never quality evidence.
 
 ---@class louiselm.agent.SkillConfig
 ---@field policy? louiselm.skills.Policy Agent-specific policy override.
@@ -13,12 +21,12 @@ local Provider = require("louiselm.agent.provider")
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
 ---@field provider louiselm.agent.Provider Explicit access/quota service, exact option routes, or literal option prefixes; required before prompting.
----@field auto? { model: string, effort?: string, default?: boolean } Baseline pair; new Sessions default to Auto unless default=false. Resumed choices are retained.
+---@field auto? { model: string, effort?: string, default?: boolean, rules?: table<string, louiselm.routing.SelectionRule> } Baseline pair and qualified rules; new Sessions default to Auto unless default=false. Resumed choices are retained.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options. `options._meta`, when present, is threaded
 ---verbatim into the ACP `session/new`/`session/load` request params (e.g. Claude's
 ---`{ claudeCode = { options = { thinking = { type = "adaptive" } } } }`).
----@field capabilities? string[] Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
+---@field capabilities? string[] Declared Agent traits, matched against `needs-capability:*` beads labels by the Agent selecting work and explicit Auto rule constraints by LouiseLM. Never Model-quality evidence; LouiseLM does not read Beads or choose work.
 ---@field transcript_layout? string Optional Provenance integration for locating this Agent's historical transcripts on disk; live chat transcripts need no configuration.
 ---Setting this to `"claude"` also defaults the ACP session to request summarized thinking display
 ---(`_meta.claudeCode.options.thinking = { type = "adaptive", display = "summarized" }`) unless
@@ -451,6 +459,31 @@ function M.normalize(definitions, default_skills_policy)
                 )
               else
                 auto.default = value
+              end
+            elseif key == "rules" then
+              local rule_errors = Schema.validate(Routing.rules_schema, { rules = value })
+              for _, rule_error in ipairs(rule_errors) do
+                add_error(
+                  errors,
+                  child_path(auto_path, rule_error.path),
+                  provider_error_types[rule_error.type],
+                  rule_error.message or "invalid routing rule",
+                  rule_error.expected,
+                  rule_error.got
+                )
+              end
+              if #rule_errors == 0 then
+                auto.rules = {}
+                for workload, rule in pairs(value) do
+                  local owned = { model = rule.model, effort = rule.effort, policy_revision = rule.policy_revision }
+                  if rule.require_traits ~= nil then
+                    owned.require_traits = {}
+                    for index, trait in ipairs(rule.require_traits) do
+                      owned.require_traits[index] = trait
+                    end
+                  end
+                  auto.rules[workload] = owned
+                end
               end
             elseif key ~= "model" and key ~= "effort" then
               add_error(errors, child_path(auto_path, tostring(key)), "unknown_key", "unknown Auto baseline key")

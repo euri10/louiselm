@@ -21,6 +21,61 @@ T["validate"]["Auto defaults are boolean, optional and caller-owned"] = function
   end
 end
 
+T["validate"]["setup accepts the documented Auto default and rejects non-booleans"] = function()
+  local Schema = require("louiselm.schema")
+  local schema = require("louiselm.config").schema
+  local input =
+    { agents = { agent = { command = "agent", provider = "OpenAI", auto = { model = "large", default = false } } } }
+  MiniTest.expect.equality(Schema.validate(schema, input), {})
+  MiniTest.expect.equality(input.agents.agent.auto.default, false)
+  for _, bad in ipairs({ "false", 0, {} }) do
+    input.agents.agent.auto.default = bad
+    MiniTest.expect.equality(Schema.validate(schema, input)[1].type, "wrong_type")
+  end
+end
+
+T["validate"]["normalization owns nested routing rules and capability constraints"] = function()
+  local rules = {
+    implementation = { model = "small", effort = "low", policy_revision = "policy-1", require_traits = { "coding" } },
+  }
+  local input = { agent = { command = "agent", provider = "OpenAI", auto = { model = "large", rules = rules } } }
+  local normalized = assert(Config.normalize(input))
+  rules.implementation.model, rules.implementation.effort, rules.implementation.policy_revision =
+    "changed", "changed", "changed"
+  rules.implementation.require_traits[1] = "changed"
+  MiniTest.expect.equality(normalized.agent.auto.rules.implementation, {
+    model = "small",
+    effort = "low",
+    policy_revision = "policy-1",
+    require_traits = { "coding" },
+  })
+end
+
+T["validate"]["exact workload rules use the same closed schema in setup and headless configuration"] = function()
+  local rules = {
+    implementation = { model = "small", effort = "low", policy_revision = "policy-1", require_traits = { "coding" } },
+  }
+  local input =
+    { agent = { command = "agent", provider = "OpenAI", auto = { model = "large", effort = "high", rules = rules } } }
+  local normalized, errors = Config.normalize(input)
+  MiniTest.expect.equality(errors, {})
+  assert(normalized)
+  MiniTest.expect.equality(assert(normalized).agent.auto.rules, rules)
+  MiniTest.expect.equality(normalized.agent.auto.rules == rules, false)
+  local Schema = require("louiselm.schema")
+  MiniTest.expect.equality(Schema.validate(require("louiselm.config").schema, { agents = input }), {})
+  for _, bad in ipairs({
+    { model = "small" },
+    { model = "", policy_revision = "policy-1" },
+    { model = "small", policy_revision = "policy-1", agent = "other" },
+    { model = "small", policy_revision = "policy-1", require_traits = { false } },
+  }) do
+    input.agent.auto.rules = { implementation = bad }
+    MiniTest.expect.equality(Config.normalize(input), nil)
+    assert(#Schema.validate(require("louiselm.config").schema, { agents = input }) > 0)
+  end
+end
+
 T["validate"]["requires an explicit complete Auto baseline and copies it"] = function()
   local auto = { model = "baseline", effort = "medium" }
   local definitions, errors = Config.normalize({

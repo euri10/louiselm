@@ -68,7 +68,26 @@
 
 ---@class louiselm.session.AdmissionDecisionEvent: louiselm.session.EventBase
 ---@field type "admission_decided"
----@field data { turn_id: string, origin: "auto"|"helper", reason: "baseline"|"parent_correlation", requested: { model?: string|boolean, effort?: string|boolean }, parent_turn_id?: string } Payload-free selection before configuration.
+---@field data louiselm.session.AdmissionDecisionData Payload-free selection before configuration, or the incomplete choice when admission terminates early.
+
+---@class louiselm.session.AdmissionDecisionData
+---@field turn_id string
+---@field origin "auto"|"helper"
+---@field reason "baseline"|"qualified"|"parent_correlation"
+---@field requested { model?: string|boolean, effort?: string|boolean }
+---@field parent_turn_id? string
+---@field selection? louiselm.routing.SelectionDecision Exact Auto baseline, workload, approval and separate economic provenance.
+
+---@class louiselm.routing.SelectionDecision
+---@field reason "baseline"|"qualified"
+---@field requested { model: string, effort?: string }
+---@field baseline { model: string, effort?: string }
+---@field rule? string Exact rule/workload key, when resolved.
+---@field workload? louiselm.routing.ComparisonWorkload
+---@field fallback_reason? string Typed reason a configured candidate was not selected.
+---@field qualification? { report_id: string, policy_revision: string, revision: integer, approval_revision?: integer }
+---@field economic_basis? louiselm.routing.ComparisonEconomics[] Approved figures, not factual usage.
+---@field api_for_quota? louiselm.routing.ApiForQuotaAllowance
 
 ---@class louiselm.session.AdmissionSettlementEvent: louiselm.session.EventBase
 ---@field type "admission_settled"

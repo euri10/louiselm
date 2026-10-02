@@ -73,11 +73,12 @@ local function fake_session(id, agent)
     end)
   end
 
-  function session:prompt(prompt)
+  function session:prompt(prompt, _, metadata)
     if self.prompt_error ~= nil then
       return nil, self.prompt_error
     end
     self.prompts[#self.prompts + 1] = prompt
+    self.prompt_metadata = nvim.deepcopy(metadata)
     if self.prompt_sets_status then
       self.state.status = "prompting"
     end
@@ -2734,7 +2735,7 @@ local function select_first()
 end
 
 ---@param session table
----@param workflow table
+---@param workflow? table
 ---@param api? table
 ---@param agents? string[]
 ---@return louiselm.ui.Chat chat
@@ -2791,9 +2792,33 @@ T["chat"]["sends a native picker's resolved dollar command merged with the task 
   assert(chat:submit("stress-test this"))
 
   MiniTest.expect.equality(first.prompts, { "/$grill-me stress-test this" })
+  MiniTest.expect.equality(first.prompt_metadata.skill, "grill-me")
   MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> stress-test this")
   chat:dispose()
   nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["only the submitted Skill supplies routing metadata, never a later slash command"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local chat, workspace = workflow_chat(first, nil)
+  MiniTest.finally(function()
+    chat:dispose()
+    nvim.fn.delete(workspace, "rf")
+  end)
+  local restore = select_first()
+  MiniTest.finally(restore)
+  assert(chat:pick_skill())
+  assert(chat:submit("implement"))
+  MiniTest.expect.equality(first.prompt_metadata, {
+    skill = "implementation",
+    phase = { primary = "implementation", secondary = {}, source = "inferred", confidence = 0.5 },
+  })
+  assert(chat:submit("next untagged task"))
+  MiniTest.expect.equality(first.prompt_metadata, nil)
+  assert(chat:pick_skill())
+  assert(chat:submit("/unrelated-command"))
+  MiniTest.expect.equality(first.prompt_metadata, nil)
 end
 
 T["chat"]["presents phase recommendations only after a tagged turn completes"] = function()
