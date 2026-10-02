@@ -57,7 +57,7 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 base_id=$({
   printf '%s\n' "$image_sha" "$rust_toolchain" "${packages[@]}"
   git -C "$project_root" show HEAD:skills-core/Cargo.lock
-  sha256sum "$project_root/scripts/verifier-toolchain"
+  sha256sum <"$project_root/scripts/verifier-toolchain"
 } | sha256sum | cut -c 1-16)
 base="$state/prepared-$base_id.qcow2"
 build="$state/build-$base_id.qcow2"

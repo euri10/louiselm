@@ -76,6 +76,7 @@ fi
 # A private fixture substitutes only process/SSH endpoints, never starts QEMU.
 test_dir=$(mktemp -d "${TMPDIR:-/var/tmp}/louiselm-vm-test.XXXXXX")
 cleanup() {
+  rm -rf -- "$test_dir/checkout-one" "$test_dir/checkout two"
   rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/bin/udevadm" "$test_dir/ssh-args" \
     "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2 \
     "$test_dir/cache/louiselm-launcher-vm/run.qcow2" \
@@ -110,6 +111,37 @@ chmod +x "$test_dir/bin/systemctl" "$test_dir/bin/ssh"
 export XDG_CACHE_HOME="$test_dir/cache" PATH="$test_dir/bin:$PATH"
 export VM_TEST_ACTIVE=1 VM_TEST_LOAD=loaded VM_TEST_SSH_ARGS="$test_dir/ssh-args"
 base=$(bash "$vm" plan | jq -r .base_image)
+# louiselm-d7mxk: identical inputs must select the same base from any checkout.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+for checkout in "$test_dir/checkout-one" "$test_dir/checkout two"; do
+  mkdir -p "$checkout/scripts" "$checkout/skills-core"
+  cp -- "$vm" "$script_dir/verifier-toolchain" "$checkout/scripts/"
+  git -C "$script_dir/.." show HEAD:skills-core/Cargo.lock >"$checkout/skills-core/Cargo.lock"
+  git init -q --template= --initial-branch=main "$checkout"
+  git -C "$checkout" add -- skills-core/Cargo.lock
+  git -C "$checkout" -c user.name=Fixture -c user.email=fixture@example.invalid \
+    -c core.hooksPath=/dev/null commit --no-gpg-sign -qm fixture
+  checkout_base=$(bash "$checkout/scripts/launcher-vm" plan | jq -r .base_image)
+  [[ $checkout_base == "$base" ]] || { echo 'identical checkout inputs selected a different VM base' >&2; exit 1; }
+done
+changed_checkout="$test_dir/checkout two"
+printf '\n# changed verifier bytes\n' >>"$changed_checkout/scripts/verifier-toolchain"
+changed_base=$(bash "$changed_checkout/scripts/launcher-vm" plan | jq -r .base_image)
+[[ $changed_base != "$base" ]] || { echo 'changed verifier bytes reused the VM base' >&2; exit 1; }
+cp -- "$script_dir/verifier-toolchain" "$changed_checkout/scripts/verifier-toolchain"
+printf '\n# changed locked dependencies\n' >>"$changed_checkout/skills-core/Cargo.lock"
+git -C "$changed_checkout" add -- skills-core/Cargo.lock
+git -C "$changed_checkout" -c user.name=Fixture -c user.email=fixture@example.invalid \
+  -c core.hooksPath=/dev/null commit --no-gpg-sign -qm 'changed lockfile'
+changed_base=$(bash "$changed_checkout/scripts/launcher-vm" plan | jq -r .base_image)
+[[ $changed_base != "$base" ]] || { echo 'changed HEAD lockfile reused the VM base' >&2; exit 1; }
+for change in 's/^image_sha=/image_sha=changed-/' \
+  's/^rust_toolchain=/rust_toolchain=changed-/' \
+  's/^packages=(bubblewrap/packages=(changed-package bubblewrap/'; do
+  sed "$change" "$vm" >"$test_dir/checkout-one/scripts/launcher-vm"
+  changed_base=$(bash "$test_dir/checkout-one/scripts/launcher-vm" plan | jq -r .base_image)
+  [[ $changed_base != "$base" ]] || { echo "changed provisioning input reused the VM base: $change" >&2; exit 1; }
+done
 # louiselm-6y1ee: a base built from other provisioning inputs is never used.
 touch "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2"
 export VM_TEST_ACTIVE=0 VM_TEST_LOAD=not-found

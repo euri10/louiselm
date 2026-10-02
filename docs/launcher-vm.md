@@ -303,8 +303,9 @@ Normal builds are offline; do not silently enable guest egress.
 
 The base is named by its provisioning inputs: `prepared-<id>.qcow2`, where the
 id hashes the Debian image checksum, the package list, the Rust toolchain and
-`Cargo.lock` at `HEAD`. `plan` prints the current `base_image`. After any of
-those inputs change:
+`Cargo.lock` at `HEAD`, plus the bytes of `scripts/verifier-toolchain`. Checkout
+paths do not affect the ID: identical provisioning inputs select the same base.
+`plan` prints the current `base_image`. After any of those inputs change:
 
 ```sh
 ./scripts/launcher-vm prepare         # builds the new base; the old one stays
@@ -317,6 +318,11 @@ guest. A base is never overwritten or deleted by the script: archived overlays
 (`discarded.*`) and retained disks keep their backing file. Delete an old base
 by hand only after checking with `qemu-img info` that no kept overlay uses it
 (louiselm-6y1ee).
+
+Correcting the earlier path-dependent fingerprint changes existing base IDs.
+Old bases and overlays stay intact; the same explicit `prepare` and
+`reset --discard` procedure applies. Startup never accepts or rebases a retained
+disk merely because its previous ID included a checkout path (louiselm-d7mxk).
 
 The launcher VM has one shared systemd unit and SSH port, so do not prepare
 while another launcher VM is active or in use.
