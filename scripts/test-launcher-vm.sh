@@ -75,9 +75,15 @@ fi
 
 # A private fixture substitutes only process/SSH endpoints, never starts QEMU.
 test_dir=$(mktemp -d "${TMPDIR:-/var/tmp}/louiselm-vm-test.XXXXXX")
+vm_fixture_pid=
 cleanup() {
+  if [[ -n $vm_fixture_pid ]]; then
+    kill "$vm_fixture_pid" 2>/dev/null || true
+    wait "$vm_fixture_pid" 2>/dev/null || true
+  fi
   rm -rf -- "$test_dir/checkout-one" "$test_dir/checkout two"
   rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/bin/udevadm" "$test_dir/ssh-args" \
+    "$test_dir/hold" "$test_dir/other cache/louiselm-launcher-vm/control.lock" \
     "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2 \
     "$test_dir/cache/louiselm-launcher-vm/run.qcow2" \
     "$test_dir/cache/louiselm-launcher-vm/control.lock"
@@ -89,7 +95,8 @@ cleanup() {
       "$test_dir/fido/hidraw/hidraw0" "$test_dir/fido/hidraw" \
       "$test_dir/fido/nodes" "$test_dir/fido"
   fi
-  rmdir -- "$test_dir/cache/louiselm-launcher-vm" "$test_dir/cache" "$test_dir/bin" "$test_dir"
+  rmdir -- "$test_dir/other cache/louiselm-launcher-vm" "$test_dir/other cache" \
+    "$test_dir/cache/louiselm-launcher-vm" "$test_dir/cache" "$test_dir/bin" "$test_dir"
 }
 trap cleanup EXIT
 mkdir -m 700 -p "$test_dir/bin" "$test_dir/cache/louiselm-launcher-vm"
@@ -98,7 +105,10 @@ cat >"$test_dir/bin/systemctl" <<'MOCK'
 case $2 in
   is-active) [[ ${VM_TEST_ACTIVE:-0} == 1 ]] ;;
   is-failed) exit 1 ;;
-  show) echo "${VM_TEST_LOAD:-not-found}" ;;
+  show)
+    if [[ $* == *MainPID* ]]; then echo "${VM_TEST_PID:-0}"
+    else echo "${VM_TEST_LOAD:-not-found}"; fi
+    ;;
   *) exit 1 ;;
 esac
 MOCK
@@ -110,6 +120,18 @@ MOCK
 chmod +x "$test_dir/bin/systemctl" "$test_dir/bin/ssh"
 export XDG_CACHE_HOME="$test_dir/cache" PATH="$test_dir/bin:$PATH"
 export VM_TEST_ACTIVE=1 VM_TEST_LOAD=loaded VM_TEST_SSH_ARGS="$test_dir/ssh-args"
+mkdir -m 700 -p "$test_dir/other cache/louiselm-launcher-vm"
+mkfifo "$test_dir/hold"
+exec 7<>"$test_dir/hold"
+# Only the process argv is doubled: no QEMU, SSH server or real unit starts.
+bash -c 'exec -a /usr/bin/qemu-system-x86_64 bash -c "read -r -t 600" -serial "$1"' \
+  _ "file:$XDG_CACHE_HOME/louiselm-launcher-vm/serial.log" <&7 &
+vm_fixture_pid=$!
+export VM_TEST_PID=$vm_fixture_pid
+for attempt in {1..100}; do
+  if tr '\0' '\n' <"/proc/$vm_fixture_pid/cmdline" | grep -Fxq /usr/bin/qemu-system-x86_64; then break; fi
+  sleep 0.01
+done
 base=$(bash "$vm" plan | jq -r .base_image)
 # louiselm-d7mxk: identical inputs must select the same base from any checkout.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -182,6 +204,22 @@ for option in StrictHostKeyChecking=yes IdentityAgent=none ForwardAgent=no Batch
   grep -Fxq "$option" "$test_dir/ssh-args"
 done
 grep -Fxq 'printf %s space\;\ \$literal ' "$test_dir/ssh-args"
+# louiselm-w9xgw: the unit/port is shared; another cache must never connect or stop it.
+rm -- "$test_dir/ssh-args"
+for action in 'exec true' stop 'forward 43219' 'put fixture /home/vm/fixture' 'get /home/vm/fixture fixture'; do
+  if message=$(XDG_CACHE_HOME="$test_dir/other cache" bash "$vm" $action 2>&1); then
+    echo "wrong cache accepted $action" >&2; exit 1
+  fi
+  grep -Fq 'running VM belongs to a different cache' <<<"$message" || {
+    echo "wrong cache reached $action instead of refusing: $message" >&2; exit 1
+  }
+  [[ ! -e $test_dir/ssh-args ]] || { echo 'wrong-cache command reached SSH' >&2; exit 1; }
+done
+if message=$(VM_TEST_PID=0 bash "$vm" exec true 2>&1); then
+  echo 'accepted an unidentifiable running VM' >&2; exit 1
+fi
+grep -Fq 'cannot identify running VM' <<<"$message" || { echo "wrong identity refusal: $message" >&2; exit 1; }
+[[ ! -e $test_dir/ssh-args ]] || { echo 'unidentifiable VM reached SSH' >&2; exit 1; }
 # Long-lived tunnels must not reserve the mutation lock or expose the LAN.
 exec 8>"$test_dir/cache/louiselm-launcher-vm/control.lock"
 flock -n 8

@@ -115,8 +115,20 @@ ssh_options=(-F /dev/null -i "$state/client-key" -o IdentitiesOnly=yes -o Identi
   -o "UserKnownHostsFile=$state/known_hosts" -o GlobalKnownHostsFile=/dev/null
   -o HostKeyAlias=louiselm-launcher-vm -o ConnectTimeout=3
   -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+require_matching_vm() {
+  local pid argv=() index
+  pid=$(systemctl --user show "$unit" -p MainPID --value)
+  [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/cmdline ]] || die 'cannot identify running VM; no action taken'
+  mapfile -d '' -t argv <"/proc/$pid/cmdline" || die 'cannot read running VM identity; no action taken'
+  [[ ${argv[0]:-} == /usr/bin/qemu-system-x86_64 ]] || die 'cannot identify running VM process; no action taken'
+  for (( index=1; index<${#argv[@]}; index++ )); do
+    if [[ ${argv[index]} == -serial && ${argv[index+1]:-} == "file:$state/serial.log" ]]; then return; fi
+  done
+  die 'running VM belongs to a different cache; inspect systemctl --user show louiselm-launcher-vm.service -p ExecStart and use its original XDG_CACHE_HOME; no action taken'
+}
 guest() {
   local quoted
+  require_matching_vm
   printf -v quoted '%q ' "$@"
   timeout --foreground 900 ssh "${ssh_options[@]}" -p 22554 vm@127.0.0.1 "$quoted"
 }
@@ -144,6 +156,7 @@ start_image() {
 }
 stop_vm() {
   if active; then
+    require_matching_vm
     if ! guest sudo -n poweroff; then
       echo 'launcher-vm: graceful shutdown unconfirmed; stopping only its user unit' >&2
     fi
@@ -160,6 +173,9 @@ stop_vm() {
   stopped
 }
 
+case $action in
+  terminal|forward|put|get) active || die 'VM is not running'; require_matching_vm ;;
+esac
 case $action in
   prepare)
     for tool in curl sha512sum qemu-img qemu-system-x86_64 xorriso ssh ssh-keygen scp jq systemd-run rustup; do
@@ -272,14 +288,12 @@ case $action in
     ;;
   exec) active || die 'VM is not running'; guest "$@" ;;
   terminal)
-    active || die 'VM is not running'
     timeout --foreground 3600 ssh "${ssh_options[@]}" -t -p 22554 vm@127.0.0.1 'exec bash --noprofile --norc'
     ;;
   forward)
-    active || die 'VM is not running'
     timeout --foreground 3600 ssh "${ssh_options[@]}" -N -o ExitOnForwardFailure=yes \
       -L "127.0.0.1:$browser_port:127.0.0.1:$browser_port" -p 22554 vm@127.0.0.1
     ;;
-  put) active || die 'VM is not running'; timeout 300 scp "${ssh_options[@]}" -P 22554 -- "$1" "vm@127.0.0.1:$2" ;;
-  get) active || die 'VM is not running'; timeout 300 scp "${ssh_options[@]}" -P 22554 -- "vm@127.0.0.1:$1" "$2" ;;
+  put) timeout 300 scp "${ssh_options[@]}" -P 22554 -- "$1" "vm@127.0.0.1:$2" ;;
+  get) timeout 300 scp "${ssh_options[@]}" -P 22554 -- "vm@127.0.0.1:$1" "$2" ;;
 esac

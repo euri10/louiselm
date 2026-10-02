@@ -325,7 +325,13 @@ Old bases and overlays stay intact; the same explicit `prepare` and
 disk merely because its previous ID included a checkout path (louiselm-d7mxk).
 
 The launcher VM has one shared systemd unit and SSH port, so do not prepare
-while another launcher VM is active or in use.
+while another launcher VM is active or in use. All commands that connect to or
+stop a running VM verify its QEMU state directory against the selected cache.
+If the VM belongs to another cache, they refuse before SSH or shutdown. Inspect
+`systemctl --user show louiselm-launcher-vm.service -p ExecStart` and use the
+original `XDG_CACHE_HOME` only when that guest is the intended target. Do not
+remove SSH pins or disable host-key checking to work around a cache mismatch.
+`status` still reports the shared unit; it does not prove cache ownership.
 
 Existing privileged CI recipes are in `.github/workflows/ci.yml`, under
 `cargo (skills-core)`. Execute them **inside the guest**. Keep build artifacts
