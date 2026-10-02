@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+# Explicit filesystem roots let the offline gate use disposable USB/HID trees.
+test "$#" -eq 3 || { echo 'usage: launcher-vm-fido USB_SYSFS HIDRAW_SYSFS DEVICE_NODES' >&2; exit 64; }
+test -d "$1" || { echo 'guest kernel has no USB bus; USB-capable guest kernel required' >&2; exit 1; }
+for device in "$1"/*; do
+  test -r "$device/idVendor" && test -r "$device/idProduct" &&
+    test "$(cat "$device/idVendor")" = 1050 && test "$(cat "$device/idProduct")" = 0407 &&
+    test -r "$device/bConfigurationValue" && test "$(cat "$device/bConfigurationValue")" = 1 || continue
+  usb_path=$(readlink -f "$device") || continue
+  for hid in "$2"/*; do
+    hid_path=$(readlink -f "$hid/device") || continue
+    case $hid_path in "$usb_path"/*) ;; *) continue ;; esac
+    node="$3/${hid##*/}"
+    test -c "$node" && test -r "$node" && test -w "$node" || continue
+    properties=$(udevadm info --query=property --name="$node") || {
+      echo 'cannot inspect selected YubiKey HID metadata' >&2; continue
+    }
+    printf '%s\n' "$properties" | grep -Fxq 'ID_FIDO_TOKEN=1' || continue
+    # Open as the ceremony's guest identity without reading or writing the token.
+    if (: <>"$node"); then exit 0; fi
+  done
+done
+echo 'selected YubiKey has no configured accessible FIDO HID transport' >&2
+exit 1

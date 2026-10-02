@@ -244,17 +244,9 @@ case $action in
     trap 'stop_vm' EXIT
     start_image "$state/run.qcow2" "$network_restrict"
     if [[ -n $yubikey_bus ]]; then
-      guest sh -c '
-        test -d /sys/bus/usb/devices || { echo "guest kernel has no USB bus; USB-capable guest kernel required" >&2; exit 1; }
-        for device in /sys/bus/usb/devices/*; do
-          if test -r "$device/idVendor" && test -r "$device/idProduct" &&
-            test "$(head -c 4 "$device/idVendor")" = 1050 && test "$(head -c 4 "$device/idProduct")" = 0407; then
-            exit 0
-          fi
-        done
-        echo "selected YubiKey is not visible in guest; inspect device/driver availability" >&2
-        exit 1
-      ' || die 'hardware readiness failed; stopping this VM without changing host permissions'
+      guest sudo -n sh -s -- /sys/bus/usb/devices /sys/class/hidraw /dev \
+        <"$project_root/scripts/launcher-vm-fido" ||
+        die 'hardware readiness failed; stopping this VM without changing host permissions'
     fi
     trap - EXIT
     ;;

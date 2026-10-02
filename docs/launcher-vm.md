@@ -209,8 +209,10 @@ Inspect `uname -r` and the corresponding `/boot/config-*`; installation alone
 does not prove the right kernel booted. In the retained VM, a guest GRUB drop-in
 selects the USB-capable kernel because the retained cloud flavor otherwise sorts
 first. Exact package authentication, selection and rollback evidence live in
-`louiselm-d5y8`. Startup with `--yubikey` checks guest enumeration and stops the VM if
-hardware is unavailable. SSH readiness alone is not enough.
+`louiselm-d5y8`. Startup with `--yubikey` requires configuration 1 and an associated
+`ID_FIDO_TOKEN=1` HID character device that the guest root signing identity can
+open read/write. The metadata-only probe reads and writes no token data. Failure
+stops the VM before signing; SSH readiness and USB enumeration alone are not enough.
 
 ```sh
 ./scripts/launcher-vm plan --yubikey 003:002   # inspect only, no device access

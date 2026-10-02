@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 vm="$script_dir/launcher-vm"
+fido_probe="$script_dir/launcher-vm-fido"
+sh -n "$fido_probe"
 
 # The plan is the same argv used to launch, without downloads or VM side effects.
 plan=$(bash "$vm" plan)
@@ -74,10 +76,18 @@ fi
 # A private fixture substitutes only process/SSH endpoints, never starts QEMU.
 test_dir=$(mktemp -d "${TMPDIR:-/var/tmp}/louiselm-vm-test.XXXXXX")
 cleanup() {
-  rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/ssh-args" \
+  rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/bin/udevadm" "$test_dir/ssh-args" \
     "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2 \
     "$test_dir/cache/louiselm-launcher-vm/run.qcow2" \
     "$test_dir/cache/louiselm-launcher-vm/control.lock"
+  if [[ -d $test_dir/fido ]]; then
+    rm -f -- "$test_dir/fido/usb/1-1/"{idVendor,idProduct,bConfigurationValue} \
+      "$test_dir/fido/hidraw/hidraw0/device" "$test_dir/fido/nodes/hidraw0"
+    rmdir -- "$test_dir/fido/usb/1-1/fido" "$test_dir/fido/usb/2-1/fido" \
+      "$test_dir/fido/usb/1-1" "$test_dir/fido/usb/2-1" "$test_dir/fido/usb" \
+      "$test_dir/fido/hidraw/hidraw0" "$test_dir/fido/hidraw" \
+      "$test_dir/fido/nodes" "$test_dir/fido"
+  fi
   rmdir -- "$test_dir/cache/louiselm-launcher-vm" "$test_dir/cache" "$test_dir/bin" "$test_dir"
 }
 trap cleanup EXIT
@@ -169,4 +179,65 @@ if bash "$vm" forward 43219 >/dev/null 2>&1; then
 fi
 bash "$vm" stop
 bash "$vm" stop
+
+# louiselm-bzfc4: enumeration alone succeeded in the actual recovery guest,
+# although configuration failed and no FIDO HID transport existed.
+export VM_TEST_FIDO_ROOT="$test_dir/fido" VM_TEST_FIDO_PROPERTIES=ID_FIDO_TOKEN=1
+export VM_TEST_FIDO_UDEV_STATUS=0
+mkdir -p "$test_dir/fido/usb/"{1-1,2-1}/fido \
+  "$test_dir/fido/hidraw/hidraw0" "$test_dir/fido/nodes"
+printf '1050\n' >"$test_dir/fido/usb/1-1/idVendor"
+printf '0407\n' >"$test_dir/fido/usb/1-1/idProduct"
+printf '\n' >"$test_dir/fido/usb/1-1/bConfigurationValue"
+cat >"$test_dir/bin/udevadm" <<'MOCK'
+#!/usr/bin/env bash
+[[ $* == "info --query=property --name=$VM_TEST_FIDO_ROOT/nodes/hidraw0" ]] || exit 90
+[[ $VM_TEST_FIDO_UDEV_STATUS == 0 ]] || { echo 'udev inspection failed' >&2; exit 1; }
+printf '%s\n' "$VM_TEST_FIDO_PROPERTIES"
+MOCK
+chmod +x "$test_dir/bin/udevadm"
+check_fido() {
+  setsid --wait sh "$fido_probe" "$test_dir/fido/usb" "$test_dir/fido/hidraw" "$test_dir/fido/nodes"
+}
+refuse_fido() {
+  if message=$(check_fido 2>&1); then
+    echo "accepted $1" >&2; exit 1
+  fi
+  grep -Fq 'selected YubiKey has no configured accessible FIDO HID transport' <<<"$message" || {
+    echo "wrong FIDO refusal for $1: $message" >&2; exit 1
+  }
+}
+refuse_fido 'unconfigured VID/PID-only USB device'
+printf '1\n' >"$test_dir/fido/usb/1-1/bConfigurationValue"
+refuse_fido 'configured USB device without an associated HID'
+ln -s "$test_dir/fido/usb/1-1/fido" "$test_dir/fido/hidraw/hidraw0/device"
+ln -s /dev/null "$test_dir/fido/nodes/hidraw0"
+check_fido
+printf '\n' >"$test_dir/fido/usb/1-1/bConfigurationValue"
+refuse_fido 'unconfigured USB device with lingering HID metadata'
+printf '0\n' >"$test_dir/fido/usb/1-1/bConfigurationValue"
+refuse_fido 'configuration zero with lingering HID metadata'
+printf '1\n' >"$test_dir/fido/usb/1-1/bConfigurationValue"
+export VM_TEST_FIDO_PROPERTIES=ID_INPUT_KEYBOARD=1
+refuse_fido 'OTP-only HID'
+export VM_TEST_FIDO_PROPERTIES=ID_FIDO_TOKEN=1
+rm -- "$test_dir/fido/hidraw/hidraw0/device"
+ln -s "$test_dir/fido/usb/2-1/fido" "$test_dir/fido/hidraw/hidraw0/device"
+refuse_fido 'FIDO HID belonging to another USB device'
+rm -- "$test_dir/fido/hidraw/hidraw0/device"
+ln -s "$test_dir/fido/usb/1-1/fido" "$test_dir/fido/hidraw/hidraw0/device"
+rm -- "$test_dir/fido/nodes/hidraw0"
+touch "$test_dir/fido/nodes/hidraw0"
+refuse_fido 'regular file in place of a HID character device'
+rm -- "$test_dir/fido/nodes/hidraw0"
+ln -s /dev/tty "$test_dir/fido/nodes/hidraw0"
+# setsid leaves no controlling terminal: the character node exists, but its
+# read/write open fails. No test reads from or writes to a real terminal.
+refuse_fido 'FIDO character node that cannot be opened'
+rm -- "$test_dir/fido/nodes/hidraw0"
+ln -s /dev/null "$test_dir/fido/nodes/hidraw0"
+export VM_TEST_FIDO_UDEV_STATUS=1
+refuse_fido 'failed HID metadata inspection'
+export VM_TEST_FIDO_UDEV_STATUS=0
+check_fido
 echo 'launcher-vm safety contract: passed'
