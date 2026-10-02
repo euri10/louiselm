@@ -68,6 +68,48 @@ local function query(writer, sql)
   return result.stdout == "" and {} or nvim.json.decode(result.stdout)
 end
 
+T["routing preferences are private mutable state scoped by Agent and ACP identity"] = function()
+  local writer = store()
+  local function save(agent, id, preference)
+    local done, result
+    writer:save_routing_preference(agent, id, preference, function(err)
+      assert(not nvim.in_fast_event())
+      done, result = true, err
+    end)
+    MiniTest.expect.equality(done, nil)
+    wait_for(function()
+      return done
+    end)
+    return result
+  end
+  local function get(reader, agent, id)
+    local done, result, err
+    reader:routing_preference(agent, id, function(value, error_value)
+      assert(not nvim.in_fast_event())
+      done, result, err = true, value, error_value
+    end)
+    MiniTest.expect.equality(done, nil)
+    wait_for(function()
+      return done
+    end)
+    return result, err
+  end
+  MiniTest.expect.equality({ get(writer, "agent", "missing") }, {})
+  local pinned = { mode = "manual", pair = { model = "quote'\n.shell false", effort = "high" } }
+  MiniTest.expect.equality(save("agent", "same", pinned), nil)
+  MiniTest.expect.equality(save("other", "same", { mode = "auto" }), nil)
+  MiniTest.expect.equality(save("agent", "second", { mode = "auto" }), nil)
+  local reader = assert(Recording.new(writer.directory, function() end))
+  MiniTest.expect.equality(get(reader, "agent", "same"), pinned)
+  MiniTest.expect.equality(get(reader, "other", "same"), { mode = "auto" })
+  MiniTest.expect.equality(save("agent", "same", { mode = "auto" }), nil)
+  MiniTest.expect.equality(get(reader, "agent", "same"), { mode = "auto" })
+  MiniTest.expect.equality(query(writer, "SELECT COUNT(*) AS n FROM turns")[1].n, 0)
+  query(writer, "UPDATE routing_preferences SET preference='broken' WHERE agent='agent'")
+  local _, err = get(reader, "agent", "same")
+  MiniTest.expect.equality(assert(err).code, "corrupt")
+end
+
 T["canonical retries preserve typed options and reject conflicting facts"] = function()
   local writer = store()
   local turn = prepared("quote'\n.quit\0semicolon;")

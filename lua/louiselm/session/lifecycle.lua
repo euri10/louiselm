@@ -33,7 +33,8 @@ local nvim = vim
 ---@field recording_error? louiselm.session.RecordingError Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
 ---@field recording_pending boolean Whether the registry has unacknowledged writes.
 ---@field config_options louiselm.session.ConfigOption[] Supported agent-advertised options in priority order.
----@field auto_mode? "auto"|"manual" Per-Session in-memory authority; absent when the Agent has no Auto baseline.
+---@field auto_mode? "auto"|"manual" Durable Session authority; absent for ordinary Sessions without routing preferences.
+---@field auto_available? boolean Whether this Agent configures a baseline for explicit return to Auto.
 ---@field manual_pair? { model?: string|boolean, effort?: string|boolean } Whole effective pair protected after an operator option change.
 ---@field context? louiselm.session.ContextUsage Latest agent-reported context state.
 ---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
@@ -72,6 +73,7 @@ local nvim = vim
 ---@field client louiselm.acp.Client? ACP client.
 ---@field acp_session_id string? Agent-side session identifier.
 ---@field load_session_id string? Agent-side session identifier to load.
+---@field routing_read? fun() Cancel a pending routing preference read.
 ---@field prompt_callback? fun(result: unknown, error?: string) Current prompt completion callback.
 ---@field admission? { id: string, origin: "auto"|"helper", requested: { model?: string|boolean, effort?: string|boolean }, requests: table<string, string|number>, started_at: integer, in_flight: boolean, cancelled: boolean, settled: boolean } Admission ownership until a terminal settlement.
 ---@field recording_turn? { id: string, sequence: integer, finished: boolean, dispatched: boolean } Active recording identity.
@@ -103,7 +105,7 @@ local nvim = vim
 ---@field option_usage fun(self: louiselm.session.Session, option_id: string, callback: louiselm.session.OptionUsageCallback)
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
 ---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string), correlation?: { parent_turn_id?: string }): string?, string?
----@field set_auto fun(self: louiselm.session.Session, enabled: boolean): boolean, string?
+---@field set_auto fun(self: louiselm.session.Session, enabled: boolean, callback?: fun(error?: string)): boolean, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
 ---@field dispose fun(self: louiselm.session.Session): boolean, string?
@@ -125,6 +127,25 @@ local STDERR_BUFFER_LIMIT = 4096
 local M = {}
 local Session = {}
 Session.__index = Session
+
+---@param options louiselm.session.ConfigOption[]
+---@param category string
+---@return louiselm.session.ConfigOption?
+local function category_option(options, category)
+  for _, option in ipairs(options) do
+    if option.category == category then
+      return option
+    end
+  end
+end
+
+---@param self louiselm.session.Session
+---@return { model?: string|boolean, effort?: string|boolean }
+local function current_pair(self)
+  local model = category_option(self.state.config_options, "model")
+  local effort = category_option(self.state.config_options, "thought_level")
+  return { model = model and model.current_value, effort = effort and effort.current_value }
+end
 
 ---@return string? id
 ---@return string? error_message
@@ -851,6 +872,180 @@ local function handle_exit(self, result)
 end
 
 ---@param self louiselm.session.Session
+---@param callback fun(error?: string)
+local function save_routing(self, callback)
+  if self.acp_session_id == nil then
+    callback("Session routing preferences require an ACP Session identity")
+    return
+  end
+  local preference = { mode = self.state.auto_mode, pair = self.state.manual_pair }
+  ---@cast preference louiselm.session.RoutingPreference -- Callers own a routing mode before saving it.
+  self.owner.recording:save_routing_preference(self.state.agent, self.acp_session_id, preference, function(err)
+    if self.state.status == "disposed" or self.state.status == "error" then
+      return
+    end
+    callback(err and "could not save Session routing preference: " .. err.message or nil)
+  end)
+end
+
+---@param self louiselm.session.Session
+---@param pair { model?: string|boolean, effort?: string|boolean }
+---@param ready fun()
+local function restore_manual_pair(self, pair, ready)
+  local function finish()
+    if not nvim.deep_equal(current_pair(self), pair) then
+      fail(
+        self,
+        "saved pinned Model/effort pair is not confirmed; restore its availability in the Agent before resuming"
+      )
+      return
+    end
+    ready()
+  end
+  local function restore(category, value, next_step)
+    local option = category_option(self.state.config_options, category)
+    if (option == nil and value == nil) or (option ~= nil and option.current_value == value) then
+      next_step()
+      return
+    end
+    local supported = option ~= nil and option.type == "boolean" and type(value) == "boolean"
+    for _, choice in ipairs(option and option.options or {}) do
+      supported = supported or choice.value == value
+    end
+    if not supported or option == nil or self.client == nil then
+      fail(
+        self,
+        "saved pinned " .. category .. " is unavailable; restore its availability in the Agent before resuming"
+      )
+      return
+    end
+    local params = { sessionId = self.acp_session_id, configId = option.id, value = value }
+    if option.type == "boolean" then
+      params.type = "boolean"
+    end
+    local request_id, request_error
+    request_id, request_error = self.client:set_config_option(params, function(result, rpc_error)
+      if self.state.status ~= "starting" then
+        return
+      end
+      if rpc_error ~= nil then
+        fail(self, "ACP pinned configuration failed: " .. error_message(rpc_error))
+        return
+      end
+      local options, options_error = Validation.config_options(type(result) == "table" and result.configOptions)
+      if options == nil or type(result) ~= "table" or result.configOptions == nil then
+        fail(
+          self,
+          "ACP pinned configuration returned malformed configOptions: " .. (options_error or "missing configOptions")
+        )
+        return
+      end
+      accept_options(self, options)
+      local confirmed = Validation.find_option(options, option.id)
+      if confirmed == nil or confirmed.current_value ~= value then
+        fail(self, "ACP pinned configuration did not confirm requested " .. option.id)
+        return
+      end
+      emit(self, "config_options_changed", nvim.deepcopy(options))
+      if self.state.status == "starting" then
+        next_step()
+      end
+    end)
+    if request_id == nil then
+      fail(self, request_error or "ACP pinned configuration request could not be sent")
+    end
+  end
+  restore("model", pair.model, function()
+    restore("thought_level", pair.effort, finish)
+  end)
+end
+
+---@param self louiselm.session.Session
+---@param ready fun()
+local function initialize_routing(self, ready)
+  local function saved(err)
+    if self.state.status ~= "starting" then
+      return
+    end
+    if err ~= nil then
+      fail(self, err)
+    else
+      ready()
+    end
+  end
+  if self.load_session_id == nil then
+    if self.state.auto_mode == nil then
+      ready()
+    else
+      if self.state.auto_mode == "manual" then
+        self.state.manual_pair = current_pair(self)
+      end
+      save_routing(self, saved)
+    end
+    return
+  end
+  local function read_preference()
+    if self.state.status ~= "starting" then
+      return
+    end
+    self.routing_read = self.owner.recording:routing_preference(
+      self.state.agent,
+      self.load_session_id,
+      function(preference, err)
+        self.routing_read = nil
+        if self.state.status ~= "starting" then
+          return
+        end
+        if err ~= nil then
+          fail(self, "could not restore Session routing preference: " .. err.message)
+          return
+        end
+        if preference ~= nil then
+          if preference.mode == "auto" and self.definition.auto == nil then
+            fail(
+              self,
+              "saved Auto choice requires agents."
+                .. self.state.agent
+                .. ".auto; configure its baseline before resuming"
+            )
+            return
+          end
+          self.state.auto_mode = preference.mode
+          self.state.manual_pair = nvim.deepcopy(preference.pair)
+          if preference.mode == "manual" then
+            ---@cast preference { mode: "manual", pair: { model?: string|boolean, effort?: string|boolean } }
+            restore_manual_pair(self, preference.pair, ready)
+          else
+            ready()
+          end
+        elseif self.definition.auto ~= nil then
+          -- An old Session never inherits a newly enabled Agent default.
+          self.state.auto_mode = "manual"
+          self.state.manual_pair = current_pair(self)
+          save_routing(self, saved)
+        else
+          ready()
+        end
+      end
+    )
+  end
+  if #self.owner.recording.queue > 0 then
+    self.owner.recording:flush(function(err)
+      if self.state.status ~= "starting" then
+        return
+      end
+      if err ~= nil then
+        fail(self, "could not restore Session routing preference: " .. err.message)
+      else
+        read_preference()
+      end
+    end)
+  else
+    read_preference()
+  end
+end
+
+---@param self louiselm.session.Session
 ---@param result unknown
 ---@param rpc_error? louiselm.acp.JsonRpcError
 local function handle_initialized(self, result, rpc_error)
@@ -922,14 +1117,16 @@ local function handle_initialized(self, result, rpc_error)
       return
     end
     self.state.config_options = options
-    set_status(self, "ready")
-    if not self.ready_callback_called then
-      self.ready_callback_called = true
-      local callback = self.ready_callback
-      if callback ~= nil then
-        callback(self)
+    initialize_routing(self, function()
+      set_status(self, "ready")
+      if not self.ready_callback_called and self.state.status ~= "disposed" then
+        self.ready_callback_called = true
+        local callback = self.ready_callback
+        if callback ~= nil then
+          callback(self)
+        end
       end
-    end
+    end)
   end
   local meta = session_meta(self.definition)
   if self.load_session_id == nil then
@@ -1020,7 +1217,11 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       recording_pending = #owner.recording.queue > 0,
       recording_error = nvim.deepcopy(owner.recording.error),
       config_options = {},
-      auto_mode = definition.auto ~= nil and "auto" or nil,
+      auto_mode = load_session_id == nil
+          and definition.auto ~= nil
+          and (definition.auto.default ~= false and "auto" or "manual")
+        or nil,
+      auto_available = definition.auto ~= nil and true or nil,
       commands = {},
       compactions = {},
       skills_policy = definition.skills.policy,
@@ -1312,17 +1513,6 @@ local function prepare_prompt(self, prompt, turn_id, provider)
   end)
 end
 
----@param options louiselm.session.ConfigOption[]
----@param category string
----@return louiselm.session.ConfigOption?
-local function category_option(options, category)
-  for _, option in ipairs(options) do
-    if option.category == category then
-      return option
-    end
-  end
-end
-
 ---@param option louiselm.session.ConfigOption?
 ---@param value string?
 ---@return boolean
@@ -1492,12 +1682,7 @@ function Session:prompt(prompt, callback, correlation)
   local auto = self.state.auto_mode == "auto" and self.definition.auto or nil
   if auto == nil then
     if self.state.manual_pair ~= nil then
-      local model = category_option(self.state.config_options, "model")
-      local effort = category_option(self.state.config_options, "thought_level")
-      if
-        (model and model.current_value or nil) ~= self.state.manual_pair.model
-        or (effort and effort.current_value or nil) ~= self.state.manual_pair.effort
-      then
+      if not nvim.deep_equal(current_pair(self), self.state.manual_pair) then
         return nil, "operator-pinned Model/effort pair is no longer confirmed"
       end
     end
@@ -1527,7 +1712,7 @@ function Session:prompt(prompt, callback, correlation)
   if origin ~= nil then
     local requested
     if auto ~= nil then
-      requested = nvim.deepcopy(auto)
+      requested = { model = auto.model, effort = auto.effort }
     else
       local model = category_option(self.state.config_options, "model")
       local effort = category_option(self.state.config_options, "thought_level")
@@ -1707,6 +1892,9 @@ function Session:set_config_option(id, value, callback)
     params.type = "boolean"
   end
   set_status(self, "configuring")
+  if self.state.status ~= "configuring" then
+    return nil, "session is no longer configuring"
+  end
   local request_id, request_error
   request_id, request_error = client:set_config_option(params, function(result, rpc_error)
     if self.state.status == "disposed" then
@@ -1714,7 +1902,7 @@ function Session:set_config_option(id, value, callback)
     end
     if rpc_error ~= nil then
       local message = "ACP session/set_config_option failed: " .. error_message(rpc_error)
-      if self.definition.auto ~= nil then
+      if self.state.auto_mode ~= nil then
         fail(self, message)
         if callback ~= nil then
           callback(nil, message)
@@ -1740,7 +1928,7 @@ function Session:set_config_option(id, value, callback)
     ---@cast request_id string|number -- ACP returns the ID before receiving the asynchronous response.
     accept_options(self, options, { id = request_id, option = id, value = value })
     local confirmed = Validation.find_option(options, id)
-    if self.definition.auto ~= nil and (confirmed == nil or confirmed.current_value ~= value) then
+    if self.state.auto_mode ~= nil and (confirmed == nil or confirmed.current_value ~= value) then
       local message = "ACP session/set_config_option did not confirm requested " .. id
       fail(self, message)
       if callback ~= nil then
@@ -1748,16 +1936,30 @@ function Session:set_config_option(id, value, callback)
       end
       return
     end
-    if self.definition.auto ~= nil and (option.category == "model" or option.category == "thought_level") then
-      local model = category_option(options, "model")
-      local effort = category_option(options, "thought_level")
-      self.state.manual_pair = { model = model and model.current_value, effort = effort and effort.current_value }
-      self.state.auto_mode = "manual"
+    local function changed(err)
+      if
+        err == nil
+        and self.state.manual_pair ~= nil
+        and not nvim.deep_equal(current_pair(self), self.state.manual_pair)
+      then
+        err = "operator-pinned Model/effort pair changed before its preference was saved"
+      end
+      if err ~= nil then
+        fail(self, err)
+      else
+        set_status(self, settled_status(self))
+        emit(self, "config_options_changed", nvim.deepcopy(self.state.config_options))
+      end
+      if callback ~= nil and self.state.status ~= "disposed" then
+        callback(err == nil and nvim.deepcopy(self.state.config_options) or nil, err)
+      end
     end
-    set_status(self, settled_status(self))
-    emit(self, "config_options_changed", nvim.deepcopy(options))
-    if callback ~= nil then
-      callback(nvim.deepcopy(options))
+    if self.state.auto_mode ~= nil and (option.category == "model" or option.category == "thought_level") then
+      self.state.manual_pair = current_pair(self)
+      self.state.auto_mode = "manual"
+      save_routing(self, changed)
+    else
+      changed()
     end
   end)
   if request_id == nil then
@@ -1767,28 +1969,44 @@ function Session:set_config_option(id, value, callback)
   return request_id
 end
 
----Select Auto baseline admission or pin the current effective pair in this Session.
+---Persist Auto baseline admission or pin the current effective pair in this Session.
+---The Session stays configuring until durable acknowledgement; Disposal suppresses late delivery.
 ---@param self louiselm.session.Session
 ---@param enabled boolean
----@return boolean changed
+---@param callback? fun(error?: string) Asynchronous durable acknowledgement.
+---@return boolean accepted
 ---@return string? error_message
-function Session:set_auto(enabled)
+function Session:set_auto(enabled, callback)
   if self.state.status ~= "ready" then
     return false, "session is not idle"
   end
-  if type(enabled) ~= "boolean" or self.definition.auto == nil then
+  if type(enabled) ~= "boolean" then
+    return false, "Auto selection must be a boolean"
+  end
+  if self.definition.auto == nil then
     return false, "this Agent has no Auto baseline"
+  end
+  set_status(self, "configuring")
+  if self.state.status ~= "configuring" then
+    return false, "Session was disposed during routing selection"
   end
   if enabled then
     self.state.auto_mode = "auto"
     self.state.manual_pair = nil
   else
-    local model = category_option(self.state.config_options, "model")
-    local effort = category_option(self.state.config_options, "thought_level")
     self.state.auto_mode = "manual"
-    self.state.manual_pair = { model = model and model.current_value, effort = effort and effort.current_value }
+    self.state.manual_pair = current_pair(self)
   end
-  emit(self, "state_changed", { status = self.state.status })
+  save_routing(self, function(err)
+    if err ~= nil then
+      fail(self, err)
+    else
+      set_status(self, settled_status(self))
+    end
+    if callback ~= nil and self.state.status ~= "disposed" then
+      callback(err)
+    end
+  end)
   return true
 end
 
@@ -1808,6 +2026,10 @@ function Session:dispose()
   self.permission_active = nil
   self.permission_queue = {}
   self.prompt_callback = nil
+  if self.routing_read ~= nil then
+    self.routing_read()
+    self.routing_read = nil
+  end
   local client = self.client
   local closed, close_error = true, nil
   if client ~= nil then

@@ -111,6 +111,7 @@ local nvim = vim
 ---@field submit_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Submit and close a handoff buffer.
 ---@field abandon_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Close a handoff buffer without sending it.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
+---@field set_auto fun(self: louiselm.ui.Chat, enabled: boolean, callback?: fun(error?: string)): boolean, string? Persist the current Session's routing choice.
 ---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number|boolean?, string? Submit or queue the current prompt.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
 ---@field mention_buffer fun(self: louiselm.ui.Chat): boolean, string? Queue the source buffer context.
@@ -917,15 +918,45 @@ open_session_options = function(self, view, initial)
       and not self.decisions:is_active()
       and view.options_revision == revision
       and view.session:inspect().status == "ready"
+      and view.session:inspect().auto_mode == state.auto_mode
       and nvim.deep_equal(view.session:inspect().config_options, state.config_options)
   end
-  Picker.select(state.config_options, {
+  local routing = state.auto_available
+      and state.auto_mode ~= nil
+      and { id = "", name = "Routing", type = "boolean", current_value = state.auto_mode == "auto" }
+    or nil
+  local items = nvim.list_extend(routing and { routing } or {}, state.config_options)
+  local function changed(callback_error)
+    nvim.schedule(function()
+      if self.disposed or self.views[state.id] ~= view or self.current_id ~= state.id then
+        return
+      end
+      if callback_error ~= nil then
+        view.renderer:append({ "Error: " .. callback_error })
+      else
+        view.renderer:header(view.session:inspect())
+      end
+      open_session_options(self, view, false)
+    end)
+  end
+  Picker.select(items, {
     prompt = readonly and "louiselm session options (read-only while busy): " or "louiselm session options: ",
     format_item = function(option)
+      if option == routing then
+        return state.auto_mode == "auto" and "Routing: Auto (select to pin current pair)"
+          or "Routing: Pinned (select to return to Auto)"
+      end
       return option.name .. ": " .. Status.option_display_value(option)
     end,
   }, function(option)
     if readonly or option == nil or not current() then
+      return
+    end
+    if option == routing then
+      local _, err = self:set_auto(state.auto_mode ~= "auto", changed)
+      if err ~= nil then
+        view.renderer:append({ "Error: " .. err })
+      end
       return
     end
     view.session:option_usage(option.id, function(candidates, query_error)
@@ -956,17 +987,7 @@ open_session_options = function(self, view, initial)
           return
         end
         local _, set_error = self:set_config_option(option.id, choice.value, function(_, callback_error)
-          nvim.schedule(function()
-            if self.disposed or self.views[state.id] ~= view then
-              return
-            end
-            if callback_error ~= nil then
-              view.renderer:append({ "Error: " .. callback_error })
-            else
-              view.renderer:header(view.session:inspect())
-            end
-            open_session_options(self, view, false)
-          end)
+          changed(callback_error)
         end)
         if set_error ~= nil then
           view.renderer:append({ "Error: " .. set_error })
@@ -2442,6 +2463,23 @@ function Chat:set_config_option(id, value, callback)
     return nil, "no chat session is attached"
   end
   return view.session:set_config_option(id, value, callback)
+end
+
+---Persist Auto or a whole-pair pin for the current idle Session.
+---@param self louiselm.ui.Chat
+---@param enabled boolean True explicitly returns to Auto; false pins the confirmed pair.
+---@param callback? fun(error?: string) Durable acknowledgement; suppressed after Session Disposal.
+---@return boolean accepted
+---@return string? error_message Lifecycle, configuration or validation error.
+function Chat:set_auto(enabled, callback)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  return view.session:set_auto(enabled, callback)
 end
 
 ---Submit text to the current session; slash commands are passed through unchanged.

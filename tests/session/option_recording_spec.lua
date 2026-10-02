@@ -89,7 +89,7 @@ local function query(sql)
   return result.stdout == "" and {} or nvim.json.decode(result.stdout)
 end
 
-local function start(provider, load, auto, initial_options)
+local function begin(provider, load, auto, initial_options)
   api = assert(
     Session.new(
       { agent = { command = "option-test-agent", provider = provider or "test-service", auto = auto } },
@@ -104,6 +104,14 @@ local function start(provider, load, auto, initial_options)
     notify(options("medium"))
   end
   respond(2, { sessionId = "recording-session", configOptions = initial_options or options("medium") })
+  return session
+end
+
+local function start(provider, load, auto, initial_options)
+  local session = begin(provider, load, auto, initial_options)
+  wait_for(function()
+    return session:inspect().status ~= "starting"
+  end)
   MiniTest.expect.equality(session:inspect().status, "ready")
   return session
 end
@@ -197,6 +205,9 @@ T["operator selection pins the full pair and Auto can be selected again"] = func
   local session = start(nil, nil, { model = "model-a", effort = "medium" })
   local request = assert(session:set_config_option("model", "model-b"))
   respond(request, { configOptions = options("high", "model-b") })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
   MiniTest.expect.equality(session:inspect().auto_mode, "manual")
   MiniTest.expect.equality(session:inspect().manual_pair, { model = "model-b", effort = "high" })
   assert(session:prompt("manual"))
@@ -207,11 +218,222 @@ T["operator selection pins the full pair and Auto can be selected again"] = func
   respond(process.writes[#process.writes].id, { stopReason = "end_turn" })
   assert(session:set_auto(true))
   MiniTest.expect.equality(session:inspect().auto_mode, "auto")
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
   local effort_request = assert(session:set_config_option("reasoning_effort", "medium"))
   respond(effort_request, { configOptions = options("medium", "model-b") })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
   MiniTest.expect.equality(session:inspect().auto_mode, "manual")
   MiniTest.expect.equality(session:inspect().manual_pair, { model = "model-b", effort = "medium" })
   MiniTest.expect.equality(flush(), nil)
+end
+
+T["new Auto defaults persist and resumed choices ignore changed defaults"] = function()
+  local session = start(nil, nil, { model = "model-a", effort = "medium" })
+  assert(session:dispose())
+  MiniTest.expect.equality(flush(), nil)
+  assert(api:dispose())
+  session = start(nil, true, { model = "model-a", effort = "medium", default = false })
+  MiniTest.expect.equality(session:inspect().auto_mode, "auto")
+  assert(session:set_auto(false))
+  MiniTest.expect.equality(flush(), nil)
+  assert(api:dispose())
+  session = start(nil, true, { model = "model-a", effort = "medium" })
+  MiniTest.expect.equality(session:inspect().auto_mode, "manual")
+  MiniTest.expect.equality(session:inspect().manual_pair, { model = "model-a", effort = "medium" })
+end
+
+T["preference-less resumed Sessions stay manual while new Sessions honor explicit default off"] = function()
+  local session = start(nil, true, { model = "model-a", effort = "medium" })
+  MiniTest.expect.equality(session:inspect().auto_mode, "manual")
+  assert(api:dispose())
+  session = start(nil, nil, { model = "model-a", effort = "medium", default = false })
+  MiniTest.expect.equality(session:inspect().auto_mode, "manual")
+end
+
+T["resume restores the saved pair in Model-then-effort order before publishing ready"] = function()
+  local baseline = { model = "model-a", effort = "medium", default = false }
+  local session = start(nil, nil, baseline, options("high", "model-b"))
+  assert(api:dispose())
+  MiniTest.expect.equality(flush(), nil)
+  session = begin(nil, true, { model = "model-a", effort = "medium" })
+  MiniTest.expect.equality(session:inspect().status, "starting")
+  MiniTest.expect.equality(session:inspect().auto_mode, nil)
+  MiniTest.expect.equality({ session:prompt("too early") }, { nil, "session is not ready" })
+  wait_for(function()
+    return #process.writes == 3
+  end)
+  MiniTest.expect.equality(
+    process.writes[3].params,
+    { sessionId = "recording-session", configId = "model", value = "model-b" }
+  )
+  respond(process.writes[3].id, { configOptions = options("medium", "model-b") })
+  MiniTest.expect.equality(process.writes[4].params.configId, "reasoning_effort")
+  MiniTest.expect.equality(session:inspect().status, "starting")
+  respond(process.writes[4].id, { configOptions = options("high", "model-b") })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(session:inspect().manual_pair, { model = "model-b", effort = "high" })
+  MiniTest.expect.equality(session:inspect().auto_mode, "manual")
+end
+
+T["unavailable resumed pins fail explicitly without changing the saved choice"] = function()
+  start(nil, nil, { model = "model-a", effort = "medium", default = false }, options("high", "model-b"))
+  assert(api:dispose())
+  MiniTest.expect.equality(flush(), nil)
+  local initial = options()
+  initial[2].options = { { value = "model-a", name = "A" } }
+  local session = begin(nil, true, { model = "model-a", effort = "medium" }, initial)
+  local errors = {}
+  session:on(function(event)
+    if event.type == "error" then
+      errors[#errors + 1] = event.data.message
+    end
+  end)
+  wait_for(function()
+    return session:inspect().status == "error"
+  end)
+  MiniTest.expect.equality(#process.writes, 2)
+  MiniTest.expect.equality(errors[1]:find("saved pinned model is unavailable", 1, true) ~= nil, true)
+  MiniTest.expect.equality(nvim.json.decode(query("SELECT preference FROM routing_preferences")[1].preference), {
+    mode = "manual",
+    pair = { model = "model-b", effort = "high" },
+  })
+end
+
+T["internal Auto acknowledgements never replace routing authority with a manual pin"] = function()
+  local session = start(nil, nil, { model = "model-b", effort = "high" })
+  assert(session:prompt("automatic"))
+  wait_for(function()
+    return #process.writes == 3
+  end)
+  respond(process.writes[3].id, { configOptions = options("medium", "model-b") })
+  respond(process.writes[4].id, { configOptions = options("high", "model-b") })
+  wait_for(function()
+    return session:inspect().status == "prompting"
+  end)
+  MiniTest.expect.equality(session:inspect().auto_mode, "auto")
+  MiniTest.expect.equality(session:inspect().manual_pair, nil)
+  MiniTest.expect.equality(
+    nvim.json.decode(query("SELECT preference FROM routing_preferences")[1].preference),
+    { mode = "auto" }
+  )
+  respond(process.writes[#process.writes].id, { stopReason = "end_turn" })
+end
+
+T["saving routing authority holds admission and reports storage failure once"] = function()
+  local session = start(nil, nil, { model = "model-a", effort = "medium" })
+  assert(nvim.uv.fs_chmod(directory, 493))
+  local calls = 0
+  local callback_error ---@type string?
+  assert(session:set_auto(false, function(err)
+    calls, callback_error = calls + 1, err
+  end))
+  MiniTest.expect.equality(session:inspect().status, "configuring")
+  MiniTest.expect.equality({ session:prompt("not saved") }, { nil, "session is not ready" })
+  wait_for(function()
+    return calls > 0
+  end)
+  MiniTest.expect.equality(calls, 1)
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(assert(callback_error):find("owned private directory", 1, true) ~= nil, true)
+  MiniTest.expect.equality(#process.writes, 2)
+  assert(nvim.uv.fs_chmod(directory, 448))
+end
+
+T["corrupt routing state refuses resume and Disposal suppresses queued preference work"] = function()
+  start(nil, nil, { model = "model-a", effort = "medium" })
+  assert(api:dispose())
+  MiniTest.expect.equality(flush(), nil)
+  query("UPDATE routing_preferences SET preference='invalid'")
+  local session = begin(nil, true, { model = "model-a", effort = "medium" })
+  wait_for(function()
+    return session:inspect().status == "error"
+  end)
+  MiniTest.expect.equality(process.closed, true)
+  assert(api:dispose())
+  session = begin(nil, true, { model = "model-a", effort = "medium" })
+  assert(session:dispose())
+  local settled = false
+  nvim.schedule(function()
+    settled = true
+  end)
+  wait_for(function()
+    return settled
+  end)
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+end
+
+T["two live Sessions retain independent routing choices in one registry"] = function()
+  local first = start(nil, nil, { model = "model-a", effort = "medium" })
+  local second = assert(api:create_session("agent"))
+  respond(1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(2, { sessionId = "second-session", configOptions = options() })
+  wait_for(function()
+    return second:inspect().status == "ready"
+  end)
+  assert(first:set_auto(false))
+  wait_for(function()
+    return first:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(first:inspect().auto_mode, "manual")
+  MiniTest.expect.equality(second:inspect().auto_mode, "auto")
+  local rows = query("SELECT acp_session_id,preference FROM routing_preferences ORDER BY acp_session_id")
+  MiniTest.expect.equality(rows[1].acp_session_id, "recording-session")
+  MiniTest.expect.equality(nvim.json.decode(rows[1].preference).mode, "manual")
+  MiniTest.expect.equality(rows[2].acp_session_id, "second-session")
+  MiniTest.expect.equality(nvim.json.decode(rows[2].preference).mode, "auto")
+end
+
+T["missing effort and unconfirmed Model replies cannot restore a pin"] = function()
+  start(nil, nil, { model = "model-a", effort = "medium", default = false }, options("high", "model-b"))
+  assert(api:dispose())
+  MiniTest.expect.equality(flush(), nil)
+  for _, unconfirmed in ipairs({ false, true }) do
+    local session = begin(nil, true, { model = "model-a", effort = "medium" })
+    local errors = {}
+    session:on(function(event)
+      if event.type == "error" then
+        errors[#errors + 1] = event.data.message
+      end
+    end)
+    wait_for(function()
+      return #process.writes == 3
+    end)
+    local response = options("medium", unconfirmed and "model-a" or "model-b")
+    response[1].options = { { value = "medium", name = "Medium" } }
+    respond(process.writes[3].id, { configOptions = response })
+    wait_for(function()
+      return session:inspect().status == "error"
+    end)
+    MiniTest.expect.equality(
+      errors[1]:find(unconfirmed and "did not confirm requested model" or "thought_level is unavailable", 1, true)
+        ~= nil,
+      true
+    )
+    MiniTest.expect.equality(#process.writes, 3)
+    assert(api:dispose())
+  end
+end
+
+T["Disposal during the configuring event cannot revive a Session or send an option request"] = function()
+  local session = start(nil, nil, { model = "model-a", effort = "medium" })
+  session:on(function(event)
+    if event.type == "state_changed" and event.data.status == "configuring" then
+      assert(session:dispose())
+    end
+  end)
+  MiniTest.expect.equality(
+    { session:set_config_option("model", "model-b") },
+    { nil, "session is no longer configuring" }
+  )
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  MiniTest.expect.equality(api:get_session(session:inspect().id), nil)
+  MiniTest.expect.equality(#process.writes, 2)
 end
 
 T["Auto without an effort option admits a Model-only baseline"] = function()
@@ -589,7 +811,7 @@ T["schema upgrade preserves prior turn facts and resumed observation streams sta
   MiniTest.expect.equality(rows[2].observer_id ~= first.observer_id, true)
   MiniTest.expect.equality(rows[2].sequence, 1)
   MiniTest.expect.equality(query("SELECT * FROM turns"), turns)
-  MiniTest.expect.equality(query("PRAGMA user_version")[1].user_version, 3)
+  MiniTest.expect.equality(query("PRAGMA user_version")[1].user_version, 4)
 end
 
 return T

@@ -299,6 +299,9 @@ function M.session_header(state)
   if state.source == "loaded" then
     session_parts[#session_parts + 1] = "source=loaded"
   end
+  if state.auto_mode ~= nil then
+    session_parts[#session_parts + 1] = "routing=" .. (state.auto_mode == "auto" and "Auto" or "Pinned")
+  end
   local session_line = "Session: " .. table.concat(session_parts, " · ")
   local display_text = "display=" .. turn_label(state)
   local display_start = assert(session_line:find(display_text, 1, true)) - 1
@@ -525,6 +528,9 @@ function M.session_winbar(state, limits, available)
         tokens[1] = "opts"
       elseif hidden > 0 then
         tokens[#tokens + 1] = "+" .. hidden
+      end
+      if state.auto_mode ~= nil then
+        table.insert(tokens, 1, state.auto_mode == "auto" and "Auto" or "Pinned")
       end
       add(table.concat(tokens, " "), ACP_HIGHLIGHT, OPTIONS_CLICK_TARGET)
     end

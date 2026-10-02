@@ -53,6 +53,15 @@ end
 
 -- Each API owns its recorder through cleanup, including failed expectations.
 -- A pending writer from a previous case must never reject this case's prompt.
+local function wait_ready(session)
+  assert(
+    nvim.wait(6000, function()
+      return session:inspect().status == "ready"
+    end, 10),
+    "Session did not become ready"
+  )
+end
+
 local function new_api(definitions, debug_level, options)
   local directory = options and options.usage_directory or nvim.fn.tempname()
   options = nvim.tbl_extend("force", options or {}, { usage_directory = directory })
@@ -278,6 +287,7 @@ T["compaction"]["replays terminal-only compactions and rejects malformed state b
     },
   })
   respond(process, 2, {})
+  wait_ready(session)
   MiniTest.expect.equality(session:inspect().status, "ready")
   MiniTest.expect.equality(session:inspect().compactions[1].summary[1].text, "retained history")
   notification(process, "session/update", {
@@ -1172,6 +1182,7 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
   })
   respond(process, 2, {})
 
+  wait_ready(session)
   MiniTest.expect.equality(ready.error, nil)
   MiniTest.expect.equality(ready.session, session)
   MiniTest.expect.equality(events[1].data.content.text, "previous answer")
@@ -1382,6 +1393,7 @@ T["new"]["replays the user's own prior messages as user_chunk events when loadin
   })
   respond(process, 2, {})
 
+  wait_ready(session)
   MiniTest.expect.equality(session:inspect().status, "ready")
   MiniTest.expect.equality({ events[1].type, events[2].type }, { "user_chunk", "chunk" })
   MiniTest.expect.equality(events[1].data.content.text, "what did we decide last time")
@@ -1412,6 +1424,7 @@ T["new"]["emits thought_chunk events for replayed agent_thought_chunk notificati
   })
   respond(process, 2, {})
 
+  wait_ready(session)
   MiniTest.expect.equality(session:inspect().status, "ready")
   -- The replay's one content-bearing event is the thought chunk; any remaining
   -- events are lifecycle notifications (e.g. the final state change).
@@ -1927,6 +1940,7 @@ T["new"]["holds Auto admission until the baseline pair is confirmed"] = function
   end
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(process, 2, { sessionId = "auto-session", configOptions = options("small", "medium") })
+  wait_ready(session)
   local turn_id = assert(session:prompt("hello"))
   MiniTest.expect.equality(session:inspect().status, "admitting")
   MiniTest.expect.equality({ session:prompt("again") }, { nil, "session is not ready" })
@@ -3630,6 +3644,7 @@ T["new"]["activity preserves permissions and ignores replay and unsupported exte
   respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
   session_activity(process, "running")
   respond(process, 2, {})
+  wait_ready(session)
   MiniTest.expect.equality(session:inspect().status, "ready")
   notification(process, "session/update", {
     sessionId = "agent-acp",

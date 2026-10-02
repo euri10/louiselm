@@ -13,7 +13,7 @@ local Provider = require("louiselm.agent.provider")
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
 ---@field provider louiselm.agent.Provider Explicit access/quota service, exact option routes, or literal option prefixes; required before prompting.
----@field auto? { model: string, effort?: string } Opt-in baseline Model and optional thought-level value for new Sessions.
+---@field auto? { model: string, effort?: string, default?: boolean } Baseline pair; new Sessions default to Auto unless default=false. Resumed choices are retained.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options. `options._meta`, when present, is threaded
 ---verbatim into the ACP `session/new`/`session/load` request params (e.g. Claude's
@@ -439,7 +439,20 @@ function M.normalize(definitions, default_skills_policy)
           auto = {}
           for _, key in ipairs(sorted_keys(definition.auto)) do
             local value = definition.auto[key]
-            if key ~= "model" and key ~= "effort" then
+            if key == "default" then
+              if type(value) ~= "boolean" then
+                add_error(
+                  errors,
+                  child_path(auto_path, key),
+                  "wrong_type",
+                  "must be a boolean",
+                  "boolean",
+                  value_type(value)
+                )
+              else
+                auto.default = value
+              end
+            elseif key ~= "model" and key ~= "effort" then
               add_error(errors, child_path(auto_path, tostring(key)), "unknown_key", "unknown Auto baseline key")
             elseif type(value) ~= "string" or value == "" then
               add_error(errors, child_path(auto_path, key), "invalid_value", "must be a non-empty advertised value")

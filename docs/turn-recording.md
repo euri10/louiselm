@@ -11,7 +11,7 @@ All shared LouiseLM state uses the same root, independently of the editor profil
 
 | Relative path | Owner and purpose |
 | --- | --- |
-| `usage/turns.sqlite3` | Session registry: durable turn and option facts |
+| `usage/turns.sqlite3` | Session registry: durable facts and current routing preferences |
 | `usage.json` | Chat: read-only legacy replay annotations |
 | `forensics/` | Session registry: immutable Forensics records |
 | `permissions.json` | Permission store: remembered rules |
@@ -63,13 +63,31 @@ submissions. Retrying the prompt creates another attempt, with another ID.
 
 An Agent configured with `auto = { model = "<advertised value>", effort = "<advertised value>" }`
 opts new Sessions into baseline Auto admission. Omit `effort` only when the Agent
-advertises no thought-level option. Unset Agents use the ordinary path. Auto
+advertises no thought-level option. Set `auto.default = false` to start new
+Sessions with the current pair pinned while keeping explicit Auto available.
+Unset Agents use the ordinary path. Auto
 holds the Session in `admitting` while it confirms the Model, re-reads the
 Agent's effort choices, confirms the effort, and checks the effective pair.
 It then enters the same durable `preparing` barrier. The operator can pin the
 whole confirmed pair by changing either option with `set_config_option`, and
-`session:set_auto(true)` explicitly returns to Auto. These controls are only
-in memory in this slice. A failed or unknown configuration does not trigger a
+`session:set_auto(true, callback)` explicitly returns to Auto; `false` pins the
+current pair. Model/effort selection and pin/Auto changes keep the Session
+`configuring` until the private writer durably acknowledges the choice. The
+optional callback receives a save error, if any, on the main loop. Disposal
+suppresses late callbacks. The Chat options picker, header and winbar show Auto
+or Pinned beside the effective pair; the picker offers an explicit mode change.
+
+Schema version 4 adds mutable `routing_preferences`, keyed by configured Agent
+and exact ACP Session ID, without rewriting historical facts or Forensics.
+Resumed Sessions retain their saved mode despite a changed Agent default.
+An older Session without preference data stays manual; it never inherits a
+newly enabled Auto default. Saved pins are restored Model first, then effort
+against the refreshed choices, before `ready` is published. Unsupported pins,
+corrupt state and failed persistence are actionable errors; they never silently
+select another pair or enable Auto. A saved Auto choice requires the Agent's
+baseline to remain configured. These controls do not change reading workers.
+
+A failed or unknown configuration does not trigger a
 resend; an unresolved request holds or errors the Session. Chat keeps the
 editable prompt and Staged context until dispatch is confirmed, and leaves
 them in place when admission rejects the attempt.

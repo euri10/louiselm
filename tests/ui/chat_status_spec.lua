@@ -10,6 +10,20 @@ local function snapshot(id, agent)
   return { id = id, name = id, agent = agent, status = "ready", current_turn = 0, config_options = {} }
 end
 
+T["header shows routing authority beside the confirmed pair"] = function()
+  local state = snapshot("session", "agent")
+  state.auto_mode = "manual"
+  state.config_options = {
+    { id = "model", name = "Model", type = "select", current_value = "large" },
+    { id = "effort", name = "Effort", type = "select", current_value = "high" },
+  }
+  local lines = Status.session_header(state)
+  MiniTest.expect.equality(lines[2]:find("routing=Pinned", 1, true) ~= nil, true)
+  MiniTest.expect.equality(lines[3], "ACP options: Model=large · Effort=high")
+  state.auto_mode = "auto"
+  MiniTest.expect.equality(Status.session_header(state)[2]:find("routing=Auto", 1, true) ~= nil, true)
+end
+
 T["Agent hover span uses display columns and disappears when compacted"] = function()
   local state = snapshot("session-1", "codex")
   state.name = "界 100%"

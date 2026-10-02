@@ -87,7 +87,8 @@ string|table
 - `acp_session_id: string?` -- Agent-side persistent conversation identifier, once available.
 - `activity: string?` -- Current generic tool activity.
 - `agent: string` -- Named agent definition.
-- `auto_mode: ("auto"|"manual")?` -- Per-Session in-memory authority; absent when the Agent has no Auto baseline.
+- `auto_available: boolean?` -- Whether this Agent configures a baseline for explicit return to Auto.
+- `auto_mode: ("auto"|"manual")?` -- Durable Session authority; absent for ordinary Sessions without routing preferences.
 - `broker_session_id: string?` -- Trusted Control broker Session binding, distinct from the ACP Session ID.
 - `commands: louiselm.session.AvailableCommand[]` -- Latest agent-advertised commands, replaced wholesale on each update.
 - `compactions: louiselm.session.Compaction[]` -- Compaction snapshots in first-seen order, including replay.
@@ -166,8 +167,9 @@ string|table
 - `ready_callback_called: boolean` -- Whether startup callback ran.
 - `recording_turn: { id: string, sequence: integer, finished: boolean, dispatched: boolean }?` -- Active recording identity.
 - `replay_user_open: boolean` -- Consecutive historical user chunks belong to one prompt.
+- `routing_read: fun()?` -- Cancel a pending routing preference read.
 - `schedule: fun(delay_ms: integer, callback: fun())` -- Testable scheduling boundary.
-- `set_auto: fun(self: louiselm.session.Session, enabled: boolean):boolean, string?`
+- `set_auto: fun(self: louiselm.session.Session, enabled: boolean, callback?: fun(error?: string)):boolean, string?`
 - `set_config_option: fun(self: louiselm.session.Session, id: string, value: boolean|string, callback?: fun(options?: louiselm.session.ConfigOption[], error?: string)):(string|number)?, string?`
 - `set_name: fun(self: louiselm.session.Session, name: string):boolean, string?` -- Rename the session.
 - `start: fun(self: louiselm.session.Session):boolean, string?`
@@ -701,7 +703,7 @@ louiselm.permission.Lifetime:
 ### louiselm.agent.Definition
 
 - `args: string[]` -- Arguments passed after the command.
-- `auto: { model: string, effort: string }?` -- Opt-in baseline Model and optional thought-level value for new Sessions.
+- `auto: { model: string, effort: string, default: boolean }?` -- Baseline pair; new Sessions default to Auto unless default=false. Resumed choices are retained.
 - `capabilities: string[]?` -- Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
 - `command: string` -- Executable to start.
 - `env: table<string, string>?` -- Environment variables for the process.

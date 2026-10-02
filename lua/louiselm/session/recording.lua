@@ -49,6 +49,10 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field turn_id? string Active attempt affected by this transition; its starting tuple stays immutable.
 
 ---@alias louiselm.session.RecordingCallback fun(error?: louiselm.session.RecordingError)
+---@class louiselm.session.RoutingPreference
+---@field mode "auto"|"manual"
+---@field pair? { model?: string|boolean, effort?: string|boolean } Complete confirmed pair; required for manual mode.
+---@alias louiselm.session.RoutingPreferenceCallback fun(preference: louiselm.session.RoutingPreference?, error?: louiselm.session.RecordingError)
 ---@class louiselm.session.ReplayUsage
 ---@field id string Durable turn ID; the ordinal is only a presentation association.
 ---@field turn integer Observed transcript position of the dispatched prompt.
@@ -71,6 +75,8 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field usage_history fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.UsageHistoryCallback)
 ---@field usage_summaries fun(self: louiselm.session.RecordingStore, cohorts: louiselm.session.UsageCohort[], callback: louiselm.session.UsageSummariesCallback)
 ---@field usage_query fun(self: louiselm.session.RecordingStore, query: louiselm.session.UsageQuery, callback: louiselm.session.UsageQueryCallback): fun()
+---@field save_routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, preference: louiselm.session.RoutingPreference, callback: louiselm.session.RecordingCallback)
+---@field routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.RoutingPreferenceCallback): fun()
 
 ---@class louiselm.session.UsageCohort
 ---@field agent string Exact configured Agent.
@@ -120,6 +126,10 @@ CREATE TABLE IF NOT EXISTS admission_events (
   turn_id TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('decision','settlement')),
   agent TEXT NOT NULL, acp_session_id TEXT NOT NULL, observed_at TEXT NOT NULL, data TEXT NOT NULL,
   PRIMARY KEY(turn_id, phase)
+) STRICT;
+CREATE TABLE IF NOT EXISTS routing_preferences (
+  agent TEXT NOT NULL, acp_session_id TEXT NOT NULL, preference TEXT NOT NULL,
+  PRIMARY KEY(agent, acp_session_id)
 ) STRICT;
 ]]
 
@@ -597,9 +607,9 @@ local function drain(self)
         .. " AND (SELECT journal_mode = 'delete' FROM pragma_journal_mode)"
         .. " AND (SELECT synchronous = 3 FROM pragma_synchronous)"
         .. " AND (SELECT foreign_keys = 1 FROM pragma_foreign_keys)"
-        .. " AND (SELECT user_version IN (0,1,2,3) FROM pragma_user_version);",
+        .. " AND (SELECT user_version IN (0,1,2,3,4) FROM pragma_user_version);",
       SCHEMA,
-      "PRAGMA user_version=3;",
+      "PRAGMA user_version=4;",
     }
     for index = 1, count do
       sql[#sql + 1] = self.queue[index].sql
@@ -714,7 +724,7 @@ INSERT INTO history_guard SELECT
   (CAST(sqlite_version() AS INTEGER)>3 OR
     (CAST(sqlite_version() AS INTEGER)=3 AND CAST(substr(sqlite_version(),3) AS INTEGER)>=38))
   AND json_valid('{}')
-  AND (SELECT user_version IN (1,2,3) FROM pragma_user_version)
+  AND (SELECT user_version IN (1,2,3,4) FROM pragma_user_version)
   AND (SELECT journal_mode='delete' FROM pragma_journal_mode)
   AND (SELECT synchronous=3 FROM pragma_synchronous)
   AND (SELECT foreign_keys=1 FROM pragma_foreign_keys);
@@ -755,6 +765,119 @@ COMMIT;
       running:kill(15)
       running = nil
     end
+  end
+end
+
+---@param value unknown
+---@return boolean
+local function valid_preference(value)
+  if type(value) ~= "table" or (value.mode ~= "auto" and value.mode ~= "manual") then
+    return false
+  end
+  for key in pairs(value) do
+    if key ~= "mode" and key ~= "pair" then
+      return false
+    end
+  end
+  if value.mode == "auto" then
+    return value.pair == nil
+  end
+  if type(value.pair) ~= "table" then
+    return false
+  end
+  for key, item in pairs(value.pair) do
+    if (key ~= "model" and key ~= "effort") or (not nonempty(item) and type(item) ~= "boolean") then
+      return false
+    end
+  end
+  return true
+end
+
+---Save mutable Session routing authority through the existing private writer.
+---This never rewrites historical turn, option, admission or Forensics facts.
+---@param self louiselm.session.RecordingStore
+---@param agent string Configured Agent.
+---@param acp_session_id string Exact ACP Session identity.
+---@param preference louiselm.session.RoutingPreference
+---@param callback louiselm.session.RecordingCallback Main-loop durable acknowledgement, once.
+function Store:save_routing_preference(agent, acp_session_id, preference, callback)
+  if not nonempty(agent) or not nonempty(acp_session_id) or not valid_preference(preference) then
+    nvim.schedule(function()
+      callback(failure("invalid"))
+    end)
+    return
+  end
+  self.queue[#self.queue + 1] = {
+    sql = "INSERT INTO routing_preferences(agent,acp_session_id,preference) VALUES("
+      .. sql_text(agent)
+      .. ","
+      .. sql_text(acp_session_id)
+      .. ","
+      .. sql_text(json(preference))
+      .. ") ON CONFLICT(agent,acp_session_id) DO UPDATE SET preference=excluded.preference;",
+    callback = callback,
+  }
+  -- A failed writer must acknowledge refusal too; its queued choice remains retryable.
+  if self.error ~= nil then
+    local err = self.error
+    self.queue[#self.queue].callback = nil
+    nvim.schedule(function()
+      callback(err)
+    end)
+  else
+    drain(self)
+  end
+end
+
+---Read saved authority for one configured Agent and ACP Session without migrating history.
+---Missing/pre-feature stores return nil; malformed state returns an explicit error.
+---@param self louiselm.session.RecordingStore
+---@param agent string Configured Agent.
+---@param acp_session_id string Exact ACP Session identity.
+---@param callback louiselm.session.RoutingPreferenceCallback Main-loop result, once.
+---@return fun() cancel Suppress delivery and terminate the current read.
+function Store:routing_preference(agent, acp_session_id, callback)
+  local cancelled = false
+  local cancel_read
+  cancel_read = read(self, "SELECT user_version AS version FROM pragma_user_version;", function(rows, err)
+    if cancelled then
+      return
+    end
+    if err ~= nil or rows == nil or #rows == 0 or rows[1].version < 4 then
+      callback(nil, err)
+      return
+    end
+    if not nonempty(agent) or not nonempty(acp_session_id) then
+      callback(nil, failure("invalid"))
+      return
+    end
+    cancel_read = read(
+      self,
+      "SELECT preference FROM routing_preferences WHERE agent="
+        .. sql_text(agent)
+        .. " AND acp_session_id="
+        .. sql_text(acp_session_id)
+        .. ";",
+      function(records, query_error)
+        if cancelled then
+          return
+        end
+        if query_error ~= nil or records == nil or #records == 0 then
+          callback(nil, query_error)
+          return
+        end
+        local ok, preference = pcall(nvim.json.decode, records[1].preference, { luanil = { object = true } })
+        if not ok or not valid_preference(preference) then
+          callback(nil, failure("corrupt"))
+        else
+          callback(preference)
+        end
+      end
+    )
+  end)
+  return function()
+    cancelled = true
+    cancel_read()
   end
 end
 

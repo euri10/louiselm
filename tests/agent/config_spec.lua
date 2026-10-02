@@ -5,6 +5,22 @@ local T = MiniTest.new_set()
 
 T["validate"] = MiniTest.new_set()
 
+T["validate"]["Auto defaults are boolean, optional and caller-owned"] = function()
+  local auto = { model = "baseline", default = false }
+  local definitions, errors =
+    Config.normalize({ agent = { command = "agent", provider = "test-service", auto = auto } })
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(assert(definitions).agent.auto, auto)
+  MiniTest.expect.equality(auto, { model = "baseline", default = false })
+  for _, value in ipairs({ "false", 0, {} }) do
+    local rejected, issues = Config.normalize({
+      agent = { command = "agent", provider = "test-service", auto = { model = "baseline", default = value } },
+    })
+    MiniTest.expect.equality(rejected, nil)
+    MiniTest.expect.equality(issues[1].path, "agents.agent.auto.default")
+  end
+end
+
 T["validate"]["requires an explicit complete Auto baseline and copies it"] = function()
   local auto = { model = "baseline", effort = "medium" }
   local definitions, errors = Config.normalize({

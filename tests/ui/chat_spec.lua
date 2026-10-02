@@ -7211,6 +7211,80 @@ T["chat"]["explains when the Agent exposes no standard ACP options"] = function(
   chat:dispose()
 end
 
+T["chat"]["routing picker explicitly returns the attached Session to Auto"] = function()
+  local session = fake_session("routing", "agent")
+  session.state.auto_available, session.state.auto_mode = true, "manual"
+  session.state.config_options = { { id = "model", name = "Model", type = "select", current_value = "large" } }
+  local calls, selected, acknowledged = {}, nil, false
+  local original_select = nvim.ui.select
+  function session:set_auto(enabled, callback)
+    selected = enabled
+    self.state.status = "configuring"
+    nvim.schedule(function()
+      self.state.status, self.state.auto_mode = "ready", "auto"
+      callback()
+      acknowledged = true
+    end)
+    return true
+  end
+  nvim.ui.select = function(items, opts, callback)
+    calls[#calls + 1] = { items = items, options = opts, callback = callback }
+  end
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+    nvim.ui.select = original_select
+  end)
+  assert(chat:attach(session))
+  assert(nvim.wait(1000, function()
+    return #calls == 1
+  end))
+  MiniTest.expect.equality(
+    calls[1].options.format_item(calls[1].items[1]),
+    "Routing: Pinned (select to return to Auto)"
+  )
+  calls[1].callback(calls[1].items[1])
+  MiniTest.expect.equality(selected, true)
+  assert(nvim.wait(1000, function()
+    return acknowledged and #calls == 2
+  end))
+  MiniTest.expect.equality(
+    calls[2].options.format_item(calls[2].items[1]),
+    "Routing: Auto (select to pin current pair)"
+  )
+  MiniTest.expect.equality(session.config_changes, {})
+end
+
+T["chat"]["disposed routing pickers cannot mutate a Session or reopen controls"] = function()
+  local session = fake_session("late-routing", "agent")
+  session.state.auto_available, session.state.auto_mode = true, "manual"
+  session.state.config_options = { { id = "model", name = "Model", type = "select", current_value = "large" } }
+  local pending, selected = nil, false
+  local original_select = nvim.ui.select
+  function session:set_auto()
+    selected = true
+    return true
+  end
+  nvim.ui.select = function(items, _, callback)
+    pending = function()
+      callback(items[1])
+    end
+  end
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+    nvim.ui.select = original_select
+  end)
+  assert(chat:attach(session))
+  assert(nvim.wait(1000, function()
+    return pending ~= nil
+  end))
+  chat:dispose()
+  assert(pending)()
+  MiniTest.expect.equality(selected, false)
+  MiniTest.expect.equality({ chat:set_auto(true) }, { false, "chat UI is disposed" })
+end
+
 T["chat"]["busy options can be inspected by keyboard and winbar without mutation"] = function()
   local session = fake_session("session-1", "codex")
   session.state.status = "prompting"
