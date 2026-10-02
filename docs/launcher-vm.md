@@ -22,6 +22,8 @@ production relay/loss composition. It is a component gate, not installed authori
 - Guest: 2 vCPUs, 4 GiB RAM, 32 GiB sparse disk. The transient user unit caps
   total memory at 5 GiB, swap at zero, CPU at two cores, and lifetime at one
   hour. It runs at nice 10 with no new privileges and QEMU seccomp filtering.
+  The root disk uses `cache=none`: direct host I/O avoids charging a second
+  disk-data cache alongside guest RAM. Guest flush requests remain honored.
 - No host directory, agent socket, existing SSH credential, USB device, or
   physical disk is exposed to the guest. The VM gets its own SSH client and
   host keys; host checking is pinned, not disabled. SSH ignores user config
@@ -300,6 +302,14 @@ dependencies and compiles tests without running them.
 Builds use the same line-table debug metadata as the skills-core CI gate.
 The clean baseline thus retains dependency and build caches across resets.
 Normal builds are offline; do not silently enable guest egress.
+
+An interrupted `prepare` is never resumed inside its partially installed disk.
+The next attempt, with the VM stopped, retains that build disk, its UEFI
+variables and serial log under `interrupted.*`, then provisions a fresh overlay
+from the checksum-verified Debian image. It does not regenerate trust checksums
+from the interrupted installation. The verifier's offline check must pass before
+the completed disk is synced, shut down and published as a prepared base.
+Retained interrupted disks are evidence, not prepared bases or reusable caches.
 
 The base is named by its provisioning inputs: `prepared-<id>.qcow2`, where the
 id hashes the Debian image checksum, the package list, the Rust toolchain and

@@ -13,6 +13,7 @@ jq -e '
   .network == "restricted" and
   (.qemu | index("q35,accel=kvm")) != null and
   (.qemu | index("4096")) != null and
+  (.qemu | any(test("^file=.*/run\\.qcow2,format=qcow2,cache=none,if=none,id=root$"))) and
   (.qemu | index("2")) != null and
   (.qemu | index("-no-reboot")) != null and
   (.qemu | index("file=/usr/share/OVMF/OVMF_CODE_4M.fd,format=raw,if=pflash,readonly=on")) != null and
@@ -75,6 +76,7 @@ fi
 
 # A private fixture substitutes only process/SSH endpoints, never starts QEMU.
 test_dir=$(mktemp -d "${TMPDIR:-/var/tmp}/louiselm-vm-test.XXXXXX")
+interrupted_archive=
 vm_fixture_pid=
 cleanup() {
   if [[ -n $vm_fixture_pid ]]; then
@@ -82,8 +84,13 @@ cleanup() {
     wait "$vm_fixture_pid" 2>/dev/null || true
   fi
   rm -rf -- "$test_dir/checkout-one" "$test_dir/checkout two"
+  if [[ -n $interrupted_archive ]]; then
+    rm -r -- "$interrupted_archive"
+  fi
   rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/bin/udevadm" "$test_dir/ssh-args" \
     "$test_dir/hold" "$test_dir/other cache/louiselm-launcher-vm/control.lock" \
+    "$test_dir/bin/prepare-refusal" "$test_dir/bin/"{curl,sha512sum,qemu-system-x86_64,xorriso,rustup,systemd-run} \
+    "$test_dir/cache/louiselm-launcher-vm/"{build*.qcow2,build*.vars.fd,serial.log,debian*.qcow2} \
     "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2 \
     "$test_dir/cache/louiselm-launcher-vm/run.qcow2" \
     "$test_dir/cache/louiselm-launcher-vm/control.lock"
@@ -174,6 +181,46 @@ grep -Fq 'run prepare' <<<"$message" || { echo "unhelpful missing-base refusal: 
 if bash "$vm" reset --discard >/dev/null 2>&1; then
   echo 'reset created an overlay without a current base' >&2; exit 1
 fi
+
+# An interrupted prepare must retain its evidence and start from the pinned
+# image, not retry inside the partially installed verifier/Rustup disk.
+build=${base/prepared-/build-}
+printf 'interrupted build\n' >"$build"
+printf 'interrupted UEFI\n' >"$build.vars.fd"
+printf 'interrupted serial\n' >"$test_dir/cache/louiselm-launcher-vm/serial.log"
+touch "$test_dir/cache/louiselm-launcher-vm/$(jq -r '.image_url | split("/")[-1]' <<<"$plan")"
+cat >"$test_dir/bin/prepare-refusal" <<'MOCK'
+#!/usr/bin/env bash
+exit 43
+MOCK
+chmod +x "$test_dir/bin/prepare-refusal"
+for tool in curl sha512sum qemu-system-x86_64 xorriso rustup systemd-run; do
+  ln -s prepare-refusal "$test_dir/bin/$tool"
+done
+export VM_TEST_ACTIVE=1 VM_TEST_LOAD=loaded
+if bash "$vm" prepare >/dev/null 2>&1; then
+  echo 'prepare accepted a live VM unit' >&2; exit 1
+fi
+[[ -f $build && -f $build.vars.fd ]] || { echo 'prepare moved a protected live disk' >&2; exit 1; }
+export VM_TEST_ACTIVE=0 VM_TEST_LOAD=not-found
+touch "$base"
+bash "$vm" prepare >/dev/null
+[[ -f $build && -f $build.vars.fd ]] || { echo 'prepare moved evidence after successful publication' >&2; exit 1; }
+rm -- "$base"
+if bash "$vm" prepare >/dev/null 2>&1; then
+  echo 'prepare accepted the deliberately invalid pinned-image fixture' >&2; exit 1
+fi
+archives=("$test_dir/cache/louiselm-launcher-vm/"interrupted.*)
+[[ ${#archives[@]} == 1 && -d ${archives[0]} ]] || { echo 'interrupted preparation was not retained separately' >&2; exit 1; }
+interrupted_archive=${archives[0]}
+[[ ! -e $build && ! -e $build.vars.fd ]] || { echo 'prepare reused the interrupted disk' >&2; exit 1; }
+[[ $(<"$interrupted_archive/${build##*/}") == 'interrupted build' ]] || { echo 'lost interrupted disk evidence' >&2; exit 1; }
+[[ $(<"$interrupted_archive/${build##*/}.vars.fd") == 'interrupted UEFI' ]] || { echo 'lost interrupted UEFI evidence' >&2; exit 1; }
+[[ $(<"$interrupted_archive/serial.log") == 'interrupted serial' ]] || { echo 'lost interrupted serial evidence' >&2; exit 1; }
+for tool in curl sha512sum qemu-system-x86_64 xorriso rustup systemd-run; do
+  rm -- "$test_dir/bin/$tool"
+done
+
 touch "$base"
 qemu-img create -q -u -f qcow2 -F qcow2 -b "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2" \
   "$test_dir/cache/louiselm-launcher-vm/run.qcow2" 1G

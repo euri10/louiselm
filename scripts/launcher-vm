@@ -70,7 +70,8 @@ qemu_args() {
     -sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny
     -drive file=/usr/share/OVMF/OVMF_CODE_4M.fd,format=raw,if=pflash,readonly=on
     -drive "file=$1.vars.fd,format=raw,if=pflash"
-    -drive "file=$1,format=qcow2,if=none,id=root"
+    # Avoid charging the same disk data in guest RAM and the host page cache.
+    -drive "file=$1,format=qcow2,cache=none,if=none,id=root"
     -device virtio-blk-pci,drive=root
     -drive "file=$state/seed.iso,format=raw,if=none,id=seed,readonly=on"
     -device virtio-blk-pci,drive=seed
@@ -183,6 +184,15 @@ case $action in
     done
     stopped
     [[ ! -f $base ]] || { echo "launcher-vm: already prepared ${base##*/}"; exit 0; }
+    # A killed guest can leave buffered verifier/Rustup writes incomplete.
+    # Keep the failed disk for inspection; retry only from verified inputs.
+    if [[ -e $build || -e $build.vars.fd ]]; then
+      archive=$(mktemp -d "$state/interrupted.XXXXXX")
+      for artifact in "$build" "$build.vars.fd" "$state/serial.log"; do
+        if [[ -e $artifact ]]; then mv -- "$artifact" "$archive/"; fi
+      done
+      echo "launcher-vm: interrupted preparation retained at $archive; building fresh" >&2
+    fi
     [[ -r /usr/share/OVMF/OVMF_CODE_4M.fd && -r /usr/share/OVMF/OVMF_VARS_4M.fd ]] || die 'existing OVMF firmware is required; no host install fallback'
     if [[ ! -f $state/$image ]]; then
       curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 900 --retry 2 \
@@ -206,8 +216,8 @@ case $action in
       printf '  ed25519_public: %s\n' "$(<"$state/host-key.pub")"
     } >"$state/seed/user-data"
     xorriso -as mkisofs -quiet -output "$state/seed.iso" -volid cidata -joliet -rock "$state/seed"
-    [[ -f $build ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/$image" "$build" 32G
-    [[ -f $build.vars.fd ]] || cp -- /usr/share/OVMF/OVMF_VARS_4M.fd "$build.vars.fd"
+    qemu-img create -f qcow2 -F qcow2 -b "$state/$image" "$build" 32G
+    cp -- /usr/share/OVMF/OVMF_VARS_4M.fd "$build.vars.fd"
     # Only trusted distro provisioning gets egress; test guests always use restrict=on.
     trap 'stop_vm' EXIT
     start_image "$build" off
@@ -231,6 +241,7 @@ case $action in
       CARGO_PROFILE_DEV_DEBUG=line-tables-only \
       /home/vm/.cargo/bin/cargo test --manifest-path /home/vm/skills-core/Cargo.toml \
       --all-features --locked --offline --no-run
+    guest /bin/bash /home/vm/verifier-toolchain check
     guest sudo -n sync
     stop_vm
     trap - EXIT
