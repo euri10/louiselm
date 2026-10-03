@@ -121,6 +121,7 @@ fn launch_request() -> LaunchRequest {
 
 fn launch_authorization(request: &LaunchRequest) -> LaunchAuthorization {
     LaunchAuthorization {
+        role: louiselm_skills::launch_protocol::LaunchRole::Agent,
         conformance: launch_protocol::ConformanceAuthorization::default(),
         schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
         protocol_version: PROTOCOL_VERSION,
@@ -148,6 +149,22 @@ fn launch_authorization_carries_a_bounded_provider_deadline() {
     let authorization = serde_json::from_value::<LaunchAuthorization>(value)
         .expect("the broker must send the narrower Provider deadline");
     assert!(authorization.validate_for(&request, 1_000, 1_000).is_ok());
+}
+
+#[test]
+fn fixed_verifier_authorization_refuses_provider_permission_and_missing_role() {
+    let request = launch_request();
+    let mut authorization = launch_authorization(&request);
+    authorization.role = launch_protocol::LaunchRole::FixedVerifier;
+    authorization.validate_for(&request, 1_000, 1_000).unwrap();
+    authorization.provider_expires_at_ms = Some(1_500);
+    assert_eq!(
+        authorization.validate().unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+    let mut value = serde_json::to_value(authorization).unwrap();
+    value.as_object_mut().unwrap().remove("role");
+    assert!(serde_json::from_value::<LaunchAuthorization>(value).is_err());
 }
 
 fn broker_reconnect(request_id: &str) -> BrokerReconnect {
@@ -385,7 +402,7 @@ fn launch_authorization_is_correlated_closed_and_exactly_bound() {
     let authorization = launch_authorization(&request);
     assert_eq!(
         LAUNCH_AUTHORIZATION_SCHEMA,
-        "louiselm.launch.authorization/3"
+        "louiselm.launch.authorization/4"
     );
     assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
     authorization
@@ -1596,6 +1613,7 @@ fn responses_enforce_request_correlation_and_the_encoded_size_limit() {
                 request_digest: launch_request_digest.clone(),
             },
             evidence: Box::new(LaunchEvidence {
+                role: louiselm_skills::launch_protocol::LaunchRole::Agent,
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest,
                 runtime_measurement_digest: digest(b"runtime"),

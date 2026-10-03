@@ -12,6 +12,7 @@ fn starting() -> StartingLockfile {
 
 fn auth(attendance: Attendance) -> PendingAuthorization {
     PendingAuthorization {
+        role: crate::launch_protocol::LaunchRole::Agent,
         dependencies: Some(ApprovedDependencies {
             input_manifest_digest: Digest::of(b"inputs").to_string(),
             lockfile_path: "Cargo.lock".into(),

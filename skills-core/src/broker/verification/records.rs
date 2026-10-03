@@ -65,6 +65,8 @@ impl BrokerService {
             || producer.digest()?.to_string() != *export_digest
             || producer.job.job_digest != *job_digest
             || source.identity == verifier.identity
+            || source.role != crate::launch_protocol::LaunchRole::Agent
+            || verifier.role != crate::launch_protocol::LaunchRole::FixedVerifier
             || source.controller_uid != verifier.controller_uid
             || producer.request.launch.run_id != request.launch.run_id
             || producer.request.launch.skill_generation_id != request.launch.skill_generation_id

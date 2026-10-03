@@ -86,6 +86,7 @@ mod tests {
 
     fn source() -> PendingAuthorization {
         PendingAuthorization {
+            role: crate::launch_protocol::LaunchRole::Agent,
             conformance: crate::launch_protocol::ConformanceAuthorization::default(),
             dependencies: None,
             skill_requests: None,

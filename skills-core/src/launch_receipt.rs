@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// SSHSIG namespace and schema for the bytes a Launch supervisor signs.
-pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/5";
+pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/6";
 
 /// Schema for the payload plus its launcher signature.
 pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/5";
@@ -141,6 +141,8 @@ pub enum ConformanceEvidence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchEvidence {
+    /// Broker-approved role whose narrower authority this signed launch enforces.
+    pub role: crate::launch_protocol::LaunchRole,
     /// Host conformance evidence admission relied on. Nested under its own
     /// name: `deny_unknown_fields` and `flatten` cannot be combined, because
     /// flattening deserializes through a map the deny rejects.
@@ -182,6 +184,10 @@ pub struct StartEvidence {
     pub assigned_gid: u32,
     /// Digest of the exact integration evidence verified before channel enablement.
     pub tool_isolation_digest: String,
+    /// Whether the supervisor must complete initial Sender guard enrollment
+    /// before its control loop can answer broker requests. This signed startup
+    /// fact comes from the resolved network policy, never Provider permission.
+    pub sender_guard_required: bool,
 }
 
 /// Privileged lifecycle result recorded by one receipt.

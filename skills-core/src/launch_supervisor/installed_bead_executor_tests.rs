@@ -146,6 +146,7 @@ fn privileged_installed_lua_bead_executor() {
         .digest()
         .to_string();
         let grant = GrantRequest {
+            role: crate::launch_protocol::LaunchRole::Agent,
             request: launch,
             controller_uid: config.operator_uid,
             expires_at_ms: now + 120_000,
@@ -169,6 +170,7 @@ fn privileged_installed_lua_bead_executor() {
         verifier_launch.run_id = grant.request.run_id.clone();
         verifier_launch.session_input_manifest_id = grant.request.session_input_manifest_id.clone();
         let verifier_grant = GrantRequest {
+            role: crate::launch_protocol::LaunchRole::FixedVerifier,
             request: verifier_launch,
             controller_uid: config.operator_uid,
             expires_at_ms: now + 120_000,

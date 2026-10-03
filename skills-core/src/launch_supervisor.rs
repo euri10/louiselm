@@ -1155,6 +1155,9 @@ fn run_launch(
             SupervisorError::ResolutionFailed,
         ));
     };
+    if authorization.role == crate::launch_protocol::LaunchRole::FixedVerifier {
+        resolution.plan.network = NetworkPolicy::Denied;
+    }
     resolution.plan.channels.push(capability_channel.clone());
     let receipt_channels = resolution.plan.channels.clone();
     let brokered = resolution.plan.network == NetworkPolicy::Brokered;
@@ -1264,7 +1267,7 @@ fn run_launch(
         prepared.evidence(),
         prepared.backend_id(),
         &receipt_channels,
-        broker_loss_grace_ms,
+        &authorization,
         conformance.evidence,
     ) {
         Ok(evidence) => evidence,
@@ -1411,6 +1414,7 @@ fn run_launch(
                 assigned_uid: assigned.uid,
                 assigned_gid: assigned.gid,
                 tool_isolation_digest,
+                sender_guard_required: brokered,
             },
         },
         resulting_state: SessionState::Running,
@@ -1542,7 +1546,7 @@ fn launch_evidence(
     isolation: &IsolationEvidence,
     backend_id: &str,
     channels: &[Channel],
-    broker_loss_grace_ms: u32,
+    authorization: &LaunchAuthorization,
     conformance: ConformanceEvidence,
 ) -> Result<LaunchEvidence, SupervisorError> {
     let runtime_bytes = serde_json::to_vec(runtime).map_err(|_| SupervisorError::ReceiptInvalid)?;
@@ -1559,6 +1563,7 @@ fn launch_evidence(
         return Err(SupervisorError::ReceiptInvalid);
     }
     let evidence = LaunchEvidence {
+        role: authorization.role,
         conformance,
         launch_request_digest: request.digest().to_string(),
         runtime_measurement_digest: Digest::of(&runtime_bytes).to_string(),
@@ -1568,7 +1573,7 @@ fn launch_evidence(
         isolation_backend_id: backend_id.to_owned(),
         kernel_identity: Digest::of(&kernel_bytes).to_string(),
         isolation_evidence_digest: Digest::of(&isolation_bytes).to_string(),
-        broker_loss_grace_ms,
+        broker_loss_grace_ms: authorization.broker_loss_grace_ms,
         capability_channel_ids: channel_ids,
     };
     let probe = ReceiptPayload {

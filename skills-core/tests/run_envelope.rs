@@ -61,6 +61,7 @@ fn grant() -> GrantRequest {
     scope.effects = vec![BeadsEffect::CommentAdd, BeadsEffect::Claim];
     scope.max_mutations = 2;
     GrantRequest {
+        role: louiselm_skills::launch_protocol::LaunchRole::Agent,
         dependencies: None,
         conformance: ConformanceAuthorization::default(),
         require_cold_recovery: true,

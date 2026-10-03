@@ -322,6 +322,8 @@ impl BrokerService {
         );
         if result.is_err() {
             session.provider_listener = None;
+        } else {
+            session.initial_guard_pending = false;
         }
         result
     }

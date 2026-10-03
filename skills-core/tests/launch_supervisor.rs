@@ -2228,6 +2228,7 @@ fn setup(
         gid: 300_003,
     };
     let mut authorization = LaunchAuthorization {
+        role: louiselm_skills::launch_protocol::LaunchRole::Agent,
         conformance: louiselm_skills::launch_protocol::ConformanceAuthorization::default(),
         schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
         protocol_version: PROTOCOL_VERSION,
@@ -3153,6 +3154,44 @@ fn brokered_launch_refuses_without_a_live_provider_deadline() {
 }
 
 #[test]
+fn authenticated_fixed_verifier_attenuates_brokered_network_without_provider_authority() {
+    let setup = brokered_setup(None);
+    lock(&setup.broker.state)
+        .authorization
+        .as_mut()
+        .unwrap()
+        .role = louiselm_skills::launch_protocol::LaunchRole::FixedVerifier;
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    // A verifier must reach launch admission without Provider permission. The
+    // ordinary Agent refusal above still uses the unchanged Brokered policy.
+    for sequence in 0..=1 {
+        setup.broker.wait_for_append(sequence);
+        setup.broker.acknowledge();
+    }
+    let session = receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().unwrap();
+    assert_eq!(
+        setup.platform.plan().network,
+        louiselm_skills::registry::NetworkPolicy::Denied
+    );
+    let launch = SignedReceipt::parse_canonical(&setup.broker.receipt_bytes(0)).unwrap();
+    let ReceiptOutcome::Launch { evidence, .. } = launch.payload.outcome else {
+        panic!("launch receipt");
+    };
+    assert_eq!(
+        evidence.role,
+        louiselm_skills::launch_protocol::LaunchRole::FixedVerifier
+    );
+    let ReceiptOutcome::Start { evidence, .. } = &session.receipt().payload.outcome else {
+        panic!("start receipt");
+    };
+    assert!(!evidence.sender_guard_required);
+    // End this seam's lifetime without adding a synthetic broker settlement.
+    setup.signer.authority_valid.store(false, Ordering::SeqCst);
+    setup.signer.wait_for_containment();
+    assert!(session.dispose().is_err());
+}
+
+#[test]
 fn brokered_launch_refuses_unevaluated_host_conformance() {
     let setup = brokered_setup(Some(NOW_MS + 1_000));
     let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
@@ -3350,6 +3389,7 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
                 assigned_uid: setup.platform.expected_identity.uid,
                 assigned_gid: setup.platform.expected_identity.gid,
                 tool_isolation_digest: Digest::of(b"fixture-tool-isolation").to_string(),
+                sender_guard_required: false,
             },
             authority: ReceiptAuthority::Cause {
                 cause: ReceiptCause::LaunchAcknowledged,

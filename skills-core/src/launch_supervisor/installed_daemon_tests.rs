@@ -25,6 +25,9 @@ mod state;
 #[path = "installed_bead_executor_tests.rs"]
 mod bead_executor;
 
+#[path = "installed_qualification_tests.rs"]
+mod qualification;
+
 fn completed<T: Send + 'static>(queue: impl FnOnce(Box<dyn FnOnce(T) + Send>)) -> T {
     let (tx, rx) = mpsc::channel();
     queue(Box::new(move |value| tx.send(value).unwrap()));
@@ -95,6 +98,7 @@ fn seed_authorizations() {
         broker
             .authorize_child(
                 &GrantRequest {
+                    role: crate::launch_protocol::LaunchRole::Agent,
                     conformance: crate::launch_protocol::ConformanceAuthorization {
                         attendance: if config.conformance
                             == crate::conformance::admission::Enforcement::Enforced

@@ -141,6 +141,7 @@ local function grants(selection, id, index, binding)
   local function grant(role)
     local session_id = envelope.run_id .. "-" .. role .. "-" .. index
     return {
+      role = role == "verifier" and "fixed_verifier" or "agent",
       request = {
         schema = "louiselm.launch.request/2",
         protocol_version = 1,

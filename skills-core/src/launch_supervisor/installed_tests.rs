@@ -413,6 +413,7 @@ fn installed_broker_worker() {
     .unwrap();
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
     let grant = GrantRequest {
+        role: crate::launch_protocol::LaunchRole::Agent,
         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
         dependencies: None,
         skill_requests: None,

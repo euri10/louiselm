@@ -29,6 +29,7 @@ fn authorization(root: &Path, config: &LauncherConfig, session: &str) -> LaunchA
     store
         .authorize(
             &GrantRequest {
+                role: crate::launch_protocol::LaunchRole::Agent,
                 conformance: crate::launch_protocol::ConformanceAuthorization::default(),
                 dependencies: None,
                 skill_requests: None,
@@ -66,6 +67,7 @@ fn genesis(signer: &LauncherSigner, auth: &LaunchAuthorization) -> ReceiptPayloa
                 request_digest: auth.request_digest.clone(),
             },
             evidence: Box::new(crate::launch_receipt::LaunchEvidence {
+                role: crate::launch_protocol::LaunchRole::Agent,
                 conformance: crate::launch_receipt::ConformanceEvidence::Unevaluated,
                 launch_request_digest: auth.request_digest.clone(),
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
@@ -176,6 +178,7 @@ fn privileged_installed_receipt_history_survives_rotation_and_upgrade() {
                     assigned_uid: auth.assigned_uid,
                     assigned_gid: auth.assigned_gid,
                     tool_isolation_digest: Digest::of(b"tool isolation").to_string(),
+                    sender_guard_required: false,
                 },
                 authority: crate::launch_receipt::ReceiptAuthority::Cause {
                     cause: crate::launch_receipt::ReceiptCause::LaunchAcknowledged,

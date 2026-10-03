@@ -152,6 +152,7 @@ const CONTROLLER_UID: u32 = 1501;
 
 fn grant(request: &LaunchRequest) -> GrantRequest {
     GrantRequest {
+        role: louiselm_skills::launch_protocol::LaunchRole::Agent,
         conformance: louiselm_skills::launch_protocol::ConformanceAuthorization::default(),
         dependencies: None,
         skill_requests: None,
@@ -309,6 +310,29 @@ fn absent_command_approval_denies_effects_without_ending_the_session() {
         }))
     ));
     assert!(!session.channel().is_closed());
+}
+
+#[test]
+fn signed_launch_cannot_change_the_operator_approved_role() {
+    let root = TempDir::new().unwrap();
+    let authorization = consumed_authorization(root.path(), &request("session-1"));
+    let receipts = ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap();
+    let mut launch = launch_receipt(&authorization);
+    let ReceiptOutcome::Launch { evidence, .. } = &mut launch.payload.outcome else {
+        panic!("launch");
+    };
+    evidence.role = louiselm_skills::launch_protocol::LaunchRole::FixedVerifier;
+    let changed = signed(launch.payload);
+    assert!(matches!(
+        receipts.append(
+            &authorization,
+            &changed.canonical_bytes(),
+            None,
+            verify_fixture_signature
+        ),
+        Err(BrokerError::ReceiptUnauthorized)
+    ));
+    assert_eq!(receipts.head("session-1").unwrap(), None);
 }
 
 #[test]
@@ -586,6 +610,7 @@ fn pinned_launch_receipt(authorization: &LaunchAuthorization, generation: &str) 
                 request_digest: authorization.request_digest.clone(),
             },
             evidence: Box::new(LaunchEvidence {
+                role: authorization.role,
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: authorization.request_digest.clone(),
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
@@ -616,6 +641,7 @@ fn start_receipt(authorization: &LaunchAuthorization, launch: &SignedReceipt) ->
                 assigned_uid: authorization.assigned_uid,
                 assigned_gid: authorization.assigned_gid,
                 tool_isolation_digest: Digest::of(b"fixture-tool-isolation").to_string(),
+                sender_guard_required: false,
             },
             authority: ReceiptAuthority::Cause {
                 cause: ReceiptCause::LaunchAcknowledged,

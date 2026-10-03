@@ -349,6 +349,22 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         self.require_trusted_history(session, &mut verify)?;
+        if session.initial_guard_pending {
+            // The Start ACK releases supervisor startup, not its control loop.
+            // Sending status now would compete with its enrollment ACK receive.
+            let result = receive(&session.channel).and_then(|packet| {
+                self.accept_provider_listener(
+                    session,
+                    packet,
+                    crate::broker::now_ms()?,
+                    &mut verify,
+                )
+            });
+            if result.is_err() {
+                session.close();
+            }
+            result?;
+        }
         let request = StatusRequest {
             schema: STATUS_REQUEST_SCHEMA.into(),
             protocol_version: PROTOCOL_VERSION,

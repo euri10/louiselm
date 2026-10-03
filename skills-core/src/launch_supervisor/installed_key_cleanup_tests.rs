@@ -28,6 +28,7 @@ fn advance(
                 assigned_uid: auth.assigned_uid,
                 assigned_gid: auth.assigned_gid,
                 tool_isolation_digest: Digest::of(b"isolation").to_string(),
+                sender_guard_required: false,
             },
         },
         SessionState::Running => ReceiptOutcome::Resume { authorization },

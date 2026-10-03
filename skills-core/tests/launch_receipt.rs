@@ -30,7 +30,22 @@ fn start_evidence() -> StartEvidence {
         assigned_uid: 2_000_000,
         assigned_gid: 3_000_000,
         tool_isolation_digest: digest("fixture-tool-isolation"),
+        sender_guard_required: false,
     }
+}
+
+#[test]
+fn start_evidence_requires_an_authenticated_guard_startup_fact() {
+    let mut value = serde_json::to_value(start_evidence()).unwrap();
+    assert_eq!(value["sender_guard_required"], false);
+    value["sender_guard_required"] = serde_json::json!(true);
+    let guarded: StartEvidence = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(guarded).unwrap(), value);
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("sender_guard_required");
+    assert!(serde_json::from_value::<StartEvidence>(value).is_err());
 }
 
 fn authorization(request_id: &str) -> Authorization {
@@ -50,6 +65,7 @@ fn launch_authorization(request_id: &str) -> Authorization {
 
 fn launch_evidence() -> LaunchEvidence {
     LaunchEvidence {
+        role: louiselm_skills::launch_protocol::LaunchRole::Agent,
         conformance: ConformanceEvidence::Unevaluated,
         launch_request_digest: digest("launch-request"),
         runtime_measurement_digest: digest("runtime"),
@@ -217,7 +233,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(payload_bytes.clone()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/5\",",
+                "{{\"schema\":\"louiselm.launch.receipt/6\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-0\",\"envelope_revision\":3,",
                 "\"sequence\":0,\"previous_receipt_digest\":null,",
@@ -225,6 +241,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
                 "\"outcome\":{{\"action\":\"launch\",\"authorization\":{{",
                 "\"authorization_id\":\"authorization-1\",\"request_id\":\"request-0\",",
                 "\"request_digest\":\"{}\"}},\"evidence\":{{",
+                "\"role\":\"agent\",",
                 "\"conformance\":{{\"status\":\"unevaluated\"}},",
                 "\"launch_request_digest\":\"{}\",",
                 "\"runtime_measurement_digest\":\"{}\",",
@@ -270,7 +287,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(start.payload.canonical_bytes()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/5\",",
+                "{{\"schema\":\"louiselm.launch.receipt/6\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-start\",\"envelope_revision\":3,",
                 "\"sequence\":1,\"previous_receipt_digest\":\"{}\",",
@@ -278,7 +295,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
                 "\"outcome\":{{\"action\":\"start\",\"authority\":{{",
                 "\"kind\":\"cause\",\"cause\":\"launch_acknowledged\"}},",
                 "\"evidence\":{{\"agent_pid\":123,\"assigned_uid\":2000000,\"assigned_gid\":3000000,",
-                "\"tool_isolation_digest\":\"{}\"}}}},",
+                "\"tool_isolation_digest\":\"{}\",\"sender_guard_required\":false}}}},",
                 "\"resulting_state\":\"running\"}}"
             ),
             chain()[0].digest(),
@@ -328,7 +345,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
 
 #[test]
 fn launch_evidence_binds_the_exact_broker_loss_grace() {
-    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/5");
+    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/6");
     assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
 
     let maximum = chain().remove(0).payload;

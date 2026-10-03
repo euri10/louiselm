@@ -384,6 +384,7 @@ struct ChannelCore {
     control: OwnedFd,
     pin: CredentialPin,
     peer_credentials: KernelCredentials,
+    authenticated_sender: Mutex<Option<KernelCredentials>>,
     closed: AtomicBool,
     completion_gate: Mutex<()>,
     send_commands: Mutex<Option<SyncSender<SendCommand>>>,
@@ -475,6 +476,7 @@ impl SeqpacketChannel {
             control: fd,
             pin,
             peer_credentials,
+            authenticated_sender: Mutex::new(None),
             closed: AtomicBool::new(false),
             completion_gate: Mutex::new(()),
             send_commands: Mutex::new(Some(send_commands)),
@@ -507,6 +509,21 @@ impl SeqpacketChannel {
     #[must_use]
     pub fn peer_credentials(&self) -> KernelCredentials {
         self.inner.core.peer_credentials
+    }
+
+    /// Last sender accepted by both the message credential pin and packet decoder.
+    ///
+    /// A service-manager listener's `SO_PEERCRED` is not the service's process
+    /// identity. This is absent before a validated receive or after closure;
+    /// forged or malformed packets never supply it. It is an observation, not
+    /// a lifetime pin: a consumer retaining authority must pin that process.
+    #[must_use]
+    pub fn authenticated_sender(&self) -> Option<KernelCredentials> {
+        if self.is_closed() {
+            None
+        } else {
+            *lock(&self.inner.core.authenticated_sender)
+        }
     }
 
     /// Queues one exact packet for validation and atomic sending.
@@ -762,6 +779,9 @@ fn receive_loop(fd: OwnedFd, commands: Receiver<ReceiveCommand>, core: Arc<Chann
         let closed = match command {
             ReceiveCommand::Packet(completion) => {
                 let result = receive_one(&fd, &core.pin, core.peer_credentials);
+                if let Ok(packet) = &result {
+                    *lock(&core.authenticated_sender) = Some(packet.message_credentials);
+                }
                 let fatal = result.is_err();
                 core.finish(completion, result, fatal)
             }

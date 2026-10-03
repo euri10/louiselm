@@ -41,9 +41,10 @@ reference. An unselected history file is ignored. Review the preview's
 The command does not print selected file contents.
 
 `acceptance.reference_checks` pin source-backed answer text and citations;
-`acceptance.commands` hold argv arrays for tests that a future isolated runner
+`acceptance.commands` hold argv arrays for tests that the explicit isolated runner
 may execute; `acceptance.human_review` records the rubric needed before a
 reasoning case can count as quality evidence. Preview never evaluates any of
 them. `launch: blocked` lists the unproven containment and runtime properties.
-The follow-up runner must establish those properties, revalidate the manifest
-and selected bytes at launch, and obtain explicit bounded operator authority.
+The [explicit paired runner](https://github.com/euri10/louiselm/blob/main/docs/workflows/qualification-run.md)
+describes those requirements, upfront Run approval and verifier preflight.
+A preview establishes none of those properties and does not authorize execution.

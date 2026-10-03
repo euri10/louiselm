@@ -9,6 +9,38 @@ use louiselm_skills::launch_protocol::{
     CONTROLLER_LOSS_SETTLEMENT_SCHEMA, ControllerLossSettlement, RecoveryRequest,
 };
 
+#[test]
+fn fixed_verifier_cannot_reconstruct_into_an_agent_role() {
+    let root = TempDir::new().unwrap();
+    let source = request("fixed-verifier");
+    let mut approval = grant(&source);
+    approval.role = louiselm_skills::launch_protocol::LaunchRole::FixedVerifier;
+    approval.commands = None;
+    let store = AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap();
+    store.authorize(&approval, 1000).unwrap();
+    store.consume(&source, CONTROLLER_UID, 2000).unwrap();
+    let service = super::verification::reopen(root.path(), "broker.sock");
+    assert!(matches!(
+        service.authorize_cold_resume(
+            "fixed-verifier",
+            &request("replacement"),
+            &LifecycleCaller::Operator {
+                uid: CONTROLLER_UID
+            },
+            3000,
+            verify_fixture_signature,
+        ),
+        Err(BrokerError::InvalidGrant)
+    ));
+    assert_eq!(store.session_count_for_run(&source.run_id).unwrap(), 1);
+    assert!(
+        !root
+            .path()
+            .join("authorizations/cold-resume/allocation-fixed-verifier.json")
+            .exists()
+    );
+}
+
 fn dispose_source(
     service: &BrokerService,
     session: &mut BrokerSession,

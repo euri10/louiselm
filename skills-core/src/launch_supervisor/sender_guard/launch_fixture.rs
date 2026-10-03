@@ -60,6 +60,7 @@ pub(super) fn launch(channel: &SeqpacketChannel, setup: &Value) -> Option<Superv
                 request_digest: authorization.request_digest.clone(),
             },
             evidence: Box::new(LaunchEvidence {
+                role: crate::launch_protocol::LaunchRole::Agent,
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: authorization.request_digest.clone(),
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
@@ -91,6 +92,7 @@ pub(super) fn launch(channel: &SeqpacketChannel, setup: &Value) -> Option<Superv
             assigned_uid: authorization.assigned_uid,
             assigned_gid: authorization.assigned_gid,
             tool_isolation_digest: Digest::of(b"fixture-tool-isolation").to_string(),
+            sender_guard_required: true,
         },
         authority: ReceiptAuthority::Cause {
             cause: ReceiptCause::LaunchAcknowledged,

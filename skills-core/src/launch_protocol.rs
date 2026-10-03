@@ -84,7 +84,7 @@ pub const STATUS_REQUEST_SCHEMA: &str = "louiselm.launch.status-request/1";
 pub const RECEIPT_ACK_SCHEMA: &str = "louiselm.launch.receipt-ack/2";
 
 /// Schema for a broker-consumed single-use launch authorization.
-pub const LAUNCH_AUTHORIZATION_SCHEMA: &str = "louiselm.launch.authorization/3";
+pub const LAUNCH_AUTHORIZATION_SCHEMA: &str = "louiselm.launch.authorization/4";
 
 /// Schema for exact receipt-head exchange during authenticated broker reattachment.
 pub const BROKER_RECONNECT_SCHEMA: &str = "louiselm.launch.broker-reconnect/1";
@@ -925,6 +925,16 @@ impl ReceiptAcknowledgement {
     }
 }
 
+/// The explicitly approved authority role of one Session launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchRole {
+    /// Ordinary Agent authority; the registered network policy remains unchanged.
+    Agent,
+    /// A fresh fixed-plan verifier with denied network and no effect grants.
+    FixedVerifier,
+}
+
 /// A pending launch authorization atomically consumed by the Control broker.
 ///
 /// The broker returns this record at most once. The record binds its identity
@@ -933,6 +943,8 @@ impl ReceiptAcknowledgement {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchAuthorization {
+    /// Broker-approved role, included in the signed launch receipt.
+    pub role: LaunchRole,
     /// Authenticated attendance and exact waiver; protected install policy owns activation.
     pub conformance: ConformanceAuthorization,
     /// Authorization schema.
@@ -992,6 +1004,7 @@ impl LaunchAuthorization {
             || self.assigned_uid == 0
             || self.assigned_gid == 0
             || self.provider_expires_at_ms == Some(0)
+            || (self.role == LaunchRole::FixedVerifier && self.provider_expires_at_ms.is_some())
             || self.expires_at_ms == 0
             || self.broker_loss_grace_ms > MAX_BROKER_LOSS_GRACE_MS
         {

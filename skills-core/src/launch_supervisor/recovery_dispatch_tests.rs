@@ -37,6 +37,7 @@ fn parked() -> (Harness, RecoveryRequest) {
             request_digest: launch.digest().to_string(),
         },
         evidence: Box::new(LaunchEvidence {
+            role: crate::launch_protocol::LaunchRole::Agent,
             conformance: ConformanceEvidence::Certified {
                 report_digest: crate::Digest::of(b"observations").to_string(),
             },

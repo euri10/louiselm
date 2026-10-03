@@ -214,7 +214,7 @@ a fallback to ordinary launch. The policy is itself measured: a certificate for
 the pre-cutover configuration cannot certify a subsequently enforced one.
 Do not enable enforcement as part of a routine refresh or test on the desktop.
 
-The broker's authenticated `louiselm.launch.authorization/3` carries explicit
+The broker's authenticated `louiselm.launch.authorization/4` carries explicit
 attendance and any already-approved waiver. A waiver binds the exact Session,
 request digest (including Run, authorization and envelope revision), operator
 UID, condition, exclusive expiry and durable waiver-receipt digest. Unattended,

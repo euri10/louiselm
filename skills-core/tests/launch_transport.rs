@@ -115,6 +115,7 @@ fn signed_receipt() -> SignedReceipt {
                 request_digest: launch_digest.clone(),
             },
             evidence: Box::new(LaunchEvidence {
+                role: louiselm_skills::launch_protocol::LaunchRole::Agent,
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: launch_digest,
                 runtime_measurement_digest: digest("runtime"),
@@ -607,6 +608,7 @@ fn broker_identity_and_per_message_process_pins_fail_closed() {
 fn peer_and_per_message_credentials_are_independent_kernel_observations() {
     let parent = current_credentials();
     let connection = raw_connection(identity_pin());
+    assert_eq!(connection.server.authenticated_sender(), None);
     let bytes = status_bytes("delegated-sender");
     let mut child = spawn_inherited_sender(&connection.peer, &bytes);
     let child_pid = child.id();
@@ -622,12 +624,18 @@ fn peer_and_per_message_credentials_are_independent_kernel_observations() {
     assert_eq!(packet.message_credentials.pid, child_pid);
     assert_eq!(packet.message_credentials.uid, parent.uid);
     assert_eq!(packet.message_credentials.gid, parent.gid);
+    assert_eq!(
+        connection.server.authenticated_sender(),
+        Some(packet.message_credentials)
+    );
     assert_ne!(
         packet.peer_credentials.pid, packet.message_credentials.pid,
         "SO_PEERCRED must not be substituted for SCM_CREDENTIALS",
     );
     assert_request(packet, &bytes, "delegated-sender");
     assert!(child.wait().expect("helper exits").success());
+    connection.server.close();
+    assert_eq!(connection.server.authenticated_sender(), None);
 }
 
 #[test]
@@ -652,12 +660,14 @@ fn service_listener_identity_does_not_authorize_its_packets() {
         )
         .unwrap();
     let client = wait(result).unwrap();
+    assert_eq!(client.authenticated_sender(), None);
     let peer = rustix::net::accept(&manager).unwrap();
     raw_send(&peer, &status_bytes("manager-forgery"));
     assert!(
         matches!(receive_packet(&client), Err(TransportError::MessageCredentialsMismatch { expected, .. }) if expected == service)
     );
     assert!(client.is_closed());
+    assert_eq!(client.authenticated_sender(), None);
 
     // Naming a service never authorizes an unrelated listener owner.
     let wrong = CredentialPin::Identity {

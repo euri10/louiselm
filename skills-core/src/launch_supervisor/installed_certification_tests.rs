@@ -209,6 +209,7 @@ fn authorization(config: &LauncherConfig) -> LaunchAuthorization {
     let request = request();
     let request_digest = request.digest().to_string();
     LaunchAuthorization {
+        role: crate::launch_protocol::LaunchRole::Agent,
         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
         schema: LAUNCH_AUTHORIZATION_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,

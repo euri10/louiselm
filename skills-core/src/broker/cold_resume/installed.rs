@@ -28,6 +28,7 @@ impl InstalledBroker {
             .ok_or(BrokerError::UnknownAuthorization)?;
         // Reconstruction drops these capabilities; commands can only shrink.
         let child = GrantRequest {
+            role: crate::launch_protocol::LaunchRole::Agent,
             dependencies: None,
             conformance: ConformanceAuthorization::default(),
             require_cold_recovery: original.require_cold_recovery,

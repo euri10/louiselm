@@ -113,11 +113,12 @@ jobs:
       - run: python3 scripts/test-ecosystem-radar.py
 
   qualification-preview:
-    name: Qualification preview offline contract
+    name: Qualification preview and preparation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/test-qualification-preview.py
+      - run: python3 scripts/test-qualification-run.py
 
   usage-cli:
     name: cargo (usage-cli)
@@ -243,7 +244,7 @@ jobs:
           version: stable
       - name: Run the installed Lua controller gate
         run: |
-          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua scripts/install-broker-beads.py scripts/install-broker-attention.py |
+          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/install-broker-beads.py scripts/install-broker-attention.py |
             ./scripts/launcher-vm exec tar -x -C /home/vm
           rustup toolchain install "$RUST_VERSION" --profile minimal
           cargo +"$RUST_VERSION" build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
@@ -267,6 +268,12 @@ jobs:
                 LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 120 \
                 unshare --mount --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture'\'' bash "$library_test"
             done
+            sudo -n env LOUISELM_REQUIRE_ACTIVATED_GUARD=1 LOUISELM_TEST_LUA_ROOT=/home/vm \
+              LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 180 \
+              unshare --mount --net --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::qualification::privileged_activated_brokered_guard_start --exact --nocapture'\'' bash "$library_test"
+            sudo -n env LOUISELM_REQUIRE_QUALIFICATION=1 LOUISELM_TEST_LUA_ROOT=/home/vm \
+              LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 180 \
+              unshare --mount --net --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::qualification::privileged_installed_lua_qualification --exact --nocapture'\'' bash "$library_test"
           '
       - name: Run the Lua gates inside the offline confined verifier
         run: |

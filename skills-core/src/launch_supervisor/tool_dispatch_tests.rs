@@ -354,6 +354,7 @@ impl Harness {
                         assigned_uid: binding.assigned_uid,
                         assigned_gid: binding.assigned_gid,
                         tool_isolation_digest: Digest::of(b"fixture-tool-isolation").to_string(),
+                        sender_guard_required: false,
                     },
                     authority: ReceiptAuthority::Cause {
                         cause: ReceiptCause::LaunchAcknowledged,

@@ -278,6 +278,7 @@ fn signed_record(
                 request_digest: request.digest().to_string(),
             },
             evidence: Box::new(LaunchEvidence {
+                role: louiselm_skills::launch_protocol::LaunchRole::Agent,
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: request.digest().to_string(),
                 runtime_measurement_digest: digest(&serde_json::to_vec(&manifest.runtime).unwrap()),

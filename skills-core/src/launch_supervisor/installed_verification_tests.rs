@@ -4,8 +4,8 @@ use super::*;
 use crate::{
     broker::{BrokerSession, lifecycle::LifecycleCaller, verification::VerificationStatus},
     launch_protocol::{
-        LIFECYCLE_REQUEST_SCHEMA, LifecycleAction, LifecycleRequest, VERIFICATION_SCHEMA,
-        VerificationOperation, VerificationRequest, VerificationStep,
+        LIFECYCLE_REQUEST_SCHEMA, LaunchRole, LifecycleAction, LifecycleRequest,
+        VERIFICATION_SCHEMA, VerificationOperation, VerificationRequest, VerificationStep,
     },
     launch_receipt::SessionState,
 };
@@ -229,8 +229,14 @@ fn lifecycle(
     }
 }
 
-fn approval(launch: LaunchRequest, uid: u32, commands: Option<ApprovedCommands>) -> GrantRequest {
+fn approval(
+    role: LaunchRole,
+    launch: LaunchRequest,
+    uid: u32,
+    commands: Option<ApprovedCommands>,
+) -> GrantRequest {
     GrantRequest {
+        role,
         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
         dependencies: None,
         skill_requests: None,
@@ -287,6 +293,7 @@ fn installed_verification_worker() {
     };
     let now = clock_ms();
     let grant = approval(
+        LaunchRole::Agent,
         request(),
         config.operator_uid,
         Some(ApprovedCommands {
@@ -402,7 +409,7 @@ fn run_job(
     };
     write_json(
         &operator_root.join("operator-api/verifier-grant.json"),
-        &approval(launch.clone(), *uid, None),
+        &approval(LaunchRole::FixedVerifier, launch.clone(), *uid, None),
     );
     println!("VERIFIER_AUTH_READY_{index}");
     wait_for_operator(operator_root, "operator-verifier-approved");
@@ -782,7 +789,12 @@ fn privileged_verification_case(index: usize) {
         authorize_child(
             root.path(),
             config.operator_uid,
-            &approval(verifier_launch(index + 10), config.operator_uid, None),
+            &approval(
+                LaunchRole::FixedVerifier,
+                verifier_launch(index + 10),
+                config.operator_uid,
+                None,
+            ),
             &run.envelope_digest
         )
         .is_err(),

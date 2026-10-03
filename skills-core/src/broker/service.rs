@@ -64,6 +64,7 @@ pub struct BrokerSession {
     pub(in crate::broker) provider_work: super::provider_worker::ProviderWork,
     pub(in crate::broker) provider_listener: Option<super::provider_listener::ProviderListener>,
     pub(in crate::broker) provider_revision: Option<u64>,
+    pub(in crate::broker) initial_guard_pending: bool,
     pub(in crate::broker) provider_sockets:
         std::collections::BTreeMap<u64, std::sync::Weak<super::provider_socket::SocketLease>>,
     pub(in crate::broker) posture_evidence: super::posture::LaunchPostureEvidence,
@@ -738,6 +739,7 @@ impl BrokerService {
             provider_work: super::provider_worker::ProviderWork::default(),
             provider_listener: None,
             provider_revision: None,
+            initial_guard_pending: evidence.sender_guard_required,
             provider_sockets: std::collections::BTreeMap::new(),
             posture_evidence,
             require_cold_recovery: pending.require_cold_recovery,

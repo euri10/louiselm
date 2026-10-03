@@ -22,7 +22,7 @@ use crate::{
     },
     launch::{LaunchRequest, PROTOCOL_VERSION},
     launch_protocol::{
-        IdentityExhaustion, LAUNCH_AUTHORIZATION_SCHEMA, LaunchAuthorization,
+        IdentityExhaustion, LAUNCH_AUTHORIZATION_SCHEMA, LaunchAuthorization, LaunchRole,
         OccupiedSessionIdentity,
     },
     launch_receipt::SessionState,
@@ -82,6 +82,8 @@ impl ApprovedCommands {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GrantRequest {
+    /// Explicit role selected by the trusted controller under its Run approval.
+    pub role: LaunchRole,
     /// Exact dependency scope approved before Run start; omission denies fetching.
     pub dependencies: Option<crate::dependency_fetch::ApprovedDependencies>,
     /// Attendance and any exact waiver already approved by the trusted controller.
@@ -110,6 +112,8 @@ pub struct GrantRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingAuthorization {
+    /// Exact operator-approved role; restart cannot broaden it.
+    pub role: LaunchRole,
     /// Exact immutable lockfile and dependency scope fixed by the trusted controller.
     pub dependencies: Option<crate::dependency_fetch::ApprovedDependencies>,
     /// Exact approved conformance policy; replay and restart never renew a waiver.
@@ -163,6 +167,7 @@ struct ConsumedAuthorization {
 impl PendingAuthorization {
     pub(super) fn launch_authorization(&self) -> LaunchAuthorization {
         LaunchAuthorization {
+            role: self.role,
             conformance: self.conformance.clone(),
             schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
             protocol_version: PROTOCOL_VERSION,
@@ -256,6 +261,9 @@ impl AuthorizationStore {
         grant: &GrantRequest,
         now_ms: u64,
     ) -> Result<PendingAuthorization, BrokerError> {
+        if grant.role == LaunchRole::FixedVerifier {
+            return Err(BrokerError::InvalidGrant);
+        }
         let name = record_name(&grant.request.authorization_id)?;
         let pending_path = self.pending_path(&name);
         let consumed_path = self.consumed_path(&name);
@@ -269,6 +277,7 @@ impl AuthorizationStore {
             if prior.request_digest != grant.request.digest().to_string()
                 || prior.conformance != grant.conformance
                 || prior.controller_uid != grant.controller_uid
+                || prior.role != grant.role
                 || prior.commands != grant.commands
                 || prior.skill_requests != grant.skill_requests
                 || prior.dependencies != grant.dependencies
@@ -336,6 +345,16 @@ impl AuthorizationStore {
             .request
             .validate()
             .map_err(|_| BrokerError::InvalidGrant)?;
+        if grant.role == LaunchRole::FixedVerifier
+            && (grant.require_cold_recovery
+                || grant.commands.is_some()
+                || grant.dependencies.is_some()
+                || grant.skill_requests.is_some()
+                || grant.beads_mutations.is_some()
+                || grant.provider_requests.is_some())
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
         if grant.expires_at_ms <= now_ms || grant.controller_uid == 0 {
             return Err(BrokerError::InvalidGrant);
         }
@@ -387,6 +406,7 @@ impl AuthorizationStore {
         }
         let identity = self.assign_identity(now_ms)?;
         let pending = PendingAuthorization {
+            role: grant.role,
             dependencies: grant.dependencies.clone(),
             conformance: grant.conformance.clone(),
             require_cold_recovery: grant.require_cold_recovery,

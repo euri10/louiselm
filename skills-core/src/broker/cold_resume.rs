@@ -58,6 +58,7 @@ pub struct ColdResumeAllocation {
 impl ColdResumeAllocation {
     fn grant(&self) -> GrantRequest {
         GrantRequest {
+            role: crate::launch_protocol::LaunchRole::Agent,
             // Reconstruction is fresh authority, never an inherited Session waiver.
             conformance: crate::launch_protocol::ConformanceAuthorization::default(),
             require_cold_recovery: self.require_cold_recovery,
@@ -99,6 +100,9 @@ impl BrokerService {
             .consumed_for_session(source_id)?
             .ok_or(BrokerError::UnknownAuthorization)?;
         check_operator(caller, original.controller_uid)?;
+        if original.role == crate::launch_protocol::LaunchRole::FixedVerifier {
+            return Err(BrokerError::InvalidGrant);
+        }
         let source = self.cold_source(source_id, now_ms, &mut verify)?;
         let expires_at_ms = original.expires_at_ms.min(source.request.expires_at_ms);
         if now_ms >= expires_at_ms {

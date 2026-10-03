@@ -156,7 +156,7 @@ impl SenderGuard {
             scope: self.scope.clone(),
             guard_id: self.pins.id()?,
             runtime_pid: self.runtime_pid,
-            broker_pid: self.broker.peer_credentials().pid,
+            broker_pid: self.broker_credentials.pid,
             address: endpoint
                 .listener
                 .local_addr()
@@ -283,7 +283,7 @@ impl SenderGuard {
         if accepted.request_id != request_id
             || accepted.result != *expected
             || packet.descriptors.is_some()
-            || packet.message_credentials != self.broker.peer_credentials()
+            || packet.message_credentials != self.broker_credentials
         {
             return Err(GuardError::Authority);
         }

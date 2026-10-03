@@ -107,6 +107,8 @@ T["prepares exact HEAD and fresh scoped worker/verifier grants"] = function()
   MiniTest.expect.equality(f.prepared.grant.beads_mutations.role, "worker")
   MiniTest.expect.equality(f.prepared.grant.provider_requests, f.selection.envelope.provider_requests)
   MiniTest.expect.equality(f.prepared.verification.verifier_grant.provider_requests, nvim.NIL)
+  MiniTest.expect.equality(f.prepared.grant.role, "agent")
+  MiniTest.expect.equality(f.prepared.verification.verifier_grant.role, "fixed_verifier")
   local first = f.prepared.grant.request.session_id
   local head = string.rep("b", 40)
   local snapshot = "sha256:" .. string.rep("b", 64)

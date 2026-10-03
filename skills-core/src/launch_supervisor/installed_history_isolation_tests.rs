@@ -45,6 +45,7 @@ fn installed_history_inspector() {
             authorizations
                 .authorize(
                     &GrantRequest {
+                        role: crate::launch_protocol::LaunchRole::Agent,
                         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
                         dependencies: None,
                         skill_requests: None,

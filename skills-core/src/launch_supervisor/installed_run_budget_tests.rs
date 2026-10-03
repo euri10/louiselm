@@ -26,10 +26,17 @@ fn permission(now: u64, port: u16) -> crate::provider_request::ApprovedProviderR
 }
 
 fn child_grant(launch: LaunchRequest, uid: u32, now: u64, port: u16) -> GrantRequest {
-    let mut grant = approval(launch, uid, None);
+    let mut grant = approval(LaunchRole::Agent, launch, uid, None);
     grant.expires_at_ms = now + 120_000;
     grant.provider_requests = Some(permission(now, port));
     grant
+}
+
+#[test]
+fn budget_children_are_workers_even_with_reused_session_names() {
+    let grant = child_grant(verifier_launch(0), 1000, clock_ms(), 443);
+    assert_eq!(grant.role, crate::launch_protocol::LaunchRole::Agent);
+    assert!(grant.provider_requests.is_some());
 }
 
 fn drive_until(broker: &Arc<InstalledBroker>, session: &mut BrokerSession, done: &Path) {

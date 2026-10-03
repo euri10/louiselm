@@ -13,6 +13,7 @@ use crate::{
 
 fn authorization() -> LaunchAuthorization {
     LaunchAuthorization {
+        role: crate::launch_protocol::LaunchRole::Agent,
         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
         schema: crate::launch_protocol::LAUNCH_AUTHORIZATION_SCHEMA.into(),
         protocol_version: crate::launch::PROTOCOL_VERSION,

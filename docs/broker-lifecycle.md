@@ -40,6 +40,16 @@ One Control broker serves exactly one operator identity, enforced by
 instances, identities, sockets and state; a
 partitioned multi-operator broker is not supported.
 
+Every launch grant explicitly names `agent` or `fixed_verifier`. The broker
+persists that role across restart and returns it under authorization schema 4;
+the launcher binds it into signed sequence-zero evidence. A fixed verifier
+attenuates the registered network policy to Denied and cannot receive Provider,
+Beads, dependency, Skill-request, arbitrary-command or cold-recovery authority.
+Ordinary Agents keep their registered policy: missing Provider authority never
+silently converts a Brokered worker into a verifier. Fixed execution additionally
+requires the approved Run plan, a distinct identity and one-use export/job binding.
+It cannot be reconstructed into ordinary Agent authority by cold Resume.
+
 The daemon separates `accept_connection` from `serve_accepted`: each accepted
 supervisor gets its own handshake and continuing `step` worker. A silent or
 invalid peer cannot hold up another Session's launch. Handshake and operation

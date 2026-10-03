@@ -172,6 +172,19 @@ The curated qualification preview uses the Python standard-library gate
 pinned synthetic snapshots, disclosure selection and read-only preview behavior.
 It does not certify containment or authorize a paid Model run. CI runs this gate.
 
+Qualification execution additionally runs `python3 scripts/test-qualification-run.py`
+and the complete Lua suite. CI requires both installed
+`privileged_activated_brokered_guard_start` and `privileged_installed_lua_qualification`
+gates in the disposable launcher VM, with private mount/network namespaces and
+four real contained Lua Sessions. Both fixed verifiers initialize under denied
+network before guarded workers. The narrower gate advertises no Model options and
+sends no prompts; the paired gate explicitly selects synthetic ACP options, checks
+six turn identities, frozen-job execution, selected-source/ambient isolation,
+distinct identities and authenticated terminal cleanup. Human judgment and
+unavailable usage remain pending. These gates certify neither vendor offline
+initialization nor a paid comparison or desktop deployment. The installed exact-
+job and Run-budget gates separately prove one-use verification and shared counting.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is

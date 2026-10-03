@@ -401,6 +401,7 @@ fn check_authorized(
         && (claimed.authorization_id != authorization.authorization_id
             || claimed.request_id != authorization.request_id
             || claimed.request_digest != authorization.request_digest
+            || evidence.role != authorization.role
             || evidence.launch_request_digest != authorization.request_digest
             || evidence.broker_loss_grace_ms != authorization.broker_loss_grace_ms)
     {
@@ -408,7 +409,9 @@ fn check_authorized(
     }
     if let ReceiptOutcome::Start { evidence, .. } = &payload.outcome
         && (evidence.assigned_uid != authorization.assigned_uid
-            || evidence.assigned_gid != authorization.assigned_gid)
+            || evidence.assigned_gid != authorization.assigned_gid
+            || (authorization.role == crate::launch_protocol::LaunchRole::FixedVerifier
+                && evidence.sender_guard_required))
     {
         return Err(BrokerError::ReceiptUnauthorized);
     }

@@ -161,6 +161,7 @@ pub struct SenderGuard {
     maps: BTreeMap<String, MapHandle>,
     scope: GuardScope,
     broker: SeqpacketChannel,
+    broker_credentials: crate::launch_transport::KernelCredentials,
     broker_pin: OwnedFd,
     enrolled: bool,
     // Announced for a descendant sender that is not enrolled yet.
@@ -193,7 +194,7 @@ impl SenderGuard {
         channel: SeqpacketChannel,
         timeout: Duration,
     ) -> Result<(), GuardError> {
-        if channel.is_closed() || channel.peer_credentials() != self.broker.peer_credentials() {
+        if broker_identity(&channel)? != self.broker_credentials {
             return Err(GuardError::Authority);
         }
         self.broker = channel;
@@ -259,10 +260,7 @@ impl SenderGuard {
     /// Refuses invalid scope, a lost/root broker, or missing enforcement support.
     pub fn load(scope: GuardScope, broker: SeqpacketChannel) -> Result<Self, GuardError> {
         validate_scope(&scope)?;
-        let credentials = broker.peer_credentials();
-        if credentials.uid == 0 || broker.is_closed() {
-            return Err(GuardError::Authority);
-        }
+        let credentials = broker_identity(&broker)?;
         let broker_pin = pidfd_open(
             Pid::from_raw(i32::try_from(credentials.pid).map_err(|_| GuardError::Authority)?)
                 .ok_or(GuardError::Authority)?,
@@ -331,6 +329,7 @@ impl SenderGuard {
             pins,
             scope,
             broker,
+            broker_credentials: credentials,
             broker_pin,
             endpoint: None,
             enrolled: false,
@@ -686,6 +685,18 @@ fn validate_scope(scope: &GuardScope) -> Result<(), GuardError> {
         return Err(GuardError::Authority);
     }
     Ok(())
+}
+
+fn broker_identity(
+    channel: &SeqpacketChannel,
+) -> Result<crate::launch_transport::KernelCredentials, GuardError> {
+    let credentials = channel
+        .authenticated_sender()
+        .unwrap_or_else(|| channel.peer_credentials());
+    if channel.is_closed() || credentials.uid == 0 {
+        return Err(GuardError::Authority);
+    }
+    Ok(credentials)
 }
 
 fn namespace_id(namespace: &File) -> Result<u32, GuardError> {
