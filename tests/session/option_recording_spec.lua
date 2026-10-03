@@ -84,6 +84,8 @@ local function flush()
 end
 
 local function query(sql)
+  -- Session readiness can precede queued recording writes.
+  MiniTest.expect.equality(flush(), nil)
   local result = original_system({ "sqlite3", "-json", directory .. "/turns.sqlite3", sql }, { text = true }):wait()
   assert(result.code == 0, result.stderr)
   return result.stdout == "" and {} or nvim.json.decode(result.stdout)

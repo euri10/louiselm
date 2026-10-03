@@ -231,6 +231,9 @@ jobs:
             done
             sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 timeout 120 unshare --net -- \
               /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::budget::privileged_installed_run_budget --exact --nocapture'\'' bash "$library_test"
+            # Exact-job execution requires the trusted verifier provisioned in this guest.
+            sudo -n env LOUISELM_REQUIRE_BROKER_LAUNCH=1 timeout 300 \
+              /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture'\'' bash "$library_test"
             sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain timeout 90 unshare --net -- \
               /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_completes_prompt --exact --nocapture'\'' bash "$library_test"
             LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain "$library_test" launch_supervisor::system::installed_tests::codex_chain::stock_runtime_rejects_a_wrong_registered_hash --exact
@@ -772,8 +775,6 @@ jobs:
           done
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success --exact --nocapture' bash "$library_test"
-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
-            timeout 300 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture' bash "$library_test"
           # Debian 13 exercises the full installed certifier. Other runner
           # profiles must explicitly refuse it, never issue a guest-derived pass.
           sudo env LOUISELM_REQUIRE_CERTIFICATION=1 \
