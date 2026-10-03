@@ -38,6 +38,7 @@ local nvim = vim
 ---@field auto_mode? "auto"|"manual" Durable Session authority; absent for ordinary Sessions without routing preferences.
 ---@field auto_available? boolean Whether this Agent configures a baseline for explicit return to Auto.
 ---@field manual_pair? { model?: string|boolean, effort?: string|boolean } Whole effective pair protected after an operator option change.
+---@field routing_recovery? louiselm.session.RoutingRecovery Next authorized continuation uses baseline in Auto; retained until a continuation completes.
 ---@field context? louiselm.session.ContextUsage Latest agent-reported context state.
 ---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
@@ -267,6 +268,9 @@ end
 ---@type fun(self: louiselm.session.Session, result: "dispatched"|"not_sent"|"cancelled"|"uncertain", reason?: string)
 local settle_admission
 
+---@type fun(self: louiselm.session.Session, reason: "not_sent"|"turn_failed"|"delivery_unknown")
+local recover_economical
+
 ---@param self louiselm.session.Session
 ---@return boolean cleared
 local function clear_session_failure(self)
@@ -306,6 +310,11 @@ local function fail(self, message, peer_response)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
+  local turn = self.recording_turn
+  recover_economical(
+    self,
+    turn ~= nil and turn.dispatched and (peer_response and "turn_failed" or "delivery_unknown") or "not_sent"
+  )
   if self.admission ~= nil and not self.admission.settled then
     settle_admission(
       self,
@@ -330,7 +339,11 @@ local function fail(self, message, peer_response)
   end
   local prompt_callback = self.prompt_callback
   self.prompt_callback = nil
-  emit(self, "error", { message = message })
+  emit(
+    self,
+    "error",
+    { message = message, recovery = nvim.deepcopy(self.state.routing_recovery), can_continue = false }
+  )
   if prompt_callback ~= nil then
     prompt_callback(nil, message)
   end
@@ -369,9 +382,11 @@ local function complete_turn(self, result, turn_error)
   if self.turn_done_turn ~= self.state.current_turn then
     self.turn_done_turn = self.state.current_turn
     if turn_error ~= nil then
-      -- Clear queued UI work before ready can release it. This is a failed
-      -- turn, not a broken transport; keep its diagnostic for an explicit retry.
-      emit(self, "error", { message = turn_error })
+      emit(self, "error", {
+        message = turn_error,
+        recovery = nvim.deepcopy(self.state.routing_recovery),
+        can_continue = self.state.routing_recovery ~= nil,
+      })
       if self.state.status == "disposed" or self.state.status == "error" then
         return
       end
@@ -395,6 +410,7 @@ end
 ---@param self louiselm.session.Session
 ---@param message string Sanitized admission error.
 local function reject_prompt(self, message, reason)
+  recover_economical(self, "not_sent")
   record_observation(self, "outcome", { outcome = "not_sent", peer_response = false })
   local admission = self.admission
   if admission ~= nil and not admission.settled then
@@ -917,13 +933,31 @@ local function save_routing(self, callback)
     callback("Session routing preferences require an ACP Session identity")
     return
   end
-  local preference = { mode = self.state.auto_mode, pair = self.state.manual_pair }
+  local preference =
+    { mode = self.state.auto_mode, pair = self.state.manual_pair, recovery = self.state.routing_recovery }
   ---@cast preference louiselm.session.RoutingPreference -- Callers own a routing mode before saving it.
   self.owner.recording:save_routing_preference(self.state.agent, self.acp_session_id, preference, function(err)
     if self.state.status == "disposed" or self.state.status == "error" then
       return
     end
     callback(err and "could not save Session routing preference: " .. err.message or nil)
+  end)
+end
+
+recover_economical = function(self, reason)
+  local admission, turn = self.admission, self.recording_turn
+  if admission == nil or admission.decision.reason ~= "qualified" or (turn ~= nil and turn.finished) then
+    return
+  end
+  local recovery = self.state.routing_recovery
+  if recovery ~= nil then
+    return
+  end
+  self.state.routing_recovery = { turn_id = admission.id, reason = reason }
+  save_routing(self, function(err)
+    if err ~= nil then
+      fail(self, err)
+    end
   end)
 end
 
@@ -1051,6 +1085,7 @@ local function initialize_routing(self, ready)
           end
           self.state.auto_mode = preference.mode
           self.state.manual_pair = nvim.deepcopy(preference.pair)
+          self.state.routing_recovery = nvim.deepcopy(preference.recovery)
           if preference.mode == "manual" then
             ---@cast preference { mode: "manual", pair: { model?: string|boolean, effort?: string|boolean } }
             restore_manual_pair(self, preference.pair, ready)
@@ -1243,6 +1278,16 @@ local function handle_prompt_result(self, result, rpc_error)
     turn_error = "Codex agent reported a system error for this turn"
   end
   self.state.usage = usage
+  if turn_error ~= nil then
+    recover_economical(self, "turn_failed")
+  elseif result.stopReason ~= "cancelled" and self.admission ~= nil and self.admission.decision.recovery ~= nil then
+    self.state.routing_recovery = nil
+    save_routing(self, function(err)
+      if err ~= nil then
+        fail(self, err)
+      end
+    end)
+  end
   record_observation(self, "outcome", {
     outcome = turn_error ~= nil and "failed" or (result.stopReason == "cancelled" and "cancelled" or "completed"),
     peer_response = true,
@@ -1787,6 +1832,10 @@ local function select_auto(self, metadata, callback)
   local function fallback(reason)
     callback({ reason = "baseline", requested = baseline, baseline = baseline, fallback_reason = reason })
   end
+  if self.state.routing_recovery ~= nil then
+    fallback("economical_failure")
+    return
+  end
   local scope, reason =
     Routing.scope({ agent = self.state.agent, definition = definition, options = options, metadata = metadata })
   if scope == nil then
@@ -1901,6 +1950,7 @@ function Session:prompt(prompt, callback, correlation)
     reason = origin == "auto" and "baseline" or (origin == "helper" and "parent_correlation" or "current_pair"),
     requested = requested,
     parent_turn_id = correlation and correlation.parent_turn_id or nil,
+    recovery = nvim.deepcopy(self.state.routing_recovery),
     selection = auto and {
       reason = "baseline",
       requested = requested,

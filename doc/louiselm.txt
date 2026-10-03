@@ -168,8 +168,15 @@ Workflow                                                   *louiselm-workflow*
   and comparable approved economics can select the candidate. Unknown evidence
   keeps the configured baseline; a manual pin wins. Approval or configuration
   changes during preparation prevent stale dispatch. Admission records retain
-  payload-free selection provenance. See docs/routing-qualification.md for
-  configuration, headless metadata and allowance semantics.
+  payload-free selection provenance. After an economical failure, the next
+  authorized Auto continuation confirms baseline; a later manual pin wins.
+  Recovery survives supported resume until a continuation completes.
+  Separately queued follow-ups may continue on a safe idle Session; failed
+  prompts and tools are never replayed automatically. Unavailable baseline or
+  a dead Session retains input for operator action. Failures and completed
+  turns never rewrite qualification approvals. See
+  docs/routing-qualification.md for configuration, headless metadata and
+  allowance semantics.
 
   Session buffers always install these buffer-local Normal-mode motions,
   independently of the global keymaps option:

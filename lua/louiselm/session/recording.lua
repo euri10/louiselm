@@ -52,6 +52,7 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@class louiselm.session.RoutingPreference
 ---@field mode "auto"|"manual"
 ---@field pair? { model?: string|boolean, effort?: string|boolean } Complete confirmed pair; required for manual mode.
+---@field recovery? louiselm.session.RoutingRecovery Pending continuation intent; manual mode retains authority over its pair.
 ---@alias louiselm.session.RoutingPreferenceCallback fun(preference: louiselm.session.RoutingPreference?, error?: louiselm.session.RecordingError)
 ---@class louiselm.session.ReplayUsage
 ---@field id string Durable turn ID; the ordinal is only a presentation association.
@@ -266,6 +267,7 @@ local function record_sql(record)
         or (data.origin == "helper" and (data.reason ~= "parent_correlation" or not nonempty(data.parent_turn_id)))
         or (data.origin == "manual" and (data.reason ~= "current_pair" or data.parent_turn_id ~= nil))
         or (data.parent_turn_id ~= nil and not nonempty(data.parent_turn_id))
+        or (data.recovery ~= nil and not Routing.valid_recovery(data.recovery))
       then
         return nil
       end
@@ -275,6 +277,7 @@ local function record_sql(record)
         requested = pair,
         parent_turn_id = data.parent_turn_id,
         selection = data.selection,
+        recovery = data.recovery,
       }
     else
       local requests_valid = type(data.requests) == "table"
@@ -793,9 +796,12 @@ local function valid_preference(value)
     return false
   end
   for key in pairs(value) do
-    if key ~= "mode" and key ~= "pair" then
+    if key ~= "mode" and key ~= "pair" and key ~= "recovery" then
       return false
     end
+  end
+  if value.recovery ~= nil and not Routing.valid_recovery(value.recovery) then
+    return false
   end
   if value.mode == "auto" then
     return value.pair == nil

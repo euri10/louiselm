@@ -1269,6 +1269,11 @@ local function handle_event(self, view, event, completed_state)
     settle_prompt(self, view, event)
   elseif event.type == "prompt_rejected" then
     view.renderer:append({ "Prompt not sent: " .. event.data.message })
+    if view.session:inspect().routing_recovery ~= nil then
+      view.renderer:append({
+        "Continuation remains a draft; restore the baseline or choose a manual pin, then submit it explicitly.",
+      })
+    end
   elseif event.type == "recording_changed" then
     if event.data.error ~= nil then
       clear_queued_prompt(view)
@@ -1276,10 +1281,23 @@ local function handle_event(self, view, event, completed_state)
     end
   elseif event.type == "error" then
     view.replay_user_open = false
-    clear_queued_prompt(view)
+    local state = view.session:inspect()
+    local can_continue = event.data.can_continue == true and state.status ~= "error" and state.status ~= "disposed"
+    if not can_continue then
+      clear_queued_prompt(view)
+    end
     local message = field(event.data, "message") or "unknown session error"
     view.renderer:error(message)
-    local state = view.session:inspect()
+    if event.data.recovery ~= nil then
+      view.renderer:append({
+        "Economical turn failed; history and workspace changes are retained. The next authorized Auto submission uses baseline; a manual pin remains authoritative.",
+      })
+      if not can_continue then
+        view.renderer:append({
+          "Session cannot continue safely. Restore the Agent and resume this Session, or choose an explicit Handoff; unsent input remains a draft.",
+        })
+      end
+    end
     local run = view.session.owner_run
     if self.attention ~= nil then
       self.attention:session_failed(state, run and run.id or nil)

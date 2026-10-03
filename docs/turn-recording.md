@@ -111,6 +111,9 @@ figures describe approved comparisons, never factual billing or usage. See
 submission metadata. The Session rechecks approvals and configuration after
 confirmation and immediately before the ACP write; stale selection rejects
 admission without retrying.
+Continuation decisions also retain `recovery = { turn_id, reason }` for the
+failed economical attempt; the requested pair and confirmed settlement show
+whether baseline or a later manual pin was used.
 A headless helper may pass `{ parent_turn_id = id }` as the third
 argument to `session:prompt`, even when its Agent has no Auto baseline. This
 explicitly correlated attempt uses the same admission record and may name a
@@ -141,8 +144,27 @@ response) record `failed` with `peer_response=true`, including any reported
 usage. The prompt callback receives `nil, message`; an `error` event replaces
 `turn_done`. The ACP connection stays available, and the Session returns to
 `ready` once the Agent is idle and permission requests are settled. Chat keeps
-the diagnostic visible and clears queued follow-up work. The operator can
-retry or select another advertised Model; neither happens automatically.
+the diagnostic visible. Ordinary failures cancel queued follow-up authorization
+while retaining its draft; the operator can submit it or choose another Model.
+
+A failed qualified economical attempt instead persists local
+`routing_recovery = { turn_id, reason }`, with reason `not_sent`, `turn_failed`
+or `delivery_unknown`. In Auto, the next authorized submission confirms the
+configured baseline before dispatch, bypassing economical rule selection.
+An explicitly queued follow-up is a separate authorized submission and can
+continue when the Session is safe and idle. No original failed request is
+replayed, no tool is rerun and no workspace change is undone. Queue replacement,
+editing and captured-context ownership still apply. The header shows pending
+baseline recovery, including after supported `session/load` resume.
+
+A later manual Model/effort change or pin stays authoritative; its continuation
+records the recovery source and actual pair. Recovery remains pending through
+rejected admission, cancellation and further failures, and clears when a
+continuation completes. Completion clears local recovery only: it neither
+proves correctness nor changes qualification approvals. If baseline cannot be
+confirmed, input remains a draft; restore baseline availability or select a
+manual pin and submit explicitly. A dead Session requires operator restore and
+resume or explicit Handoff; it never changes Agents or claims prompt delivery.
 
 Codex's preceding `systemError` notification marks the turn as failed but does
 not terminate its process before the detailed response arrives. A response

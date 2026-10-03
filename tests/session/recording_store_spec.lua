@@ -104,6 +104,19 @@ T["routing preferences are private mutable state scoped by Agent and ACP identit
   MiniTest.expect.equality(get(reader, "other", "same"), { mode = "auto" })
   MiniTest.expect.equality(save("agent", "same", { mode = "auto" }), nil)
   MiniTest.expect.equality(get(reader, "agent", "same"), { mode = "auto" })
+  local recovery = { turn_id = "failed-attempt", reason = "delivery_unknown" }
+  MiniTest.expect.equality(save("agent", "same", { mode = "auto", recovery = recovery }), nil)
+  MiniTest.expect.equality(get(reader, "agent", "same"), { mode = "auto", recovery = recovery })
+  pinned.recovery = recovery
+  MiniTest.expect.equality(save("agent", "same", pinned), nil)
+  MiniTest.expect.equality(get(reader, "agent", "same"), pinned)
+  for _, invalid in ipairs({
+    { turn_id = "failed", reason = "completed" },
+    { turn_id = "", reason = "not_sent" },
+    { turn_id = "failed", reason = "turn_failed", prompt = "never record" },
+  }) do
+    MiniTest.expect.equality(save("agent", "same", { mode = "auto", recovery = invalid }).code, "invalid")
+  end
   MiniTest.expect.equality(query(writer, "SELECT COUNT(*) AS n FROM turns")[1].n, 0)
   query(writer, "UPDATE routing_preferences SET preference='broken' WHERE agent='agent'")
   local _, err = get(reader, "agent", "same")

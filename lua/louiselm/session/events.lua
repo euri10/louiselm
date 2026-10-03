@@ -77,6 +77,11 @@
 ---@field requested { model?: string|boolean, effort?: string|boolean }
 ---@field parent_turn_id? string
 ---@field selection? louiselm.routing.SelectionDecision Exact Auto baseline, workload, approval and separate economic provenance.
+---@field recovery? louiselm.session.RoutingRecovery Failed economical attempt behind this continuation; requested/settlement record its effective pair.
+
+---@class louiselm.session.RoutingRecovery
+---@field turn_id string Failed economical admission/turn identity; never a request to replay it.
+---@field reason "not_sent"|"turn_failed"|"delivery_unknown" Observed local failure, never a correctness judgment.
 
 ---@class louiselm.routing.SelectionDecision
 ---@field reason "baseline"|"qualified"
@@ -115,16 +120,23 @@
 ---@field data louiselm.session.PermissionCancelledData
 
 ---@class louiselm.session.GenericEvent: louiselm.session.EventBase
----@field type "chunk"|"user_chunk"|"thought_chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"|"error"
+---@field type "chunk"|"user_chunk"|"thought_chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"
 ---@field data unknown Event-specific payload. For "chunk"/"user_chunk"/"thought_chunk" this is
 ---the raw ACP `agent_message_chunk`/`user_message_chunk`/`agent_thought_chunk` update;
 ---"user_chunk" only arrives while replaying a resumed session's history via session/load, never
 ---for a live turn, while "thought_chunk" carries the agent's reasoning text (live or replayed).
----"error" carries { message: string }. Agent-reported turn failures emit it before settling
+
+---@class louiselm.session.ErrorEvent: louiselm.session.EventBase
+---@field type "error"
+---@field data { message: string, recovery?: louiselm.session.RoutingRecovery, can_continue?: boolean }
+---Agent-reported turn failures emit it before settling
 ---back to ready/running/waiting_permission and do not emit "turn_done"; transport/protocol
 ---failures instead leave the Session in error. The prompt callback reports either failure.
+---Economical failures also carry `recovery: louiselm.session.RoutingRecovery` and
+---`can_continue: boolean`: true permits separately authorized queued work to continue;
+---false requires operator recovery of the Agent/Session. No failed prompt is replayed.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

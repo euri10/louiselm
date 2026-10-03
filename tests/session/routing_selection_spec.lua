@@ -41,6 +41,7 @@ local function respond(id, result)
   timer:start(0, 0, function()
     timer:close()
     assert(nvim.in_fast_event())
+    process.responses[id] = true
     process.options.stdout(nil, assert(Protocol.encode(Protocol.response(id, result))) .. "\n")
     delivered = true
   end)
@@ -135,7 +136,7 @@ local function start(qualified)
       observed_decision = event.data
     end
   end)
-  respond(1, { protocolVersion = 1 })
+  respond(1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
   respond(2, { sessionId = "routing-session", configOptions = options() })
   wait_for(function()
     return session:inspect().status == "ready"
@@ -145,7 +146,8 @@ end
 
 local function latest(method)
   local arrived = nvim.wait(6000, function()
-    return process.writes[#process.writes].method == method
+    local request = process.writes[#process.writes]
+    return request.method == method and not process.responses[request.id]
   end, 10)
   local session = assert(api:get_session(api:list_sessions()[1]))
   assert(
@@ -188,7 +190,7 @@ local T = MiniTest.new_set({
         if command[1] ~= "routing-test-agent" then
           return system(command, opts, on_exit)
         end
-        process = { options = opts, writes = {}, closed = false }
+        process = { options = opts, writes = {}, responses = {}, closed = false, on_exit = on_exit }
         return {
           write = function(_, data)
             if data ~= nil then
@@ -459,6 +461,358 @@ T["an older matching approval remains eligible at the current global revision"] 
   local saved = nvim.json.decode(query("SELECT data FROM admission_events WHERE phase='decision'")[1].data)
   MiniTest.expect.equality(saved.selection.qualification.revision, 1)
   MiniTest.expect.equality(saved.selection.qualification.approval_revision, 2)
+end
+
+local function candidate_prompt(session)
+  local id = assert(session:prompt("original mutating request", nil, { workload = "implementation" }))
+  local request = latest("session/set_config_option")
+  respond(request.id, { configOptions = options("small", "high") })
+  request = latest("session/set_config_option")
+  respond(request.id, { configOptions = options("small", "low") })
+  return id, latest("session/prompt")
+end
+
+-- Terminal shape is from option-independent api_spec.lua's AIR/Codex failure
+-- fixture. These routing interleavings and the mutating effect are synthetic.
+local function failed_result()
+  return {
+    stopReason = "end_turn",
+    _meta = {
+      jetbrains = {
+        air = {
+          version = 1,
+          sessionFailure = {
+            id = "turn:error",
+            revision = 1,
+            severity = "error",
+            title = "Capacity unavailable",
+          },
+        },
+      },
+    },
+  }
+end
+
+local function baseline_prompt()
+  local request = latest("session/set_config_option")
+  MiniTest.expect.equality(request.params.value, "large")
+  respond(request.id, { configOptions = options("large", "low") })
+  request = latest("session/set_config_option")
+  MiniTest.expect.equality(request.params.value, "high")
+  respond(request.id, { configOptions = options() })
+  return latest("session/prompt")
+end
+
+T["failed economical turn preserves one mutating effect and confirms baseline for explicit continuation"] = function()
+  local session = start(true)
+  local failed_id, request = candidate_prompt(session)
+  local effects = 0
+  local effect_timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    effect_timer:close()
+  end)
+  effect_timer:start(0, 0, function()
+    effects = effects + 1
+    assert(nvim.uv.fs_mkdir(directory .. "/mutated-once", 448))
+    local message = assert(Protocol.notification("session/update", {
+      sessionId = "routing-session",
+      update = {
+        sessionUpdate = "tool_call",
+        toolCallId = "mutation",
+        title = "Mutating fixture",
+        status = "completed",
+      },
+    }))
+    process.options.stdout(nil, assert(Protocol.encode(message)) .. "\n")
+  end)
+  wait_for(function()
+    return effects == 1
+  end)
+  local sent = #process.writes
+  respond(request.id, failed_result())
+  respond(request.id, failed_result())
+  MiniTest.expect.equality(#process.writes, sent)
+  MiniTest.expect.equality(session:inspect().routing_recovery, { turn_id = failed_id, reason = "turn_failed" })
+  local saved = nvim.json.decode(query("SELECT preference FROM routing_preferences")[1].preference)
+  MiniTest.expect.equality(saved.recovery, session:inspect().routing_recovery)
+  local continuation = assert(session:prompt("continue from actual changes", nil, { workload = "implementation" }))
+  request = baseline_prompt()
+  MiniTest.expect.equality(request.params.prompt, { { type = "text", text = "continue from actual changes" } })
+  respond(request.id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(effects, 1)
+  assert(nvim.uv.fs_stat(directory .. "/mutated-once"))
+  MiniTest.expect.equality(session:inspect().routing_recovery, nil)
+  local decision = nvim.json.decode(
+    query("SELECT data FROM admission_events WHERE phase='decision' AND turn_id='" .. continuation .. "'")[1].data
+  )
+  MiniTest.expect.equality(decision.recovery, { turn_id = failed_id, reason = "turn_failed" })
+  MiniTest.expect.equality(decision.selection.fallback_reason, "economical_failure")
+  MiniTest.expect.equality(decision.requested, { model = "large", effort = "high" })
+  MiniTest.expect.equality(
+    query(
+      "SELECT json_extract(data,'$.outcome') AS outcome FROM turn_events WHERE kind='outcome' AND turn_id='"
+        .. failed_id
+        .. "'"
+    )[1].outcome,
+    "failed"
+  )
+  -- Local failure never revokes the operator's approval.
+  candidate_prompt(session)
+end
+
+T["post-failure manual pin wins and records the effective continuation pair"] = function()
+  local session = start(true)
+  local failed_id, request = candidate_prompt(session)
+  respond(request.id, failed_result())
+  assert(session:set_auto(false))
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  assert(session:prompt("pinned continuation", nil, { workload = "implementation" }))
+  request = latest("session/prompt")
+  MiniTest.expect.equality(observed_decision.origin, "manual")
+  MiniTest.expect.equality(observed_decision.requested, { model = "small", effort = "low" })
+  MiniTest.expect.equality(observed_decision.recovery, { turn_id = failed_id, reason = "turn_failed" })
+  respond(request.id, { stopReason = "end_turn" })
+end
+
+T["an explicitly queued follow-up continues on baseline without replaying the failed request"] = function()
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    nvim.schedule(function()
+      callback(nil)
+    end)
+  end
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+  end)
+  local session = start(true)
+  local _, active = candidate_prompt(session)
+  local chat = assert(require("louiselm.ui.chat").new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:submit("separately authorized follow-up"))
+  respond(active.id, failed_result())
+  local request = baseline_prompt()
+  MiniTest.expect.equality(request.params.prompt, { { type = "text", text = "separately authorized follow-up" } })
+  local view = chat.views[session:inspect().id]
+  wait_for(function()
+    return view.pending_admission == nil
+  end)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "")
+  local text = table.concat(nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false), "\n")
+  assert(text:find("next authorized Auto submission uses baseline", 1, true), text)
+  respond(request.id, { stopReason = "end_turn" })
+  local count = 0
+  for _, write in ipairs(process.writes) do
+    if write.method == "session/prompt" then
+      count = count + 1
+    end
+  end
+  MiniTest.expect.equality(count, 2)
+end
+
+T["resume preserves economical failure recovery until a continuation completes"] = function()
+  local session = start(true)
+  local failed_id, request = candidate_prompt(session)
+  respond(request.id, failed_result())
+  assert(session:dispose())
+  query("SELECT preference FROM routing_preferences")
+  session = assert(api:load_session("agent", "routing-session"))
+  respond(1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(2, { configOptions = options("small", "low") })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(session:inspect().routing_recovery, { turn_id = failed_id, reason = "turn_failed" })
+  assert(session:prompt("resume actual work", nil, { workload = "implementation" }))
+  request = baseline_prompt()
+  respond(request.id, { stopReason = "end_turn" })
+end
+
+T["failure before dispatch selects baseline for the next explicit attempt"] = function()
+  local session = start(true)
+  local failed_id = assert(session:prompt("not dispatched", nil, { workload = "implementation" }))
+  local request = latest("session/set_config_option")
+  -- A valid peer response fails to confirm the requested economical Model.
+  respond(request.id, { configOptions = options() })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(session:inspect().routing_recovery, { turn_id = failed_id, reason = "not_sent" })
+  MiniTest.expect.equality(query("SELECT COUNT(*) AS n FROM turns")[1].n, 0)
+  assert(session:prompt("explicitly submitted", nil, { workload = "implementation" }))
+  request = latest("session/prompt")
+  MiniTest.expect.equality(observed_decision.requested, { model = "large", effort = "high" })
+  respond(request.id, { stopReason = "end_turn" })
+end
+
+T["dead economical Session retains queued input and unknown delivery recovery for resume"] = function()
+  local session = start(true)
+  local failed_id = candidate_prompt(session)
+  local chat = assert(require("louiselm.ui.chat").new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:submit("undelivered follow-up"))
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    timer:close()
+  end)
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    process.on_exit({ code = 23, signal = 0 })
+  end)
+  wait_for(function()
+    return session:inspect().status == "error"
+  end)
+  local view = chat.views[session:inspect().id]
+  wait_for(function()
+    return view.draft.queued_prompt == nil
+  end)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "undelivered follow-up")
+  MiniTest.expect.equality(session:inspect().routing_recovery, { turn_id = failed_id, reason = "delivery_unknown" })
+  local text = table.concat(nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false), "\n")
+  assert(text:find("Session cannot continue safely", 1, true), text)
+  MiniTest.expect.equality({ session:prompt("cannot send") }, { nil, "session is not ready" })
+  assert(session:dispose())
+  query("SELECT preference FROM routing_preferences")
+  session = assert(api:load_session("agent", "routing-session"))
+  respond(1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(2, { configOptions = options("small", "low") })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(session:inspect().routing_recovery.reason, "delivery_unknown")
+  assert(session:prompt("operator resumed", nil, { workload = "implementation" }))
+  local request = baseline_prompt()
+  respond(request.id, { stopReason = "end_turn" })
+end
+
+T["unavailable baseline retains the draft and recovery; later manual selection remains possible"] = function()
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    nvim.schedule(function()
+      callback(nil)
+    end)
+  end
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+  end)
+  local session = start(true)
+  local _, request = candidate_prompt(session)
+  respond(request.id, failed_result())
+  local unavailable = options("small", "low")
+  unavailable[1].options = { { value = "small", name = "Small" } }
+  local message = assert(Protocol.notification("session/update", {
+    sessionId = "routing-session",
+    update = { sessionUpdate = "config_option_update", configOptions = unavailable },
+  }))
+  process.options.stdout(nil, assert(Protocol.encode(message)) .. "\n")
+  local chat = assert(require("louiselm.ui.chat").new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  local view = chat.views[session:inspect().id]
+  local sent = #process.writes
+  assert(chat:submit("keep this continuation"))
+  wait_for(function()
+    return view.pending_admission == nil
+  end)
+  MiniTest.expect.equality(#process.writes, sent)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "keep this continuation")
+  assert(session:inspect().routing_recovery)
+  local text = table.concat(nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false), "\n")
+  assert(text:find("restore the baseline or choose a manual pin", 1, true), text)
+  assert(session:set_auto(false))
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  assert(chat:submit())
+  request = latest("session/prompt")
+  MiniTest.expect.equality(observed_decision.origin, "manual")
+  respond(request.id, { stopReason = "end_turn" })
+end
+
+T["unconfirmed baseline and cancelled continuation do not consume recovery or dispatch the wrong pair"] = function()
+  local session = start(true)
+  local failed_id, request = candidate_prompt(session)
+  respond(request.id, failed_result())
+  assert(session:prompt("retained", nil, { workload = "implementation" }))
+  request = latest("session/set_config_option")
+  respond(request.id, { configOptions = options("small", "low") })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(session:inspect().routing_recovery.turn_id, failed_id)
+  assert(session:prompt("explicit retry", nil, { workload = "implementation" }))
+  request = baseline_prompt()
+  respond(request.id, { stopReason = "cancelled" })
+  MiniTest.expect.equality(session:inspect().routing_recovery.turn_id, failed_id)
+  assert(session:prompt("continue again", nil, { workload = "implementation" }))
+  request = latest("session/prompt")
+  MiniTest.expect.equality(observed_decision.selection.fallback_reason, "economical_failure")
+  respond(request.id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(session:inspect().routing_recovery, nil)
+end
+
+T["Disposal during economical failure cannot release queued work or accept late completion"] = function()
+  local session = start(true)
+  local failed_id, request = candidate_prompt(session)
+  local chat = assert(require("louiselm.ui.chat").new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:submit("retain across disposal"))
+  local view = chat.views[session:inspect().id]
+  local completions = 0
+  session:on(function(event)
+    if event.type == "error" then
+      completions = completions + 1
+      assert(session:dispose())
+    end
+  end)
+  local sent = #process.writes
+  respond(request.id, failed_result())
+  respond(request.id, { stopReason = "end_turn" })
+  wait_for(function()
+    return view.draft.queued_prompt == nil
+  end)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "retain across disposal")
+  MiniTest.expect.equality(completions, 1)
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  MiniTest.expect.equality(#process.writes, sent)
+  MiniTest.expect.equality({ session:prompt("late continuation") }, { nil, "session is not ready" })
+  MiniTest.expect.equality(
+    nvim.json.decode(query("SELECT preference FROM routing_preferences")[1].preference).recovery.turn_id,
+    failed_id
+  )
+end
+
+T["a failed baseline continuation keeps recovery and a later manual option change wins"] = function()
+  local session = start(true)
+  local failed_id, request = candidate_prompt(session)
+  respond(request.id, failed_result())
+  assert(session:prompt("baseline continuation", nil, { workload = "implementation" }))
+  request = baseline_prompt()
+  respond(request.id, failed_result())
+  MiniTest.expect.equality(session:inspect().routing_recovery.turn_id, failed_id)
+  assert(session:set_config_option("effort", "low"))
+  request = latest("session/set_config_option")
+  respond(request.id, { configOptions = options("large", "low") })
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  assert(session:prompt("manual continuation", nil, { workload = "implementation" }))
+  request = latest("session/prompt")
+  MiniTest.expect.equality(observed_decision.requested, { model = "large", effort = "low" })
+  MiniTest.expect.equality(observed_decision.origin, "manual")
+  respond(request.id, { stopReason = "end_turn" })
 end
 
 return T

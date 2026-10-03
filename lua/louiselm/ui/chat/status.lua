@@ -302,6 +302,9 @@ function M.session_header(state)
   if state.auto_mode ~= nil then
     session_parts[#session_parts + 1] = "routing=" .. (state.auto_mode == "auto" and "Auto" or "Pinned")
   end
+  if state.routing_recovery ~= nil then
+    session_parts[#session_parts + 1] = "recovery=" .. (state.auto_mode == "auto" and "baseline" or "pinned")
+  end
   local session_line = "Session: " .. table.concat(session_parts, " · ")
   local display_text = "display=" .. turn_label(state)
   local display_start = assert(session_line:find(display_text, 1, true)) - 1

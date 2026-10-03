@@ -469,6 +469,15 @@ local function nonempty(value)
   return type(value) == "string" and value ~= ""
 end
 
+---Validate payload-free local recovery intent before recording or resume.
+---@param value unknown Recovery provenance, not a prompt or qualification verdict.
+---@return boolean valid False for malformed identities, reasons or unknown fields.
+function M.valid_recovery(value)
+  return only(value, { turn_id = true, reason = true })
+    and nonempty(value.turn_id)
+    and (value.reason == "not_sent" or value.reason == "turn_failed" or value.reason == "delivery_unknown")
+end
+
 ---Validate explicit, payload-free submission metadata without inferring from prose.
 ---@param value unknown Optional submission metadata.
 ---@return boolean valid False for unknown fields or contradictory phase metadata.
@@ -783,6 +792,7 @@ function M.valid_selection(value)
       allowance_insufficient = true,
       approval_unavailable = true,
       selection_incomplete = true,
+      economical_failure = true,
     })[value.fallback_reason]
   then
     return false

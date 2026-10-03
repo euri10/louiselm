@@ -22,6 +22,10 @@ T["header shows routing authority beside the confirmed pair"] = function()
   MiniTest.expect.equality(lines[3], "ACP options: Model=large · Effort=high")
   state.auto_mode = "auto"
   MiniTest.expect.equality(Status.session_header(state)[2]:find("routing=Auto", 1, true) ~= nil, true)
+  state.routing_recovery = { turn_id = "failed-turn", reason = "turn_failed" }
+  MiniTest.expect.equality(Status.session_header(state)[2]:find("recovery=baseline", 1, true) ~= nil, true)
+  state.auto_mode = "manual"
+  MiniTest.expect.equality(Status.session_header(state)[2]:find("recovery=pinned", 1, true) ~= nil, true)
 end
 
 T["Agent hover span uses display columns and disappears when compacted"] = function()

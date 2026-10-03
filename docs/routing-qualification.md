@@ -137,6 +137,18 @@ usual shared state-root fallback). Headless owners may supply an absolute
 Auto; rules are inactive in manual mode and absent `auto` retains ordinary
 submission behavior.
 
+Failed economical attempts set Session-local recovery intent. The next
+authorized Auto submission uses confirmed baseline and records
+`fallback_reason = "economical_failure"`; its admission decision names the
+failed turn and reason. Recovery survives supported resume and stays pending
+through unsent, cancelled or failed continuations until one completes. A later
+manual pin wins. Chat may release a separately queued follow-up when the Session
+can safely continue, but never replays the failed prompt, reruns tools, undoes
+workspace changes, restarts an Agent or creates a Handoff automatically.
+Unavailable baseline or a dead Session retains input for operator action.
+Operational failures never rewrite qualification approvals; completed turns
+remain observations rather than correctness evidence.
+
 ## Lookup and revision checks
 
 `store:lookup({workload, baseline, candidate, policy_revision}, expected_revision, callback)`

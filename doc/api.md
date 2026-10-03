@@ -111,6 +111,7 @@ string|table
 - `name: string` -- User-facing session name.
 - `recording_error: (louiselm.session.RecordingError)?` -- Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
 - `recording_pending: boolean` -- Whether the registry has unacknowledged writes.
+- `routing_recovery: (louiselm.session.RoutingRecovery)?` -- Next authorized continuation uses baseline in Auto; retained until a continuation completes.
 - `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
 - `source: "loaded"|"new"` -- Whether the session was created or restored.
@@ -133,7 +134,7 @@ string|table
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `launch_request: (louiselm.acp.LaunchRequest)?` -- Launch through the installed supervisor instead of the configured command.
 - `name: string?` -- User-facing session name.
-- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+7))?` -- Initial event listener.
+- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
 - `schedule: fun(delay_ms: integer, callback: fun())?` -- Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -160,7 +161,7 @@ string|table
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `load_session_id: string?` -- Agent-side session identifier to load.
-- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+7))):fun()`
+- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
 - `option_usage: fun(self: louiselm.session.Session, option_id: string, callback: fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError))`
@@ -652,9 +653,15 @@ louiselm.session.EventType:
 - `origin: "auto"|"helper"|"manual"`
 - `parent_turn_id: string?`
 - `reason: "baseline"|"current_pair"|"parent_correlation"|"qualified"`
+- `recovery: (louiselm.session.RoutingRecovery)?` -- Failed economical attempt behind this continuation; requested/settlement record its effective pair.
 - `requested: { model: boolean|string, effort: boolean|string }`
 - `selection: (louiselm.routing.SelectionDecision)?` -- Exact Auto baseline, workload, approval and separate economic provenance.
 - `turn_id: string`
+
+### louiselm.session.RoutingRecovery
+
+- `reason: "delivery_unknown"|"not_sent"|"turn_failed"` -- Observed local failure, never a correctness judgment.
+- `turn_id: string` -- Failed economical admission/turn identity; never a request to replay it.
 
 ### louiselm.routing.SelectionDecision
 
@@ -705,27 +712,33 @@ louiselm.session.EventType:
 
 - `data: unknown` -- Event-specific payload. For "chunk"/"user_chunk"/"thought_chunk" this is
 - `session_id: string` -- Local session identifier.
-- `type: "chunk"|"error"|"thought_chunk"|"tool_call_finished"|"tool_call_started"...(+2)`
+- `type: "chunk"|"thought_chunk"|"tool_call_finished"|"tool_call_started"|"turn_done"...(+1)`
+
+### louiselm.session.ErrorEvent
+
+- `data: { message: string, recovery: louiselm.session.RoutingRecovery, can_continue: boolean }`
+- `session_id: string` -- Local session identifier.
+- `type: "error"`
 
 ### louiselm.session.Event
 
 ```lua
-louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+7)
+louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8)
 ```
 
 ### louiselm.session.EventCallback
 
 ```lua
-fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+7))
+fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8))
 ```
 
 ### louiselm.session.EventEmitter
 
 - `clear: fun(self: louiselm.session.EventEmitter)`
-- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+7))`
-- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+7))>`
+- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8))`
+- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8))>`
 - `next_id: integer` -- Next listener identifier.
-- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+7))):fun()` -- Remove the listener.
+- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8))):fun()` -- Remove the listener.
 - `order: integer[]` -- Listener registration order.
 
 ## Permission Policies
