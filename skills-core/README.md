@@ -1108,6 +1108,11 @@ names come from a fixed allowlist, the layout is decided by the tool, and modes
 are set by the tool — an install cannot introduce a new command, a different
 policy path, or a different owner.
 
+Public release directories use `0755` and installed `state.json` uses `0644`,
+independently of the caller's umask, so the dedicated broker can traverse and
+read them. Component files remain immutable (`0555` executables, `0444` data).
+Installation does not change private launcher-state permissions.
+
 **Ownership is reported, not asserted.** This process cannot make a file
 root-owned without being root, so `release status` says what the bytes actually
 are — uid, world-writability, and whether any installed component's hash has

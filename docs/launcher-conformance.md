@@ -339,8 +339,9 @@ bounded history by default; raw reports and operator/process identities do not.
 Ordinary pre-cutover launch still records `Unevaluated`, as confirmed in
 `louiselm-oi5an`, and does not read certification state. The protected enforced
 path can now supply report-bound admission through the broker ACK transaction;
-that does not enable Verified posture by itself. `louiselm-d6fv.9.1` still needs
-initial-launch waiver preparation (`.6.3`) and actual installed-release acceptance.
+that does not enable Verified posture by itself. Initial-launch waiver preparation
+and exact operator approval are implemented by `louiselm-d6fv.6.3`; actual
+installed-release acceptance remains required by `.12.5` and `d6fv.9.1`.
 Currentness monitoring (`.12.4`) supplies source checks; canonical admission-history
 projection (`.12.6`) separately preserves the launch decision. Component and disposable-guest
 tests do not satisfy that installed cutover.
@@ -383,9 +384,19 @@ not constitute maintainer confirmation or activate the Verified claim.
    evidence. Unattended launches refuse; interactive launches require the
    already-approved exact Session/condition waiver. Verify its recorded expiry
    and receipt, degraded isolation, refusal for another Session or condition,
-   and non-waivable containment failure. Initial-launch waiver preparation is
-   still tracked by `louiselm-d6fv.6.3`; until it is available, record this step
-   as blocked rather than constructing an approval record by hand.
+   and non-waivable containment failure. For an initial launch, the trusted
+   controller records its pending interactive authorization; run the fixed
+   `louiselm-launch prepare` on that exact request, review `waiver plan`, apply
+   its exact digest with `waiver apply`, then launch the same request. Check the
+   five-minute preparation window and the original authorization and waiver
+   expiries. Use the authenticated flow above, never a hand-built approval record.
+   Missing or no-longer-current Sender guard proof always refuses with
+   `guard_unavailable`, regardless of attendance or waiver: an empty certificate
+   store cannot prepare a waiver. The required initial-waiver fixture first
+   checks this refusal, then retains genuine guard observations with an injected
+   unrelated incomplete attempt. It exercises the actual returned `stale`
+   condition, exact report/receipt binding, expiry and broker restart. Only that
+   later observation failure is a test double; guard probes and cleanup are real.
 5. Use the maintained disposable conformance monitor fixtures to invalidate a
    relevant input and stall a check under load. Inspect the last condition,
    original last-success time and suspension flag alongside actual process state
@@ -413,7 +424,17 @@ operator socket; `tests/broker/current_conformance.rs` checks retained failure
 causes without rewriting admission. The required activated-daemon fixture
 `privileged_activated_daemon_serves_launches_and_restart` also invokes the actual
 operator binary under configured and foreign identities, including pre-cutover
-absence. Existing installed certification and hostile monitor fixtures own the
+absence. `privileged_initial_waiver_prepares_approves_then_launches` requires
+private mount **and network** namespaces and covers the authenticated positive
+waiver flow without weakening the non-waivable Sender guard rule. The
+`privileged_certified_admission_retains_report_and_suspends_on_evidence_loss`
+uses the actual fixed certifier and broker/operator binaries, compares report
+bytes with signed admission, repeats after restart, and invalidates only its
+owned certificate index. It confirms actual Park with revoked capabilities,
+recertification without implicit Resume, and terminal cleanup. Guarded warm
+Resume remains separately tracked by `louiselm-d6fv.14`; neither this case nor
+the component monitor doubles prove that recovery path. Existing
+installed certification and hostile monitor fixtures own the
 privileged probes, suspension and recovery checks. These gates support this
 recipe; actual installed host/operator acceptance remains required by
 `louiselm-d6fv.12.5` and `louiselm-d6fv.9.1` before any cutover in `.9`.

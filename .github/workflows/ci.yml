@@ -214,6 +214,16 @@ jobs:
             test -x "$library_test"
             sudo -n env LOUISELM_REQUIRE_CERTIFICATION=1 timeout 240 unshare --net -- \
               /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture'\'' bash "$library_test"
+            # The Ubuntu job can prove refusal only; require these positive
+            # producer paths in the pinned Debian/BPF guest as well.
+            for scenario in \
+              privileged_initial_waiver_prepares_approves_then_launches \
+              privileged_certified_admission_retains_report_and_suspends_on_evidence_loss; do
+              sudo -n env LOUISELM_REQUIRE_CONTROL_DAEMON=1 timeout 240 \
+                unshare --mount --net --propagation private -- \
+                /bin/bash -c '\''umask 022; exec "$1" "$2" --exact --nocapture'\'' bash "$library_test" \
+                "launch_supervisor::system::installed_tests::daemon::inspection::$scenario"
+            done
             sudo -n env LOUISELM_REQUIRE_CERTIFICATION=1 LOUISELM_EXPECT_GUARD_UNAVAILABLE=1 timeout 60 unshare --mount --net --propagation private -- \
               /bin/bash -c '\''umask 022; mount --bind /dev/null /sys/kernel/btf/vmlinux; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture'\'' bash "$library_test"
             for scenario in \
@@ -758,11 +768,12 @@ jobs:
             privileged_activated_daemon_serves_launches_and_restart \
             state::privileged_activated_daemon_upgrades_and_adopts_state \
             inspection::privileged_activated_daemon_refuses_foreign_inspection \
+            inspection::privileged_certified_admission_retains_report_and_suspends_on_evidence_loss \
             inspection::privileged_initial_waiver_prepares_approves_then_launches; do
             test_name="launch_supervisor::system::installed_tests::daemon::$scenario"
             printf 'Activated daemon scenario: %s\n' "$scenario"
             time sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \
-              timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" "$2" --exact --nocapture' bash "$library_test" "$test_name"
+              timeout 240 unshare --mount --propagation private --net -- /bin/bash -c 'umask 022; exec "$1" "$2" --exact --nocapture' bash "$library_test" "$test_name"
           done
           sudo env LOUISELM_REQUIRE_BROKER_BEADS=1 \
             "LOUISELM_TEST_BEADS_INSTALLER=$PWD/../scripts/install-broker-beads.py" \

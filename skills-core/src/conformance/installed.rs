@@ -25,7 +25,9 @@ pub(super) mod storage;
 pub use measurement::measure;
 pub use probes::serve_probe;
 #[cfg(test)]
-pub(crate) use runner::{CANCEL_AFTER_FIRST_GROUP, FORCE_UNCONFIRMED_CLEANUP};
+pub(crate) use runner::{
+    CANCEL_AFTER_FIRST_GROUP, FORCE_UNCONFIRMED_CLEANUP, INCOMPLETE_AFTER_GUARD,
+};
 pub use runner::{certify, certify_isolated};
 pub use storage::{CertificateStatus, CertificateStore};
 

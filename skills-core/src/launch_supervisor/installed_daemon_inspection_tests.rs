@@ -112,22 +112,7 @@ fn privileged_initial_waiver_prepares_approves_then_launches() {
     );
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);
-    let mut preparation = Command::new(&config.launcher_path)
-        .arg("prepare")
-        .env_clear()
-        .env("SUDO_UID", config.operator_uid.to_string())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut input = preparation.stdin.take().unwrap();
-    input
-        .write_all(&named_request("session").canonical_bytes())
-        .unwrap();
-    input.write_all(b"\n").unwrap();
-    drop(input);
-    let output = preparation.wait_with_output().unwrap();
+    let output = preparation_command(&config);
     let os = fs::read_to_string("/usr/lib/os-release").unwrap();
     if !os.lines().any(|line| line == "ID=debian")
         || !os.lines().any(|line| line == "VERSION_ID=\"13\"")
@@ -141,15 +126,21 @@ fn privileged_initial_waiver_prepares_approves_then_launches() {
         eprintln!("unsupported host refused; no positive initial-waiver acceptance claimed");
         return;
     }
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"louiselm-launch: conformance preparation refused; restore host evidence or inspect launcher policy\n");
+    assert!(!paths.state_root.join("pre-admission/session.json").exists());
+    incomplete_guard_certificate(&paths);
+    let output = preparation_command(&config);
     assert!(output.status.success(), "{output:?}");
     let observation: Preparation = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         observation.condition,
-        crate::conformance::admission::Condition::Missing
+        crate::conformance::admission::Condition::Stale
     );
     assert_preparation_boundaries(&paths, &config, &observation);
     assert!(!Path::new(STATE).join("receipts/sessions/session").exists());
-    let proposal = serde_json::json!({"request_id":"review-initial", "condition":"missing", "rationale":"Inspect this disposable host", "expires_at_ms":observation.observed_at_ms + 10_000});
+    let proposal = serde_json::json!({"request_id":"review-initial", "condition":"stale", "rationale":"Inspect this disposable host", "expires_at_ms":observation.observed_at_ms + 10_000});
     let plan = waiver_command(
         &config,
         &["plan", "session", "--json"],
@@ -166,18 +157,254 @@ fn privileged_initial_waiver_prepares_approves_then_launches() {
     assert!(!Path::new(STATE).join("receipts/sessions/session").exists());
     let session = launch(&paths, &config, root.path(), "session").unwrap();
     assert_eq!(session.receipt().payload.sequence, 1);
+    let evidence = assert_waived_report_binding(&config, &approved.receipt.unwrap().digest);
+    attention::assert_waiver_expiry_projects_without_reads(&session);
+    terminate(&mut daemon);
+    let mut restarted = process(&manager, BROKER_UID, false);
+    ready(&config);
+    let historical = session_command(config.operator_uid, "conformance", "session");
+    assert!(historical.status.success(), "{historical:?}");
+    let retained: serde_json::Value = serde_json::from_slice(&historical.stdout).unwrap();
+    for field in ["report", "admission", "waiver"] {
+        assert_eq!(
+            retained[field], evidence[field],
+            "restart must retain exact {field}"
+        );
+    }
+    session.dispose().unwrap();
+    attention::assert_posture_cleared("session");
+    terminate(&mut restarted);
+}
+
+fn assert_waived_report_binding(
+    config: &LauncherConfig,
+    receipt_digest: &str,
+) -> serde_json::Value {
     let historical = session_command(config.operator_uid, "conformance", "session");
     assert!(historical.status.success(), "{historical:?}");
     let evidence: serde_json::Value = serde_json::from_slice(&historical.stdout).unwrap();
     assert_eq!(evidence["admission"]["status"], "waived");
+    let report = evidence["report"].as_str().unwrap();
+    let parsed = crate::conformance::Report::parse_canonical(report.as_bytes()).unwrap();
     assert_eq!(
-        evidence["waiver"]["receipt_digest"],
-        approved.receipt.unwrap().digest
+        parsed.result().unwrap(),
+        crate::conformance::ReportResult::Incomplete
     );
-    attention::assert_waiver_expiry_projects_without_reads(&session);
-    session.dispose().unwrap();
-    attention::assert_posture_cleared("session");
+    assert_eq!(
+        evidence["admission"]["report_digest"],
+        Digest::of(report.as_bytes()).to_string()
+    );
+    assert_eq!(evidence["waiver"]["receipt_digest"], receipt_digest);
+    assert_signed_admission(&evidence);
+    evidence
+}
+
+fn assert_signed_admission(evidence: &serde_json::Value) {
+    let bytes = fs::read(
+        Path::new(STATE).join("receipts/sessions/session/00000000000000000000.receipt.json"),
+    )
+    .unwrap();
+    let receipt = crate::launch_receipt::SignedReceipt::parse_canonical(&bytes).unwrap();
+    let crate::launch_receipt::ReceiptOutcome::Launch {
+        evidence: launch, ..
+    } = receipt.payload.outcome
+    else {
+        panic!("sequence zero must be the signed admission");
+    };
+    assert_eq!(
+        serde_json::to_value(launch.conformance).unwrap(),
+        evidence["admission"]
+    );
+}
+
+fn preparation_command(config: &LauncherConfig) -> std::process::Output {
+    let mut preparation = Command::new(&config.launcher_path)
+        .arg("prepare")
+        .env_clear()
+        .env("SUDO_UID", config.operator_uid.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = preparation.stdin.take().unwrap();
+    input
+        .write_all(&named_request("session").canonical_bytes())
+        .unwrap();
+    input.write_all(b"\n").unwrap();
+    drop(input);
+    preparation.wait_with_output().unwrap()
+}
+
+#[test]
+fn privileged_certified_admission_retains_report_and_suspends_on_evidence_loss() {
+    use crate::conformance::{ReportResult, admission::Enforcement, installed::Certificate};
+    if std::env::var_os("LOUISELM_REQUIRE_CONTROL_DAEMON").is_none() {
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root());
+    let root = tempfile::Builder::new()
+        .prefix("louiselm-certified-")
+        .tempdir_in("/var/lib")
+        .unwrap();
+    mounts(root.path());
+    let _account = BrokerAccount::create();
+    // One retained Session still leaves the certifier's three required slots.
+    let (paths, config, manager) = install_unseeded_daemon(root.path(), Enforcement::Enforced, 4);
+    assert!(
+        process(&manager, BROKER_UID, true)
+            .0
+            .wait()
+            .unwrap()
+            .success()
+    );
+    let mut daemon = process(&manager, BROKER_UID, false);
+    ready(&config);
+    let output = certification_command(&config);
+    let os = fs::read_to_string("/usr/lib/os-release").unwrap();
+    if !os.lines().any(|line| line == "ID=debian")
+        || !os.lines().any(|line| line == "VERSION_ID=\"13\"")
+    {
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        terminate(&mut daemon);
+        eprintln!("unsupported host refused; no positive certified admission claimed");
+        return;
+    }
+    assert!(output.status.success(), "{output:?}");
+    let certificate = Certificate::parse_canonical(&output.stdout).unwrap();
+    assert_eq!(
+        certificate.observations.result().unwrap(),
+        ReportResult::Passed
+    );
+    let session = launch(&paths, &config, root.path(), "session").unwrap();
+    let evidence = conformance_value(&config);
+    assert_eq!(evidence["admission"]["status"], "certified");
+    assert_eq!(
+        evidence["report"].as_str().unwrap().as_bytes(),
+        certificate.observations.canonical_bytes().unwrap()
+    );
+    assert_eq!(
+        evidence["admission"]["report_digest"],
+        certificate.observations.digest().unwrap().to_string()
+    );
+    assert!(evidence["waiver"].is_null());
+    assert_signed_admission(&evidence);
+    // Explicit disposable-gate output, never production logging or host authority.
+    eprintln!(
+        "QA_CERTIFIED_ADMISSION: {}",
+        serde_json::json!({
+            "authority": "disposable_fixture", "session_id": "session",
+            "certificate": std::str::from_utf8(&output.stdout).unwrap(),
+            "conformance": evidence,
+        })
+    );
     terminate(&mut daemon);
+    let mut restarted = process(&manager, BROKER_UID, false);
+    ready(&config);
+    let retained = conformance_value(&config);
+    for field in ["report", "admission", "waiver"] {
+        assert_eq!(
+            retained[field], evidence[field],
+            "restart must retain exact {field}"
+        );
+    }
+    // Move only this fixture's protected index; retain it for real recertification.
+    let state = paths.state_root.join("conformance/state.json");
+    let retained_state = state.with_extension("retained");
+    fs::rename(&state, &retained_state).unwrap();
+    wait_parked(&config);
+    let suspended = conformance_value(&config);
+    assert_eq!(suspended["last_check"]["suspended"], true);
+    assert_eq!(
+        suspended["last_check"]["check"],
+        serde_json::to_value(crate::launch_protocol::ConformanceCheck::Invalid {
+            failure: crate::launch_protocol::ConformanceFailure::Unavailable,
+        })
+        .unwrap()
+    );
+    fs::rename(retained_state, state).unwrap();
+    let recertified = certification_command(&config);
+    assert!(recertified.status.success(), "{recertified:?}");
+    assert_eq!(
+        Certificate::parse_canonical(&recertified.stdout)
+            .unwrap()
+            .observations
+            .result()
+            .unwrap(),
+        ReportResult::Passed
+    );
+    // A new certificate and either read are evidence, never implicit Resume.
+    wait_parked(&config);
+    assert_eq!(conformance_value(&config)["report"], evidence["report"]);
+    session.dispose().unwrap();
+    terminate(&mut restarted);
+}
+
+fn certification_command(config: &LauncherConfig) -> std::process::Output {
+    Command::new(&config.launcher_path)
+        .arg("certify")
+        .env_clear()
+        .env("SUDO_UID", config.operator_uid.to_string())
+        .output()
+        .unwrap()
+}
+
+fn conformance_value(config: &LauncherConfig) -> serde_json::Value {
+    let output = session_command(config.operator_uid, "conformance", "session");
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn wait_parked(config: &LauncherConfig) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = session_command(config.operator_uid, "inspect", "session");
+        assert!(output.status.success(), "{output:?}");
+        let status = SessionStatus::parse_canonical(&output.stdout).unwrap();
+        if status.state == crate::launch_receipt::SessionState::Parked {
+            assert_eq!(
+                status.channel_state,
+                crate::launch_protocol::ChannelState::Revoked
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "conformance must suspend the actual tree: {status:?}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn incomplete_guard_certificate(paths: &LauncherPaths) {
+    use crate::conformance::{Cleanup, Outcome, ReportResult, SENDER_GUARD_CHECK, installed};
+    assert_ne!(
+        fs::read_link("/proc/self/ns/net").unwrap(),
+        fs::read_link("/proc/1/ns/net").unwrap()
+    );
+    // Only the later observation failure is injected. The production guard
+    // probe, host measurement, protected retention and cleanup are real.
+    installed::INCOMPLETE_AFTER_GUARD.with(|incomplete| incomplete.set(true));
+    let parent = rustix::process::getppid()
+        .unwrap()
+        .as_raw_nonzero()
+        .get()
+        .cast_unsigned();
+    let certificate =
+        installed::certify(paths, Instant::now() + Duration::from_mins(3), parent).unwrap();
+    assert_eq!(
+        certificate.observations.result().unwrap(),
+        ReportResult::Incomplete
+    );
+    assert_eq!(certificate.observations.cleanup, Cleanup::Confirmed);
+    let guard = certificate
+        .observations
+        .checks
+        .iter()
+        .find(|check| check.name == SENDER_GUARD_CHECK)
+        .unwrap();
+    assert_eq!(guard.control, Outcome::Allowed);
+    assert!(matches!(guard.confined, Outcome::Denied(_)));
 }
 
 fn assert_preparation_boundaries(

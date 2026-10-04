@@ -353,6 +353,89 @@ fn a_missing_component_is_refused_rather_than_installed_in_part() {
 }
 
 #[test]
+fn installing_with_a_private_umask_sets_public_release_permissions() {
+    const CHILD: &str = "LOUISELM_TEST_INSTALL_PRIVATE_UMASK";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new("sh")
+            .args(["-c", "umask 077; exec \"$@\"", "install-umask"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "installing_with_a_private_umask_sets_public_release_permissions",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("isolated umask test starts");
+        assert!(
+            result.status.success(),
+            "isolated umask test failed:\n{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        );
+        return;
+    }
+
+    let fixture = Fixture::new();
+    let key = enrol_release_key(&fixture);
+    let store = fixture.store();
+    let prefix = fixture.path("prefix");
+    let private_state = prefix.join("launcher/private");
+    for (name, at_ms) in [("first", 1), ("upgrade", 2)] {
+        let bundle = assemble(&fixture, name, "#!/bin/sh\nexit 0\n", at_ms);
+        sign_bundle(&bundle, &key);
+        let state = install::install(&store, &bundle, &prefix, at_ms).expect("install");
+        let installed = prefix.join("releases").join(state.release_id);
+        for directory in [
+            prefix.clone(),
+            prefix.join("releases"),
+            installed.clone(),
+            installed.join("bin"),
+            installed.join("policy"),
+            installed.join("schemas"),
+        ] {
+            assert_eq!(
+                fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o755,
+                "public release directory {}",
+                directory.display(),
+            );
+        }
+        assert_eq!(
+            fs::metadata(prefix.join("state.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644,
+            "installed metadata is readable by the dedicated broker",
+        );
+        assert_eq!(
+            fs::metadata(installed.join("bin/louiselm-skills"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o555,
+            "executable stays immutable",
+        );
+        if !private_state.exists() {
+            fs::create_dir_all(&private_state).unwrap();
+        }
+        assert_eq!(
+            fs::metadata(&private_state).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "upgrade preserves private launcher state",
+        );
+    }
+    assert_eq!(
+        fs::metadata(fixture.path("")).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "installer does not change its caller's ancestor permissions",
+    );
+}
+
+#[test]
 fn installing_flips_one_symlink_and_leaves_the_prior_release_intact() {
     let fixture = Fixture::new();
     let release_key = enrol_release_key(&fixture);
@@ -507,20 +590,6 @@ fn installed_fixture() -> (Fixture, PathBuf, PathBuf) {
     let prefix = fixture.path("prefix");
     let state = install::install(&fixture.store(), &bundle, &prefix, 1).expect("install");
     let installed = prefix.join("releases").join(state.release_id);
-    // Match the observed guest install, independent of the runner's umask.
-    for directory in [
-        &prefix,
-        &prefix.join("releases"),
-        &installed,
-        &installed.join("bin"),
-        &installed.join("policy"),
-        &installed.join("schemas"),
-    ] {
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o755))
-            .expect("fixed directory mode");
-    }
-    fs::set_permissions(prefix.join("state.json"), fs::Permissions::from_mode(0o644))
-        .expect("fixed state mode");
     let executable = installed.join("bin/louiselm-skills");
     (fixture, prefix, executable)
 }

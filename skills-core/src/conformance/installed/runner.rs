@@ -36,6 +36,7 @@ type Result<T> = std::result::Result<T, CertificationError>;
 
 #[cfg(test)]
 std::thread_local! {
+    pub(crate) static INCOMPLETE_AFTER_GUARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static CANCEL_AFTER_FIRST_GROUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static FORCE_UNCONFIRMED_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -257,6 +258,10 @@ impl Fixture {
         }
         store.observe(&self.report)?;
         if cleanup == Cleanup::Unconfirmed {
+            return Err(CertificationError::Invalid);
+        }
+        #[cfg(test)]
+        if INCOMPLETE_AFTER_GUARD.with(|incomplete| incomplete.replace(false)) {
             return Err(CertificationError::Invalid);
         }
         checks::filesystem(self, store)?;

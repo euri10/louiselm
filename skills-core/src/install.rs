@@ -17,6 +17,9 @@
 //! root-owned without being root, so [`status`] says what the bytes actually
 //! are and names the next action; nothing claims a trust boundary that the
 //! filesystem does not show.
+//!
+//! Public release directories use mode 0755 and installed metadata uses 0644,
+//! independently of the caller's umask. Private launcher state is not changed.
 
 use std::{fs, io, os::unix::fs::MetadataExt, path::Path};
 
@@ -158,13 +161,15 @@ pub fn install(
     if staging.exists() {
         remove(&staging)?;
     }
-    release::create_dir(&staging)?;
+    for directory in [prefix, releases.as_path(), staging.as_path()] {
+        create_public_directory(directory)?;
+    }
 
     for component in &manifest.components {
         let from = bundle.join(&component.path);
         let to = staging.join(&component.path);
         if let Some(parent) = to.parent() {
-            release::create_dir(parent)?;
+            create_public_directory(parent)?;
         }
         release::copy(&from, &to)?;
         release::set_mode(&to, component.executable)?;
@@ -211,8 +216,33 @@ pub fn install(
     };
     let bytes =
         serde_json::to_vec(&state).map_err(|error| InstallError::Malformed(error.to_string()))?;
-    release::write(&prefix.join("state.json"), &bytes)?;
+    let state_path = prefix.join("state.json");
+    release::write(&state_path, &bytes)?;
+    set_permissions(&state_path, 0o644)?;
     Ok(state)
+}
+
+fn create_public_directory(path: &Path) -> Result<(), InstallError> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(path)
+        .map_err(|source| InstallError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+    set_permissions(path, 0o755)
+}
+
+fn set_permissions(path: &Path, mode: u32) -> Result<(), InstallError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| InstallError::Io {
+        path: path.display().to_string(),
+        source,
+    })
 }
 
 /// Reports what is installed in `prefix` and whether it may be trusted.
