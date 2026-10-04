@@ -38,7 +38,7 @@ impl Fixture {
                 base: digest.clone(),
                 cache: digest.clone(),
                 runtime: digest,
-                isolation: "isolation".into(),
+                isolation_intent: crate::Digest::of(b"isolation").to_string(),
             },
             launch,
             disposed: false,

@@ -124,6 +124,28 @@ posture or complete the first live Run.
 
 ## Real VM operator entrypoint
 
+First use the installed
+[`workspace launch-inputs prepare`](../skills-core/README.md#inactive-run-preparation)
+command to measure the explicitly selected source/cache and project instructions
+against the current Supply and trusted registry. It writes an inactive proposal
+and canonical manifest; it does not approve a Run, launch a Session or call a
+Provider. Inspect the saved proposal with its exact manifest digest before
+building the operator selection below. Copy `proposal.run_id` into
+`envelope.run_id`, its proposed profile ID/revision into `envelope.envelope_id`
+and `envelope.envelope_revision`, and the parsed `manifest.json` into `manifest`.
+Use its `base_commit` for the dedicated worktree's initial `head`.
+Add the reviewed ordered Beads, finite limits, fixed verification plan and expiry
+through the existing operator envelope; none is supplied or approved by preparation.
+The selected immutable cache must be privately readable by the operator and broker;
+preparation does not change registry, group membership or access permissions.
+
+For the maintainer's first Run, the confirmed selection remains, in order,
+`louiselm-l9cj`, `louiselm-cf5q`, `louiselm-pnro`, Luna at low effort, six Sessions,
+an initial shared ceiling of 12 Provider requests, and the full Lua verification
+plan. Recording these bounds is not launch approval. Provisioning code changes
+must be rebuilt into a reviewed signed release before installation; a development
+binary or fixture pass cannot stand in for that deployment.
+
 `scripts/bead-run.lua` is the concrete caller for a reviewed first Run of three
 to five Beads. In an interactive VM Neovim using the approved LouiseLM checkout,
 invoke it with a private selection file:

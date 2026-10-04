@@ -59,8 +59,8 @@ fn robot_and_human_preflight_name_the_same_exact_request_without_claiming_launch
     assert_eq!(human.status.code(), Some(2));
     let text = String::from_utf8(human.stdout).unwrap();
     assert!(text.contains(&fixture.request.digest().to_string()));
-    assert!(text.contains("network_scope: unresolved"));
-    assert!(text.contains("isolation_contract: unresolved"));
+    assert!(text.contains("network_scope: denied"));
+    assert!(text.contains("isolation_contract: louiselm.isolation/2"));
     assert!(text.contains("not authorization or live Session state"));
 }
 
@@ -105,8 +105,10 @@ fn direct_launch_does_not_invent_a_session_or_verified_posture() {
     assert!(value.get("session_id").is_none());
 }
 
-#[test]
-fn shared_neovim_fixture_is_emitted_by_the_real_preflight_producer() {
+fn shared_preflight() -> (
+    louiselm_skills::preflight::Preview,
+    louiselm_skills::launch::LaunchRequest,
+) {
     let fixture = DiscoveryFixture::new();
     let mut manifest = fixture.manifest.clone();
     manifest.envelope.revision = 2;
@@ -122,6 +124,28 @@ fn shared_neovim_fixture_is_emitted_by_the_real_preflight_producer() {
         Some((&fixture.request, &fixture.manifest)),
     )
     .unwrap();
+    (preview, request)
+}
+
+#[test]
+#[ignore = "Explicit regeneration; the ordinary test below is the CI freshness gate."]
+fn regenerate_preflight_fixture() {
+    let (preview, request) = shared_preflight();
+    std::fs::write(
+        "../tests/fixtures/preflight_v1.json",
+        format!("{}\n", serde_json::to_string_pretty(&preview).unwrap()),
+    )
+    .unwrap();
+    std::fs::write(
+        "../tests/fixtures/preflight_request_v2.json",
+        request.canonical_bytes(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn shared_neovim_fixture_is_emitted_by_the_real_preflight_producer() {
+    let (preview, request) = shared_preflight();
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("../../tests/fixtures/preflight_v1.json")).unwrap();
     assert_eq!(serde_json::to_value(preview).unwrap(), expected);

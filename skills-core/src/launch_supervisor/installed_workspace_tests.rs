@@ -13,12 +13,13 @@ fn snapshot_bytes() -> Vec<u8> {
 }
 
 pub(in crate::launch_supervisor) fn fixture_manifest() -> SessionInputManifest {
-    fixture_manifest_for(None)
+    fixture_manifest_for(None, crate::registry::NetworkPolicy::Denied)
 }
 
 /// The fixture manifest, optionally for an installed Codex-contract runtime.
 pub(in crate::launch_supervisor) fn fixture_manifest_for(
     codex: Option<&Path>,
+    network: crate::registry::NetworkPolicy,
 ) -> SessionInputManifest {
     let binaries = std::env::current_exe()
         .unwrap()
@@ -33,22 +34,28 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
             .unwrap()
             .canonical_bytes(),
     );
+    let agent = AgentRegistration {
+        id: "agent".into(),
+        provider: Provider::Fixed("fixture".into()),
+        runtime_id: "runtime".into(),
+        arguments: vec![],
+        environment: std::collections::BTreeMap::new(),
+        tool_integration: Some(
+            if codex.is_some() {
+                super::super::super::tool_integration::CODEX_CONTRACT
+            } else {
+                super::super::super::tool_integration::CONTRACT
+            }
+            .into(),
+        ),
+    };
     SessionInputManifest::build(SessionInputs {
-        agent: Some(AgentRegistration {
-            id: "agent".into(),
-            provider: Provider::Fixed("fixture".into()),
-            runtime_id: "runtime".into(),
-            arguments: vec![],
-            environment: std::collections::BTreeMap::new(),
-            tool_integration: Some(
-                if codex.is_some() {
-                    super::super::super::tool_integration::CODEX_CONTRACT
-                } else {
-                    super::super::super::tool_integration::CONTRACT
-                }
-                .into(),
-            ),
-        }),
+        runtime_configuration_digest: Some(
+            crate::runtime_configuration::resolve(&agent)
+                .unwrap()
+                .to_string(),
+        ),
+        agent: Some(agent),
         runtime: Some(if let Some(runtime) = codex {
             super::codex_chain::measurement(runtime)
         } else {
@@ -73,7 +80,7 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
         source_base_digest: Some(Digest::of(b"[]").to_string()),
         cache_base_digest: Some(Digest::of(&cache_bytes).to_string()),
         policy_digest: Some(crate::Policy::embedded().digest().to_string()),
-        isolation_receipt: Some("fixture-isolation".into()),
+        isolation: Some(crate::session_manifest::IsolationIntent::new(network)),
         envelope_id: Some("envelope".into()),
         envelope_revision: Some(1),
         acp_mcp_servers: Some(vec![]),

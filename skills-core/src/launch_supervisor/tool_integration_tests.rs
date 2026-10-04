@@ -69,6 +69,44 @@ pub(super) fn manifest(executable: &Path) -> ReleaseManifest {
 }
 
 #[test]
+fn codex_configuration_explicitly_disables_added_extensions() {
+    let (_, environment) = super::super::tool_integration::launch_values(
+        super::super::tool_integration::Integration::CodexAcp,
+        Path::new("/runtime"),
+        Path::new("/session/home"),
+    );
+    let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
+    for feature in ["plugins", "remote_plugin", "apps"] {
+        assert_eq!(
+            config["features"][feature], false,
+            "{feature} must be explicit"
+        );
+    }
+    assert_eq!(config["mcp_servers"], serde_json::json!({}));
+    assert_eq!(config["model"], "gpt-5.6-luna");
+    assert_eq!(config["model_reasoning_effort"], "low");
+    let agent = crate::registry::AgentRegistration {
+        id: "codex".into(),
+        provider: crate::registry::Provider::Fixed("openai".into()),
+        runtime_id: "runtime".into(),
+        arguments: vec![],
+        environment: BTreeMap::new(),
+        tool_integration: Some(super::super::tool_integration::CODEX_CONTRACT.into()),
+    };
+    assert_eq!(
+        crate::runtime_configuration::resolve(&agent).unwrap(),
+        Digest::of(
+            format!(
+                "{}\n{}",
+                environment["CODEX_CONFIG"], environment["DEFAULT_AUTH_REQUEST"]
+            )
+            .as_bytes()
+        ),
+        "preparation and launch must measure identical configuration bytes",
+    );
+}
+
+#[test]
 fn measured_integration_rejects_missing_evidence_and_runtime_overrides() {
     let root = tempfile::tempdir().unwrap();
     let executable = root.path().join("agent");

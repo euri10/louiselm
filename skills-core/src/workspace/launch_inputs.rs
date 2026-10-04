@@ -16,6 +16,9 @@ use crate::{
 
 use super::{SnapshotPreview, SnapshotRecord, SourceFiles, WorkspaceError, filesystem, git};
 
+mod preparation;
+pub use preparation::{Preparation, RunProposal, inspect_proposal, prepare};
+
 /// Payload-free launch input preview. Digests identify bytes, not approval.
 #[derive(Serialize)]
 pub struct InputPreview {
@@ -111,20 +114,22 @@ impl LoadedInputs {
     }
 
     pub(crate) fn publish(&self, output: &Path) -> Result<(), WorkspaceError> {
-        filesystem::publish(output, |staging| {
-            filesystem::write_file(
-                &staging.join("manifest.json"),
-                &self.manifest.canonical_bytes(),
-                0o400,
-            )?;
-            filesystem::write_files(&staging.join("snapshot/files"), &self.files, true)?;
-            filesystem::write_file(
-                &staging.join("snapshot/snapshot.json"),
-                &serde_json::to_vec(&self.record)?,
-                0o400,
-            )?;
-            self.cache.write_snapshot(&staging.join("cache"))
-        })
+        filesystem::publish(output, |staging| self.write(staging))
+    }
+
+    fn write(&self, staging: &Path) -> Result<(), WorkspaceError> {
+        filesystem::write_file(
+            &staging.join("manifest.json"),
+            &self.manifest.canonical_bytes(),
+            0o400,
+        )?;
+        filesystem::write_files(&staging.join("snapshot/files"), &self.files, true)?;
+        filesystem::write_file(
+            &staging.join("snapshot/snapshot.json"),
+            &serde_json::to_vec(&self.record)?,
+            0o400,
+        )?;
+        self.cache.write_snapshot(&staging.join("cache"))
     }
 
     pub(crate) fn retain_source(&self, output: &Path) -> Result<(), WorkspaceError> {

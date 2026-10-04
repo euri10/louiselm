@@ -22,7 +22,8 @@ T["consumes the producing Rust fixture and presents proposed inputs separately"]
   MiniTest.expect.equality(text:find("not authorization or live Session state", 1, true) ~= nil, true)
   MiniTest.expect.equality(text:find("proposed envelope_revision: 2", 1, true) ~= nil, true)
   MiniTest.expect.equality(text:find("envelope_revision: 1 -> 2", 1, true) ~= nil, true)
-  MiniTest.expect.equality(text:find("network_scope: comparison unresolved", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("proposed network_scope: denied", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("proposed isolation_contract: louiselm.isolation/2", 1, true) ~= nil, true)
 end
 
 T["accepts only the current isolation contract identity"] = function()
@@ -58,7 +59,11 @@ T["rejects unsafe identities and contradictory presentation claims"] = function(
       value.proposed[2].field = "agent"
     end,
     function(value)
-      value.proposed[14].value = "denied"
+      for _, proposed in ipairs(value.proposed) do
+        if proposed.field == "network_scope" then
+          proposed.value = "unrestricted"
+        end
+      end
     end,
     function(value)
       value.comparison.changes[1].after = "sha256:" .. string.rep("0", 64)

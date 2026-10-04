@@ -23,7 +23,7 @@ use crate::{
 #[command(
     name = "preflight",
     about = "Inspect prospective artifacts without launch or approval authority",
-    after_help = "Inputs must be canonical launch request/2 and Session input-manifest/1 bytes. Exit 2: snapshot produced, enforcement unproven. Exit 1: invalid command/input."
+    after_help = "Inputs must be canonical launch request/2 and Session input-manifest/2 bytes. Exit 2: snapshot produced, enforcement unproven. Exit 1: invalid command/input."
 )]
 struct Options {
     #[arg(long, required_unless_present = "direct")]

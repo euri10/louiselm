@@ -93,7 +93,12 @@ fn staged_inputs(
         source_base_digest: Some(preview.base_digest),
         cache_base_digest: Some(CacheBase::capture(&cache).unwrap().digest().to_string()),
         policy_digest: digest(b"policy"),
-        isolation_receipt: Some("isolation".into()),
+        runtime_configuration_digest: Some(
+            louiselm_skills::Digest::of(b"fixture configuration").to_string(),
+        ),
+        isolation: Some(louiselm_skills::session_manifest::IsolationIntent::new(
+            louiselm_skills::registry::NetworkPolicy::Denied,
+        )),
         envelope_id: Some("envelope-1".into()),
         envelope_revision: Some(7),
         acp_mcp_servers: Some(vec![]),

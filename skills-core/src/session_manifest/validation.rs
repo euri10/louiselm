@@ -25,6 +25,11 @@ impl SessionInputManifest {
             });
         }
         runtime(&self.runtime)?;
+        digest(
+            "runtime_configuration_digest",
+            &self.runtime_configuration_digest,
+            true,
+        )?;
         for argument in &self.agent.arguments {
             if argument.contains('\0') {
                 return Err(malformed(
@@ -54,7 +59,9 @@ impl SessionInputManifest {
         digest("source_snapshot_digest", &self.source_snapshot_digest, true)?;
         digest("source_base_digest", &self.source_base_digest, true)?;
         digest("cache_base_digest", &self.cache_base_digest, true)?;
-        identifier("isolation_receipt", &self.isolation_receipt)?;
+        if self.isolation.contract_version != crate::isolation::CONTRACT_VERSION {
+            return Err(malformed("isolation", "unsupported isolation contract"));
+        }
         identifier("envelope_id", &self.envelope.id)?;
         for (field, entries) in [
             ("project_instructions", &self.project_instructions),

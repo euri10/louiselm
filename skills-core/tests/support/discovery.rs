@@ -185,7 +185,12 @@ fn manifest_fixture(runtime: &RuntimePackage) -> SessionInputManifest {
         source_snapshot_digest: Some(digest(b"source snapshot")),
         source_base_digest: Some(digest(b"source base")),
         policy_digest: Some(digest(b"policy")),
-        isolation_receipt: Some("isolation-1".into()),
+        runtime_configuration_digest: Some(
+            louiselm_skills::Digest::of(b"fixture configuration").to_string(),
+        ),
+        isolation: Some(louiselm_skills::session_manifest::IsolationIntent::new(
+            louiselm_skills::registry::NetworkPolicy::Denied,
+        )),
         envelope_id: Some("envelope-1".into()),
         envelope_revision: Some(1),
         acp_mcp_servers: Some(vec![]),
@@ -213,7 +218,7 @@ fn isolation_fixture(inventory: &Inventory, manifest: &SessionInputManifest) -> 
                     digest: manifest.skill_generation.view_digest.clone(),
                 },
                 _ => SourceControl::Masked {
-                    evidence_id: manifest.isolation_receipt.clone(),
+                    evidence_id: "isolation-1".into(),
                 },
             },
         })

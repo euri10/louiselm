@@ -56,6 +56,15 @@ pub enum WorkspaceError {
     /// A required Session input binding is invalid.
     #[error("workspace Session input manifest refused")]
     Input(#[from] crate::session_manifest::SessionManifestError),
+    /// Registered Agent/runtime or current witnessed supply could not be resolved.
+    #[error("workspace trusted Session inputs unavailable")]
+    Resolution(#[from] crate::session_manifest::InputResolutionError),
+    /// A selected registry identity is unavailable.
+    #[error("workspace registry input unavailable")]
+    Registry(#[from] crate::registry::RegistryError),
+    /// No fixed configuration producer supports the selected Agent.
+    #[error("workspace runtime configuration refused")]
+    Configuration(#[from] crate::runtime_configuration::ConfigurationError),
 }
 
 /// A working-copy difference from the captured commit.

@@ -8,6 +8,7 @@ use crate::{
         admission::Enforcement,
         installed::{certify, measure},
     },
+    registry::NetworkPolicy,
 };
 use std::{
     io::Read,
@@ -17,6 +18,14 @@ use std::{
 
 const BUDGET_WORKER: &str =
     "launch_supervisor::system::installed_tests::verification::budget::installed_budget_worker";
+
+fn brokered(mut launch: LaunchRequest) -> LaunchRequest {
+    launch.session_input_manifest_id =
+        workspace::fixture_manifest_for(None, NetworkPolicy::Brokered)
+            .digest()
+            .to_string();
+    launch
+}
 
 fn permission(now: u64, port: u16) -> crate::provider_request::ApprovedProviderRequests {
     let mut permission = guard::approval(now);
@@ -90,8 +99,8 @@ fn installed_budget_worker() {
         .unwrap()
         .parse()
         .unwrap();
-    let first = child_grant(request(), config.operator_uid, now, port);
-    let second = child_grant(verifier_launch(0), config.operator_uid, now, port);
+    let first = child_grant(brokered(request()), config.operator_uid, now, port);
+    let second = child_grant(brokered(verifier_launch(0)), config.operator_uid, now, port);
     let run = broker
         .authorize_run(&fixture_run_envelope(
             &first,
@@ -238,6 +247,10 @@ fn start_refusing_upstream(root: &Path) -> thread::JoinHandle<()> {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One installed transaction proves shared counting across two separately launched Sessions and their terminal cleanup."
+)]
 fn privileged_installed_run_budget() {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
         eprintln!("skipping: shared Run budget requires the Debian launcher VM");
@@ -258,6 +271,10 @@ fn privileged_installed_run_budget() {
     registry_record(
         &registry.join("envelopes.json"),
         &serde_json::json!([{"id":"envelope","network":"brokered","description":"one shared Provider attempt"}]),
+    );
+    workspace::stage_manifest(
+        &config,
+        &workspace::fixture_manifest_for(None, NetworkPolicy::Brokered),
     );
     config.conformance = Enforcement::Enforced;
     write_json(&paths.state_root.join("config.json"), &config);
@@ -286,7 +303,7 @@ fn privileged_installed_run_budget() {
         &config,
         &registry,
         &sessions,
-        request(),
+        brokered(request()),
     ));
     let address = marker(&lines, "BUDGET_FIRST_ADDR ")
         .split_whitespace()
@@ -309,7 +326,7 @@ fn privileged_installed_run_budget() {
         &config,
         &registry,
         &sessions,
-        verifier_launch(0),
+        brokered(verifier_launch(0)),
     ));
     let address = marker(&lines, "BUDGET_SECOND_ADDR ")
         .split_whitespace()

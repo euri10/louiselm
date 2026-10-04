@@ -5,8 +5,9 @@
 //! exact launch values, so no registration can widen the boundary.
 
 use super::{AgentAuthentication, SupervisorError};
+#[cfg(test)]
+use crate::Digest;
 use crate::{
-    Digest,
     registry::{AgentRegistration, Registry},
     release,
     sandbox::ConfinementPlan,
@@ -14,8 +15,12 @@ use crate::{
 use serde::Serialize;
 use std::{collections::BTreeMap, fs, os::unix::fs::MetadataExt, path::Path};
 
-pub(super) const CONTRACT: &str = "louiselm.test-tool-integration/1";
-pub(super) const CODEX_CONTRACT: &str = "louiselm.codex-acp-integration/1";
+#[cfg(test)]
+use crate::runtime_configuration::CODEX_BASE_URL;
+pub(super) use crate::runtime_configuration::{CODEX_CONTRACT, CONTRACT};
+use crate::runtime_configuration::{
+    CODEX_PROVIDER, codex_configuration, codex_configuration_digest,
+};
 const COMPONENT: &str = "louiselm-tool-test-agent";
 /// Runtime-root-relative ACP adapter script run by the measured Node executable.
 pub(super) const CODEX_ADAPTER: &str = "codex-acp.js";
@@ -23,9 +28,6 @@ pub(super) const CODEX_ADAPTER: &str = "codex-acp.js";
 pub(super) const CODEX_RUNTIME: &str = "codex";
 /// Runtime-root-relative Code Mode helper; it never gains sender authority.
 pub(super) const CODEX_HOST: &str = "codex-code-mode-host";
-/// The Session-local broker listener; the Sender guard binds this exact address.
-const CODEX_BASE_URL: &str = "http://127.0.0.1:40773/v1";
-const CODEX_PROVIDER: &str = "louiselm-broker";
 
 /// Which measured integration a registration selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +106,7 @@ impl ToolIsolationEvidence {
                 adapter: hash(&plan.runtime_root.join(CODEX_ADAPTER))?,
                 runtime: hash(&plan.runtime_root.join(CODEX_RUNTIME))?,
                 code_mode_host: hash(&plan.runtime_root.join(CODEX_HOST))?,
-                configuration: configuration_digest(),
+                configuration: codex_configuration_digest().to_string(),
             }),
         };
         let digest = hash(&plan.executable)?;
@@ -168,7 +170,7 @@ impl ToolIsolationEvidence {
                     && adapter(CODEX_ADAPTER) == Some(codex.adapter.as_str())
                     && adapter(CODEX_RUNTIME) == Some(codex.runtime.as_str())
                     && adapter(CODEX_HOST) == Some(codex.code_mode_host.as_str())
-                    && codex.configuration == configuration_digest()
+                    && codex.configuration == codex_configuration_digest().to_string()
             }
             _ => false,
         };
@@ -343,47 +345,6 @@ pub(super) fn launch_values(
     }
 }
 
-/// The fixed Codex configuration and gateway authentication request.
-///
-/// Both are Session-independent, so their digest identifies the contract's
-/// configuration exactly. The gateway carries no headers or credentials; the
-/// broker adds the Provider key after admission.
-fn codex_configuration() -> (String, String) {
-    let config = serde_json::json!({
-        "features": {"code_mode_host": true},
-        "mcp_servers": {},
-        "model": "gpt-5.6-luna",
-        "model_provider": CODEX_PROVIDER,
-        "model_reasoning_effort": "low",
-        "model_providers": {
-            CODEX_PROVIDER: {
-                "base_url": CODEX_BASE_URL,
-                "name": CODEX_PROVIDER,
-                "request_max_retries": 0,
-                "requires_openai_auth": false,
-                "stream_max_retries": 0,
-                "wire_api": "responses",
-            },
-        },
-    });
-    let authentication = serde_json::json!({
-        "_meta": {
-            "gateway": {
-                "baseUrl": CODEX_BASE_URL,
-                "headers": {},
-                "providerName": CODEX_PROVIDER,
-            },
-        },
-        "methodId": "gateway",
-    });
-    (config.to_string(), authentication.to_string())
-}
-
-fn configuration_digest() -> String {
-    let (config, authentication) = codex_configuration();
-    Digest::of(format!("{config}\n{authentication}").as_bytes()).to_string()
-}
-
 fn measure_release_component(
     plan: &ConfinementPlan,
     release_root: &Path,
@@ -510,7 +471,10 @@ mod tests {
         assert_eq!(value["codex"]["runtime"], Digest::of(b"codex").hex());
         assert_eq!(value["codex"]["adapter"], Digest::of(b"adapter").hex());
         assert_eq!(value["codex"]["code_mode_host"], Digest::of(b"host").hex());
-        assert_eq!(value["codex"]["configuration"], configuration_digest());
+        assert_eq!(
+            value["codex"]["configuration"],
+            codex_configuration_digest().to_string()
+        );
 
         let mut overridden = plan.clone();
         overridden

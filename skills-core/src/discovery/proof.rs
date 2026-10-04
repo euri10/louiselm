@@ -54,7 +54,12 @@ impl DiscoveryProof {
         if observations.schema != SOURCE_EVIDENCE_SCHEMA
             || observations.inventory_digest
                 != crate::Digest::of(&inventory.canonical_bytes()).to_string()
-            || observations.evidence_id != bound.manifest.isolation_receipt
+            || observations.evidence_id.is_empty()
+            || observations.evidence_id.len() > 128
+            || !observations
+                .evidence_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         {
             return Err(DiscoveryError::Refused("source_evidence_mismatch"));
         }
@@ -81,7 +86,12 @@ impl DiscoveryProof {
             if observation.source != *source {
                 return Err(DiscoveryError::Refused("source_set_mismatch"));
             }
-            verify_control(source.kind, &observation.control, bound)?;
+            verify_control(
+                source.kind,
+                &observation.control,
+                bound,
+                &observations.evidence_id,
+            )?;
         }
         Ok(Self {
             request_digest: bound.request.digest(),
@@ -123,6 +133,7 @@ fn verify_control(
     kind: SourceKind,
     control: &SourceControl,
     bound: &AuthenticatedInputs,
+    evidence_id: &str,
 ) -> Result<(), DiscoveryError> {
     let manifest = &bound.manifest;
     let snapshot = match kind {
@@ -137,11 +148,12 @@ fn verify_control(
     match (snapshot, control) {
         (Some(expected), SourceControl::FrozenSnapshot { digest }) if expected == *digest => Ok(()),
         (Some(_), _) => Err(DiscoveryError::Refused("snapshot_mismatch")),
-        (None, SourceControl::Masked { evidence_id })
-            if *evidence_id == manifest.isolation_receipt =>
-        {
-            Ok(())
-        }
+        (
+            None,
+            SourceControl::Masked {
+                evidence_id: actual,
+            },
+        ) if actual == evidence_id => Ok(()),
         (None, _) => Err(DiscoveryError::Refused("native_source_unmasked")),
     }
 }

@@ -73,6 +73,7 @@ impl SessionInputs {
         Ok(Self {
             agent: Some(agent),
             runtime: Some(runtime),
+            runtime_configuration_digest: None,
             skill_generation_id: Some(generation.to_owned()),
             view_digest: Some(view.digest().to_string()),
             policy_digest: Some(policy.digest().to_string()),
@@ -83,7 +84,7 @@ impl SessionInputs {
             source_base_digest: None,
             cache_base_digest: None,
             acp_mcp_servers: None,
-            isolation_receipt: None,
+            isolation: None,
             envelope_id: None,
             envelope_revision: None,
         })

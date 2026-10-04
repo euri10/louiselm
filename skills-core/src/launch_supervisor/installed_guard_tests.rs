@@ -584,6 +584,13 @@ fn installed_guard_case_for(
             "id":"envelope","network":"brokered","description":"guarded fixture"
         }]),
     );
+    workspace::stage_manifest(
+        &config,
+        &workspace::fixture_manifest_for(
+            super::codex_chain::runtime_directory(root.path()).as_deref(),
+            crate::registry::NetworkPolicy::Brokered,
+        ),
+    );
     config.conformance = Enforcement::Enforced;
     write_json(&paths.state_root.join("config.json"), &config);
     write_json(&paths.state_root.join("public-config.json"), &config);
@@ -627,7 +634,10 @@ fn installed_guard_case_for(
     .unwrap();
     supervisor
         .launch(
-            request_for(super::codex_chain::runtime_directory(root.path()).as_deref()),
+            request_for(
+                super::codex_chain::runtime_directory(root.path()).as_deref(),
+                crate::registry::NetworkPolicy::Brokered,
+            ),
             config.operator_uid,
             now_ms,
             Box::new(move |outcome| sent.send(outcome).unwrap()),

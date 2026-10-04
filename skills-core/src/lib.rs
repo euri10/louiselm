@@ -45,6 +45,7 @@ pub mod registry;
 pub mod release;
 pub mod render;
 pub mod robot;
+pub mod runtime_configuration;
 pub mod sandbox;
 pub mod scan;
 pub mod session_manifest;

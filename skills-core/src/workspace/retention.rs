@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 
 /// Default unpinned expiry measured from launch authorization, never renewed on restart.
 pub const DEFAULT_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
-const SCHEMA: &str = "louiselm.workspace.retention/1";
+const SCHEMA: &str = "louiselm.workspace.retention/2";
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 
 /// Availability claims deliberately distinguish durable pointers from source bytes.
@@ -57,8 +57,8 @@ pub struct InputReferences {
     pub generation: String,
     /// Digest of the full runtime measurement, including adapters.
     pub runtime: String,
-    /// Declared isolation evidence reference, not an assertion of verification.
-    pub isolation: String,
+    /// Intended isolation digest, independent of actual launch evidence below.
+    pub isolation_intent: String,
 }
 
 impl InputReferences {
@@ -70,7 +70,7 @@ impl InputReferences {
             cache: manifest.cache_base_digest.clone(),
             generation: manifest.skill_generation.generation_digest.clone(),
             runtime: Digest::of(&serde_json::to_vec(&manifest.runtime)?).to_string(),
-            isolation: manifest.isolation_receipt.clone(),
+            isolation_intent: Digest::of(&serde_json::to_vec(&manifest.isolation)?).to_string(),
         })
     }
 
@@ -82,13 +82,12 @@ impl InputReferences {
             &self.cache,
             &self.generation,
             &self.runtime,
+            &self.isolation_intent,
         ] {
             Digest::parse(value).map_err(|_| invalid())?;
         }
         if self.manifest != launch.session_input_manifest_id
             || self.generation != launch.skill_generation_id
-            || self.isolation.is_empty()
-            || self.isolation.len() > 256
         {
             return Err(invalid());
         }

@@ -41,7 +41,7 @@ fn registry_fixture(root: &Path) -> (Registry, AgentRegistration, RuntimePackage
         runtime_id: "runtime".into(),
         arguments: vec![],
         environment: std::collections::BTreeMap::new(),
-        tool_integration: None,
+        tool_integration: Some(crate::runtime_configuration::CONTRACT.into()),
     };
     let runtime = RuntimePackage {
         id: "runtime".into(),
@@ -72,11 +72,11 @@ fn registry_fixture(root: &Path) -> (Registry, AgentRegistration, RuntimePackage
     (Registry::open(root).unwrap(), agent, runtime)
 }
 
-#[test]
-fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
-    let (registry, agent, runtime) = registry_fixture(root);
+fn manifest_fixture(
+    root: &Path,
+    agent: AgentRegistration,
+    runtime: &RuntimePackage,
+) -> SessionInputManifest {
     let snapshot = root.join("snapshot");
     fs::create_dir_all(snapshot.join("files")).unwrap();
     let bytes = format!(
@@ -87,7 +87,12 @@ fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
     let cache = root.join("cache");
     fs::create_dir(&cache).unwrap();
     let identity = Digest::of(b"fixture").to_string();
-    let manifest = SessionInputManifest::build(SessionInputs {
+    SessionInputManifest::build(SessionInputs {
+        runtime_configuration_digest: Some(
+            crate::runtime_configuration::resolve(&agent)
+                .unwrap()
+                .to_string(),
+        ),
         agent: Some(agent),
         runtime: Some(runtime.measure().unwrap()),
         skill_generation_id: Some(identity.clone()),
@@ -99,12 +104,24 @@ fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
         source_base_digest: Some(Digest::of(b"[]").to_string()),
         cache_base_digest: Some(CacheBase::capture(&cache).unwrap().digest().to_string()),
         policy_digest: Some(identity.clone()),
-        isolation_receipt: Some("isolation".into()),
+        isolation: Some(crate::session_manifest::IsolationIntent::new(
+            crate::registry::NetworkPolicy::Denied,
+        )),
         envelope_id: Some("empty".into()),
         envelope_revision: Some(1),
         acp_mcp_servers: Some(vec![]),
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (registry, agent, runtime) = registry_fixture(root);
+    let manifest = manifest_fixture(root, agent, &runtime);
+    let snapshot = root.join("snapshot");
+    let cache = root.join("cache");
     let input_root = root.join("inputs");
     fs::DirBuilder::new()
         .mode(0o700)
@@ -127,7 +144,7 @@ fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
         agent_id: "agent".into(),
         envelope_id: "empty".into(),
         envelope_revision: 1,
-        skill_generation_id: identity,
+        skill_generation_id: manifest.skill_generation.generation_digest.clone(),
         session_input_manifest_id: manifest.digest().to_string(),
     };
     let owner = (
@@ -135,9 +152,59 @@ fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
         rustix::process::getegid().as_raw(),
     );
     assert!(load(&input_root, owner, &request, &registry).is_ok());
+    for changed in ["configuration", "added_tool", "added_plugin"] {
+        let mut substituted = manifest.clone();
+        match changed {
+            "configuration" => {
+                substituted.runtime_configuration_digest = Digest::of(b"substituted").to_string();
+            }
+            "added_tool" => substituted.tool_schemas.push(
+                crate::session_manifest::MeasuredInput::from_bytes("tool.json", false, b"{}")
+                    .unwrap(),
+            ),
+            _ => substituted.plugin_schemas.push(
+                crate::session_manifest::MeasuredInput::from_bytes("plugin.json", false, b"{}")
+                    .unwrap(),
+            ),
+        }
+        launch_inputs::stage(
+            &substituted,
+            &snapshot,
+            &cache,
+            &input_root.join(substituted.digest().hex()),
+        )
+        .unwrap();
+        let mut other = request.clone();
+        other.session_input_manifest_id = substituted.digest().to_string();
+        assert!(
+            matches!(
+                load(&input_root, owner, &other, &registry),
+                Err(SupervisorError::ResolutionFailed)
+            ),
+            "{changed} must not widen the fixed integration"
+        );
+    }
     request.envelope_revision += 1;
     assert!(matches!(
         load(&input_root, owner, &request, &registry),
         Err(SupervisorError::ResolutionFailed)
     ));
+    request.envelope_revision = manifest.envelope.revision;
+    registry_file(
+        root,
+        "envelopes.json",
+        &[EnvelopeRegistration {
+            id: "empty".into(),
+            network: NetworkPolicy::Brokered,
+            description: "changed after preparation".into(),
+        }],
+    );
+    let registry = Registry::open(root).unwrap();
+    assert!(
+        matches!(
+            load(&input_root, owner, &request, &registry),
+            Err(SupervisorError::ResolutionFailed)
+        ),
+        "registry policy drift must not broaden prepared isolation"
+    );
 }

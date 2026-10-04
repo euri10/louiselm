@@ -125,6 +125,7 @@ fn run_installed(start_only: bool) {
         }),
     );
     let mut inputs = workspace::fixture_manifest();
+    inputs.isolation.network = crate::registry::NetworkPolicy::Brokered;
     inputs.agent.provider = Provider::Fixed("openai".into());
     inputs.provider_disclosure.providers = vec!["openai".into()];
     crate::session_manifest::SessionInputManifest::parse(&inputs.canonical_bytes()).unwrap();

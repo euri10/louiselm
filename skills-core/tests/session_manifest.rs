@@ -12,9 +12,9 @@ use louiselm_skills::{
     canonical::Digest,
     launch::{LaunchRequest, PROTOCOL_VERSION, REQUEST_SCHEMA},
     posture::{DimensionName, FailureCode, PROVIDER_DISCLOSURE_NOTICE},
-    registry::{AgentRegistration, MeasuredFile, Provider, RuntimeMeasurement},
+    registry::{AgentRegistration, MeasuredFile, NetworkPolicy, Provider, RuntimeMeasurement},
     session_manifest::{
-        INPUT_MANIFEST_SCHEMA, MeasuredInput, SessionInputManifest, SessionInputs,
+        INPUT_MANIFEST_SCHEMA, IsolationIntent, MeasuredInput, SessionInputManifest, SessionInputs,
         SessionManifestError,
     },
 };
@@ -55,6 +55,7 @@ fn complete_inputs() -> SessionInputs {
     SessionInputs {
         agent: Some(agent()),
         runtime: Some(runtime()),
+        runtime_configuration_digest: Some(Digest::of(b"fixture configuration").to_string()),
         skill_generation_id: Some(GENERATION.to_owned()),
         view_digest: Some(VIEW.to_owned()),
         project_instructions: Some(vec![
@@ -73,7 +74,7 @@ fn complete_inputs() -> SessionInputs {
         source_snapshot_digest: Some(Digest::of(b"source snapshot").to_string()),
         source_base_digest: Some(Digest::of(b"source base").to_string()),
         policy_digest: Some(POLICY.to_owned()),
-        isolation_receipt: Some("isolation-contract-1".to_owned()),
+        isolation: Some(IsolationIntent::new(NetworkPolicy::Denied)),
         envelope_id: Some("envelope-7".to_owned()),
         envelope_revision: Some(3),
         acp_mcp_servers: Some(Vec::new()),
@@ -97,6 +98,24 @@ fn request_with(manifest_digest: &str) -> LaunchRequest {
 }
 
 #[test]
+fn prospective_isolation_needs_no_future_receipt() {
+    let mut json =
+        serde_json::to_value(SessionInputManifest::build(complete_inputs()).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("isolation_receipt");
+    json["schema"] = "louiselm.session.input-manifest/2".into();
+    json["isolation"] = serde_json::json!({
+        "contract_version": "louiselm.isolation/2",
+        "network": "denied",
+    });
+    let manifest: SessionInputManifest = serde_json::from_value(json)
+        .expect("preparation binds intended isolation without a future evidence ID");
+    assert_eq!(
+        SessionInputManifest::parse(&manifest.canonical_bytes()).unwrap(),
+        manifest
+    );
+}
+
+#[test]
 fn builds_and_round_trips_a_complete_manifest() {
     let manifest =
         SessionInputManifest::build(complete_inputs()).expect("complete inputs build a manifest");
@@ -105,7 +124,10 @@ fn builds_and_round_trips_a_complete_manifest() {
     assert_eq!(manifest.agent.id, "codex");
     assert_eq!(manifest.envelope.id, "envelope-7");
     assert_eq!(manifest.envelope.revision, 3);
-    assert_eq!(manifest.isolation_receipt, "isolation-contract-1");
+    assert_eq!(
+        manifest.isolation,
+        IsolationIntent::new(NetworkPolicy::Denied)
+    );
     assert_eq!(manifest.policy_digest, POLICY);
     assert_eq!(manifest.skill_generation.generation_digest, GENERATION);
     assert_eq!(manifest.skill_generation.view_digest, VIEW);
@@ -277,6 +299,13 @@ fn missing_required_inputs_are_refused_without_defaults() {
     type RemoveInput = fn(&mut SessionInputs);
     let cases: Vec<(&str, RemoveInput, SessionManifestError)> = vec![
         (
+            "runtime configuration",
+            |inputs| inputs.runtime_configuration_digest = None,
+            SessionManifestError::Missing {
+                field: "runtime_configuration_digest",
+            },
+        ),
+        (
             "source snapshot",
             |inputs| inputs.source_snapshot_digest = None,
             SessionManifestError::Missing {
@@ -332,10 +361,8 @@ fn missing_required_inputs_are_refused_without_defaults() {
         ),
         (
             "isolation receipt",
-            |inputs| inputs.isolation_receipt = None,
-            SessionManifestError::Missing {
-                field: "isolation_receipt",
-            },
+            |inputs| inputs.isolation = None,
+            SessionManifestError::Missing { field: "isolation" },
         ),
         (
             "envelope id",
@@ -470,13 +497,13 @@ fn malformed_inputs_are_refused() {
         }
     ));
 
-    let mut bad_receipt = complete_inputs();
-    bad_receipt.isolation_receipt = Some("not a valid identifier!".to_owned());
-    let error = SessionInputManifest::build(bad_receipt).unwrap_err();
+    let mut bad_isolation = complete_inputs();
+    bad_isolation.isolation.as_mut().unwrap().contract_version = "unsupported".into();
+    let error = SessionInputManifest::build(bad_isolation).unwrap_err();
     assert!(matches!(
         error,
         SessionManifestError::Malformed {
-            field: "isolation_receipt",
+            field: "isolation",
             ..
         }
     ));
@@ -532,7 +559,7 @@ fn noncanonical_or_unknown_bytes_are_refused() {
 
     let wrong_schema = String::from_utf8(manifest.canonical_bytes())
         .unwrap()
-        .replace(INPUT_MANIFEST_SCHEMA, "louiselm.session.input-manifest/2");
+        .replace(INPUT_MANIFEST_SCHEMA, "louiselm.session.input-manifest/1");
     assert!(matches!(
         SessionInputManifest::parse(wrong_schema.as_bytes()).unwrap_err(),
         SessionManifestError::UnsupportedSchema(_)
@@ -575,10 +602,11 @@ fn required_values_and_nested_wire_fields_are_checked() {
         "/runtime/executable_sha256",
         "/runtime/version",
         "/runtime/origin",
+        "/runtime_configuration_digest",
         "/skill_generation/generation_digest",
         "/skill_generation/view_digest",
         "/policy_digest",
-        "/isolation_receipt",
+        "/isolation/contract_version",
         "/envelope/id",
         "/provider_disclosure/notice",
     ] {
@@ -663,14 +691,15 @@ fn metadata_changes_are_bound_and_only_set_order_is_normalized() {
             .digest(),
         baseline
     );
-    let changes: [fn(&mut SessionInputs); 12] = [
+    let changes: [fn(&mut SessionInputs); 13] = [
+        |i| i.runtime_configuration_digest = Some(Digest::of(b"changed configuration").to_string()),
         |i| i.project_instructions.as_mut().unwrap()[0].executable = true,
         |i| i.project_instructions.as_mut().unwrap()[0].size += 1,
         |i| i.tool_schemas.as_mut().unwrap()[0].sha256 = "34".repeat(32),
         |i| i.plugin_schemas.as_mut().unwrap()[0].path = "different.json".into(),
         |i| i.policy_digest = Some(Digest::of(b"new policy").to_string()),
         |i| i.skill_generation_id = Some(Digest::of(b"new generation").to_string()),
-        |i| i.isolation_receipt = Some("new-receipt".into()),
+        |i| i.isolation.as_mut().unwrap().network = NetworkPolicy::Brokered,
         |i| i.envelope_id = Some("new-envelope".into()),
         |i| i.runtime.as_mut().unwrap().version = "2".into(),
         |i| i.runtime.as_mut().unwrap().origin = "other origin".into(),

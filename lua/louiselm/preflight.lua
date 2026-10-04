@@ -20,7 +20,7 @@ local M = {}
 ---@field unresolved string[] Fields not known on both sides.
 
 ---@class louiselm.Preflight
----@field schema "louiselm.launch.preflight/1"
+---@field schema "louiselm.launch.preflight/2"
 ---@field notice string Fixed prospective-only disclosure.
 ---@field request_digest string Exact request future launch integration must bind.
 ---@field manifest_state "missing"|"contradictory"|"matched"
@@ -53,9 +53,10 @@ local FIELDS = {
   "project_instructions",
   "tool_schemas",
   "plugin_schemas",
+  "runtime_configuration",
   "policy",
   "isolation_contract",
-  "isolation_receipt",
+  "isolation_intent",
   "envelope",
   "envelope_revision",
   "network_scope",
@@ -116,11 +117,11 @@ local function identity(field, value)
   if value == nvim.NIL then
     return not REQUIRED[field]
   end
-  if field == "agent" or field == "envelope" or field == "isolation_receipt" then
+  if field == "agent" or field == "envelope" then
     return identifier(value)
   end
   if field == "network_scope" then
-    return false
+    return value == "denied" or value == "brokered"
   end
   if field == "isolation_contract" then
     return value == "louiselm.isolation/2"
@@ -186,7 +187,7 @@ end
 local function validate(value)
   if
     not exact(value, { "schema", "notice", "request_digest", "manifest_state", "proposed", "comparison", "posture" })
-    or value.schema ~= "louiselm.launch.preflight/1"
+    or value.schema ~= "louiselm.launch.preflight/2"
     or value.notice ~= NOTICE
     or not digest(value.request_digest)
     or not array(value.proposed, #FIELDS)

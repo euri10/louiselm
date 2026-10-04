@@ -32,6 +32,32 @@ fn complete_authenticated_sources_produce_a_bound_proof() {
 }
 
 #[test]
+fn native_evidence_identity_is_owned_by_the_signed_launch() {
+    let mut fixture = DiscoveryFixture::new();
+    let sources = fixture.isolation.native_sources.as_mut().unwrap();
+    sources.evidence_id = "created-at-launch".into();
+    for observation in &mut sources.sources {
+        if let SourceControl::Masked { evidence_id } = &mut observation.control {
+            *evidence_id = sources.evidence_id.clone();
+        }
+    }
+    fixture.sign();
+    let bound = fixture.authenticate().unwrap();
+    assert!(DiscoveryProof::verify(&bound, &fixture.runtime).is_ok());
+}
+
+#[test]
+fn signed_isolation_must_answer_the_proposed_contract() {
+    let mut fixture = DiscoveryFixture::new();
+    fixture.isolation.contract_version = "unsupported-contract".into();
+    fixture.sign();
+    assert!(matches!(
+        fixture.authenticate(),
+        Err(DiscoveryError::Refused("launch_binding_mismatch"))
+    ));
+}
+
+#[test]
 fn proof_cannot_be_replayed_for_another_launch_of_identical_inputs() {
     let mut fixture = DiscoveryFixture::new();
     let proof = DiscoveryProof::verify(&fixture.authenticate().unwrap(), &fixture.runtime).unwrap();

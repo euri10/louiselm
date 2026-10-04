@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Versioned presentation record, not a launch protocol.
-pub const PREFLIGHT_SCHEMA: &str = "louiselm.launch.preflight/1";
+pub const PREFLIGHT_SCHEMA: &str = "louiselm.launch.preflight/2";
 /// Always displayed, including when local artifacts check out.
 pub const PREFLIGHT_NOTICE: &str = "Prospective artifact snapshot only; not authorization or live Session state. Launch must recheck and bind this exact request digest. Proposed identities do not prove enforcement.";
 /// Normal configured commands, including wrappers, carry no implied protection.
@@ -49,6 +49,8 @@ pub enum IdentityField {
     InstructionView,
     /// Digest of the normalized runtime measurement.
     Runtime,
+    /// Exact Session-independent configuration digest.
+    RuntimeConfiguration,
     /// Complete Session input manifest digest.
     InputManifest,
     /// Project-instruction snapshot inventory digest.
@@ -59,15 +61,15 @@ pub enum IdentityField {
     PluginSchemas,
     /// Governing supply policy digest.
     Policy,
-    /// Unresolved: the proposed artifacts do not identify the enforced contract.
+    /// Proposed contract, not evidence of an enforced contract.
     IsolationContract,
-    /// Proposed isolation evidence identifier, not proof of confinement.
-    IsolationReceipt,
+    /// Digest of intended isolation policy, not proof of confinement.
+    IsolationIntent,
     /// Requested capability envelope identifier.
     Envelope,
     /// Requested revision as an exact decimal string (no JSON precision loss).
     EnvelopeRevision,
-    /// Unresolved: the request/manifest do not contain revision-bound network rules.
+    /// Proposed registered network policy; fixed verifiers further narrow to denied.
     NetworkScope,
     /// Digest of the proposed reachable service set and fixed disclosure notice.
     ProviderDisclosure,
@@ -82,13 +84,14 @@ impl IdentityField {
             Self::Generation => "generation",
             Self::InstructionView => "instruction_view",
             Self::Runtime => "runtime",
+            Self::RuntimeConfiguration => "runtime_configuration",
             Self::InputManifest => "input_manifest",
             Self::ProjectInstructions => "project_instructions",
             Self::ToolSchemas => "tool_schemas",
             Self::PluginSchemas => "plugin_schemas",
             Self::Policy => "policy",
             Self::IsolationContract => "isolation_contract",
-            Self::IsolationReceipt => "isolation_receipt",
+            Self::IsolationIntent => "isolation_intent",
             Self::Envelope => "envelope",
             Self::EnvelopeRevision => "envelope_revision",
             Self::NetworkScope => "network_scope",
@@ -184,8 +187,8 @@ pub enum PreflightError {
 ///
 /// The caller supplies protected store/policy/registry authority; installed CLI
 /// consumers use `Registry::open_trusted`. Missing readers fail independently.
-/// Network scope stays unresolved: today's registry has no revision-bound
-/// network record and cannot reconstruct a prior envelope's rules.
+/// Network scope describes only the policy bound in the proposed manifest,
+/// never observed enforcement or reconstructed historical registry state.
 ///
 /// # Errors
 /// Rejects malformed current/prior inputs and invalid normalized evidence.
@@ -301,18 +304,31 @@ fn identities(
             F::PluginSchemas,
             manifest.map(|m| digest(&m.plugin_schemas)).transpose()?,
         ),
-        (F::Policy, manifest.map(|m| m.policy_digest.clone())),
-        (F::IsolationContract, None),
         (
-            F::IsolationReceipt,
-            manifest.map(|m| m.isolation_receipt.clone()),
+            F::RuntimeConfiguration,
+            manifest.map(|m| m.runtime_configuration_digest.clone()),
+        ),
+        (F::Policy, manifest.map(|m| m.policy_digest.clone())),
+        (
+            F::IsolationContract,
+            manifest.map(|m| m.isolation.contract_version.clone()),
+        ),
+        (
+            F::IsolationIntent,
+            manifest.map(|m| digest(&m.isolation)).transpose()?,
         ),
         (F::Envelope, Some(request.envelope_id.clone())),
         (
             F::EnvelopeRevision,
             Some(request.envelope_revision.to_string()),
         ),
-        (F::NetworkScope, None),
+        (
+            F::NetworkScope,
+            manifest.map(|m| match m.isolation.network {
+                crate::registry::NetworkPolicy::Denied => "denied".to_owned(),
+                crate::registry::NetworkPolicy::Brokered => "brokered".to_owned(),
+            }),
+        ),
         (
             F::ProviderDisclosure,
             manifest

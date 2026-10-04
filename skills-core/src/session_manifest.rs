@@ -15,7 +15,7 @@ use thiserror::Error;
 use crate::{
     CanonicalPath, Digest,
     posture::{DimensionName, FailureCode, PROVIDER_DISCLOSURE_NOTICE},
-    registry::{AgentRegistration, RuntimeMeasurement},
+    registry::{AgentRegistration, NetworkPolicy, RuntimeMeasurement},
 };
 
 mod resolution;
@@ -24,7 +24,7 @@ mod validation;
 pub use resolution::InputResolutionError;
 
 /// Canonical Session input record schema.
-pub const INPUT_MANIFEST_SCHEMA: &str = "louiselm.session.input-manifest/1";
+pub const INPUT_MANIFEST_SCHEMA: &str = "louiselm.session.input-manifest/2";
 /// Maximum encoded record size, checked before parsing.
 pub const MAX_INPUT_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
@@ -74,15 +74,17 @@ pub struct SessionInputs {
     pub agent: Option<AgentRegistration>,
     /// Measurement returned by the registered runtime.
     pub runtime: Option<RuntimeMeasurement>,
+    /// Exact Session-independent runtime configuration from its trusted producer.
+    pub runtime_configuration_digest: Option<String>,
     /// Resolved current witnessed Generation identity.
     pub skill_generation_id: Option<String>,
     /// Resolved materialized view identity.
     pub view_digest: Option<String>,
     /// Complete per-Session project-instruction snapshot.
     pub project_instructions: Option<Vec<MeasuredInput>>,
-    /// Complete measured tool-schema snapshot.
+    /// Added tool schemas; built-ins belong to runtime and configuration identity.
     pub tool_schemas: Option<Vec<MeasuredInput>>,
-    /// Complete measured plugin-schema snapshot.
+    /// Added plugin schemas, separate from built-in runtime tools.
     pub plugin_schemas: Option<Vec<MeasuredInput>>,
     /// Exact approved source snapshot, including the explicit selection record.
     pub source_snapshot_digest: Option<String>,
@@ -92,8 +94,8 @@ pub struct SessionInputs {
     pub cache_base_digest: Option<String>,
     /// Governing supply policy identity.
     pub policy_digest: Option<String>,
-    /// Trusted isolation evidence reference.
-    pub isolation_receipt: Option<String>,
+    /// Intended isolation, not evidence of enforcement or launch authority.
+    pub isolation: Option<IsolationIntent>,
     /// Exact capability envelope identity.
     pub envelope_id: Option<String>,
     /// Exact capability envelope revision.
@@ -122,6 +124,28 @@ pub struct EnvelopeInput {
     pub revision: u64,
 }
 
+/// Intended isolation policy resolved before launch from the protected registry.
+/// The launcher rechecks this policy, then signs what it actually enforced.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IsolationIntent {
+    /// Supported isolation contract, independent of backend observations.
+    pub contract_version: String,
+    /// Registered envelope network policy. Fixed verifiers further narrow to denied.
+    pub network: NetworkPolicy,
+}
+
+impl IsolationIntent {
+    /// Binds the installed contract and an explicitly resolved network policy.
+    #[must_use]
+    pub fn new(network: NetworkPolicy) -> Self {
+        Self {
+            contract_version: crate::isolation::CONTRACT_VERSION.to_owned(),
+            network,
+        }
+    }
+}
+
 /// Fixed disclosure, independently bound from managed Skill supply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,13 +166,15 @@ pub struct SessionInputManifest {
     pub agent: AgentRegistration,
     /// Measured runtime, with adapters sorted.
     pub runtime: RuntimeMeasurement,
+    /// Exact Session-independent configuration; not a native-discovery proof.
+    pub runtime_configuration_digest: String,
     /// Approved supply binding.
     pub skill_generation: SkillInputs,
     /// Project instructions, never hardware-admitted packages.
     pub project_instructions: Vec<MeasuredInput>,
-    /// Measured tool schemas.
+    /// Measured added tool schemas, excluding runtime built-ins.
     pub tool_schemas: Vec<MeasuredInput>,
-    /// Measured plugin schemas.
+    /// Measured added plugin schemas.
     pub plugin_schemas: Vec<MeasuredInput>,
     /// Exact source snapshot used to construct private source and Git metadata.
     pub source_snapshot_digest: String,
@@ -158,8 +184,8 @@ pub struct SessionInputManifest {
     pub cache_base_digest: String,
     /// Governing policy identity.
     pub policy_digest: String,
-    /// Isolation evidence reference.
-    pub isolation_receipt: String,
+    /// Intended isolation policy; actual evidence exists only after launch.
+    pub isolation: IsolationIntent,
     /// Capability envelope identity.
     pub envelope: EnvelopeInput,
     /// Explicitly empty ACP MCP state.
@@ -312,6 +338,10 @@ impl SessionInputManifest {
             schema: INPUT_MANIFEST_SCHEMA.to_owned(),
             agent,
             runtime,
+            runtime_configuration_digest: required(
+                inputs.runtime_configuration_digest,
+                "runtime_configuration_digest",
+            )?,
             skill_generation: SkillInputs {
                 generation_digest,
                 view_digest,
@@ -326,7 +356,7 @@ impl SessionInputManifest {
             source_base_digest: required(inputs.source_base_digest, "source_base_digest")?,
             cache_base_digest: required(inputs.cache_base_digest, "cache_base_digest")?,
             policy_digest: required(inputs.policy_digest, "policy_digest")?,
-            isolation_receipt: required(inputs.isolation_receipt, "isolation_receipt")?,
+            isolation: required(inputs.isolation, "isolation")?,
             envelope: EnvelopeInput {
                 id: required(inputs.envelope_id, "envelope_id")?,
                 revision: required(inputs.envelope_revision, "envelope_revision")?,

@@ -1,7 +1,7 @@
 {
-  "schema": "louiselm.launch.preflight/1",
+  "schema": "louiselm.launch.preflight/2",
   "notice": "Prospective artifact snapshot only; not authorization or live Session state. Launch must recheck and bind this exact request digest. Proposed identities do not prove enforcement.",
-  "request_digest": "sha256:c4ac4bfc5c34c47d967172ccd0ec19015b35206577f7458d692a1368b2aa16c9",
+  "request_digest": "sha256:f206898824aec861eadb271aa9c9a4bb322c36dd77abc91e425781685b082d92",
   "manifest_state": "matched",
   "proposed": [
     {
@@ -22,7 +22,7 @@
     },
     {
       "field": "input_manifest",
-      "value": "sha256:3a93f8825e767df82f5395f724d575f91e6e971e934dc360d4f89f957015dbac"
+      "value": "sha256:95fd75304ada77bbeaac395f3c67a55006581b7186de11b29779d466c33750c3"
     },
     {
       "field": "project_instructions",
@@ -37,16 +37,20 @@
       "value": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
     },
     {
+      "field": "runtime_configuration",
+      "value": "sha256:fc97427692c441cb47c16a4c52ed9ea1aa9f4160ee2e852a3a6bf9d922b5099a"
+    },
+    {
       "field": "policy",
       "value": "sha256:823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812"
     },
     {
       "field": "isolation_contract",
-      "value": null
+      "value": "louiselm.isolation/2"
     },
     {
-      "field": "isolation_receipt",
-      "value": "isolation-1"
+      "field": "isolation_intent",
+      "value": "sha256:dd59890d84d3791fb3ad7c06a5dbbd9c17b26ef5f9b6d0b08fa1d094a0d0ad23"
     },
     {
       "field": "envelope",
@@ -58,7 +62,7 @@
     },
     {
       "field": "network_scope",
-      "value": null
+      "value": "denied"
     },
     {
       "field": "provider_disclosure",
@@ -67,12 +71,12 @@
   ],
   "comparison": {
     "state": "compared",
-    "previous_request_digest": "sha256:1f042dbc0ca235d3f526f39e2f95128166643e304cfcc122e50a597216881e8a",
+    "previous_request_digest": "sha256:2d6b14f0ee1a39997660f4fd425609ab7d531328716f814a6d6bcccc9c6de7d2",
     "changes": [
       {
         "field": "input_manifest",
-        "before": "sha256:8ec95894ec429186c0ce410c0396b89a00459fae450c211df829913844421db2",
-        "after": "sha256:3a93f8825e767df82f5395f724d575f91e6e971e934dc360d4f89f957015dbac"
+        "before": "sha256:0d782caa0e445d4b39571b0a375d214336d28bb76b45320f22cd0774ba1665e6",
+        "after": "sha256:95fd75304ada77bbeaac395f3c67a55006581b7186de11b29779d466c33750c3"
       },
       {
         "field": "envelope_revision",
@@ -80,10 +84,7 @@
         "after": "2"
       }
     ],
-    "unresolved": [
-      "isolation_contract",
-      "network_scope"
-    ]
+    "unresolved": []
   },
   "posture": {
     "schema": "louiselm.verified-posture/1",

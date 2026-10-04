@@ -168,10 +168,10 @@ fn paths(root: &Path) -> LauncherPaths {
 }
 
 fn request() -> LaunchRequest {
-    request_for(None)
+    request_for(None, crate::registry::NetworkPolicy::Denied)
 }
 
-fn request_for(codex: Option<&Path>) -> LaunchRequest {
+fn request_for(codex: Option<&Path>, network: crate::registry::NetworkPolicy) -> LaunchRequest {
     LaunchRequest {
         schema: REQUEST_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
@@ -183,7 +183,9 @@ fn request_for(codex: Option<&Path>) -> LaunchRequest {
         envelope_id: "envelope".into(),
         envelope_revision: 1,
         skill_generation_id: Digest::of(b"fixture-generation").to_string(),
-        session_input_manifest_id: workspace::fixture_manifest_for(codex).digest().to_string(),
+        session_input_manifest_id: workspace::fixture_manifest_for(codex, network)
+            .digest()
+            .to_string(),
     }
 }
 
@@ -436,7 +438,14 @@ fn installed_broker_worker() {
             approval
         }),
         require_cold_recovery: true,
-        request: request_for(codex_chain::runtime_directory(&root).as_deref()),
+        request: request_for(
+            codex_chain::runtime_directory(&root).as_deref(),
+            Registry::open(&root.join("registry"))
+                .unwrap()
+                .envelope("envelope")
+                .unwrap()
+                .network,
+        ),
         controller_uid: config.operator_uid,
         expires_at_ms: fixture_expiry(&root, now),
         broker_loss_grace_ms: 500,

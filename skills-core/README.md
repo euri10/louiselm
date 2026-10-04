@@ -371,7 +371,7 @@ including when that Agent has no admitted members. This blocking API refuses
 runtime drift, missing supply and altered views; it never falls back.
 
 The caller supplies the per-Session project-instruction, tool-schema and
-plugin-schema snapshots, measured cache-base digest, isolation evidence reference
+plugin-schema snapshots, measured cache-base digest, intended isolation policy
 and exact capability envelope revision. The [private cache APIs](../docs/session-caches.md)
 capture immutable warm bytes and seed independent Session overlays; even an
 empty cache requires its explicit digest. `MeasuredInput::from_bytes` binds captured bytes by path,
@@ -381,18 +381,89 @@ Project instructions remain measured Session inputs, never admitted packages.
 Workspace files stay editable; automatic loading must use the frozen Session
 snapshot. Later edits take effect in a new Session, not through rediscovery.
 
-`SessionInputManifest::build` creates `louiselm.session.input-manifest/1`.
+Built-in tools are bound by the measured runtime and `runtime_configuration_digest`,
+not duplicated as synthetic schema files. `runtime_configuration::resolve` uses
+the same fixed configuration producer as launch. Its supported integrations have
+no added tools/plugins or ACP MCP servers; unknown integrations and registered
+argument/environment overrides refuse, never become empty snapshots. Codex keeps
+Luna low and the credential-free broker route, explicitly disabling apps, plugins
+and remote plugins. These feature switches were checked with pinned Codex 0.156.1
+(SHA-256 `0b2e9301d6100dddda3b9d5c80ebaeaa3a2f1962388f2f36f6b96a9f08b1f33f`)
+using `features list` with and without the overrides in an empty private home.
+Added schema fields describe only separately supplied extensions. The fixed
+launcher refuses nonempty added schemas, configuration drift, and unknown
+producers; these intended settings do not establish native-discovery control.
+
+`SessionInputManifest::build` creates `louiselm.session.input-manifest/2`.
 Its canonical bytes bind all inputs, the governing policy, and disclosure for
 every reachable Provider. File sets and runtime baselines are sorted; Agent
 argument and routing order is preserved. `parse` checks bounded, closed,
 canonical JSON, including nested records. The digest uses the spelling already
 accepted by `LaunchRequest::validate`.
 
+`isolation` binds the supported contract and the registered envelope's intended
+network policy. Launch rechecks that policy; fixed verifiers narrow it to denied
+network. Preparation requires no future receipt ID and grants no authority.
+The signed launch receipt separately binds the exact manifest and actual
+isolation evidence. Native-source masks refer to their enclosing signed
+observation record, not to an invented pre-launch evidence reference.
+
 This is an input record, not launch authority. Parsing cannot prove provenance,
 complete discovery-source control, immutable mounts or continued currency.
 Resolve immediately before binding, protect captured snapshots, and require
 the adapter/confinement proofs before reporting Verified posture. Do not log
 manifest bytes: registered arguments and environment can contain secrets.
+
+### Inactive Run preparation
+
+After selecting an existing source snapshot, its digest, an immutable cache and
+its digest, use the installed CLI to assemble the complete input record:
+
+```sh
+louiselm-skills workspace launch-inputs prepare \
+  --store /var/lib/louiselm/skills --registry /var/lib/louiselm/registry \
+  --agent codex --envelope first-run-worker \
+  --snapshot /private/selected-snapshot --snapshot-digest sha256:REVIEWED_SNAPSHOT \
+  --cache /private/selected-cache --cache-digest sha256:REVIEWED_CACHE \
+  --instructions /private/instruction-paths.json --output /private/new-proposal \
+  --robot-json
+```
+
+Replace the example paths and digest placeholders with reviewed values.
+`instruction-paths.json` is the explicit complete JSON array of project-instruction
+paths inside that snapshot (for example `["AGENTS.md","docs/agent-testing.md"]`).
+An explicit `[]` means no project instructions; an omitted category is not empty.
+Preparation remeasures all selected source/cache bytes and resolves the existing
+Supply, registered runtime and shared launch configuration. It refuses missing
+stores, untrusted registries, unresolved configuration, missing instruction paths,
+changed identities and existing output. It never initializes or repairs a store.
+
+Successful preparation atomically writes a private new directory containing
+`manifest.json`, `proposal.json`, `snapshot/` and `cache/`. The closed
+`louiselm.run.input-proposal/1` record names a fresh UUID Run ID, proposed envelope
+revision 1, exact manifest digest and selected base commit. It is **not** a
+`RunEnvelope`, a broker grant, an approved revision or isolation evidence.
+No broker, Agent or Provider is called. Preparation can populate the immutable
+Instruction view cache, but cannot activate a new Generation.
+
+`workspace launch-inputs inspect-proposal --input /private/new-proposal
+--digest sha256:REVIEWED_MANIFEST --robot-json` remeasures the saved input tree
+and checks the proposal's bindings. This verifies stored bytes, not current
+registry/Supply freshness or approval. Resolve again after changed inputs;
+the installed launcher independently refuses stale bindings and expired grants.
+The [operator entrypoint](../docs/bead-executor.md#real-vm-operator-entrypoint)
+adds the separately reviewed finite scope, budgets, verification plan and expiry.
+Starting that entrypoint, not preparing or inspecting inputs, authorizes the
+reviewed envelope and starts execution. Accepted source promotions retain its
+existing source-update workflow; preparation does not replace that authority boundary.
+
+The ordinary suite checks preparation, proposal tampering, exact selection and
+no-write refusals. CI also runs
+`preparation::privileged_preparation_cli_measures_trusted_owners_without_launch`
+from the `instruction_view` test executable with `--exact --ignored --nocapture`,
+as root with `TMPDIR=/var/lib` only in the disposable launcher VM. This exercises
+the actual CLI against root-owned fixture registries and witnessed fixture Supply;
+it does not sign a release, launch an Agent or approve the maintainer's Run.
 
 ### Discovery evidence and supply status
 
@@ -640,12 +711,12 @@ installed composition, not activation of the maintainer's desktop.
 
 `preflight --request request.json --manifest inputs.json --robot-json` reads
 exact canonical `louiselm.launch.request/2` and
-`louiselm.session.input-manifest/1` bytes. These are proposed inputs, not an
+`louiselm.session.input-manifest/2` bytes. These are proposed inputs, not an
 approval or proof that a Session ran. Do not log the input files: they can
 contain runtime arguments and environment. The safe output contains only
 opaque identities, digests, closed codes and fixed notices.
 
-The versioned `louiselm.launch.preflight/1` record separates `proposed` identities
+The versioned `louiselm.launch.preflight/2` record separates `proposed` identities
 from the existing six-dimension `posture`. It checks request/manifest digest,
 Agent, Generation and envelope bindings before using proposed bytes to constrain
 independent view materialization and runtime measurement. Missing or contradictory
@@ -657,13 +728,11 @@ provide no trusted evidence. Inspection may create the existing immutable view
 cache, but does not change permissions, start an Agent or record approval.
 
 Native discovery controls, isolation, network enforcement and bound Provider
-disclosure remain unproven in this prospective mode. A proposed isolation
-reference is not a verified mount. A proposed disclosure digest is not recorded
-disclosure evidence. Network scope is explicitly unresolved: these input records
-do not contain network rules bound to the requested envelope revision, and
-today's registry must not be used to reconstruct a prior revision. The isolation
-contract is also unresolved: these proposed artifacts do not identify the
-contract enforced by a launcher. Actual launch receipts bind that contract.
+disclosure remain unproven in this prospective mode. Proposed isolation intent
+is not a verified mount. A proposed disclosure digest is not recorded disclosure
+evidence. Network scope and contract come from the bound manifest's intended
+settings, not reconstructed historical registry state or enforcement evidence.
+Actual launch receipts bind the observed enforcement separately.
 Output therefore exits **2**, never launch-ready success; malformed commands or
 input files exit **1** with fixed diagnostics. Human output omits no robot
 identities or diff results. `preflight --direct` separately reports that a direct

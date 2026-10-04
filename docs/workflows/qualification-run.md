@@ -41,7 +41,7 @@ The JSON selection must be an operator-owned regular file, mode `0600`, at most
 | `workload` | `{"kind":"main","id":"<chosen workload>"}` |
 | `retention_days` | `7`, acknowledging the installed workspace retention |
 | `envelope` | Complete resolved `louiselm.broker.run-envelope/1` record |
-| `input_manifest` | Complete resolved `louiselm.session.input-manifest/1` record |
+| `input_manifest` | Complete resolved `louiselm.session.input-manifest/2` record |
 | `cache` | Absolute path to the trusted immutable cache |
 | `snapshot_parent` | Absolute operator-owned directory, mode `0750`, owned by `input_group` |
 | `input_group` | Sharing GID restricted to the operator and broker |

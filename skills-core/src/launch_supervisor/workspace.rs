@@ -59,11 +59,20 @@ pub(super) fn load(
         .and_then(|r| r.measure())
         .map_err(|_| SupervisorError::ResolutionFailed)?;
     runtime.adapters.sort_by(|a, b| a.path.cmp(&b.path));
+    let envelope = registry
+        .envelope(&request.envelope_id)
+        .map_err(|_| SupervisorError::ResolutionFailed)?;
+    let configuration = crate::runtime_configuration::resolve(&agent)
+        .map_err(|_| SupervisorError::ResolutionFailed)?;
     if manifest.agent != agent
         || manifest.runtime != runtime
         || manifest.skill_generation.generation_digest != request.skill_generation_id
         || manifest.envelope.id != request.envelope_id
         || manifest.envelope.revision != request.envelope_revision
+        || manifest.isolation.network != envelope.network
+        || manifest.runtime_configuration_digest != configuration.to_string()
+        || !manifest.tool_schemas.is_empty()
+        || !manifest.plugin_schemas.is_empty()
     {
         return Err(SupervisorError::ResolutionFailed);
     }

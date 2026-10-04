@@ -35,7 +35,12 @@ fn request() -> LaunchInputsRequest {
                 source_base_digest: digest(b"source"),
                 cache_base_digest: digest(b"cache"),
                 policy_digest: digest(b"policy"),
-                isolation_receipt: Some("isolation".into()),
+                runtime_configuration_digest: Some(
+                    louiselm_skills::Digest::of(b"fixture configuration").to_string(),
+                ),
+                isolation: Some(louiselm_skills::session_manifest::IsolationIntent::new(
+                    louiselm_skills::registry::NetworkPolicy::Denied,
+                )),
                 envelope_id: Some("envelope".into()),
                 envelope_revision: Some(1),
                 acp_mcp_servers: Some(vec![]),

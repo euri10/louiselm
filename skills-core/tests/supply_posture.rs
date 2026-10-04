@@ -135,7 +135,7 @@ fn preflight_artifact_drift_is_dimension_specific_and_prior_selection_is_explici
             .any(|change| change.field == IdentityField::EnvelopeRevision)
     );
     assert!(
-        preview
+        !preview
             .comparison
             .unresolved
             .contains(&IdentityField::NetworkScope)
@@ -221,7 +221,7 @@ fn absent_supply_store_does_not_hide_runtime_or_invent_an_isolation_contract() {
     assert!(!robot::payload(&preview).unwrap().contains("private-marker"));
     assert!(preview.proposed.iter().any(|identity| identity.field
         == IdentityField::IsolationContract
-        && identity.value.is_none()));
+        && identity.value.as_deref() == Some(louiselm_skills::isolation::CONTRACT_VERSION)));
 }
 
 impl Supply {

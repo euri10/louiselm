@@ -83,6 +83,7 @@ impl AuthenticatedInputs {
             || evidence.runtime_measurement_digest != json_digest(&manifest.runtime)?.to_string()
             || evidence.isolation_evidence_digest != json_digest(isolation)?.to_string()
             || evidence.isolation_contract != isolation.contract_version
+            || isolation.contract_version != manifest.isolation.contract_version
         {
             return Err(DiscoveryError::Refused("launch_binding_mismatch"));
         }

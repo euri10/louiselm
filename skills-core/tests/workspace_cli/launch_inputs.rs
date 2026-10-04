@@ -45,7 +45,12 @@ fn inputs(temp: &TempDir) -> SessionInputManifest {
                 .to_string(),
         ),
         policy_digest: digest(b"policy"),
-        isolation_receipt: Some("isolation".into()),
+        runtime_configuration_digest: Some(
+            louiselm_skills::Digest::of(b"fixture configuration").to_string(),
+        ),
+        isolation: Some(louiselm_skills::session_manifest::IsolationIntent::new(
+            louiselm_skills::registry::NetworkPolicy::Denied,
+        )),
         envelope_id: Some("envelope".into()),
         envelope_revision: Some(1),
         acp_mcp_servers: Some(vec![]),
@@ -135,4 +140,73 @@ fn launch_staging_refuses_substitution_and_links_before_publication() {
     symlink("/etc/passwd", temp.path().join("cache/link")).unwrap();
     assert!(!stage(&temp, &manifest).status.success());
     assert!(!temp.path().join("staged").exists());
+}
+
+fn prepare_proposal(temp: &TempDir) -> Output {
+    let digest = Digest::of(b"explicit selection").to_string();
+    run(&[
+        "launch-inputs",
+        "prepare",
+        "--store",
+        temp.path().join("store").to_str().unwrap(),
+        "--registry",
+        temp.path().join("registry").to_str().unwrap(),
+        "--agent",
+        "agent",
+        "--envelope",
+        "envelope",
+        "--snapshot",
+        temp.path().join("snapshot").to_str().unwrap(),
+        "--snapshot-digest",
+        &digest,
+        "--cache",
+        temp.path().join("cache").to_str().unwrap(),
+        "--cache-digest",
+        &digest,
+        "--instructions",
+        temp.path().join("instructions.json").to_str().unwrap(),
+        "--output",
+        temp.path().join("prepared").to_str().unwrap(),
+        "--robot-json",
+    ])
+}
+
+#[test]
+fn preparation_never_initializes_or_repairs_a_supply_store() {
+    let temp = TempDir::new().unwrap();
+    let store = temp.path().join("store");
+    for existing_directory in [false, true] {
+        if existing_directory {
+            fs::create_dir(&store).unwrap();
+        }
+        let output = prepare_proposal(&temp);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("preparation requires an existing supply store")
+        );
+        assert_eq!(store.exists(), existing_directory);
+        if existing_directory {
+            assert_eq!(fs::read_dir(&store).unwrap().count(), 0);
+        }
+        assert!(!temp.path().join("prepared").exists());
+    }
+}
+
+#[test]
+fn preparation_refuses_untrusted_registry_without_publishing() {
+    let temp = TempDir::new().unwrap();
+    let store = temp.path().join("store");
+    louiselm_skills::Store::open(&store).unwrap();
+    fs::create_dir(temp.path().join("registry")).unwrap();
+    let original = fs::read(store.join("provenance.json")).unwrap();
+    let output = prepare_proposal(&temp);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("preparation requires a trusted registry")
+    );
+    assert_eq!(fs::read(store.join("provenance.json")).unwrap(), original);
+    assert!(!temp.path().join("prepared").exists());
 }

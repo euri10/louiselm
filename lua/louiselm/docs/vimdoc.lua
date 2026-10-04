@@ -486,12 +486,12 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "Direct vendor commands, including wrappers, have no LouiseLM Verified posture. With skills.management.enabled = true and louiselm-skills on PATH, :LouiselmPreflight {request-file} [{manifest-file} [{prior-request-file} {prior-manifest-file}]] asynchronously inspects canonical launch request/2 and Session input-manifest/1 artifacts and opens health. Prior files are explicitly selected, never inferred from history.",
+        "Direct vendor commands, including wrappers, have no LouiseLM Verified posture. With skills.management.enabled = true and louiselm-skills on PATH, :LouiselmPreflight {request-file} [{manifest-file} [{prior-request-file} {prior-manifest-file}]] asynchronously inspects canonical launch request/2 and Session input-manifest/2 artifacts and opens health. Prior files are explicitly selected, never inferred from history.",
         context
       )
       append_prose(
         lines,
-        "The selected prospective snapshot separates proposed identities from independently checked supply/runtime artifacts. Native loading, isolation, network enforcement and disclosure remain unproven; network scope is unresolved without revision-bound rules. The snapshot is not approval, launch authority or live Session status. Refresh after input changes; future launch integration must bind the exact displayed request digest. Setup/reset forgets the selection and cancels pending reads.",
+        "The selected prospective snapshot separates proposed identities from independently checked supply/runtime artifacts. Native loading, isolation, network enforcement and disclosure remain unproven; proposed contract and network scope describe intended settings only. The snapshot is not approval, launch authority or live Session status. Refresh after input changes; future launch integration must bind the exact displayed request digest. Setup/reset forgets the selection and cancels pending reads.",
         context
       )
     end,

@@ -105,7 +105,10 @@ pub(super) fn install(
             "version":"fixture","origin":"fixture"
         }]),
     );
-    workspace::stage_manifest(config, &workspace::fixture_manifest_for(Some(&runtime)));
+    workspace::stage_manifest(
+        config,
+        &workspace::fixture_manifest_for(Some(&runtime), crate::registry::NetworkPolicy::Denied),
+    );
     fs::write(root.join("codex-chain"), b"").unwrap();
     if stock.is_some() {
         fs::write(root.join("stock-codex"), b"").unwrap();

@@ -6,6 +6,8 @@
     reason = "Test fixtures abort on setup failure and assert failures directly."
 )]
 
+#[path = "instruction_view/preparation.rs"]
+mod preparation;
 mod support;
 
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
@@ -76,7 +78,11 @@ fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
     inputs.acp_mcp_servers = Some(vec![]);
     inputs.envelope_id = Some("denied".into());
     inputs.envelope_revision = Some(1);
-    inputs.isolation_receipt = Some("isolation-receipt".into());
+    inputs.runtime_configuration_digest =
+        Some(louiselm_skills::Digest::of(b"fixture configuration").to_string());
+    inputs.isolation = Some(louiselm_skills::session_manifest::IsolationIntent::new(
+        louiselm_skills::registry::NetworkPolicy::Denied,
+    ));
     let manifest = SessionInputManifest::build(inputs).unwrap();
     let views =
         instruction_view::materialize(&supply.fixture.store(), &Policy::embedded(), &registry)
