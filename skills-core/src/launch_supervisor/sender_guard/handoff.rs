@@ -9,7 +9,7 @@ use crate::launch_transport::LauncherPacket;
 use std::sync::mpsc;
 use std::{
     net::{SocketAddr, TcpStream},
-    os::fd::AsFd,
+    os::fd::{AsFd, OwnedFd},
     time::Duration,
 };
 
@@ -22,6 +22,83 @@ pub(super) enum HandoffStage {
 }
 
 impl SenderGuard {
+    pub(crate) fn prepare_resume_handoff(
+        &mut self,
+        scope: GuardScope,
+        channel: crate::launch_transport::SeqpacketChannel,
+    ) -> Result<(GuardEnrollment, [OwnedFd; 3]), GuardError> {
+        if !self.enrolled
+            || self.handoff.is_some()
+            || self.announced
+            || scope.deadline_ns != self.scope.deadline_ns
+            || super::broker_identity(&channel)? != self.broker_credentials
+            || !self.revocable()?.revoked
+        {
+            return Err(GuardError::Authority);
+        }
+        self.broker = channel;
+        self.revise(scope)?;
+        self.prepare_announcement()
+    }
+
+    pub(crate) fn confirm_resume_handoff(&mut self, scope: &GuardScope) -> Result<(), GuardError> {
+        let enrollment = self.handoff.clone().ok_or(GuardError::Enrollment)?;
+        if &enrollment.scope != scope {
+            return Err(GuardError::Authority);
+        }
+        self.confirm_announcement(&enrollment)
+    }
+
+    fn prepare_announcement(&mut self) -> Result<(GuardEnrollment, [OwnedFd; 3]), GuardError> {
+        self.check_scope(&self.scope)?;
+        if !(self.enrolled || self.deferred) || self.handoff.is_some() {
+            return Err(GuardError::Enrollment);
+        }
+        let endpoint = self.endpoint.as_ref().ok_or(GuardError::Enrollment)?;
+        let enrollment = GuardEnrollment {
+            scope: self.scope.clone(),
+            guard_id: self.pins.id()?,
+            runtime_pid: self.runtime_pid,
+            broker_pid: self.broker_credentials.pid,
+            address: endpoint
+                .listener
+                .local_addr()
+                .map_err(|_| GuardError::Socket)?,
+            listener_cookie: endpoint.rule.listener,
+            network_id: endpoint.rule.namespace,
+        };
+        enrollment.validate().map_err(|_| GuardError::Authority)?;
+        let descriptors = [
+            endpoint
+                .listener
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|_| GuardError::Socket)?,
+            self.pins.lease()?.into(),
+            endpoint
+                .network
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|_| GuardError::Socket)?,
+        ];
+        self.handoff = Some(enrollment.clone());
+        Ok((enrollment, descriptors))
+    }
+
+    fn confirm_announcement(&mut self, enrollment: &GuardEnrollment) -> Result<(), GuardError> {
+        self.check_scope(&enrollment.scope)?;
+        if self.handoff.as_ref() != Some(enrollment) {
+            return Err(GuardError::Authority);
+        }
+        let state = self.revocable()?;
+        if state.revoked || state.revision != self.scope.revision {
+            return Err(GuardError::Authority);
+        }
+        drop(state);
+        self.announced = true;
+        Ok(())
+    }
+
     pub(crate) fn prepare_upstream(
         &mut self,
         scope: &GuardScope,
@@ -146,24 +223,7 @@ impl SenderGuard {
         request_id: &str,
         timeout: Duration,
     ) -> Result<(), GuardError> {
-        self.check_scope(&self.scope)?;
-        if !(self.enrolled || self.deferred) || self.handoff.is_some() {
-            return Err(GuardError::Enrollment);
-        }
-        let endpoint = self.endpoint.as_ref().ok_or(GuardError::Enrollment)?;
-        let pins = self.pins.lease()?;
-        let enrollment = GuardEnrollment {
-            scope: self.scope.clone(),
-            guard_id: self.pins.id()?,
-            runtime_pid: self.runtime_pid,
-            broker_pid: self.broker_credentials.pid,
-            address: endpoint
-                .listener
-                .local_addr()
-                .map_err(|_| GuardError::Socket)?,
-            listener_cookie: endpoint.rule.listener,
-            network_id: endpoint.rule.namespace,
-        };
+        let (enrollment, descriptors) = self.prepare_announcement()?;
         let response = response(
             request_id,
             ResponseResult::SenderGuardEnrolled {
@@ -171,17 +231,12 @@ impl SenderGuard {
             },
         );
         response.validate().map_err(|_| GuardError::Authority)?;
-        self.handoff = Some(enrollment.clone());
         let (sent, completion) = mpsc::sync_channel(1);
         let result = self
             .broker
             .send_descriptors(
                 response.canonical_bytes(),
-                [
-                    endpoint.listener.as_fd(),
-                    pins.as_fd(),
-                    endpoint.network.as_fd(),
-                ],
+                descriptors.each_ref().map(AsFd::as_fd),
                 Box::new(move |result| {
                     let _ = sent.send(result);
                 }),
@@ -196,7 +251,9 @@ impl SenderGuard {
             .and_then(|()| {
                 self.receive_ack(
                     request_id,
-                    &ResponseResult::SenderGuardAccepted { enrollment },
+                    &ResponseResult::SenderGuardAccepted {
+                        enrollment: enrollment.clone(),
+                    },
                     timeout,
                 )
             });
@@ -204,14 +261,7 @@ impl SenderGuard {
             self.broker.close();
         }
         result?;
-        self.live()?;
-        let state = self.revocable()?;
-        if state.revoked || state.revision != self.scope.revision {
-            return Err(GuardError::Authority);
-        }
-        drop(state);
-        self.announced = true;
-        Ok(())
+        self.confirm_announcement(&enrollment)
     }
 
     pub(super) fn close_handoff(&mut self, timeout: Duration) -> Result<(), GuardError> {

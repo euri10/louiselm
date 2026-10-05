@@ -11,6 +11,8 @@ mod key_authority;
 mod recovery_dispatch;
 #[path = "restore_dispatch.rs"]
 mod restore_dispatch;
+#[path = "resume_dispatch.rs"]
+mod resume_dispatch;
 #[path = "verification_dispatch.rs"]
 mod verification_dispatch;
 
@@ -349,6 +351,16 @@ enum OwnerEvent {
         connection_epoch: u64,
         result: Result<(), SupervisorError>,
     },
+    GuardResumePrepared {
+        connection_epoch: u64,
+        operation_epoch: u64,
+        result: Result<(), SupervisorError>,
+    },
+    GuardResumeActivated {
+        connection_epoch: u64,
+        operation_epoch: u64,
+        result: Result<(), SupervisorError>,
+    },
     Signed {
         operation_epoch: u64,
         result: Result<String, SupervisorError>,
@@ -457,6 +469,7 @@ impl DeferredReceipt {
                     && matches!(
                         cause,
                         ReceiptCause::AcknowledgementFailed
+                            | ReceiptCause::ResumeActivationFailed
                             | ReceiptCause::BrokerLost
                             | ReceiptCause::ConformanceInvalid
                     )
@@ -570,6 +583,8 @@ struct SessionOwner {
     channel_state: ChannelState,
     broker_head: ReceiptHead,
     pending: Option<ActiveOperation>,
+    guard_resume: Option<crate::launch_protocol::GuardResumeRequest>,
+    resume_capability_result: Option<Result<(), SupervisorError>>,
     deferred: VecDeque<DeferredReceipt>,
     completed: VecDeque<CompletedRequest>,
     failed: VecDeque<FailedRequest>,
@@ -644,6 +659,8 @@ impl SessionOwner {
             channel_state: ChannelState::Enabled,
             broker_head,
             pending: None,
+            guard_resume: None,
+            resume_capability_result: None,
             deferred: VecDeque::new(),
             completed: VecDeque::new(),
             failed: VecDeque::new(),
@@ -779,6 +796,16 @@ impl SessionOwner {
                     operation_epoch,
                     result,
                 } => self.handle_signature(operation_epoch, result),
+                OwnerEvent::GuardResumePrepared {
+                    connection_epoch,
+                    operation_epoch,
+                    result,
+                } => self.guard_resume_prepared(connection_epoch, operation_epoch, &result),
+                OwnerEvent::GuardResumeActivated {
+                    connection_epoch,
+                    operation_epoch,
+                    result,
+                } => self.guard_resume_activated(connection_epoch, operation_epoch, &result),
                 OwnerEvent::ReceiptSent {
                     operation_epoch,
                     result,
@@ -967,6 +994,7 @@ impl SessionOwner {
             ProtocolMessage::Command(request) => self.handle_command(request),
             ProtocolMessage::ToolExecution(request) => self.handle_tool(request),
             ProtocolMessage::Lifecycle(request) => self.handle_lifecycle(request),
+            ProtocolMessage::GuardResume(authority) => self.handle_guard_resume(*authority),
             ProtocolMessage::Status(request) => self.handle_status(request),
             ProtocolMessage::BrokerReconnect(reconnect) => {
                 self.send_error(
@@ -1081,7 +1109,13 @@ impl SessionOwner {
         // subject and compare-and-swap fields have passed normal validation.
         let cancels_check = request.action == LifecycleAction::Disposal
             && self.resources.conformance.resume.is_some();
-        if cancels_check {
+        let cancels_preparation = request.action == LifecycleAction::Disposal
+            && self.state == SessionState::Parked
+            && self.pending.as_ref().is_some_and(|pending| {
+                pending.request.action == LifecycleAction::Resume
+                    && pending.phase == PendingPhase::Applying
+            });
+        if cancels_check || cancels_preparation {
             status.pending_operation = None;
         }
         if let Some(completed) = self
@@ -1184,6 +1218,13 @@ impl SessionOwner {
                 if request.action == LifecycleAction::Disposal =>
             {
                 self.cancel_conformance_resume();
+                self.guard_resume = None;
+                if cancels_preparation {
+                    self.fail_guard_resume_preparation();
+                    if self.state != SessionState::Parked || self.cleanup_unproven {
+                        return;
+                    }
+                }
                 self.begin_disposal(request, intent);
             }
             Ok(RequestDisposition::Execute(_)) => self.send_error(
@@ -1259,64 +1300,6 @@ impl SessionOwner {
         if !deadline_armed {
             self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);
             return;
-        }
-        if let Some(pending) = self.pending.as_mut() {
-            pending.phase = PendingPhase::Signing;
-        }
-        self.start_signing(operation_epoch);
-    }
-
-    fn begin_resume(&mut self, request: LifecycleRequest, intent: ReceiptIntent) {
-        let Some(operation_epoch) = self.operation_epoch.checked_add(1) else {
-            self.send_error(
-                request.request_id,
-                ProtocolError::new(
-                    ErrorCode::InvalidRequest,
-                    Some(self.state),
-                    Some(self.broker_head.sequence),
-                ),
-            );
-            return;
-        };
-        self.operation_epoch = operation_epoch;
-        self.pending = Some(ActiveOperation {
-            epoch: operation_epoch,
-            request,
-            intent,
-            phase: PendingPhase::Applying,
-            receipt: None,
-            payload_override: None,
-            respond: true,
-            finish: None,
-        });
-        if self.schedule_operation_deadline(operation_epoch).is_err() {
-            self.fail_mechanic();
-            return;
-        }
-
-        let resume = self
-            .resources
-            .process
-            .as_mut()
-            .map_or(Err(MechanicFailure::Ambiguous), |process| process.resume());
-        match resume {
-            Ok(()) | Err(MechanicFailure::Running) => {
-                self.state = SessionState::Running;
-            }
-            Err(MechanicFailure::Parked) => {
-                self.state = SessionState::Parked;
-                self.fail_mechanic();
-                return;
-            }
-            Err(MechanicFailure::Terminal(classification)) => {
-                self.fail_mechanic_in_state(Some(SessionState::Terminal));
-                self.begin_process_exit(classification);
-                return;
-            }
-            Err(MechanicFailure::Ambiguous) => {
-                self.quarantine_pending_mechanic();
-                return;
-            }
         }
         if let Some(pending) = self.pending.as_mut() {
             pending.phase = PendingPhase::Signing;
@@ -2177,7 +2160,17 @@ impl SessionOwner {
             .as_ref()
             .is_some_and(|pending| pending.epoch == operation_epoch)
         {
-            self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);
+            if self.pending_matches(operation_epoch, PendingPhase::Applying)
+                && self.state == SessionState::Parked
+                && self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.request.action == LifecycleAction::Resume)
+            {
+                self.fail_guard_resume_preparation();
+            } else {
+                self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);
+            }
         }
     }
 
@@ -2198,6 +2191,9 @@ impl SessionOwner {
             return;
         };
         if pending.phase != PendingPhase::AwaitingDurableAck {
+            if pending.phase == PendingPhase::Activating {
+                return;
+            }
             self.fail_receipt_operation(ErrorCode::ReceiptChainInvalid);
             return;
         }
@@ -2231,6 +2227,17 @@ impl SessionOwner {
         reason = "Both callers first prove a pending signed receipt matches the acknowledged broker head."
     )]
     fn complete_pending_receipt(&mut self, permit_resume_enable: bool) {
+        if permit_resume_enable
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.request.action == LifecycleAction::Resume)
+            && self.state == SessionState::Running
+            && !self.resources.conformance.suspended
+        {
+            self.begin_resume_activation();
+            return;
+        }
         let pending = self.pending.take().expect("pending operation was checked");
         let starts_controller_loss_settlement = self
             .controller_loss_park_request_id
@@ -2242,31 +2249,7 @@ impl SessionOwner {
         if pending.respond {
             self.remember_completed(CompletedRequest::new(&pending.request, receipt.clone()));
         }
-        if pending.request.action == LifecycleAction::Resume
-            && permit_resume_enable
-            && self.state != SessionState::Terminal
-            && !self.resources.conformance.suspended
-        {
-            let enabled = self
-                .resources
-                .capability
-                .as_mut()
-                .ok_or(SupervisorError::CapabilityUnavailable)
-                .and_then(|capability| capability.enable_after_resume());
-            if enabled.is_ok() {
-                self.channel_state = ChannelState::Enabled;
-                self.last_failure = None;
-                self.resumed_conformance();
-                self.resume_command_reception();
-            } else {
-                self.channel_state = ChannelState::Revoked;
-                self.last_failure = Some(ProtocolError::new(
-                    ErrorCode::LifecycleMechanicUnavailable,
-                    Some(self.state),
-                    Some(self.broker_head.sequence),
-                ));
-            }
-        } else if pending.request.action != LifecycleAction::Resume {
+        if pending.request.action != LifecycleAction::Resume {
             self.last_failure = None;
             if pending.request.action == LifecycleAction::Park
                 && !self.controller_loss_unresolved
@@ -2503,10 +2486,20 @@ impl SessionOwner {
     }
 
     fn fail_receipt_operation(&mut self, code: ErrorCode) {
+        if self.state == SessionState::Parked
+            && self.pending.as_ref().is_some_and(|pending| {
+                pending.request.action == LifecycleAction::Resume
+                    && pending.phase == PendingPhase::Applying
+            })
+        {
+            self.fail_guard_resume_preparation();
+            return;
+        }
         let Some(pending) = self.pending.take() else {
             return;
         };
         let resume_failed = pending.request.action == LifecycleAction::Resume;
+        self.resume_capability_result = None;
         let finish = pending.finish.clone();
         self.widening_blocked = true;
         if self.channel_state == ChannelState::Enabled {
@@ -2530,10 +2523,23 @@ impl SessionOwner {
             }
             if matches!(resume_park_result, Some(ParkResult::Parked)) {
                 let request_digest = pending.request.digest();
+                let activation_failed = pending.phase == PendingPhase::Activating;
                 receipt_retained |= self.defer(DeferredReceipt::CausalPark {
-                    request_id: format!("ack-failed-{}", request_digest.hex()),
+                    request_id: format!(
+                        "{}-{}",
+                        if activation_failed {
+                            "activation-failed"
+                        } else {
+                            "ack-failed"
+                        },
+                        request_digest.hex()
+                    ),
                     envelope_revision: pending.request.envelope_revision,
-                    cause: ReceiptCause::AcknowledgementFailed,
+                    cause: if activation_failed {
+                        ReceiptCause::ResumeActivationFailed
+                    } else {
+                        ReceiptCause::AcknowledgementFailed
+                    },
                 });
             }
         } else if let Some(Ok(payload)) = unsigned_payload {
@@ -2575,13 +2581,21 @@ impl SessionOwner {
     }
 
     fn repark_after_failed_resume(&mut self) -> ParkResult {
-        if let Some(capability) = self.resources.capability.as_mut() {
-            let _ = capability.revoke();
-        }
+        let revoked = self
+            .resources
+            .capability
+            .as_mut()
+            .ok_or(SupervisorError::CapabilityUnavailable)
+            .and_then(|capability| capability.revoke());
         if self.channel_state != ChannelState::Closed {
             self.channel_state = ChannelState::Revoked;
         }
-        self.attempt_park()
+        let parked = self.attempt_park();
+        if revoked.is_err() {
+            ParkResult::Ambiguous
+        } else {
+            parked
+        }
     }
 
     fn defer(&mut self, receipt: DeferredReceipt) -> bool {
@@ -2685,6 +2699,19 @@ impl SessionOwner {
         }
         if self.channel_state != ChannelState::Closed {
             self.channel_state = ChannelState::Revoked;
+        }
+        // An unfinished guarded Resume cannot recover by enabling only the
+        // capability gate. Its networking revision belongs to this exact
+        // handoff/receipt transaction; loss narrows both and requires a new request.
+        let guarded = matches!(
+            &self.receipts[0].payload.outcome,
+            ReceiptOutcome::Start { evidence, .. } if evidence.sender_guard_required
+        );
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.request.action == LifecycleAction::Resume
+                && (guarded || pending.phase == PendingPhase::Activating)
+        }) {
+            self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);
         }
         let current_head = receipt_head(self.receipt());
         let receipt_state_can_restore = match self.pending.as_ref() {

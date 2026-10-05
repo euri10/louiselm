@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 mod command;
 mod sender_guard;
 pub use sender_guard::{
-    GUARD_SOCKET_REQUEST_SCHEMA, GUARD_SOCKET_RETIRE_SCHEMA, GuardEnrollment, GuardScope,
-    GuardSocketRequest, GuardSocketRetire, GuardUpstream,
+    GUARD_RESUME_SCHEMA, GUARD_SOCKET_REQUEST_SCHEMA, GUARD_SOCKET_RETIRE_SCHEMA, GuardEnrollment,
+    GuardResumeRequest, GuardScope, GuardSocketRequest, GuardSocketRetire, GuardUpstream,
 };
 pub(crate) mod conformance;
 mod conformance_update;
@@ -96,13 +96,13 @@ pub const CONTROLLER_LOSS_SETTLEMENT_SCHEMA: &str = "louiselm.launch.controller-
 pub const CONTROLLER_LOSS_ACK_SCHEMA: &str = "louiselm.launch.controller-loss-ack/1";
 
 /// Schema for the mechanical supervisor status.
-pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/3";
+pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/4";
 
 /// Schema for broker-composed canonical Session status.
-pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/6";
+pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/7";
 
 /// Schema for a response to a request.
-pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/2";
+pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/3";
 
 /// An authorized public lifecycle mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -155,6 +155,8 @@ pub enum PendingPhase {
     Signing,
     /// Completion remains blocked until the broker acknowledges durable bytes.
     AwaitingDurableAck,
+    /// The exact receipt is durable; paired effect activation has not completed.
+    Activating,
 }
 
 /// One serialized operation in progress.
@@ -1053,6 +1055,8 @@ impl LaunchAuthorization {
 /// One decoded inbound supervisor message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolMessage {
+    /// Fresh broker-authorized guard handoff before an exact operator Resume.
+    GuardResume(Box<GuardResumeRequest>),
     /// Broker-approved destination for one guarded upstream socket.
     GuardSocketRequest(GuardSocketRequest),
     /// Broker closed one exact upstream descriptor.
@@ -1095,6 +1099,11 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))?;
     validate_version(header.protocol_version)?;
     match header.schema.as_str() {
+        GUARD_RESUME_SCHEMA => {
+            let request: GuardResumeRequest = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::GuardResume(Box::new(request)))
+        }
         GUARD_SOCKET_REQUEST_SCHEMA => {
             let request: GuardSocketRequest = decode_closed(bytes)?;
             request.validate()?;
@@ -2182,6 +2191,7 @@ fn validate_status_shape(shape: StatusShape<'_>) -> Result<(), ProtocolError> {
             PendingPhase::AwaitingDurableAck => {
                 signed_gap > 0 && u64::from(pending_receipt_count) >= signed_gap
             }
+            PendingPhase::Activating => signed_gap == 0 && launcher_head.is_some(),
         };
         if !phase_receipt_matches {
             return Err(invalid_status(state, broker_head));
@@ -2199,6 +2209,10 @@ fn validate_status_shape(shape: StatusShape<'_>) -> Result<(), ProtocolError> {
             (PendingAction::Resume, PendingPhase::Signing | PendingPhase::AwaitingDurableAck) => {
                 state == SessionState::Running || terminated_after_mechanic
             }
+            (PendingAction::Resume, PendingPhase::Activating) => {
+                state == SessionState::Running && channel_state == ChannelState::Revoked
+            }
+            (_, PendingPhase::Activating) => false,
             (PendingAction::Interrupt, _) => {
                 matches!(state, SessionState::Running | SessionState::Parked)
                     || terminated_after_mechanic

@@ -28,6 +28,7 @@ fn run() -> io::Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let mut channel = None;
+    let mut retained_provider = None;
     let mut byte = [0];
     let mut counter = 0_u64;
     while input.read(&mut byte)? != 0 {
@@ -51,7 +52,7 @@ fn run() -> io::Result<()> {
             continue;
         }
         if byte[0] == 0x1b {
-            provider::exchange(&mut input, &mut output)?;
+            provider::exchange(&mut input, &mut output, &mut retained_provider)?;
             continue;
         }
         if byte[0] != 0x1e {

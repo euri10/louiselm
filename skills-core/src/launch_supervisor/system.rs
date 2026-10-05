@@ -5,6 +5,10 @@
 mod relay_tests;
 
 #[cfg(test)]
+#[path = "system_guard_transport_tests.rs"]
+mod guard_transport_tests;
+
+#[cfg(test)]
 #[path = "tool_integration_tests.rs"]
 mod tool_integration_tests;
 
@@ -14,6 +18,9 @@ mod installed_tests;
 
 #[path = "system_command.rs"]
 mod command_io;
+
+#[path = "system_guard_resume.rs"]
+mod guard_resume;
 
 #[cfg(test)]
 #[path = "command_test_support.rs"]
@@ -114,7 +121,7 @@ fn reconnect_guard_channel(
         request_id: format!("guard-reconnect-{}", head.digest),
         session_id: scope.session_id.clone(),
         run_id: scope.run_id.clone(),
-        envelope_revision: scope.revision,
+        envelope_revision: scope.envelope_revision,
         sequence: head.sequence,
         receipt_digest: head.digest.clone(),
     };
@@ -189,6 +196,7 @@ struct SeqpacketLaunchBrokerState {
     controller_loss_pending: Option<PendingControllerLossSettlement>,
     guard_close_pending: Option<PendingGuardClosure>,
     guard_upstream_pending: Option<PendingGuardUpstream>,
+    guard_enrollment_pending: Option<PendingGuardEnrollment>,
     session_receive_armed: bool,
 }
 
@@ -214,6 +222,12 @@ struct PendingGuardUpstream {
     complete: SupervisorCompletion<()>,
 }
 
+struct PendingGuardEnrollment {
+    request_id: String,
+    enrollment: GuardEnrollment,
+    complete: SupervisorCompletion<()>,
+}
+
 impl SeqpacketLaunchBroker {
     fn new(
         connector: SeqpacketConnector,
@@ -232,6 +246,7 @@ impl SeqpacketLaunchBroker {
                 controller_loss_pending: None,
                 guard_close_pending: None,
                 guard_upstream_pending: None,
+                guard_enrollment_pending: None,
                 session_receive_armed: false,
             })),
         }
@@ -417,13 +432,14 @@ impl SeqpacketLaunchBroker {
                 let packet = match received.map_err(map_transport) {
                     Ok(packet) => packet,
                     Err(error) => {
-                        let (controller, guard, upstream) = {
+                        let (controller, guard, upstream, enrollment) = {
                             let mut state = lock(&state);
                             state.session_receive_armed = false;
                             (
                                 state.controller_loss_pending.take(),
                                 state.guard_close_pending.take(),
                                 state.guard_upstream_pending.take(),
+                                state.guard_enrollment_pending.take(),
                             )
                         };
                         if let Some(pending) = controller {
@@ -435,6 +451,9 @@ impl SeqpacketLaunchBroker {
                         if let Some(pending) = upstream {
                             (pending.complete)(Err(error.clone()));
                         }
+                        if let Some(pending) = enrollment {
+                            (pending.complete)(Err(error.clone()));
+                        }
                         if let Some(complete) = lock(&completion).take() {
                             complete(Err(error));
                         }
@@ -443,6 +462,46 @@ impl SeqpacketLaunchBroker {
                 };
                 let no_descriptors = packet.descriptors.is_none();
                 if let LauncherPacket::Response(response) = packet.packet {
+                    if let ResponseResult::SenderGuardAccepted { enrollment } = &response.result {
+                        let retired_reply = {
+                            let state = lock(&state);
+                            state
+                                .guard_enrollment_pending
+                                .as_ref()
+                                .is_some_and(|pending| {
+                                    enrollment.scope.session_id
+                                        == pending.enrollment.scope.session_id
+                                        && enrollment.scope.revision
+                                            < pending.enrollment.scope.revision
+                                })
+                        };
+                        let pending = if retired_reply {
+                            None
+                        } else {
+                            lock(&state).guard_enrollment_pending.take()
+                        };
+                        if let Some(pending) = pending {
+                            let result = if no_descriptors
+                                && response.request_id == pending.request_id
+                                && enrollment == &pending.enrollment
+                            {
+                                Ok(())
+                            } else {
+                                Err(SupervisorError::IsolationRejected)
+                            };
+                            (pending.complete)(result);
+                        }
+                        if let Err(error) = Self::arm_session_receive(
+                            Arc::clone(&state),
+                            &next_channel,
+                            Arc::clone(&completion),
+                        ) && let Some(complete) = lock(&completion).take()
+                        {
+                            lock(&state).session_receive_armed = false;
+                            complete(Err(error));
+                        }
+                        return;
+                    }
                     if matches!(
                         response.result,
                         ResponseResult::SenderGuardUpstreamAccepted { .. }
@@ -593,6 +652,73 @@ impl SeqpacketLaunchBroker {
 }
 
 impl LaunchBroker for SeqpacketLaunchBroker {
+    fn send_guarded_listener(
+        &self,
+        request_id: &str,
+        enrollment: GuardEnrollment,
+        descriptors: [BorrowedFd<'_>; 3],
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let response = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request_id.into(),
+            result: ResponseResult::SenderGuardEnrolled {
+                enrollment: enrollment.clone(),
+            },
+        };
+        response
+            .validate()
+            .map_err(|_| SupervisorError::IsolationRejected)?;
+        let channel = self.current_channel()?;
+        {
+            let mut state = lock(&self.state);
+            if state.guard_enrollment_pending.is_some() {
+                return Err(SupervisorError::BrokerUnavailable);
+            }
+            state.guard_enrollment_pending = Some(PendingGuardEnrollment {
+                request_id: request_id.into(),
+                enrollment,
+                complete,
+            });
+        }
+        let callback_state = Arc::clone(&self.state);
+        let callback_request = request_id.to_owned();
+        let callback_enrollment = match &response.result {
+            ResponseResult::SenderGuardEnrolled { enrollment } => enrollment.clone(),
+            _ => return Err(SupervisorError::IsolationRejected),
+        };
+        if let Err(error) = channel.send_descriptors(
+            response.canonical_bytes(),
+            descriptors,
+            Box::new(move |result| {
+                let pending = if result.is_err() {
+                    let mut state = lock(&callback_state);
+                    if state
+                        .guard_enrollment_pending
+                        .as_ref()
+                        .is_some_and(|pending| {
+                            pending.request_id == callback_request
+                                && pending.enrollment == callback_enrollment
+                        })
+                    {
+                        state.guard_enrollment_pending.take()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(pending) = pending {
+                    (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+                }
+            }),
+        ) {
+            lock(&self.state).guard_enrollment_pending.take();
+            return Err(map_transport(error));
+        }
+        Ok(())
+    }
     fn send_guarded_upstream(
         &self,
         request_id: &str,
@@ -665,22 +791,34 @@ impl LaunchBroker for SeqpacketLaunchBroker {
             .validate()
             .map_err(|_| SupervisorError::CleanupUnproven)?;
         let (sent, received) = mpsc::sync_channel(1);
-        let (channel, direct_receive) = {
+        let (channel, direct_receive, cancelled_enrollment) = {
             let mut state = lock(&self.state);
             if state.connector.is_none()
                 || state.guard_close_pending.is_some()
                 || state.controller_loss_pending.is_some()
+                || state
+                    .guard_enrollment_pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.enrollment != enrollment)
             {
                 return Err(SupervisorError::CleanupUnproven);
             }
+            let cancelled_enrollment = state.guard_enrollment_pending.take();
             state.guard_close_pending = Some(PendingGuardClosure {
                 enrollment,
                 complete: Box::new(move |result| {
                     let _ = sent.try_send(result);
                 }),
             });
-            (state.channel.clone(), !state.session_receive_armed)
+            (
+                state.channel.clone(),
+                !state.session_receive_armed,
+                cancelled_enrollment,
+            )
         };
+        if let Some(pending) = cancelled_enrollment {
+            (pending.complete)(Err(SupervisorError::IsolationRejected));
+        }
         if direct_receive
             && Self::receive_direct_guard_close(Arc::clone(&self.state), &channel).is_err()
         {
@@ -1032,6 +1170,7 @@ impl LaunchBroker for SeqpacketLaunchBroker {
             controller_loss_pending,
             guard_close_pending,
             guard_upstream_pending,
+            guard_enrollment_pending,
         ) = {
             let mut state = lock(&self.state);
             state.session_receive_armed = false;
@@ -1042,6 +1181,7 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                 state.controller_loss_pending.take(),
                 state.guard_close_pending.take(),
                 state.guard_upstream_pending.take(),
+                state.guard_enrollment_pending.take(),
             )
         };
         channel.close();
@@ -1059,6 +1199,9 @@ impl LaunchBroker for SeqpacketLaunchBroker {
             (pending.complete)(Err(SupervisorError::CleanupUnproven));
         }
         if let Some(pending) = guard_upstream_pending {
+            (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+        }
+        if let Some(pending) = guard_enrollment_pending {
             (pending.complete)(Err(SupervisorError::BrokerUnavailable));
         }
     }
@@ -1713,6 +1856,7 @@ pub struct SystemRunningAgent {
     guard_scope: Option<GuardScope>,
     guard_revoker: Option<super::sender_guard::GuardRevoker>,
     guard_broker: Option<Arc<dyn LaunchBroker>>,
+    guard_resume_acknowledged: Arc<AtomicBool>,
     cache_worker: Option<super::cache_download::Worker>,
     workspace: Option<super::workspace::SessionWorkspace>,
     tools: Option<super::tool_execution::ToolExecutor>,
@@ -1749,6 +1893,7 @@ impl SystemRunningAgent {
             guard_scope: None,
             guard_revoker: None,
             guard_broker: None,
+            guard_resume_acknowledged: Arc::new(AtomicBool::new(false)),
             cache_worker: None,
             workspace: None,
             session: Arc::new(Mutex::new(session)),
@@ -2052,6 +2197,23 @@ impl SystemRunningAgent {
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn prepare_guard_resume(
+        &mut self,
+        authority: Option<crate::launch_protocol::GuardResumeRequest>,
+        broker: Arc<dyn LaunchBroker>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        self.prepare_guarded_resume(authority, &broker, complete)
+    }
+
+    fn activate_guard_resume(
+        &mut self,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        self.activate_guarded_resume(complete);
+        Ok(())
+    }
+
     fn handoff_guarded_upstream(
         &mut self,
         request: &crate::launch_protocol::GuardSocketRequest,
@@ -2510,10 +2672,19 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn resume(&mut self) -> Result<(), MechanicFailure> {
-        if self.sender_guard.is_some() {
-            // A revoked revision cannot be reused; fresh broker authority and
-            // handoff must precede any guarded warm Resume.
-            return Err(MechanicFailure::Parked);
+        if let Some(guard) = &self.sender_guard {
+            let Some(scope) = &self.guard_scope else {
+                return Err(MechanicFailure::Parked);
+            };
+            if !self.guard_resume_acknowledged.load(Ordering::Acquire)
+                || self
+                    .guard_revoker
+                    .as_ref()
+                    .is_none_or(|revoker| !revoker.active())
+                || lock(guard).confirm_resume_handoff(scope).is_err()
+            {
+                return Err(MechanicFailure::Parked);
+            }
         }
         self.cancel_verification()
             .map_err(|_| MechanicFailure::Ambiguous)?;
@@ -4025,6 +4196,7 @@ mod tests {
             scope: GuardScope {
                 session_id: "session".into(),
                 run_id: "run".into(),
+                envelope_revision: 1,
                 revision: 1,
                 deadline_ns: u64::MAX,
             },

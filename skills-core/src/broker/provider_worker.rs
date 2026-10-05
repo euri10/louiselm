@@ -66,6 +66,28 @@ impl Default for ProviderWork {
 }
 
 impl ProviderWork {
+    pub(super) fn resume(&mut self) -> Result<(), BrokerError> {
+        if !self.pending.is_empty()
+            || self
+                .connections
+                .iter()
+                .any(|lease| lease.strong_count() != 0)
+        {
+            return Err(BrokerError::ProviderUnavailable);
+        }
+        let sequence = self.sequence;
+        #[cfg(test)]
+        let test_root = self.test_root.clone();
+        // Old workers retain the cancelled generation and old mailbox senders.
+        self.cancel();
+        *self = Self::default();
+        self.sequence = sequence;
+        #[cfg(test)]
+        {
+            self.test_root = test_root;
+        }
+        Ok(())
+    }
     #[cfg(test)]
     pub(super) fn set_test_root(&mut self, root: ureq::tls::Certificate<'static>) {
         self.test_root = Some(root);

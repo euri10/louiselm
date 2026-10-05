@@ -193,6 +193,7 @@ impl Probe {
         let scope = GuardScope {
             session_id: format!("conformance-{}", std::process::id()),
             run_id: "conformance".into(),
+            envelope_revision: 1,
             revision: 1,
             deadline_ns: u64::try_from(now.tv_sec)
                 .map_err(|_| Error::Observation("clock unavailable"))?

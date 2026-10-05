@@ -1,12 +1,72 @@
 //! Exact scope carried by authenticated Sender guard enrollment evidence.
-use super::{ErrorCode, ProtocolError, validate_identifier, validate_schema, validate_version};
+use super::{
+    ErrorCode, LifecycleAction, LifecycleRequest, ProtocolError, validate_identifier,
+    validate_schema, validate_version,
+};
+use crate::{
+    Digest,
+    launch_receipt::{ReceiptHead, SessionState},
+};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 /// Broker request for one supervisor-created, enrolled upstream socket.
-pub const GUARD_SOCKET_REQUEST_SCHEMA: &str = "louiselm.launch.guard-socket-request/1";
+pub const GUARD_SOCKET_REQUEST_SCHEMA: &str = "louiselm.launch.guard-socket-request/2";
 /// Broker notice that its exact upstream descriptor has been closed.
-pub const GUARD_SOCKET_RETIRE_SCHEMA: &str = "louiselm.launch.guard-socket-retire/1";
+pub const GUARD_SOCKET_RETIRE_SCHEMA: &str = "louiselm.launch.guard-socket-retire/2";
+/// Broker-authorized networking preparation for one exact warm Resume.
+pub const GUARD_RESUME_SCHEMA: &str = "louiselm.launch.guard-resume/1";
+
+/// Fresh networking authority within an unchanged approved permission envelope.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardResumeRequest {
+    /// Closed wire schema.
+    pub schema: String,
+    /// Protocol version.
+    pub protocol_version: u32,
+    /// Exact durable operator Resume authorization, never an Agent request.
+    pub request: LifecycleRequest,
+    /// Exact durable Park checkpoint authorizing preparation.
+    pub parked_head: ReceiptHead,
+    /// Fresh enforcement revision and the original exclusive deadline.
+    pub scope: GuardScope,
+}
+
+impl GuardResumeRequest {
+    /// Serializes the closed record without whitespace.
+    /// # Panics
+    /// Panics only if a future schema adds a fallible serializer.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived closed record contains only JSON-native values."
+    )]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("guard resume authority is always serializable")
+    }
+
+    /// Checks every consumed authority binding before state changes.
+    /// # Errors
+    /// Refuses non-Resume, foreign scope, changed envelope or inconsistent Park.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_schema(&self.schema, GUARD_RESUME_SCHEMA)?;
+        validate_version(self.protocol_version)?;
+        self.request.validate()?;
+        self.scope.validate()?;
+        if self.request.action != LifecycleAction::Resume
+            || self.request.expected_state != SessionState::Parked
+            || self.request.expected_receipt_sequence != Some(self.parked_head.sequence)
+            || self.scope.session_id != self.request.session_id
+            || self.scope.run_id != self.request.run_id
+            || self.scope.envelope_revision != self.request.envelope_revision
+            || Digest::parse(&self.parked_head.digest).is_err()
+        {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        Ok(())
+    }
+}
 
 /// Exact destination chosen by the Control broker after request admission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +160,9 @@ pub struct GuardScope {
     pub session_id: String,
     /// Owning Run.
     pub run_id: String,
-    /// Current capability-envelope revision.
+    /// Approved capability-envelope revision; Resume never changes it.
+    pub envelope_revision: u64,
+    /// Strictly increasing networking enforcement revision, independent of permissions.
     pub revision: u64,
     /// Exclusive `CLOCK_MONOTONIC` deadline in nanoseconds.
     pub deadline_ns: u64,
@@ -149,7 +211,7 @@ impl GuardScope {
     pub(crate) fn validate(&self) -> Result<(), ProtocolError> {
         validate_identifier(&self.session_id)?;
         validate_identifier(&self.run_id)?;
-        if self.revision == 0 || self.deadline_ns == 0 {
+        if self.envelope_revision == 0 || self.revision == 0 || self.deadline_ns == 0 {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
         }
         Ok(())

@@ -42,6 +42,7 @@ fn invalid_scope_is_refused_before_any_platform_effect() {
             validate_scope(&GuardScope {
                 session_id: session.into(),
                 run_id: run.into(),
+                envelope_revision: 1,
                 revision,
                 deadline_ns: deadline
             }),
@@ -61,6 +62,7 @@ fn enrollment_response_round_trips_and_rejects_malformed_scope() {
                 scope: GuardScope {
                     session_id: "s".into(),
                     run_id: "r".into(),
+                    envelope_revision: 1,
                     revision: 1,
                     deadline_ns: 100,
                 },
@@ -122,9 +124,10 @@ fn production_loader_worker() {
         run_id: current
             .as_ref()
             .map_or_else(|| "fixture-run".into(), |status| status.run_id.clone()),
-        revision: current
+        envelope_revision: current
             .as_ref()
             .map_or(1, |status| status.envelope_revision),
+        revision: 1,
         deadline_ns: u64::try_from(now.tv_sec).unwrap() * 1_000_000_000
             + u64::try_from(now.tv_nsec).unwrap()
             + setup["deadline_ms"].as_u64().unwrap_or(300_000) * 1_000_000,

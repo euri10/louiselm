@@ -197,6 +197,19 @@ pub struct AgentAuthentication {
 
 /// Broker operations needed by the one-shot launch transaction.
 pub trait LaunchBroker: Send + Sync {
+    /// Transfers the retained guard's listener through the Session's single reader.
+    /// # Errors
+    /// Refuses concurrent, unavailable or inexact authenticated handoff.
+    fn send_guarded_listener(
+        &self,
+        _request_id: &str,
+        _enrollment: GuardEnrollment,
+        _descriptors: [std::os::fd::BorrowedFd<'_>; 3],
+        _complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
     /// Transfers one already-registered upstream on the Session's authenticated
     /// channel. Its single receive owner reports the exact broker ACK.
     /// # Errors
@@ -611,6 +624,36 @@ pub trait RunningAgent: Send {
     /// # Errors
     /// An uncertain ACK must withhold the signed Park outcome.
     fn close_guard_handoff(&mut self) -> Result<(), SupervisorError> {
+        Ok(())
+    }
+
+    /// Prepares fresh networking authority while the retained tree remains frozen.
+    /// Completion uses the Session's existing broker reader; it never enables effects.
+    /// Unguarded Agents accept only an ordinary Resume without guard authority.
+    /// # Errors
+    /// Refuses missing authority, failed descriptor closure or authenticated handoff.
+    fn prepare_guard_resume(
+        &mut self,
+        authority: Option<crate::launch_protocol::GuardResumeRequest>,
+        _broker: Arc<dyn LaunchBroker>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        complete(if authority.is_none() {
+            Ok(())
+        } else {
+            Err(SupervisorError::IsolationRejected)
+        });
+        Ok(())
+    }
+
+    /// Enables prepared networking only after the exact Resume receipt's durable ACK.
+    /// # Errors
+    /// Refuses revoked, expired or mismatched prepared authority.
+    fn activate_guard_resume(
+        &mut self,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        complete(Ok(()));
         Ok(())
     }
 
@@ -1518,7 +1561,8 @@ fn guard_scope(
     Ok(GuardScope {
         session_id: authorization.session_id.clone(),
         run_id: authorization.run_id.clone(),
-        revision: authorization.envelope_revision,
+        envelope_revision: authorization.envelope_revision,
+        revision: 1,
         deadline_ns,
     })
 }

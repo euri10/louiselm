@@ -219,6 +219,7 @@ fn guarded_handoff_keeps_exact_three_descriptors_with_authenticated_packet() {
                 scope: GuardScope {
                     session_id: "session-1".into(),
                     run_id: "run-1".into(),
+                    envelope_revision: 1,
                     revision: 1,
                     deadline_ns: u64::MAX,
                 },

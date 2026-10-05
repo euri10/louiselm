@@ -169,7 +169,7 @@ impl BrokerService {
         let authorization = session.authorization();
         if enrollment.scope.session_id != authorization.session_id
             || enrollment.scope.run_id != authorization.run_id
-            || enrollment.scope.revision != authorization.envelope_revision
+            || enrollment.scope.envelope_revision != authorization.envelope_revision
             || enrollment.broker_pid != std::process::id()
             || session
                 .provider_listener
@@ -275,13 +275,19 @@ impl BrokerService {
         let maximum = monotonic
             .checked_add(expires.saturating_sub(now_ms).saturating_mul(1_000_000))
             .ok_or(BrokerError::InvalidGrant)?;
+        if !self
+            .provider_ownership
+            .permits_enrollment(enrollment, &response.request_id)
+        {
+            return Err(BrokerError::ProviderUnavailable);
+        }
         if session.provider_listener.is_some()
             || session
                 .provider_revision
                 .is_some_and(|revision| scope.revision <= revision)
             || scope.session_id != authorization.session_id
             || scope.run_id != authorization.run_id
-            || scope.revision != authorization.envelope_revision
+            || scope.envelope_revision != authorization.envelope_revision
             || now_ms >= expires
             || scope.deadline_ns <= monotonic
             || scope.deadline_ns > maximum
@@ -307,7 +313,9 @@ impl BrokerService {
             runtime,
             std::sync::Arc::clone(&owner_lease),
         )?;
-        self.provider_ownership.listener(&scope, &owner_lease)?;
+        self.provider_ownership
+            .listener(&listener.enrollment, &request_id, &owner_lease)?;
+        session.provider_work.resume()?;
         let accepted = listener.enrollment.clone();
         session.provider_revision = Some(scope.revision);
         session.provider_listener = Some(listener);
@@ -349,7 +357,7 @@ impl BrokerService {
             if session.channel().is_closed()
                 || scope.session_id != session.authorization().session_id
                 || scope.run_id != session.authorization().run_id
-                || scope.revision != session.authorization().envelope_revision
+                || scope.envelope_revision != session.authorization().envelope_revision
             {
                 return Err(BrokerError::InvalidGrant);
             }

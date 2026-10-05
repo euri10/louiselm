@@ -126,6 +126,14 @@ Its installed Brokered composition cases also require guarded Start, Park,
 disposal, loss/uncertain-close containment and two pipelined HTTPS Provider
 requests over supervisor-created sockets; a fixture-only component pass is not
 evidence that the production launcher constructor enables Brokered.
+Guarded Resume also requires
+`privileged_installed_brokered_guard_warm_resume_provider` in that guest. It uses
+the installed broker, retained runtime and real signer with a held Resume
+signature: writes after thaw but before receipt acknowledgment must be kernel
+denials, an old accepted connection stays invalid, and a fresh post-Resume HTTPS
+request succeeds without resetting Run spending. Together with the loader's
+cross-Session, stale-revoker and upstream-revision cases, this is offline
+composition evidence, not desktop or real-Provider acceptance.
 
 Broker Skill Admission request changes also run
 `python3 scripts/test-skill-requests` from the repository root. It builds both

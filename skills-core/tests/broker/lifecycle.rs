@@ -283,6 +283,69 @@ fn a_durable_refusal_replays_and_releases_the_pending_request() {
 }
 
 #[test]
+fn a_later_quarantine_does_not_rewrite_a_recorded_resume_outcome() {
+    for refused in [false, true] {
+        let root = TempDir::new().unwrap();
+        let launch = consumed_authorization(root.path(), &request("session-1"));
+        let store = LifecycleStore::open(&root.path().join("lifecycle")).unwrap();
+        let caller = LifecycleCaller::Operator {
+            uid: CONTROLLER_UID,
+        };
+        let mut current = status(&launch);
+        current.state = SessionState::Parked;
+        current.channel_state = ChannelState::Revoked;
+        let mut resume = park(&launch);
+        resume.action = LifecycleAction::Resume;
+        resume.expected_state = SessionState::Parked;
+        let accepted = store
+            .prepare(&launch, &current, &caller, &resume, 2000, &[])
+            .unwrap();
+        let receipt = signed(
+            accepted
+                .execute_intent()
+                .unwrap()
+                .receipt_payload(
+                    &trusted_release().release_id,
+                    &trusted_release().signing_key_id,
+                )
+                .unwrap(),
+        );
+        let failure = ProtocolError::new(
+            ErrorCode::LifecycleMechanicUnavailable,
+            Some(SessionState::Parked),
+            Some(1),
+        );
+        if refused {
+            store.record_failure(&resume, &failure).unwrap();
+        }
+        store.quarantine(&launch.session_id).unwrap();
+        let result = store.prepare(
+            &launch,
+            &current,
+            &caller,
+            &resume,
+            3000,
+            if refused {
+                &[]
+            } else {
+                std::slice::from_ref(&receipt)
+            },
+        );
+        if refused {
+            assert!(matches!(result, Err(BrokerError::Policy(error)) if error == failure));
+        } else {
+            assert_eq!(result.unwrap().replayed_receipt(), Some(&receipt));
+        }
+        let mut fresh = resume;
+        fresh.request_id = "fresh-resume".into();
+        assert!(
+            matches!(store.prepare(&launch, &current, &caller, &fresh, 3000, &[]),
+            Err(BrokerError::Policy(error)) if error.code == ErrorCode::InvalidRequest)
+        );
+    }
+}
+
+#[test]
 fn concurrent_lifecycle_reservations_have_exactly_one_winner() {
     let root = TempDir::new().unwrap();
     let launch = consumed_authorization(root.path(), &request("session-1"));

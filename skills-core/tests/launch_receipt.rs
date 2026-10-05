@@ -233,7 +233,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(payload_bytes.clone()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/6\",",
+                "{{\"schema\":\"louiselm.launch.receipt/7\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-0\",\"envelope_revision\":3,",
                 "\"sequence\":0,\"previous_receipt_digest\":null,",
@@ -268,7 +268,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
     assert_eq!(
         String::from_utf8(envelope_bytes.clone()).unwrap(),
         format!(
-            "{{\"schema\":\"louiselm.launch.signed-receipt/5\",\"payload\":{},\"signature\":\"{}\"}}",
+            "{{\"schema\":\"louiselm.launch.signed-receipt/6\",\"payload\":{},\"signature\":\"{}\"}}",
             String::from_utf8(payload_bytes.clone()).unwrap(),
             receipt.signature,
         ),
@@ -287,7 +287,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(start.payload.canonical_bytes()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/6\",",
+                "{{\"schema\":\"louiselm.launch.receipt/7\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-start\",\"envelope_revision\":3,",
                 "\"sequence\":1,\"previous_receipt_digest\":\"{}\",",
@@ -345,7 +345,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
 
 #[test]
 fn launch_evidence_binds_the_exact_broker_loss_grace() {
-    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/6");
+    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/7");
     assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
 
     let maximum = chain().remove(0).payload;

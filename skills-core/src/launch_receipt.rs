@@ -19,10 +19,10 @@ use crate::{
 };
 
 /// SSHSIG namespace and schema for the bytes a Launch supervisor signs.
-pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/6";
+pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/7";
 
 /// Schema for the payload plus its launcher signature.
-pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/5";
+pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/6";
 
 /// Largest canonical payload or signed envelope accepted at the trust boundary.
 pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
@@ -82,6 +82,8 @@ pub enum ReceiptCause {
     ControllerLost,
     /// A success receipt was not durably acknowledged in time.
     AcknowledgementFailed,
+    /// The exact Resume receipt was durable, but paired effect activation failed.
+    ResumeActivationFailed,
     /// The supervisor's ACP relay failed; no raw I/O detail is retained.
     RelayFailed,
     /// The authenticated Agent lifetime or executable proof ended without an exit status.
@@ -388,6 +390,7 @@ impl ReceiptPayload {
                                 | ReceiptCause::ConformanceInvalid
                                 | ReceiptCause::ControllerLost
                                 | ReceiptCause::AcknowledgementFailed
+                                | ReceiptCause::ResumeActivationFailed
                         }
                 ) =>
             {

@@ -14,6 +14,7 @@ fn enrollment(listener: &TcpListener, pins: &File, network: &File) -> GuardEnrol
         scope: GuardScope {
             session_id: "session-1".into(),
             run_id: "run-1".into(),
+            envelope_revision: 1,
             revision: 1,
             deadline_ns: u64::try_from(now.tv_sec).unwrap() * 1_000_000_000
                 + u64::try_from(now.tv_nsec).unwrap()
@@ -38,6 +39,158 @@ fn response(result: ResponseResult) -> ProtocolResponse {
 }
 
 #[test]
+fn networking_revision_cannot_be_self_authorized() {
+    let mut fixture = fixture(Some(approval(5)), Some("openai"));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let pins = File::open("/proc/self/ns/mnt").unwrap();
+    let network = File::open("/proc/self/ns/net").unwrap();
+    let mut enrollment = enrollment(&listener, &pins, &network);
+    enrollment.scope.session_id = fixture.session.authorization().session_id.clone();
+    enrollment.scope.envelope_revision = fixture.session.authorization().envelope_revision;
+    enrollment.scope.revision = 2;
+    let message = response(ResponseResult::SenderGuardEnrolled { enrollment });
+    settle(|complete| {
+        fixture.peer.send_descriptors(
+            message.canonical_bytes(),
+            [listener.as_fd(), pins.as_fd(), network.as_fd()],
+            complete,
+        )
+    });
+    assert!(matches!(
+        fixture
+            .service
+            .step(&mut fixture.session, 2500, None, verify_fixture_signature,),
+        Err(BrokerError::ProviderUnavailable)
+    ));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One authenticated handoff, Park and Resume dispatch trace."
+)]
+fn operator_resume_dispatches_fresh_authority_bound_to_the_durable_park() {
+    use louiselm_skills::{
+        broker::lifecycle::LifecycleCaller,
+        launch_protocol::{ChannelState, LifecycleAction},
+    };
+    let mut fixture = fixture(Some(approval(5)), Some("openai"));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let pins = File::open("/proc/self/ns/mnt").unwrap();
+    let network = File::open("/proc/self/ns/net").unwrap();
+    let mut original = enrollment(&listener, &pins, &network);
+    original.scope.session_id = fixture.session.authorization().session_id.clone();
+    original.scope.envelope_revision = fixture.session.authorization().envelope_revision;
+    let enrolled = response(ResponseResult::SenderGuardEnrolled {
+        enrollment: original.clone(),
+    });
+    settle(|complete| {
+        fixture.peer.send_descriptors(
+            enrolled.canonical_bytes(),
+            [listener.as_fd(), pins.as_fd(), network.as_fd()],
+            complete,
+        )
+    });
+    fixture
+        .service
+        .step(&mut fixture.session, 2500, None, verify_fixture_signature)
+        .unwrap();
+    let _accepted = settle(|complete| fixture.peer.receive(complete));
+    let closing = response(ResponseResult::SenderGuardClosing {
+        enrollment: original.clone(),
+    });
+    settle(|complete| fixture.peer.send(closing.canonical_bytes(), complete));
+    fixture
+        .service
+        .step(&mut fixture.session, 2500, None, verify_fixture_signature)
+        .unwrap();
+    let _closed = settle(|complete| fixture.peer.receive(complete));
+    let caller = LifecycleCaller::Operator {
+        uid: CONTROLLER_UID,
+    };
+    let park = lifecycle::park(fixture.session.authorization());
+    let parked = thread::scope(|threads| {
+        let peer = &fixture.peer;
+        let current = &fixture.current;
+        let driver = threads.spawn(move || lifecycle::drive_lifecycle_peer(peer, current));
+        let receipt = fixture
+            .service
+            .request_lifecycle(
+                &mut fixture.session,
+                &caller,
+                &park,
+                2500,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        assert_eq!(driver.join().unwrap(), receipt);
+        receipt
+    });
+    let head = louiselm_skills::launch_receipt::ReceiptHead {
+        sequence: parked.payload.sequence,
+        digest: parked.digest().to_string(),
+    };
+    fixture.current.state = SessionState::Parked;
+    fixture.current.channel_state = ChannelState::Revoked;
+    fixture.current.launcher_head = Some(head.clone());
+    fixture.current.broker_head = Some(head.clone());
+    let mut resume = park;
+    resume.request_id = "guard-resume-1".into();
+    resume.authorization_id = "operator-resume".into();
+    resume.action = LifecycleAction::Resume;
+    resume.expected_state = SessionState::Parked;
+    resume.expected_receipt_sequence = Some(head.sequence);
+    let authority = thread::scope(|threads| {
+        let peer = &fixture.peer;
+        let current = &fixture.current;
+        let request_id = resume.request_id.clone();
+        let driver = threads.spawn(move || {
+            lifecycle::answer_one_status_query(peer, current);
+            let packet = settle(|complete| peer.receive(complete));
+            let authority = match packet.packet {
+                LauncherPacket::Request(ProtocolMessage::GuardResume(authority)) => {
+                    Some(*authority)
+                }
+                _ => None,
+            };
+            let error = response(ResponseResult::Error {
+                error: ProtocolError::new(
+                    ErrorCode::LifecycleMechanicUnavailable,
+                    Some(SessionState::Parked),
+                    Some(2),
+                ),
+            });
+            let error = ProtocolResponse {
+                request_id,
+                ..error
+            };
+            settle(|complete| peer.send(error.canonical_bytes(), complete));
+            authority
+        });
+        assert!(matches!(
+            fixture.service.request_lifecycle(
+                &mut fixture.session,
+                &caller,
+                &resume,
+                2500,
+                verify_fixture_signature
+            ),
+            Err(BrokerError::Policy(_))
+        ));
+        driver.join().unwrap()
+    })
+    .expect("a guarded Resume needs broker-owned fresh networking authority");
+    assert_eq!(authority.request, resume);
+    assert_eq!(authority.parked_head, head);
+    assert_eq!(authority.scope.revision, 2);
+    assert_eq!(
+        authority.scope.envelope_revision,
+        original.scope.envelope_revision
+    );
+    assert_eq!(authority.scope.deadline_ns, original.scope.deadline_ns);
+}
+
+#[test]
 fn transferred_listener_uses_production_admission_and_closes_before_ack() {
     let mut fixture = fixture(Some(approval(5)), Some("openai"));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -45,7 +198,7 @@ fn transferred_listener_uses_production_admission_and_closes_before_ack() {
     let network = File::open("/proc/self/ns/net").unwrap();
     let mut enrollment = enrollment(&listener, &pins, &network);
     enrollment.scope.session_id = fixture.session.authorization().session_id.clone();
-    enrollment.scope.revision = fixture.session.authorization().envelope_revision;
+    enrollment.scope.envelope_revision = fixture.session.authorization().envelope_revision;
     let message = response(ResponseResult::SenderGuardEnrolled {
         enrollment: enrollment.clone(),
     });
@@ -144,7 +297,7 @@ fn reconnect_cannot_ack_guard_closure_while_old_session_owns_listener() {
     let network = File::open("/proc/self/ns/net").unwrap();
     let mut enrollment = enrollment(&listener, &pins, &network);
     enrollment.scope.session_id = fixture.session.authorization().session_id.clone();
-    enrollment.scope.revision = fixture.session.authorization().envelope_revision;
+    enrollment.scope.envelope_revision = fixture.session.authorization().envelope_revision;
     let enrolled = response(ResponseResult::SenderGuardEnrolled {
         enrollment: enrollment.clone(),
     });
@@ -169,7 +322,7 @@ fn reconnect_cannot_ack_guard_closure_while_old_session_owns_listener() {
         request_id: "guard-reconnect".into(),
         session_id: enrollment.scope.session_id.clone(),
         run_id: enrollment.scope.run_id.clone(),
-        envelope_revision: enrollment.scope.revision,
+        envelope_revision: enrollment.scope.envelope_revision,
         sequence: head.sequence,
         receipt_digest: head.digest.clone(),
     };

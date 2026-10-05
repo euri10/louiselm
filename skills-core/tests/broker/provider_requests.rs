@@ -794,6 +794,259 @@ fn a_held_run_cannot_be_resumed_or_offered_resume() {
 }
 
 #[test]
+fn a_completed_resume_replays_without_lifting_a_later_budget_hold() {
+    let mut fixture = fixture(Some(approval(1)), Some("openai"));
+    let operator = LifecycleCaller::Operator {
+        uid: CONTROLLER_UID,
+    };
+    let park = lifecycle::park(fixture.session.authorization());
+    let parked = thread::scope(|scope| {
+        let peer = &fixture.peer;
+        let current = &fixture.current;
+        let driver = scope.spawn(move || lifecycle::drive_lifecycle_peer(peer, current));
+        let receipt = fixture
+            .service
+            .request_lifecycle(
+                &mut fixture.session,
+                &operator,
+                &park,
+                2000,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        assert_eq!(driver.join().unwrap(), receipt);
+        receipt
+    });
+    let resumed = fixture.resume(&parked, 2100);
+    let upstream = FakeUpstream::replying(200);
+    fixture.admit(&upstream, 2200).unwrap();
+    assert!(matches!(
+        fixture.admit(&upstream, 2300),
+        Err(BrokerError::ProviderBudgetExhausted)
+    ));
+    let hold = fixture.service.provider_hold("run-1").unwrap();
+    let mut resume = park;
+    resume.request_id = format!("resume-{}", parked.payload.sequence);
+    resume.action = LifecycleAction::Resume;
+    resume.expected_state = SessionState::Parked;
+    resume.expected_receipt_sequence = Some(parked.payload.sequence);
+    let replay = thread::scope(|scope| {
+        let peer = &fixture.peer;
+        let current = &fixture.current;
+        let request = &resume;
+        let receipt = &resumed;
+        let driver = scope.spawn(move || {
+            lifecycle::answer_one_status_query(peer, current);
+            let packet = settle(|done| peer.receive(done));
+            assert_eq!(packet.bytes, request.canonical_bytes());
+            let response = ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: request.request_id.clone(),
+                result: ResponseResult::Receipt {
+                    receipt: receipt.clone(),
+                },
+            };
+            settle(|done| peer.send(response.canonical_bytes(), done));
+        });
+        let result = fixture
+            .service
+            .request_lifecycle(
+                &mut fixture.session,
+                &operator,
+                &resume,
+                2400,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        driver.join().unwrap();
+        result
+    });
+    assert_eq!(replay, resumed);
+    assert_eq!(fixture.service.provider_hold("run-1").unwrap(), hold);
+    assert_eq!(fixture.service.provider_requests_spent("run-1").unwrap(), 1);
+    assert_eq!(upstream.calls(), 1);
+    resume.request_id = "fresh-while-held".into();
+    assert!(
+        matches!(fixture.service.request_lifecycle(&mut fixture.session, &operator,
+        &resume, 2500, verify_fixture_signature),
+        Err(BrokerError::Policy(error)) if error.code == ErrorCode::InvalidRequest)
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One thaw receipt, pending activation, rollback and exact retry trace."
+)]
+fn a_running_receipt_cannot_replay_success_without_the_resume_owner_outcome() {
+    use louiselm_skills::{
+        broker::lifecycle::LifecycleStore,
+        launch_protocol::{PendingAction, PendingOperation, PendingPhase},
+        launch_receipt::{ReceiptAuthority, ReceiptCause, ReceiptHead, ReceiptOutcome},
+    };
+    let mut fixture = fixture(Some(approval(1)), Some("openai"));
+    let operator = LifecycleCaller::Operator {
+        uid: CONTROLLER_UID,
+    };
+    let park = lifecycle::park(fixture.session.authorization());
+    let parked = thread::scope(|scope| {
+        let peer = &fixture.peer;
+        let current = &fixture.current;
+        let driver = scope.spawn(move || lifecycle::drive_lifecycle_peer(peer, current));
+        let receipt = fixture
+            .service
+            .request_lifecycle(
+                &mut fixture.session,
+                &operator,
+                &park,
+                2000,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        assert_eq!(driver.join().unwrap(), receipt);
+        receipt
+    });
+    let mut resume = park;
+    resume.request_id = "resume-unconfirmed".into();
+    resume.action = LifecycleAction::Resume;
+    resume.expected_state = SessionState::Parked;
+    resume.expected_receipt_sequence = Some(parked.payload.sequence);
+    let parked_status = fixture.parked(&parked);
+    let store =
+        LifecycleStore::open(&fixture.root.path().join("authorizations/lifecycle")).unwrap();
+    let disposition = store
+        .prepare(
+            fixture.session.authorization(),
+            &parked_status,
+            &operator,
+            &resume,
+            2100,
+            std::slice::from_ref(&parked),
+        )
+        .unwrap();
+    let running = signed(
+        disposition
+            .execute_intent()
+            .unwrap()
+            .receipt_payload(
+                &trusted_release().release_id,
+                &trusted_release().signing_key_id,
+            )
+            .unwrap(),
+    );
+    // The broker has ACKed the truthful thaw receipt, but no activation response.
+    fixture
+        .service
+        .receipts()
+        .append(
+            fixture.session.authorization(),
+            &running.canonical_bytes(),
+            None,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    let head = ReceiptHead {
+        sequence: running.payload.sequence,
+        digest: running.digest().to_string(),
+    };
+    fixture.current.launcher_head = Some(head.clone());
+    fixture.current.broker_head = Some(head);
+    fixture.current.channel_state = ChannelState::Revoked;
+    fixture.current.pending_operation = Some(PendingOperation {
+        request_id: resume.request_id.clone(),
+        action: PendingAction::Resume,
+        phase: PendingPhase::Activating,
+    });
+    let result = thread::scope(|scope| {
+        let peer = &fixture.peer;
+        let current = &fixture.current;
+        let driver = scope.spawn(move || lifecycle::answer_one_status_query(peer, current));
+        let result = fixture.service.request_lifecycle(
+            &mut fixture.session,
+            &operator,
+            &resume,
+            2200,
+            verify_fixture_signature,
+        );
+        driver.join().unwrap();
+        result
+    });
+    assert!(
+        matches!(result, Err(BrokerError::Policy(error)) if error.code == ErrorCode::OperationPending)
+    );
+    let mut payload = running.payload.clone();
+    payload.request_id = "activation-failed-park".into();
+    payload.sequence += 1;
+    payload.previous_receipt_digest = Some(running.digest().to_string());
+    payload.outcome = ReceiptOutcome::Park {
+        authority: ReceiptAuthority::Cause {
+            cause: ReceiptCause::ResumeActivationFailed,
+        },
+    };
+    payload.resulting_state = SessionState::Parked;
+    let failed_park = signed(payload);
+    fixture
+        .service
+        .receipts()
+        .append(
+            fixture.session.authorization(),
+            &failed_park.canonical_bytes(),
+            None,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    fixture.current = fixture.parked(&failed_park);
+    fixture.current.pending_operation = None;
+    let failure = ProtocolError::new(
+        ErrorCode::LifecycleMechanicUnavailable,
+        Some(SessionState::Parked),
+        Some(4),
+    );
+    let result = thread::scope(|scope| {
+        let peer = &fixture.peer;
+        let current = &fixture.current;
+        let request = &resume;
+        let error = &failure;
+        let driver = scope.spawn(move || {
+            lifecycle::answer_one_status_query(peer, current);
+            let packet = settle(|done| peer.receive(done));
+            assert_eq!(packet.bytes, request.canonical_bytes());
+            let response = ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: request.request_id.clone(),
+                result: ResponseResult::Error {
+                    error: error.clone(),
+                },
+            };
+            settle(|done| peer.send(response.canonical_bytes(), done));
+        });
+        let result = fixture.service.request_lifecycle(
+            &mut fixture.session,
+            &operator,
+            &resume,
+            2300,
+            verify_fixture_signature,
+        );
+        driver.join().unwrap();
+        result
+    });
+    assert!(matches!(result, Err(BrokerError::Policy(error)) if error == failure));
+    assert_eq!(
+        fixture
+            .service
+            .receipts()
+            .head(&resume.session_id)
+            .unwrap()
+            .unwrap()
+            .sequence,
+        4
+    );
+    assert_eq!(fixture.service.provider_requests_spent("run-1").unwrap(), 0);
+}
+
+#[test]
 fn permission_expiry_holds_the_run_with_or_without_a_request() {
     let upstream = FakeUpstream::replying(200);
     let mut requested = fixture(Some(approval(5)), Some("openai"));

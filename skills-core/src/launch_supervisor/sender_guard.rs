@@ -592,6 +592,7 @@ impl SenderGuard {
         validate_scope(&scope)?;
         if scope.session_id != self.scope.session_id
             || scope.run_id != self.scope.run_id
+            || scope.envelope_revision != self.scope.envelope_revision
             || scope.revision <= self.scope.revision
         {
             return Err(GuardError::Authority);

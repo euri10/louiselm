@@ -14,6 +14,9 @@ mod support;
 #[path = "launch_supervisor_cases/conformance.rs"]
 mod conformance_monitor_tests;
 
+#[path = "launch_supervisor_cases/guard_resume.rs"]
+mod guard_resume_tests;
+
 use std::{
     env, fs,
     io::{self, BufReader, Cursor, Read, Write},
@@ -1091,6 +1094,8 @@ struct GateState {
     enabled: bool,
     revoked: bool,
     closed: bool,
+    resume_enable_error: Option<SupervisorError>,
+    revoke_error: Option<SupervisorError>,
 }
 
 struct FakeCapabilityGate {
@@ -1167,11 +1172,22 @@ impl CapabilityGate for FakeCapabilityGate {
         Ok(())
     }
 
+    fn enable_after_resume(&mut self) -> Result<(), SupervisorError> {
+        self.enable()?;
+        lock(&self.state)
+            .resume_enable_error
+            .clone()
+            .map_or(Ok(()), Err)
+    }
+
     fn revoke(&mut self) -> Result<(), SupervisorError> {
         record(&self.events, "capability.revoke");
         let mut state = lock(&self.state);
         state.enabled = false;
         state.revoked = true;
+        if let Some(error) = &state.revoke_error {
+            return Err(error.clone());
+        }
         if self.revoke_fails {
             Err(SupervisorError::CapabilityUnavailable)
         } else {
@@ -1194,8 +1210,14 @@ impl CapabilityGate for FakeCapabilityGate {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct AgentState {
+    hold_guard_preparation: bool,
+    guard_preparation: Option<SupervisorCompletion<()>>,
     guard_enabled: bool,
     guard_revoke_fails: bool,
+    guard_active: bool,
+    guard_activation_fails: bool,
+    hold_guard_activation: bool,
+    guard_activation: Option<(Result<(), SupervisorError>, SupervisorCompletion<()>)>,
     hold_tool: bool,
     tool_completion:
         Option<SupervisorCompletion<louiselm_skills::launch_protocol::ToolExecutionResult>>,
@@ -1377,9 +1399,49 @@ fn run_fake_relay(
 }
 
 impl RunningAgent for FakeRunningAgent {
+    fn prepare_guard_resume(
+        &mut self,
+        _authority: Option<louiselm_skills::launch_protocol::GuardResumeRequest>,
+        _broker: Arc<dyn LaunchBroker>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        if lock(&self.state).hold_guard_preparation {
+            lock(&self.state).guard_preparation = Some(complete);
+        } else {
+            complete(Ok(()));
+        }
+        Ok(())
+    }
+
+    fn activate_guard_resume(
+        &mut self,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let fails = {
+            let mut state = lock(&self.state);
+            state.guard_active = state.guard_enabled;
+            state.guard_activation_fails
+        };
+        if lock(&self.state).guard_enabled {
+            record(&self.events, "agent.guard_activate");
+        }
+        let result = if fails {
+            Err(SupervisorError::IsolationRejected)
+        } else {
+            Ok(())
+        };
+        if lock(&self.state).hold_guard_activation {
+            lock(&self.state).guard_activation = Some((result, complete));
+        } else {
+            complete(result);
+        }
+        Ok(())
+    }
+
     fn revoke_guard(&self) -> Result<(), SupervisorError> {
         let (enabled, fails) = {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
+            state.guard_active = false;
             (state.guard_enabled, state.guard_revoke_fails)
         };
         if enabled {

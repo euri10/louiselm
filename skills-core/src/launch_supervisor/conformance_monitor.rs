@@ -495,6 +495,7 @@ impl SessionOwner {
     pub(super) fn cancel_conformance_resume(&mut self) {
         self.resources.conformance.resume_deadline = None;
         if let Some((request, _, _)) = self.resources.conformance.resume.take() {
+            self.guard_resume = None;
             self.cache_and_send_error(
                 request,
                 ProtocolError::new(

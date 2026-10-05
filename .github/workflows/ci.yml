@@ -232,6 +232,7 @@ jobs:
               privileged_installed_brokered_guard_broker_outage_poison \
               privileged_installed_brokered_guard_park_closes_before_receipt \
               privileged_installed_brokered_provider_stream \
+              privileged_installed_brokered_guard_warm_resume_provider \
               privileged_installed_brokered_codex_chain_enrolls_descendant \
               privileged_installed_brokered_codex_missing_descendant_times_out \
               privileged_installed_brokered_codex_wrong_ancestry_refuses \

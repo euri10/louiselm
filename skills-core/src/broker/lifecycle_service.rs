@@ -94,10 +94,16 @@ impl BrokerService {
                 )
                 .into());
             }
-            // Only an operator extension lifts a Provider budget hold; Resume
-            // alone would hand the Run back a budget it no longer has.
+            let recorded = self.receipts.chain(&session.authorization.session_id)?;
+            // A held Run may read an existing outcome, not execute Resume.
+            // prepare still checks the exact accepted bytes and caller; only an
+            // operator extension lifts the hold for new or unfinished requests.
             if request.action == crate::launch_protocol::LifecycleAction::Resume
                 && self.provider_requests.held(&request.run_id)?.is_some()
+                && !recorded
+                    .iter()
+                    .any(|receipt| receipt.payload.request_id == request.request_id)
+                && self.lifecycle.failure(request)?.is_none()
             {
                 return Err(crate::launch_protocol::ProtocolError::new(
                     crate::launch_protocol::ErrorCode::InvalidRequest,
@@ -107,6 +113,7 @@ impl BrokerService {
                 .into());
             }
             let status = self.supervisor_status(session, &mut verify)?;
+            // Status receive can append a signed suffix; use that current prefix.
             let receipts = self.receipts.chain(&session.authorization.session_id)?;
             let disposition = self.lifecycle.prepare(
                 &session.authorization,
@@ -116,8 +123,27 @@ impl BrokerService {
                 current_time(),
                 &receipts,
             )?;
-            if let Some(receipt) = disposition.replayed_receipt() {
+            if let Some(receipt) = disposition.replayed_receipt()
+                && request.action != crate::launch_protocol::LifecycleAction::Resume
+            {
                 return Ok(receipt.clone());
+            }
+            let replaying_resume = disposition.replayed_receipt().is_some();
+            // The Running receipt describes thaw, not paired activation. Only
+            // the retained owner's terminal result can complete this operation.
+            // A pending retry is not a final refusal and must not be persisted.
+            if replaying_resume
+                && status
+                    .pending_operation
+                    .as_ref()
+                    .is_some_and(|pending| pending.request_id == request.request_id)
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::OperationPending,
+                    Some(status.state),
+                    status.broker_head.as_ref().map(|head| head.sequence),
+                )
+                .into());
             }
             if !caller.permits(&session.authorization, request, current_time()) {
                 let error = crate::launch_protocol::ProtocolError::new(
@@ -128,40 +154,30 @@ impl BrokerService {
                 self.lifecycle.record_failure(request, &error)?;
                 return Err(error.into());
             }
-            send(&session.channel, request.canonical_bytes())?;
-            loop {
-                let packet = receive(&session.channel)?;
-                if let LauncherPacket::Response(response) = &packet.packet {
-                    if matches!(response.result, ResponseResult::SenderGuardClosing { .. }) {
-                        self.close_provider_listener(session, packet)?;
-                        continue;
+            let guarded = request.action == crate::launch_protocol::LifecycleAction::Resume
+                && (self.provider_ownership.guarded_session(&request.session_id) || receipts.iter().any(|receipt| matches!(
+                    &receipt.payload.outcome, crate::launch_receipt::ReceiptOutcome::Start { evidence, .. }
+                        if evidence.sender_guard_required
+                )));
+            let bytes = if guarded && replaying_resume {
+                // Replay the immutable wrapper, never reserve another revision.
+                self.lifecycle
+                    .recorded_guard_resume(request)?
+                    .canonical_bytes()
+            } else if guarded {
+                match self.prepare_guard_resume(session, caller, request, &status) {
+                    Ok(authority) => authority.canonical_bytes(),
+                    Err(BrokerError::Policy(error)) => {
+                        self.lifecycle.record_failure(request, &error)?;
+                        return Err(error.into());
                     }
-                    if response.request_id != request.request_id {
-                        return Err(BrokerError::InvalidGrant);
-                    }
-                    match &response.result {
-                        ResponseResult::Receipt { receipt } => {
-                            let completed = CompletedRequest::new(request, receipt.clone());
-                            evaluate_request(&status, Some(&completed), request)
-                                .map_err(|_| BrokerError::ReceiptUnauthorized)?;
-                            let stored = self.receipts.stored_bytes(&request.session_id)?;
-                            if !stored
-                                .iter()
-                                .any(|bytes| bytes == &receipt.canonical_bytes())
-                            {
-                                return Err(BrokerError::ReceiptUnauthorized);
-                            }
-                            return Ok(receipt.clone());
-                        }
-                        ResponseResult::Error { error } => {
-                            self.lifecycle.record_failure(request, error)?;
-                            return Err(error.clone().into());
-                        }
-                        _ => return Err(BrokerError::InvalidGrant),
-                    }
+                    Err(error) => return Err(error),
                 }
-                self.lifecycle_packet(session, packet, &mut verify)?;
-            }
+            } else {
+                request.canonical_bytes()
+            };
+            send(&session.channel, bytes)?;
+            self.await_lifecycle_result(session, request, &status, current_time(), &mut verify)
         })();
         if result.is_ok() {
             // Stored bytes and an earlier verification do not authorize a late
@@ -172,6 +188,67 @@ impl BrokerService {
             session.close();
         }
         result
+    }
+
+    fn await_lifecycle_result<F>(
+        &self,
+        session: &mut BrokerSession,
+        request: &LifecycleRequest,
+        status: &SupervisorStatus,
+        now_ms: u64,
+        verify: &mut F,
+    ) -> Result<SignedReceipt, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let clock = std::time::Instant::now();
+        loop {
+            let packet = receive(&session.channel)?;
+            if let LauncherPacket::Response(response) = &packet.packet {
+                if matches!(response.result, ResponseResult::SenderGuardClosing { .. }) {
+                    self.close_provider_listener(session, packet)?;
+                    continue;
+                }
+                if matches!(response.result, ResponseResult::SenderGuardEnrolled { .. }) {
+                    self.accept_provider_listener(
+                        session,
+                        packet,
+                        now_ms.saturating_add(
+                            u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        ),
+                        verify,
+                    )?;
+                    continue;
+                }
+                if response.request_id != request.request_id {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                match &response.result {
+                    ResponseResult::Receipt { receipt } => {
+                        let completed = CompletedRequest::new(request, receipt.clone());
+                        evaluate_request(status, Some(&completed), request)
+                            .map_err(|_| BrokerError::ReceiptUnauthorized)?;
+                        let stored = self.receipts.stored_bytes(&request.session_id)?;
+                        if !stored
+                            .iter()
+                            .any(|bytes| bytes == &receipt.canonical_bytes())
+                        {
+                            return Err(BrokerError::ReceiptUnauthorized);
+                        }
+                        return Ok(receipt.clone());
+                    }
+                    ResponseResult::Error { error } => {
+                        if let Some(authority) = self.provider_ownership.pending_resume(request) {
+                            self.provider_ownership.close(&authority.scope)?;
+                        }
+                        self.lifecycle.record_failure(request, error)?;
+                        return Err(error.clone().into());
+                    }
+                    _ => return Err(BrokerError::InvalidGrant),
+                }
+            }
+            self.lifecycle_packet(session, packet, verify)?;
+        }
     }
 
     /// Serves one read-only status request arriving on the Agent capability channel.

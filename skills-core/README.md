@@ -40,6 +40,43 @@ Control broker's Provider permission; direct unguarded sandbox start still
 refuses Brokered. These checks do not confer Verified posture. See the
 [ownership contract](../docs/codex-kernel-guard-proof.md#production-loader-and-per-session-upstream-ownership).
 
+### Guarded warm Resume
+
+An explicit operator Resume reuses the retained runtime, supervisor and original
+live Control broker. The capability-envelope revision remains immutable;
+`GuardScope.envelope_revision` identifies that envelope and `GuardScope.revision`
+is the independent, strictly increasing networking enforcement revision.
+Original scope, Provider policy, Run spending and exclusive expiry remain in force.
+
+After proven Park and descriptor closure, the broker durably records
+`louiselm.launch.guard-resume/1`: the exact lifecycle request, durable Park
+receipt head and fresh networking scope. Failed attempts retire their revision.
+The frozen supervisor hands off the same pinned listener and namespaces through
+the live channel's single reader; no runtime re-enrollment or replacement broker
+is permitted. It then thaws and signs the actual Running outcome. Neither the
+guard handoff acknowledgment nor thaw enables effects: the exact Resume receipt
+must be durably acknowledged before paired capability/network activation.
+Status reports the intervening `activating` phase with effects revoked. Success
+is published only after both authorities activate.
+
+Preparation refusal stays truthfully Parked. Later signing, durability or
+activation failure withdraws both authorities and re-Parks only with proven
+freeze/closure. Signed Running history is retained with its causal Park; failed
+activation uses `resume_activation_failed`. Uncertain containment terminates and
+poisons identity reuse. Exact retries ask the retained owner for its recorded
+outcome using the original wrapper, without reserving another revision. A stored
+Running receipt alone cannot complete Resume; unfinished activation remains
+pending. Later quarantine or budget holds prohibit fresh Resume, not reading an
+exact recorded result. Only a new explicit request after reconciliation can
+attempt a newer revision.
+
+The closed wire versions are receipt `/7`, signed receipt `/6`, response `/3`,
+supervisor status `/4`, Session status `/7`, guard socket request/retire `/2`.
+The required disposable-VM installed test
+`privileged_installed_brokered_guard_warm_resume_provider` proves kernel denial
+before Resume acknowledgment, offline Provider writes afterward and unchanged
+Run spending. It does not establish desktop or real-Provider acceptance.
+
 ## Commands
 
 `louiselm-skills`, `louiselm-launch` and `louiselm-control` use clap-generated
@@ -497,7 +534,7 @@ configured Provider names. The isolation/network owners must supply their own
 evidence; all four supply dimensions passing does not establish a Verified
 launch. Installed status/launch consumption remains `louiselm-d6fv.9`.
 
-The broker's canonical `louiselm.launch.session-status/6` includes a
+The broker's canonical `louiselm.launch.session-status/7` includes a
 display-only six-dimension `PostureStatus`, derived from retained trusted facts.
 Callers cannot supply its verdict. The initial runtime producer consumes the
 authenticated launch/start chain and preserves its original proof-validation

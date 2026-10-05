@@ -570,7 +570,7 @@ fn broker_reconnect_is_closed_correlated_and_compares_exact_heads() {
         BROKER_RECONNECT_SCHEMA,
         "louiselm.launch.broker-reconnect/1"
     );
-    assert_eq!(RESPONSE_SCHEMA, "louiselm.launch.response/2");
+    assert_eq!(RESPONSE_SCHEMA, "louiselm.launch.response/3");
 
     let launcher = broker_reconnect("reconnect-1");
     launcher
@@ -613,7 +613,7 @@ fn broker_reconnect_is_closed_correlated_and_compares_exact_heads() {
         String::from_utf8(response.canonical_bytes()).expect("response JSON is UTF-8"),
         format!(
             concat!(
-                r#"{{"schema":"louiselm.launch.response/2","protocol_version":1,"#,
+                r#"{{"schema":"louiselm.launch.response/3","protocol_version":1,"#,
                 r#""request_id":"reconnect-1","result":{{"kind":"broker_reconnect","#,
                 r#""reconnect":{}}}}}"#,
             ),
@@ -1178,6 +1178,23 @@ fn pending_receipt_shape_tracks_the_active_operation_without_hiding_backlog() {
         .validate()
         .expect("the truthful Running receipt may await its exact ACK");
 
+    let mut activating = awaiting_resume.clone();
+    activating.broker_head = activating.launcher_head.clone();
+    activating.pending_receipt_count = 0;
+    activating.pending_operation.as_mut().unwrap().phase = PendingPhase::Activating;
+    activating
+        .validate()
+        .expect("durable Resume may await paired activation");
+    assert_eq!(
+        SupervisorStatus::parse_canonical(&activating.canonical_bytes()).unwrap(),
+        activating
+    );
+    activating.channel_state = ChannelState::Enabled;
+    assert!(
+        activating.validate().is_err(),
+        "activation cannot advertise completed effects"
+    );
+
     let mut missing_signed_receipt = signing_resume;
     missing_signed_receipt
         .pending_operation
@@ -1316,7 +1333,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
                 &serde_json::to_string(&status.posture).unwrap(),
                 "\"fully_verified\""
             ),
-        r#"{"schema":"louiselm.launch.session-status/6","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","conformance_admission":{"status":"unevaluated"},"recovery":{"state":"unavailable","reason":"evidence_missing"},"broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
+        r#"{"schema":"louiselm.launch.session-status/7","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","conformance_admission":{"status":"unevaluated"},"recovery":{"state":"unavailable","reason":"evidence_missing"},"broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
     );
 
     let response = ProtocolResponse {

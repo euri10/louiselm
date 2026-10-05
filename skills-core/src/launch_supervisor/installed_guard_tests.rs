@@ -1,6 +1,16 @@
 //! Disposable-VM composition of the installed Brokered launch handoff.
 
 use super::*;
+#[path = "installed_guard_resume.rs"]
+mod warm;
+
+pub(super) fn warm_resume(broker: &InstalledBroker, session: &mut BrokerSession, uid: u32) {
+    warm::park_resume(broker, session, uid);
+}
+
+pub(super) fn finish_warm_resume(broker: &InstalledBroker, session: &mut BrokerSession, uid: u32) {
+    warm::finish(broker, session, uid);
+}
 use crate::conformance::{
     ReportResult,
     admission::Enforcement,
@@ -321,7 +331,7 @@ pub(super) fn park_and_dispose(
                     "guard-stale-resume",
                     LifecycleAction::Resume,
                     SessionState::Parked,
-                    2,
+                    1,
                 ),
             )
             .is_err()
@@ -371,18 +381,31 @@ fn privileged_installed_brokered_provider_stream() {
 }
 
 #[test]
+fn privileged_installed_brokered_guard_warm_resume_provider() {
+    installed_guard_case_for(false, true, false, true, false, CodexCase::None, true);
+}
+
+#[test]
 fn privileged_installed_brokered_codex_chain_enrolls_descendant() {
-    installed_guard_case_for(false, true, false, true, false, CodexCase::Fixture);
+    installed_guard_case_for(false, true, false, true, false, CodexCase::Fixture, false);
 }
 
 #[test]
 fn privileged_installed_brokered_codex_missing_descendant_times_out() {
-    installed_guard_case_for(false, false, false, false, false, CodexCase::Missing);
+    installed_guard_case_for(false, false, false, false, false, CodexCase::Missing, false);
 }
 
 #[test]
 fn privileged_installed_brokered_codex_wrong_ancestry_refuses() {
-    installed_guard_case_for(false, false, false, false, false, CodexCase::WrongAncestry);
+    installed_guard_case_for(
+        false,
+        false,
+        false,
+        false,
+        false,
+        CodexCase::WrongAncestry,
+        false,
+    );
 }
 
 #[test]
@@ -400,6 +423,7 @@ fn privileged_installed_brokered_stock_codex_completes_prompt() {
         true,
         false,
         CodexCase::Stock(Path::new(&stock)),
+        false,
     );
 }
 
@@ -416,6 +440,7 @@ fn privileged_installed_brokered_stock_codex_real_openai() {
         true,
         false,
         CodexCase::Live(Path::new(&stock), address),
+        false,
     );
 }
 
@@ -430,6 +455,7 @@ fn privileged_installed_brokered_real_openai_refusals_precede_upstream() {
         true,
         false,
         CodexCase::LiveFixture(address),
+        false,
     );
 }
 
@@ -480,6 +506,7 @@ fn installed_guard_case(
         provider,
         no_permission,
         CodexCase::None,
+        false,
     );
 }
 
@@ -511,6 +538,7 @@ fn installed_guard_case_for(
     provider: bool,
     no_permission: bool,
     codex: CodexCase<'_>,
+    warm_resume: bool,
 ) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
         eprintln!("requires disposable root and a current installed guard certificate");
@@ -523,6 +551,9 @@ fn installed_guard_case_for(
         .tempdir_in("/var/lib")
         .unwrap();
     let (paths, mut config, registry_root) = install_fixture_with_slots(root.path(), 3);
+    if warm_resume {
+        fs::write(root.path().join("guard-warm-resume"), b"").unwrap();
+    }
     if !matches!(codex, CodexCase::None) {
         super::codex_chain::install(
             root.path(),
@@ -616,9 +647,13 @@ fn installed_guard_case_for(
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
+    let signer = Arc::new(warm::ResumeSigner::new(
+        InstalledLaunchSigner::open(&paths, Duration::from_secs(5)).unwrap(),
+        warm_resume,
+    ));
     let supervisor = LaunchSupervisor::new(
         connect_control_broker(&config, Duration::from_secs(5)).unwrap(),
-        Arc::new(InstalledLaunchSigner::open(&paths, Duration::from_secs(5)).unwrap()),
+        signer.clone(),
         Arc::new(platform),
         Arc::new(Registry::open_trusted(&registry_root).unwrap()),
         sessions.clone(),
@@ -758,7 +793,17 @@ fn installed_guard_case_for(
     // Run exhaustion reports its Park mid-test; teardown must not await a second.
     let mut parked_seen = false;
     if let Some(address) = provider_address {
-        if matches!(codex, CodexCase::LiveFixture(_)) {
+        if warm_resume {
+            warm::drive(
+                root.path(),
+                &lines,
+                &signer,
+                agent_pid,
+                address,
+                (&mut controller_peer_input, &mut controller_peer_output),
+            );
+            tls_server.unwrap().1.join().unwrap();
+        } else if matches!(codex, CodexCase::LiveFixture(_)) {
             controller_peer_output
                 .set_read_timeout(Some(Duration::from_secs(20)))
                 .unwrap();

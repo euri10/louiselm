@@ -477,7 +477,7 @@ As the installed operator, without sudo:
 /usr/local/lib/louiselm/current/bin/louiselm-control session inspect SESSION_ID --json
 ```
 
-Success exits 0 and writes exactly canonical `louiselm.launch.session-status/6` JSON to
+Success exits 0 and writes exactly canonical `louiselm.launch.session-status/7` JSON to
 stdout, without prose or an added newline. Refusals leave stdout empty and write
 `louiselm.operator-error/1` JSON to stderr, with `error` and `next_action`:
 
@@ -560,7 +560,7 @@ still in flight withdraws all of them, because the status schema rejects a
 pending operation advertised alongside an executable action.
 
 `SessionStatus.posture` is the broker-derived, display-only `PostureStatus` in
-`louiselm.launch.session-status/6`. Status callers supply no posture verdict.
+`louiselm.launch.session-status/7`. Status callers supply no posture verdict.
 Each response includes all six dimensions in canonical order, with state,
 requirement, bounded evidence references, a typed failure and fixed next action,
 and freshness. The aggregate must agree with the dimensions; `Pending` is valid

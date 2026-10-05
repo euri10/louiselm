@@ -143,8 +143,14 @@ without waiting for connect, descriptor delivery or the broker ACK. Registration
 and activation hold only its short state lock; a late ACK cannot restore the
 revoked revision. The disposable handoff gate races revocation at all three
 stages and rejects a stale handle after revision replacement. The installed
-lifecycle owner now connects this seam for guarded Start, Park and Disposal.
-Warm Resume remains fail-closed pending a separately authorized revision protocol.
+lifecycle owner connects this seam for guarded Start, Park, operator warm Resume
+and Disposal. Warm Resume uses broker-authorized networking revisions independent
+of the immutable capability-envelope revision, with exact durable Park-head and
+request bindings. The retained runtime stays frozen through fresh descriptor
+handoff; paired networking/capability effects activate only after exact durable
+acknowledgment of its truthful Running receipt. Failure narrows both, retaining
+Running history and a causal Park only when containment is proved. See the
+[warm Resume protocol](https://github.com/euri10/louiselm/blob/main/skills-core/README.md#guarded-warm-resume).
 
 Revision/disposal revokes first, then exchanges `SenderGuardClosing` /
 `SenderGuardClosed` for the exact enrollment before releasing the endpoint.

@@ -1,5 +1,8 @@
 //! Durable broker lifecycle authorization, independent of supervisor mechanics.
 
+#[path = "guard_resume.rs"]
+mod guard_resume;
+
 use super::{
     BrokerError, corrupt, is_record_identifier, lock, read_record, skill_quarantine::SessionTaint,
     sync_directory, write_new_record,
@@ -258,9 +261,6 @@ impl LifecycleStore {
             return Err(refusal(ErrorCode::InvalidRequest));
         }
         let _guard = lock(&self.preparing);
-        if request.action == LifecycleAction::Resume && self.is_quarantined(&request.session_id)? {
-            return Err(refusal(ErrorCode::InvalidRequest));
-        }
         let directory = self.root.join(&request.session_id).join("requests");
         let path = directory.join(format!(
             "{}.json",
@@ -281,6 +281,14 @@ impl LifecycleStore {
         }
         if let Some(error) = self.failure(request)? {
             return Err(error.into());
+        }
+        // A recorded result is history, not a fresh grant of Resume authority.
+        // Quarantine still prevents executing every new or unfinished request.
+        if completed.is_none()
+            && request.action == LifecycleAction::Resume
+            && self.is_quarantined(&request.session_id)?
+        {
+            return Err(refusal(ErrorCode::InvalidRequest));
         }
         let disposition = evaluate_request(status, completed.as_ref(), request)?;
         if accepted.is_some() {
@@ -537,7 +545,10 @@ impl LifecycleStore {
         write_new_record(&directory.join(name), error)
     }
 
-    fn failure(&self, request: &LifecycleRequest) -> Result<Option<ProtocolError>, BrokerError> {
+    pub(super) fn failure(
+        &self,
+        request: &LifecycleRequest,
+    ) -> Result<Option<ProtocolError>, BrokerError> {
         let path = self
             .root
             .join(&request.session_id)

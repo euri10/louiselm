@@ -203,6 +203,7 @@ mod tests {
         let scope = GuardScope {
             session_id: "session".into(),
             run_id: "run".into(),
+            envelope_revision: 1,
             revision: 1,
             deadline_ns: u64::MAX,
         };

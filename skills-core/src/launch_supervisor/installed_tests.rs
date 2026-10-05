@@ -523,13 +523,21 @@ fn installed_broker_worker() {
             } else {
                 thread::sleep(Duration::from_millis(10));
             }
+            if root.join("guard-warm-request").exists() && !parked {
+                guard::warm_resume(&broker, &mut session, config.operator_uid);
+                parked = true;
+            }
             if live_provider && broker.settle_provider_hold(&mut session).unwrap().is_some() {
                 parked = true;
                 println!("BROKER_PARKED");
             }
         }
         // Live refusal-only runs never exhaust the Run, so the operator parks.
-        guard::park_and_dispose(&broker, &mut session, config.operator_uid, parked);
+        if root.join("guard-warm-resume").exists() {
+            guard::finish_warm_resume(&broker, &mut session, config.operator_uid);
+        } else {
+            guard::park_and_dispose(&broker, &mut session, config.operator_uid, parked);
+        }
         return;
     }
     if root.join("guard-close-no-ack").exists() {

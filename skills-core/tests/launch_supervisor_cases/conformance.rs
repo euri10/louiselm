@@ -398,6 +398,71 @@ fn fresh_resume_check_timeout_rejects_late_success() {
 }
 
 #[test]
+fn cancelled_guarded_conformance_wait_does_not_block_a_new_networking_revision() {
+    use louiselm_skills::launch_protocol::{GUARD_RESUME_SCHEMA, GuardResumeRequest, GuardScope};
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    lock(&setup.platform.state).conformance_report = Some(b"admission observations".to_vec());
+    let session = complete_launch(&setup);
+    let (input, receiver, worker) = begin_session_relay(session);
+    complete_check(&setup, 0, Err(SupervisorError::ConformanceUnavailable));
+    acknowledge_park(&setup);
+    let parked = request_supervisor_status(&setup, "guarded-conformance-park");
+    let authority = |request: LifecycleRequest, revision| GuardResumeRequest {
+        schema: GUARD_RESUME_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        parked_head: parked.broker_head.clone().unwrap(),
+        scope: GuardScope {
+            session_id: request.session_id.clone(),
+            run_id: request.run_id.clone(),
+            envelope_revision: request.envelope_revision,
+            revision,
+            deadline_ns: u64::MAX,
+        },
+        request,
+    };
+    let first = resume_request(&setup, "failed-guarded-check");
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::GuardResume(Box::new(authority(
+            first.clone(),
+            2,
+        ))));
+    wait_for_check(&setup, 1);
+    complete_check(&setup, 1, Err(SupervisorError::ConformanceUnavailable));
+    setup.broker.wait_for_session_response(&first.request_id, 0);
+    let fresh = resume_request(&setup, "fresh-guarded-check");
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::GuardResume(Box::new(authority(
+            fresh.clone(),
+            3,
+        ))));
+    // Status is a barrier: either the new check is pending or the stale
+    // retained wrapper incorrectly refused the fresh operator request.
+    let waiting = request_supervisor_status(&setup, "new-guarded-check");
+    let accepted = waiting.pending_operation.is_some();
+    if accepted {
+        wait_for_check(&setup, 2);
+        complete_check(&setup, 2, Err(SupervisorError::ConformanceUnavailable));
+        setup.broker.wait_for_session_response(&fresh.request_id, 0);
+    }
+    finish_session_relay(&setup, input, receiver, worker);
+    assert!(
+        accepted,
+        "a failed fresh check must release the cancelled wrapper"
+    );
+    assert_eq!(event_count(&setup.events, "agent.resume"), 0);
+}
+
+#[test]
 fn invalidation_during_resume_rejects_late_signature_or_ack_without_duplicate_parks() {
     for hold_signature in [true, false] {
         let setup = setup(
