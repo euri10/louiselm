@@ -1262,6 +1262,7 @@ local function handle_event(self, view, event, completed_state)
     view.replay_user_open = false
     view.renderer:render(event)
   elseif event.type == "compaction_updated" then
+    render_winbars(self)
     if view.renderer:compaction(event.data) then
       view.replay_user_open = false
     end

@@ -2258,6 +2258,7 @@ end
 
 T["chat"]["schedules compaction display and inspection and ignores queued updates after disposal"] = function()
   local first = fake_session("session-1", "arbitrary")
+  first.state.compactions = {}
   local chat = assert(Chat.new(fake_api()))
   MiniTest.finally(function()
     chat:dispose()
@@ -2265,10 +2266,12 @@ T["chat"]["schedules compaction display and inspection and ignores queued update
   assert(chat:attach(first))
   local buffer = chat:buffer()
   local before = buffer_lines(buffer)
+  local bar_before = nvim.api.nvim_get_option_value("winbar", { win = 0 })
   local timer = assert(nvim.uv.new_timer())
   local observed_fast, unchanged
   timer:start(0, 0, function()
     observed_fast = nvim.in_fast_event()
+    first.state.compactions[1] = { id = "c", status = "completed" }
     first:emit({
       type = "compaction_updated",
       session_id = "session-1",
@@ -2283,6 +2286,11 @@ T["chat"]["schedules compaction display and inspection and ignores queued update
   end, 1))
   MiniTest.expect.equality(observed_fast, true)
   MiniTest.expect.equality(unchanged, true)
+  MiniTest.expect.equality(bar_before:find("compact", 1, true), nil)
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("compact ×1", 1, true) ~= nil,
+    true
+  )
   nvim.api.nvim_win_set_cursor(0, { 6, 0 })
   assert(chat:inspect_tool())
   local inspector = nvim.api.nvim_get_current_buf()
@@ -2294,6 +2302,42 @@ T["chat"]["schedules compaction display and inspection and ignores queued update
   end, 1)
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(inspector), false)
+end
+
+T["chat"]["winbar counts replayed compactions once and isolates Session counts"] = function()
+  local first = fake_session("session-1", "one")
+  first.state.source = "loaded"
+  first.state.compactions = {}
+  local second = fake_session("session-2", "two")
+  second.state.compactions = { { id = "other", status = "completed" }, { id = "another", status = "completed" } }
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  local function bar()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 })
+  end
+  -- Synthetic terminal-first replay and enrichment; Session snapshots own unique IDs.
+  first.state.compactions[1] = { id = "replayed", status = "completed" }
+  first:emit({ type = "compaction_updated", session_id = "session-1", data = first.state.compactions[1] })
+  assert(nvim.wait(1000, function()
+    return bar():find("compact ×1", 1, true) ~= nil
+  end, 1))
+  first.state.compactions[1].meta = { enriched = true }
+  first:emit({ type = "compaction_updated", session_id = "session-1", data = first.state.compactions[1] })
+  assert(chat:attach(second))
+  MiniTest.expect.equality(bar():find("compact ×2", 1, true) ~= nil, true)
+  nvim.wait(20, function()
+    return false
+  end, 1)
+  assert(chat:switch("session-1"))
+  MiniTest.expect.equality(bar():find("compact ×1", 1, true) ~= nil, true)
+  first.state.compactions[2] = { id = "live", status = "completed" }
+  first:emit({ type = "compaction_updated", session_id = "session-1", data = first.state.compactions[2] })
+  assert(nvim.wait(1000, function()
+    return bar():find("compact ×2", 1, true) ~= nil
+  end, 1))
 end
 
 T["chat"]["late compaction patches do not split a replayed user turn"] = function()

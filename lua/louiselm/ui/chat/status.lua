@@ -474,6 +474,12 @@ end
 ---@return {first: integer, last: integer}? agent_span One-based display columns of the visible Agent name.
 function M.session_winbar(state, limits, available)
   local options = state.config_options or {}
+  local completed_compactions = 0
+  for _, entity in ipairs(state.compactions or {}) do
+    if entity.status == "completed" then
+      completed_compactions = completed_compactions + 1
+    end
+  end
   local model, effort
   for _, option in ipairs(options) do
     if option.category == "model" and model == nil then
@@ -540,6 +546,9 @@ function M.session_winbar(state, limits, available)
     if stage < 2 and state.context ~= nil then
       local _, derived = context_display(state)
       add("ctx " .. derived, DERIVED_HIGHLIGHT)
+    end
+    if stage < 2 and completed_compactions > 0 then
+      add("compact ×" .. completed_compactions, DERIVED_HIGHLIGHT)
     end
     if stage < 1 then
       add(cost_display(state), ACP_HIGHLIGHT)

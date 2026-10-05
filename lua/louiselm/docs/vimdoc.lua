@@ -342,6 +342,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "The winbar shows compact ×N beside context utilization, or on its own when usage is unavailable, after at least one completed ACP compaction is reported. It counts distinct completed records including replayed history; progress, failures, cancellations and repeated patches do not increase it. The neutral indicator disappears with context telemetry in narrow windows. Reporting varies by Agent: this is an observed count, not a guaranteed lifetime total or a measure of Model quality.",
+        context
+      )
+      append_prose(
+        lines,
         "Cold Park requires an Agent that supports session/load and persisted conversation history. A fresh Session must send a prompt first; a successfully loaded, ready Session can Park immediately without another prompt. Cold resume restores recoverable history after editor exit, but staged context is lost.",
         context
       )

@@ -209,7 +209,7 @@ from an adapter advertising the extension; Agents without support, including
 the stock Codex quickstart, show `limits n/a`:
 
 ```text
-Your turn · Review · codex · limits 98%/7d ↻7d · GPT-6 e=high +2 · ctx 53%
+Your turn · Review · codex · limits 98%/7d ↻7d · GPT-6 e=high +2 · ctx 53% · compact ×3
 ```
 
 `+N` counts hidden options, including model or effort when they no longer fit.
@@ -220,13 +220,20 @@ read-only; changes require an idle Session. Summaries reflect current settings,
 with no comparison to defaults or the start of the Session.
 
 Context percentage (including stale indication) and cost follow those fields.
+When completed ACP compactions have been reported, `compact ×N` appears beside
+the context percentage, or on its own if context usage is unavailable. It counts
+distinct completed records, including replayed history; progress, failures,
+cancellations, and repeated patches do not increase it. The indicator is hidden
+until a completion is observed. Reporting varies by Agent, so this is an observed
+count, not a guaranteed lifetime total or a measure of Model quality.
 Full ACP identity and raw telemetry remain in the transcript header. Redundant
 default quota labels are omitted; distinct quota buckets keep their names.
 The neutral `limits n/a` marker is clickable: it opens the same inspector as
 `:LouiselmLimits`, which explains when an Agent does not advertise support.
 Agents not yet observed have no limits marker; their inspector explains that
 a Session must first be started to check support.
-As windows narrow, cost and context disappear, then effort and model fold,
+As windows narrow, cost disappears, then context and the compaction count,
+then effort and model fold,
 then limits, Agent, and name give way. At extreme widths even `opts` yields to
 turn state. Background attention has reserved space before optional detail.
 

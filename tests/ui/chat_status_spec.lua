@@ -10,6 +10,49 @@ local function snapshot(id, agent)
   return { id = id, name = id, agent = agent, status = "ready", current_turn = 0, config_options = {} }
 end
 
+T["winbar counts completed compactions beside context with neutral styling"] = function()
+  local state = snapshot("session", "agent")
+  state.source = "loaded"
+  state.context = { used = 24, size = 100, percentage = 24, stale = false }
+  state.compactions = {
+    { id = "replayed", status = "completed" },
+    { id = "live", status = "completed", summary = {} },
+    { id = "active", status = "in_progress" },
+    { id = "failed", status = "failed" },
+    { id = "cancelled", status = "cancelled" },
+    { id = "unknown", status = "_paused" },
+  }
+  local before = nvim.deepcopy(state)
+  local bar = Status.session_winbar(state)
+  MiniTest.expect.equality(
+    nvim.api.nvim_eval_statusline(bar, { use_winbar = true, maxwidth = 200 }).str,
+    "Your turn · agent · ctx 24% · compact ×2"
+  )
+  MiniTest.expect.equality(bar:find("%#LouiselmDerivedValue#compact ×2%*", 1, true) ~= nil, true)
+  MiniTest.expect.equality(state, before)
+end
+
+T["winbar hides unobserved completions and elides the count with optional telemetry"] = function()
+  local state = snapshot("session", "agent")
+  local function rendered(width)
+    local bar = Status.session_winbar(state, nil, width)
+    return nvim.api.nvim_eval_statusline(bar, { use_winbar = true, maxwidth = 200 }).str
+  end
+  MiniTest.expect.equality(rendered(), "Your turn · agent")
+  for _, entities in ipairs({ {}, { { id = "c", status = "in_progress" } }, { { id = "c", status = "failed" } } }) do
+    state.compactions = entities
+    MiniTest.expect.equality(rendered(), "Your turn · agent")
+  end
+  state.context = { used = 3, size = 100, percentage = 3, stale = false }
+  MiniTest.expect.equality(rendered(), "Your turn · agent · ctx 3%")
+  state.context = nil
+  state.compactions = { { id = "c", status = "completed" } }
+  local wide = "Your turn · agent · compact ×1"
+  MiniTest.expect.equality(rendered(), wide)
+  MiniTest.expect.equality(rendered(nvim.fn.strdisplaywidth(wide) - 1), "Your turn · agent")
+  MiniTest.expect.equality(rendered(200), wide)
+end
+
 T["header shows routing authority beside the confirmed pair"] = function()
   local state = snapshot("session", "agent")
   state.auto_mode = "manual"
