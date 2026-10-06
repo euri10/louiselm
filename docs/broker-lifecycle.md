@@ -848,9 +848,10 @@ policy disables that endpoint; malformed or insecure policy refuses startup.
 There is no producer token in the receiver's state or configuration.
 
 The root provisioner derives both identities from the installed launcher's
-`public-config.json`: the dedicated broker UID/GID and the operator UID/GID
-running capture-service. After updating the capture binary, run
-from the repository root:
+`public-config.json`: the dedicated broker UID/GID and the operator UID
+running capture-service. The operator's primary GID comes from the account
+database; it is not a field in the launcher configuration. After updating the
+capture binary, run from the repository root:
 
 ```sh
 sudo python3 scripts/install-broker-attention.py

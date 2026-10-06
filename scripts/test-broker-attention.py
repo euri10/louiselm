@@ -147,8 +147,9 @@ class InstalledAttention(unittest.TestCase):
                         parent.mkdir(mode=0o755)
                         created_parents.append(parent)
                 # Only installed identity fields consumed by the provisioner.
+                # LauncherConfig publishes the operator UID, not its primary GID.
                 AUTHORITY.write_text(json.dumps({"broker_uid": broker.pw_uid, "broker_gid": broker.pw_gid,
-                                                "operator_uid": receiver.pw_uid, "operator_gid": receiver.pw_gid}))
+                                                "operator_uid": receiver.pw_uid}))
                 AUTHORITY.chmod(0o444)
                 data = root / "receiver"
                 data.mkdir(mode=0o700)

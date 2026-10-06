@@ -106,14 +106,17 @@ def install():
     if os.geteuid() != 0 or len(sys.argv) != 1:
         raise ValueError("run as root with no arguments after launcher installation")
     config = json.loads(read_file(AUTHORITY))
-    identities = [config.get(key) for key in ("broker_uid", "broker_gid", "operator_uid", "operator_gid")]
+    identities = [config.get(key) for key in ("broker_uid", "broker_gid", "operator_uid")]
     if any(type(value) is not int or value <= 0 or value >= 2**32 - 1 for value in identities):
         raise ValueError("installed identities must be positive numeric UID/GID values")
-    broker_uid, broker_gid, receiver_uid, receiver_gid = identities
+    broker_uid, broker_gid, receiver_uid = identities
+    receiver = pwd.getpwuid(receiver_uid)
+    receiver_gid = receiver.pw_gid
+    if not 0 < receiver_gid < 2**32 - 1:
+        raise ValueError("operator primary GID must be a positive numeric identity")
     if broker_uid == receiver_uid or broker_gid == receiver_gid:
         raise ValueError("broker and capture operator must have separate identities")
-    receiver = pwd.getpwuid(receiver_uid)
-    if pwd.getpwuid(broker_uid).pw_gid != broker_gid or receiver.pw_gid != receiver_gid:
+    if pwd.getpwuid(broker_uid).pw_gid != broker_gid:
         raise ValueError("installed identities do not match the account database")
     unit = capture_system_unit(receiver)
     directory(STATE, 0, 0, 0o711)

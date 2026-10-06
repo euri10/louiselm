@@ -75,7 +75,8 @@ class InstalledCapture(unittest.TestCase):
                         parents.append(parent)
                 COMMON["AUTHORITY"].write_text(json.dumps({
                     "broker_uid": broker.pw_uid, "broker_gid": broker.pw_gid,
-                    "operator_uid": receiver.pw_uid, "operator_gid": receiver.pw_gid,
+                    # Match the installed LauncherConfig; it has no operator_gid.
+                    "operator_uid": receiver.pw_uid,
                 }))
                 COMMON["AUTHORITY"].chmod(0o444)
                 command(sys.executable, str(REPO / "scripts/install-broker-attention.py"))
