@@ -415,6 +415,8 @@ impl BrokerService {
     /// Reads and correlates authenticated mechanical state with the durable broker head.
     ///
     /// This is blocking broker-worker I/O, not a liveness inference from stored receipts.
+    /// Authenticated guard and lifecycle packets remain serviced while awaiting status,
+    /// so supervisor disposal can finish its closure handshake before responding.
     /// # Errors
     /// Refuses malformed, foreign, stale-head or unavailable supervisor responses.
     pub(in crate::broker) fn supervisor_status<F>(
@@ -452,13 +454,12 @@ impl BrokerService {
         send(&session.channel, request.canonical_bytes())?;
         loop {
             let packet = receive(&session.channel)?;
-            if let LauncherPacket::Response(response) = &packet.packet {
+            if let LauncherPacket::Response(response) = &packet.packet
+                && let ResponseResult::SupervisorStatus { status } = &response.result
+            {
                 if response.request_id != request.request_id {
                     return Err(BrokerError::InvalidGrant);
                 }
-                let ResponseResult::SupervisorStatus { status } = &response.result else {
-                    return Err(BrokerError::InvalidGrant);
-                };
                 status.validate()?;
                 if status.session_id != request.session_id
                     || status.run_id != request.run_id

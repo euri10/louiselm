@@ -67,6 +67,125 @@ fn networking_revision_cannot_be_self_authorized() {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "One controlled guard-close/status race proves the closure ACK, authenticated terminal persistence and status correlation."
+)]
+fn posture_read_services_guard_closure_before_terminal_cleanup() {
+    let mut fixture = fixture(Some(approval(5)), Some("openai"));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let pins = File::open("/proc/self/ns/mnt").unwrap();
+    let network = File::open("/proc/self/ns/net").unwrap();
+    let mut enrollment = enrollment(&listener, &pins, &network);
+    enrollment.scope.session_id = fixture.session.authorization().session_id.clone();
+    enrollment.scope.envelope_revision = fixture.session.authorization().envelope_revision;
+    let enrolled = response(ResponseResult::SenderGuardEnrolled {
+        enrollment: enrollment.clone(),
+    });
+    settle(|done| {
+        fixture.peer.send_descriptors(
+            enrolled.canonical_bytes(),
+            [listener.as_fd(), pins.as_fd(), network.as_fd()],
+            done,
+        )
+    });
+    fixture
+        .service
+        .step(&mut fixture.session, 2500, None, verify_fixture_signature)
+        .unwrap();
+    let _accepted = settle(|done| fixture.peer.receive(done));
+    drop(listener);
+    let terminal = signed(payload(
+        fixture.session.authorization(),
+        "cleanup-after-guard-close",
+        2,
+        Some(
+            fixture
+                .current
+                .launcher_head
+                .as_ref()
+                .unwrap()
+                .digest
+                .clone(),
+        ),
+        ReceiptOutcome::Disposal {
+            authority: ReceiptAuthority::Cause {
+                cause: ReceiptCause::AgentIdentityLost,
+            },
+        },
+        SessionState::Terminal,
+    ));
+    thread::scope(|threads| {
+        let peer = &fixture.peer;
+        let mut current = fixture.current.clone();
+        let enrollment = enrollment.clone();
+        let terminal = &terminal;
+        let driver = threads.spawn(move || {
+            let packet = settle(|done| peer.receive(done));
+            let LauncherPacket::Request(ProtocolMessage::Status(query)) = packet.packet else {
+                panic!("expected upkeep status request");
+            };
+            // Disposal can start after the broker sends upkeep but before the
+            // owner handles it. The owner needs this ACK before it can answer.
+            let closing = response(ResponseResult::SenderGuardClosing {
+                enrollment: enrollment.clone(),
+            });
+            settle(|done| peer.send(closing.canonical_bytes(), done));
+            let closed = settle(|done| peer.receive(done));
+            assert!(matches!(closed.packet, LauncherPacket::Response(ack)
+                if ack.request_id == closing.request_id
+                    && ack.result == ResponseResult::SenderGuardClosed { enrollment }));
+            settle(|done| peer.send(terminal.canonical_bytes(), done));
+            let ack = expect_acknowledgement(peer);
+            assert_eq!(ack.sequence, 2);
+            assert_eq!(ack.receipt_digest, terminal.digest().to_string());
+            current.state = SessionState::Terminal;
+            current.channel_state = louiselm_skills::launch_protocol::ChannelState::Closed;
+            current.launcher_head = Some(louiselm_skills::launch_receipt::ReceiptHead {
+                sequence: 2,
+                digest: terminal.digest().to_string(),
+            });
+            current.broker_head = current.launcher_head.clone();
+            let reply = ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: query.request_id,
+                result: ResponseResult::SupervisorStatus { status: current },
+            };
+            settle(|done| peer.send(reply.canonical_bytes(), done));
+        });
+        let result = fixture.service.project_posture_attention(
+            &mut fixture.session,
+            2500,
+            verify_fixture_signature,
+        );
+        if result.is_err() {
+            fixture.peer.close();
+        }
+        let driver = driver.join();
+        assert!(
+            result.is_ok(),
+            "upkeep interrupted guard cleanup: {result:?}"
+        );
+        driver.unwrap();
+    });
+    assert_eq!(
+        TcpStream::connect(enrollment.address).unwrap_err().kind(),
+        std::io::ErrorKind::ConnectionRefused
+    );
+    assert!(!fixture.session.channel().is_closed());
+    assert_eq!(
+        fixture
+            .service
+            .receipts()
+            .stored_bytes("provider-requests")
+            .unwrap()
+            .last(),
+        Some(&terminal.canonical_bytes())
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "One authenticated handoff, Park and Resume dispatch trace."
 )]
 fn operator_resume_dispatches_fresh_authority_bound_to_the_durable_park() {
