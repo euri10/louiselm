@@ -107,7 +107,19 @@ jobs:
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
 
       - name: Propose the next component releases
+        id: proposals
         if: steps.pending.outputs.ready == 'true'
+        continue-on-error: true
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; release-please 17.6.0
+        with:
+          token: ${{ steps.release-token.outputs.token }}
+          target-branch: main
+          skip-github-release: true
+
+      # The pinned reader does not retry socket closures. Proposals reuse their
+      # component branches; retry once without swallowing a second failure.
+      - name: Retry failed component proposals
+        if: steps.proposals.outcome == 'failure'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; release-please 17.6.0
         with:
           token: ${{ steps.release-token.outputs.token }}

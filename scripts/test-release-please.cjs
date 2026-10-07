@@ -6,7 +6,7 @@ const {tmpdir} = require('node:os');
 const {join} = require('node:path');
 const {spawnSync} = require('node:child_process');
 const {test} = require('node:test');
-const {Manifest} = require('release-please');
+const {GitHub, Manifest} = require('release-please');
 const {setLogger} = require('release-please/build/src/util/logger');
 setLogger({debug() {}, info() {}, warn() {}, error() {}});
 
@@ -147,6 +147,23 @@ test('merged PR prepares a draft at the exact approved SHA without an early tag'
   assert.equal(candidate.prerelease, true);
 });
 
+test('connection closure escapes the pinned history reader without a retry', async () => {
+  // Run 37630077454, job 112821727120: "release-please failed: other side closed".
+  // The run exposes the message; the fetch rejection below is synthetic.
+  let requests = 0;
+  const github = await GitHub.create({
+    owner: 'fixture', repo: 'plugin', defaultBranch: 'main',
+    async fetch() {
+      requests++;
+      throw new TypeError('fetch failed', {cause: new Error('other side closed')});
+    },
+  });
+  await assert.rejects(github.mergeCommitIterator('main').next(), {
+    message: 'other side closed', status: 500,
+  });
+  assert.equal(requests, 1);
+});
+
 test('workflow retains ordinary bot-PR CI and guards publication separately', () => {
   const yaml = require('js-yaml'); // already in the pinned tool's lockfile
   const workflow = yaml.load(readFileSync('.github/workflows/release-please.yml', 'utf8'));
@@ -182,7 +199,7 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main');
   assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with['persist-credentials'], false);
   const actions = steps.filter(step => step.uses?.startsWith('googleapis/release-please-action@'));
-  assert.equal(actions.length, 2);
+  assert.equal(actions.length, 3);
   for (const action of actions) {
     assert.equal(action.uses, pin);
     assert.equal(action.with.token, '${{ steps.release-token.outputs.token }}');
@@ -192,6 +209,12 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   assert.equal(actions[0].with['skip-github-pull-request'], true);
   assert.equal(actions[1].with['skip-github-release'], true);
   assert.equal(actions[1].if, "steps.pending.outputs.ready == 'true'");
+  assert.equal(actions[1].id, 'proposals');
+  assert.equal(actions[1]['continue-on-error'], true);
+  // Success/skipped/cancelled outcomes skip recovery; failure gets one attempt.
+  assert.equal(actions[2].if, "steps.proposals.outcome == 'failure'");
+  assert.deepEqual(actions[2].with, actions[1].with);
+  assert.notEqual(actions[2]['continue-on-error'], true); // Exhaustion fails the job.
   const publicationSteps = steps.filter(step => step.run?.includes('publish-plugin-release.py'));
   assert.equal(publicationSteps.length, 2);
   assert.ok(steps.indexOf(publicationSteps[0]) < steps.indexOf(actions[0]));

@@ -152,6 +152,11 @@ An unchecked newer draft waits for its own successful main CI/retry. Outstanding
 plugin drafts suppress new proposals so an unpublished version cannot become a
 false baseline for the next proposal.
 
+Component proposals retry once if the pinned action fails, including a closed
+GitHub connection during history scanning. A second failure fails the job;
+successful, skipped or cancelled proposals do not retry. Both attempts retain
+the full history scan and only create/update proposals, never publish releases.
+
 Companion and GitLab-sync slices can consume GitHub release metadata:
 `tag_name=plugin-v<version>`, `target_commitish=<full SHA>`, release `id`,
 `immutable=true`, and VERSION plus the plugin `.` manifest entry at that SHA.
