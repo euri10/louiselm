@@ -2978,6 +2978,98 @@ T["new"]["rejects unsupported agent requests but ignores notifications"] = funct
   restore_processes(original_system)
 end
 
+T["new"]["routes sparse Codex MCP approvals through explicit decisions and cancellation"] = function()
+  -- Captured order/shape: codex_mcp_qa/01a11558-9567-78e3-af85-3088d7b3b7cd,
+  -- ~/.local/state/acp-llm-adapter/proxy/sessions/<session-id>/log.jsonl:38-40.
+  -- Tool call precedes sparse permission request id 0; irrelevant option metadata
+  -- is omitted. Successful decisions/cancellation below are regression scenarios,
+  -- not observed in that failed live turn.
+  local processes = fake_processes()
+  local root = nvim.fn.tempname()
+  MiniTest.finally(function()
+    nvim.fn.delete(root, "rf")
+  end)
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }, nil, {
+    permission_store = assert(Permission.store(nvim.fs.joinpath(root, "permissions.json"))),
+  }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    timer:stop()
+    timer:close()
+  end)
+  ---@type louiselm.session.PermissionEvent[]
+  local permissions = {}
+  local tool_calls = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    elseif event.type == "tool_call_started" then
+      tool_calls[#tool_calls + 1] = event.data
+    end
+  end)
+  local tool_id = "exec-02ec4270-7664-4772-8528-91be2d8ad0a4"
+  for index, choice in ipairs({ "cancel", "allow_once", "cancel_turn" }) do
+    local prompt_id = assert(submit(session, "MCP permission regression"))
+    local fast = false
+    local writes_before = #process.writes
+    timer:start(0, 0, function()
+      fast = nvim.in_fast_event()
+      notification(process, "session/update", {
+        sessionId = "agent-acp",
+        update = {
+          sessionUpdate = "tool_call",
+          toolCallId = tool_id,
+          title = "mcp.audit.stdio_echo",
+          kind = "execute",
+          status = "in_progress",
+        },
+      })
+      process.options.stdout(nil, assert(Protocol.encode(assert(Protocol.request(0, "session/request_permission", {
+        sessionId = "agent-acp",
+        toolCall = { toolCallId = tool_id, kind = "execute", status = "pending" },
+        _meta = { is_mcp_tool_approval = true },
+        options = {
+          { optionId = "allow_once", name = "Allow", kind = "allow_once" },
+          { optionId = "allow_session", name = "Allow for this session", kind = "allow_always" },
+          { optionId = "allow_always", name = "Always allow", kind = "allow_always" },
+          { optionId = "cancel", name = "Cancel", kind = "reject_once" },
+        },
+      })))) .. "\n")
+    end)
+    assert(nvim.wait(1000, function()
+      return #permissions == index or #process.writes > writes_before
+    end, 10))
+    MiniTest.expect.equality(fast, true)
+    MiniTest.expect.equality(#process.writes, writes_before)
+    MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+    MiniTest.expect.equality(tool_calls[index].title, "mcp.audit.stdio_echo")
+    local permission = assert(permissions[index])
+    MiniTest.expect.equality(permission.data.operation, { kind = "unknown" })
+    MiniTest.expect.equality(permission.data.toolCall, { toolCallId = tool_id, kind = "execute", status = "pending" })
+    local outcome = { outcome = "selected", optionId = choice }
+    if choice == "cancel_turn" then
+      assert(session:cancel())
+      outcome = { outcome = "cancelled" }
+      MiniTest.expect.equality(
+        permission.respond({ outcome = { outcome = "selected", optionId = "allow_once" } }),
+        false
+      )
+    else
+      assert(permission.respond({ outcome = outcome }))
+    end
+    MiniTest.expect.equality(#process.writes, writes_before + (choice == "cancel_turn" and 2 or 1))
+    MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))), {
+      jsonrpc = "2.0",
+      id = 0,
+      result = { outcome = outcome },
+    })
+    respond(process, prompt_id, { stopReason = choice == "cancel_turn" and "cancelled" or "end_turn" })
+    wait_ready(session)
+    MiniTest.expect.equality(assert(api:list_permissions()), {})
+  end
+end
+
 T["new"]["publishes permission requests with a response function"] = function()
   local processes, original_system = fake_processes()
   local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))

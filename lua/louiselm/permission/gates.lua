@@ -181,7 +181,18 @@ function M.from_acp(data)
     }
   end
   if kind == "command" or kind == "execute" or kind == "shell" then
-    local command = raw_input.command or raw_input.argv or raw_input.CommandLine
+    local command = raw_input.command
+    if command == nil then
+      command = raw_input.argv
+    end
+    if command == nil then
+      command = raw_input.CommandLine
+    end
+    -- ACP execute also covers MCP calls without shell argv. Keep them askable,
+    -- but leave explicitly malformed commands for check() to reject.
+    if command == nil then
+      return { kind = "unknown" }
+    end
     if type(command) == "string" then
       command = { command }
     end

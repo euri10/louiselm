@@ -54,6 +54,37 @@ T["policy"]["accepts ACP command strings for human review"] = function()
   MiniTest.expect.equality(err, nil)
 end
 
+T["policy"]["keeps command-less ACP execution askable without granting command scope"] = function()
+  local scoped = assert(Permission.auto_approve_scoped({ commands = { { "git", "status" } } }))
+  local automatic = {
+    evaluate = function()
+      return "allow"
+    end,
+  }
+  for _, kind in ipairs({ "execute", "command", "shell" }) do
+    local request = Permission.gates.from_acp({ toolCall = { kind = kind, status = "pending" } })
+    MiniTest.expect.equality(request, { kind = "unknown" })
+    MiniTest.expect.equality(Permission.gates.check(Permission.ask_human(), request), "ask")
+    MiniTest.expect.equality(Permission.gates.check(scoped, request), "deny")
+    MiniTest.expect.equality(Permission.gates.check(automatic, request), "allow")
+  end
+end
+
+T["policy"]["rejects supplied malformed ACP commands instead of treating them as absent"] = function()
+  for _, key in ipairs({ "command", "argv", "CommandLine" }) do
+    for _, value in ipairs({ false, 42, "", { "git", [3] = "status" }, { "git", false } }) do
+      local request = Permission.gates.from_acp({ toolCall = { kind = "execute", rawInput = { [key] = value } } })
+      local decision, err = Permission.gates.check(Permission.ask_human(), request)
+      MiniTest.expect.equality(decision, nil)
+      MiniTest.expect.equality(err, "permission command must be a dense array of strings")
+    end
+  end
+  local request = Permission.gates.from_acp({
+    toolCall = { kind = "execute", rawInput = { command = false, argv = { "git", "status" } } },
+  })
+  MiniTest.expect.equality(Permission.gates.check(Permission.ask_human(), request), nil)
+end
+
 T["policy"]["accepts Antigravity CommandLine without splitting shell text"] = function()
   -- Antigravity ACP 1.1.1, Session d04b77b3-6061-4a74-9f01-8a3f9ef67155:
   -- ~/.local/state/acp-llm-adapter/proxy/sessions/<session-id>/log.jsonl,
@@ -126,6 +157,25 @@ T["remembered"]["does not apply a rule remembered for one agent to a handoff tar
   other_agent.agent = "claude"
   MiniTest.expect.equality(store:evaluate(other_agent, { kind = "command", command = { "git", "status" } }), "ask")
   nvim.fn.delete(root, "rf")
+end
+
+T["remembered"]["does not match or remember command-less execution as a command grant"] = function()
+  local root = nvim.fn.tempname()
+  MiniTest.finally(function()
+    nvim.fn.delete(root, "rf")
+  end)
+  local context = permission_context(root)
+  local store = assert(Permission.store(nvim.fs.joinpath(root, "permissions.json")))
+  assert(store:remember(context, { kind = "command", command = { "git" } }, "allow", "always"))
+  local request = Permission.gates.from_acp({ toolCall = { kind = "execute" } })
+
+  MiniTest.expect.equality(store:evaluate(context, request), "ask")
+  for _, lifetime in ipairs({ "session", "always" }) do
+    local rule, err = store:remember(context, request, "allow", lifetime)
+    MiniTest.expect.equality(rule, nil)
+    MiniTest.expect.equality(err, "only valid file_edit and command requests can be remembered")
+  end
+  MiniTest.expect.equality(#assert(store:list()), 1)
 end
 
 T["remembered"]["keeps session rules in memory and file rules scoped to one exact path"] = function()
