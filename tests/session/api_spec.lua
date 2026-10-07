@@ -2980,7 +2980,7 @@ end
 
 T["new"]["routes sparse Codex MCP approvals through explicit decisions and cancellation"] = function()
   -- Captured order/shape: codex_mcp_qa/01a11558-9567-78e3-af85-3088d7b3b7cd,
-  -- ~/.local/state/acp-llm-adapter/proxy/sessions/<session-id>/log.jsonl:38-40.
+  -- ~/.local/state/acp-llm-adapter/proxy/sessions/<session-id>/log.jsonl:37-40.
   -- Tool call precedes sparse permission request id 0; irrelevant option metadata
   -- is omitted. Successful decisions/cancellation below are regression scenarios,
   -- not observed in that failed live turn.
@@ -3009,7 +3009,7 @@ T["new"]["routes sparse Codex MCP approvals through explicit decisions and cance
     end
   end)
   local tool_id = "exec-02ec4270-7664-4772-8528-91be2d8ad0a4"
-  for index, choice in ipairs({ "cancel", "allow_once", "cancel_turn" }) do
+  for index, choice in ipairs({ "cancel", "allow_once", "allow_session", "allow_always", "cancel_turn" }) do
     local prompt_id = assert(submit(session, "MCP permission regression"))
     local fast = false
     local writes_before = #process.writes
@@ -3067,6 +3067,7 @@ T["new"]["routes sparse Codex MCP approvals through explicit decisions and cance
     respond(process, prompt_id, { stopReason = choice == "cancel_turn" and "cancelled" or "end_turn" })
     wait_ready(session)
     MiniTest.expect.equality(assert(api:list_permissions()), {})
+    MiniTest.expect.equality(nvim.uv.fs_stat(nvim.fs.joinpath(root, "permissions.json")), nil)
   end
 end
 

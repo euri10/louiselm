@@ -415,10 +415,10 @@ local SECTIONS = {
     emit = function(lines, context)
       append_prose(
         lines,
-        "Sessions ask a human to answer ACP permission requests by default. Persistent choices remain scoped to the configured Agent, exact adapter command and arguments, and Session workspace.",
+        "Sessions ask a human to answer ACP permission requests by default. LouiseLM remembers lifetime choices for command/file operations, scoped to the configured Agent, exact adapter command and arguments, and Session workspace. Choices without a command or file scope, including sparse MCP approvals, are forwarded to the Agent without creating a local rule; the Agent owns their lifetime and persistence.",
         context
       )
-      append_prose(lines, "Use :LouiselmPermissions to inspect and revoke remembered decisions.", context)
+      append_prose(lines, "Use :LouiselmPermissions to inspect and revoke locally remembered decisions.", context)
     end,
   },
   {

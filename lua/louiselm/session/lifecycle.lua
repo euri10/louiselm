@@ -768,7 +768,7 @@ local function send_permission(self, entry, result, rpc_error)
   return true
 end
 
----Answer one published permission request, remembering an explicit lifetime choice first.
+---Answer one published permission request, remembering a supported local scope first.
 ---@param self louiselm.session.Session
 ---@param entry louiselm.session.PermissionEntry Request being answered.
 ---@param result unknown ACP permission result.
@@ -781,7 +781,8 @@ local function respond_permission(self, entry, result, rpc_error)
   end
   local data = entry.data
   local selected_decision, lifetime = Permission.gates.remembered_choice(data, result)
-  if selected_decision ~= nil and lifetime ~= nil then
+  -- Without a command/file scope, only the Agent can remember this choice.
+  if selected_decision ~= nil and lifetime ~= nil and data.operation.kind ~= "unknown" then
     local _, remember_error = self.permission_store:remember({
       session_id = self.state.id,
       agent = self.state.agent,
