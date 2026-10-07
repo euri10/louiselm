@@ -359,18 +359,31 @@ fn wait_parked(config: &LauncherConfig) {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let output = session_command(config.operator_uid, "inspect", "session");
-        assert!(output.status.success(), "{output:?}");
-        let status = SessionStatus::parse_canonical(&output.stdout).unwrap();
-        if status.state == crate::launch_receipt::SessionState::Parked {
+        if output.status.success() {
+            let status = SessionStatus::parse_canonical(&output.stdout).unwrap();
+            if status.state == crate::launch_receipt::SessionState::Parked {
+                assert_eq!(
+                    status.channel_state,
+                    crate::launch_protocol::ChannelState::Revoked
+                );
+                return;
+            }
+        } else {
+            // Daemon readiness precedes the retained Session's reattachment.
             assert_eq!(
-                status.channel_state,
-                crate::launch_protocol::ChannelState::Revoked
+                output.status.code(),
+                Some(i32::from(InspectError::StatusUnavailable.exit_code())),
+                "{output:?}"
             );
-            return;
+            assert!(output.stdout.is_empty(), "{output:?}");
+            assert_eq!(
+                output.stderr,
+                InspectError::StatusUnavailable.canonical_bytes()
+            );
         }
         assert!(
             Instant::now() < deadline,
-            "conformance must suspend the actual tree: {status:?}"
+            "conformance must suspend the actual tree: {output:?}"
         );
         thread::sleep(Duration::from_millis(50));
     }
