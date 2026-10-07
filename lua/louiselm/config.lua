@@ -1,6 +1,7 @@
 local Schema = require("louiselm.schema")
 local Provider = require("louiselm.agent.provider")
 local Routing = require("louiselm.routing.routing")
+local MCP = require("louiselm.mcp")
 
 local M = {}
 
@@ -44,6 +45,7 @@ M.schema = assert(Schema.define({
       fields = {
         command = { type = "string", description = "Executable to start." },
         provider = Provider.schema.fields.provider,
+        mcp_servers = MCP.selection_schema.fields.mcp_servers,
         auto = {
           type = "table",
           optional = true,
@@ -164,6 +166,7 @@ M.schema = assert(Schema.define({
       },
     },
   },
+  mcp = MCP.schema.fields.mcp,
   skills = {
     type = "table",
     default = {},

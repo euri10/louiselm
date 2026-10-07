@@ -15,6 +15,7 @@
 ---@field flush_recording fun(self: louiselm.session.Api, callback: louiselm.session.RecordingCallback) Retry/acknowledge queued facts, including final observations after Disposal.
 
 ---@class louiselm.session.ApiOptions
+---@field mcp? louiselm.ConfigMcp Shared MCP catalog and optional default selection, validated and copied at construction.
 ---@field permission_store? louiselm.permission.Store Explicit remembered-permission store.
 ---@field forensics_directory? string Override the private Session Forensics directory.
 ---@field usage_directory? string Absolute private directory for durable turn recording; defaults to usage/ in the shared LouiseLM state directory.

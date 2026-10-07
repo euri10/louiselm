@@ -20,6 +20,7 @@
 :LouiselmInspectTool	louiselm.txt	/*:LouiselmInspectTool*
 :LouiselmJsonl	louiselm.txt	/*:LouiselmJsonl*
 :LouiselmLimits	louiselm.txt	/*:LouiselmLimits*
+:LouiselmMcp	louiselm.txt	/*:LouiselmMcp*
 :LouiselmMentionBuffer	louiselm.txt	/*:LouiselmMentionBuffer*
 :LouiselmPark	louiselm.txt	/*:LouiselmPark*
 :LouiselmPermissions	louiselm.txt	/*:LouiselmPermissions*
@@ -62,6 +63,7 @@ louiselm-config-agents-name-latest	louiselm.txt	/*louiselm-config-agents-name-la
 louiselm-config-agents-name-latest-args	louiselm.txt	/*louiselm-config-agents-name-latest-args*
 louiselm-config-agents-name-latest-command	louiselm.txt	/*louiselm-config-agents-name-latest-command*
 louiselm-config-agents-name-latest-env	louiselm.txt	/*louiselm-config-agents-name-latest-env*
+louiselm-config-agents-name-mcp-servers	louiselm.txt	/*louiselm-config-agents-name-mcp-servers*
 louiselm-config-agents-name-provider	louiselm.txt	/*louiselm-config-agents-name-provider*
 louiselm-config-agents-name-provider-option	louiselm.txt	/*louiselm-config-agents-name-provider-option*
 louiselm-config-agents-name-provider-options	louiselm.txt	/*louiselm-config-agents-name-provider-options*
@@ -87,6 +89,15 @@ louiselm-config-capture-service	louiselm.txt	/*louiselm-config-capture-service*
 louiselm-config-context	louiselm.txt	/*louiselm-config-context*
 louiselm-config-context-instructions-file	louiselm.txt	/*louiselm-config-context-instructions-file*
 louiselm-config-keymaps	louiselm.txt	/*louiselm-config-keymaps*
+louiselm-config-mcp	louiselm.txt	/*louiselm-config-mcp*
+louiselm-config-mcp-default-servers	louiselm.txt	/*louiselm-config-mcp-default-servers*
+louiselm-config-mcp-servers	louiselm.txt	/*louiselm-config-mcp-servers*
+louiselm-config-mcp-servers-name-args	louiselm.txt	/*louiselm-config-mcp-servers-name-args*
+louiselm-config-mcp-servers-name-command	louiselm.txt	/*louiselm-config-mcp-servers-name-command*
+louiselm-config-mcp-servers-name-env	louiselm.txt	/*louiselm-config-mcp-servers-name-env*
+louiselm-config-mcp-servers-name-headers	louiselm.txt	/*louiselm-config-mcp-servers-name-headers*
+louiselm-config-mcp-servers-name-type	louiselm.txt	/*louiselm-config-mcp-servers-name-type*
+louiselm-config-mcp-servers-name-url	louiselm.txt	/*louiselm-config-mcp-servers-name-url*
 louiselm-config-skills	louiselm.txt	/*louiselm-config-skills*
 louiselm-config-skills-management	louiselm.txt	/*louiselm-config-skills-management*
 louiselm-config-skills-management-enabled	louiselm.txt	/*louiselm-config-skills-management-enabled*

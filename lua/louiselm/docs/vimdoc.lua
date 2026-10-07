@@ -219,6 +219,11 @@ end
 ---@param lines string[]
 ---@param context louiselm.docs.Context
 local function emit_configuration(lines, context)
+  append_prose(
+    lines,
+    "MCP: define named servers in mcp.servers and choose mcp.default_servers. Agent mcp_servers lists replace the defaults; omission inherits and an empty list disables supplied servers. Stdio uses an absolute executable path; HTTP requires the Agent's advertised support. env and headers are string maps. New and loaded Sessions use the selected catalog; live Sessions keep their configuration. :LouiselmMcp shows names, transports and forwarding status only, never connection health or credentials. Selected-content, transcript replay and supervisor-launched Sessions receive no supplied MCP servers. Agent-native configuration remains owned by the Agent.",
+    context
+  )
   SchemaVimdoc.append_configuration_fields(lines, context.schema, function(text)
     return Text.link_commands(text, context.command_tags)
   end)
@@ -227,6 +232,11 @@ end
 ---@param lines string[]
 ---@param context louiselm.docs.Context
 local function emit_api(lines, context)
+  append_prose(
+    lines,
+    "Pass the shared MCP catalog with Session.new(agents, nil, { mcp = mcp_config }). Session creation/loading accepts disable_mcp=true to suppress supplied servers for replay-only consumers. session:inspect().mcp contains server names/transports and configured/sent/rejected/disabled status, without connection settings. sent confirms ACP forwarding, not successful server connection. MCP startup errors retain safe context and numeric protocol codes; raw Agent errors and process stderr are withheld because they may contain credentials.",
+    context
+  )
   append_prose(
     lines,
     "api:read_selected_content(job, callback) answers one explicit question about selected line snapshots in a separate tool-less Session. A current approved reader comparison and the maintained adapter's selectedContent/1 contract are required. Unsupported Agents fail before receiving content. Input, output, one request and the local/parent deadline are bounded; cancellation does not imply zero billing. References establish source membership, not semantic truth. Main Session options and history are untouched. See docs/selected-content-reader.md for the job and result contract.",

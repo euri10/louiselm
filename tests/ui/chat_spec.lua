@@ -2438,6 +2438,90 @@ T["chat"]["closes the tool inspector with q, matching Beads' close key"] = funct
   chat:dispose()
 end
 
+T["chat"]["inspects MCP configuration without ACP options in every Session state"] = function()
+  for _, case in ipairs({
+    { session = "starting", status = "configured" },
+    { session = "ready", status = "sent" },
+    { session = "prompting", status = "sent" },
+    { session = "error", status = "rejected", error = "Agent does not support HTTP MCP server docs" },
+  }) do
+    local session = fake_session("mcp-" .. case.session, "generic")
+    session.state.status = case.session
+    session.state.mcp = {
+      servers = {
+        { name = "audit", transport = "stdio", command = "private-command", env = { TOKEN = "secret" } },
+        { name = "docs", transport = "http", url = "https://private.example", headers = { TOKEN = "secret" } },
+      },
+      status = case.status,
+      error = case.error,
+    }
+    session.state.error = "private upstream failure"
+    local chat = assert(Chat.new(fake_api()))
+    MiniTest.finally(function()
+      chat:dispose()
+    end)
+    assert(chat:attach(session))
+    assert(chat:inspect_mcp())
+    local buffer = nvim.api.nvim_get_current_buf()
+    local expected = {
+      "MCP servers",
+      "Status: " .. case.status,
+      "",
+      "audit (stdio)",
+      "docs (http)",
+    }
+    if case.error ~= nil then
+      expected[#expected + 1] = ""
+      expected[#expected + 1] = "Error: " .. case.error
+    end
+    expected[#expected + 1] = ""
+    expected[#expected + 1] = "Configuration snapshot only; the Agent manages connections and tools."
+    MiniTest.expect.equality(buffer_lines(buffer), expected)
+    MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = buffer }), false)
+    chat:dispose()
+    MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  end
+end
+
+T["chat"]["MCP inspection handles no servers and reopens with the latest snapshot"] = function()
+  local session = fake_session("mcp-empty", "generic")
+  session.state.mcp = { servers = {}, status = "disabled" }
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  MiniTest.expect.equality({ chat:inspect_mcp() }, { false, "no chat session is attached" })
+  assert(chat:attach(session))
+  assert(chat:inspect_mcp())
+  local empty = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(buffer_lines(empty), {
+    "MCP servers",
+    "Status: disabled",
+    "",
+    "No LouiseLM-supplied MCP servers.",
+    "",
+    "Configuration snapshot only; the Agent manages connections and tools.",
+  })
+  session.state.mcp = { servers = { { name = "audit", transport = "stdio" } }, status = "sent" }
+  MiniTest.expect.equality(buffer_lines(empty)[2], "Status: disabled")
+  local close
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(empty, "n")) do
+    if mapping.lhs == "q" then
+      close = mapping.callback
+    end
+  end
+  assert(type(close) == "function", "MCP inspector has no q mapping")
+  close()
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(empty), false)
+  assert(chat:inspect_mcp())
+  local current = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(buffer_lines(current)[2], "Status: sent")
+  MiniTest.expect.equality(buffer_lines(current)[4], "audit (stdio)")
+  chat:dispose()
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(current), false)
+  MiniTest.expect.equality({ chat:inspect_mcp() }, { false, "chat UI is disposed" })
+end
+
 T["chat"]["marks image tool results with the raw-payload fallback"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

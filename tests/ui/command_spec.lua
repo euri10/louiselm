@@ -196,6 +196,7 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmToMarkdown ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInspectTool ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionOptions ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmMcp ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmLimits ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmLimits.nargs, "?")
   MiniTest.expect.equality(commands.LouiselmPermissions ~= nil, true)
@@ -433,6 +434,39 @@ T["command"]["inspects Beads from the active Session workspace"] = function()
   nvim.api.nvim_cmd({ cmd = "LouiselmInspectBead", args = {} }, {})
 
   MiniTest.expect.equality(inspect_options.cwd, original_cwd)
+end
+
+T["command"]["setup passes shared MCP servers to chat and its inspection command"] = function()
+  local process, original_system = fake_process()
+  MiniTest.finally(function()
+    Command.register()
+    rawset(nvim, "system", original_system)
+    Command.configure(nil)
+  end)
+  assert(Louiselm.setup({
+    agents = { codex = { provider = "test-service", command = "codex-agent" } },
+    mcp = {
+      servers = { audit = { type = "stdio", command = "/usr/local/bin/audit-mcp", args = { "--test" } } },
+      default_servers = { "audit" },
+    },
+  }))
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  nvim.api.nvim_cmd({ cmd = "LouiselmMcp", args = {} }, {})
+  MiniTest.expect.equality(buffer_contains(0, "Status: configured"), true)
+  MiniTest.expect.equality(buffer_contains(0, "audit (stdio)"), true)
+  nvim.api.nvim_buf_delete(0, { force = true })
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  local request = assert(Protocol.decode(process.writes[2]:sub(1, -2)))
+  MiniTest.expect.equality(request.method, "session/new")
+  MiniTest.expect.equality(request.params.mcpServers, {
+    { name = "audit", command = "/usr/local/bin/audit-mcp", args = { "--test" }, env = {} },
+  })
+  respond(process, 2, { sessionId = "mcp-acp" })
+  nvim.api.nvim_cmd({ cmd = "LouiselmMcp", args = {} }, {})
+  MiniTest.expect.equality(buffer_contains(0, "Status: sent"), true)
+  MiniTest.expect.equality(buffer_contains(0, "audit (stdio)"), true)
+  MiniTest.expect.equality(buffer_contains(0, "audit-mcp"), false)
 end
 
 T["command"]["shows and refreshes the active Agent account limits"] = function()

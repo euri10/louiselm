@@ -5,6 +5,35 @@ local T = MiniTest.new_set()
 
 T["validate"] = MiniTest.new_set()
 
+T["validate"]["MCP selection distinguishes inheritance from explicit empty overrides"] = function()
+  local chosen = { "docs" }
+  local definitions, errors = Config.normalize({
+    inherited = { command = "agent", provider = "test-service" },
+    disabled = { command = "agent", provider = "test-service", mcp_servers = {} },
+    selected = { command = "agent", provider = "test-service", mcp_servers = chosen },
+  })
+  MiniTest.expect.equality(errors, {})
+  assert(definitions)
+  MiniTest.expect.equality(definitions.inherited.mcp_servers, nil)
+  MiniTest.expect.equality(definitions.disabled.mcp_servers, {})
+  MiniTest.expect.equality(definitions.selected.mcp_servers, { "docs" })
+  chosen[1] = "changed"
+  MiniTest.expect.equality(definitions.selected.mcp_servers, { "docs" })
+end
+
+T["validate"]["MCP selection uses the same validation in setup and headless Agent configuration"] = function()
+  local Schema = require("louiselm.schema")
+  local schema = require("louiselm.config").schema
+  for _, names in ipairs({ false, "docs", { "docs", "docs" }, { [2] = "docs" }, { "" }, { 1 } }) do
+    local agents = { agent = { command = "agent", provider = "test-service", mcp_servers = names } }
+    local definitions, errors = Config.normalize(agents)
+    MiniTest.expect.equality(definitions, nil)
+    MiniTest.expect.equality(errors[1].path:find("agents.agent.mcp_servers", 1, true), 1)
+    local setup_errors = Schema.validate(schema, { agents = agents })
+    MiniTest.expect.equality(setup_errors[1].path:find("agents.agent.mcp_servers", 1, true), 1)
+  end
+end
+
 T["validate"]["Auto defaults are boolean, optional and caller-owned"] = function()
   local auto = { model = "baseline", default = false }
   local definitions, errors =

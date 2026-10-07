@@ -209,6 +209,192 @@ local function start_ready_session(api, processes, name, cwd, agent_capabilities
   return session, process
 end
 
+T["MCP"] = MiniTest.new_set()
+
+local function mcp_config()
+  return {
+    servers = {
+      audit = { type = "stdio", command = "/test/mcp", args = { "echo" }, env = { TOKEN = "private-token" } },
+      remote = { type = "http", url = "https://example.test/mcp", headers = { Authorization = "private-header" } },
+    },
+    default_servers = { "audit" },
+  }
+end
+
+-- Synthetic ACP v1 client contract, not a captured adapter connection.
+T["MCP"]["freezes shared defaults and forwards owned stdio configuration on new and load"] = function()
+  local processes = fake_processes()
+  local config = mcp_config()
+  local api = assert(new_api({ agent = { provider = "test", command = "agent" } }, nil, { mcp = config }))
+  config.servers.audit.env.TOKEN = "changed"
+  for _, method in ipairs({ "new", "load" }) do
+    local session = method == "new" and assert(api:create_session("agent"))
+      or assert(api:load_session("agent", "previous"))
+    local process = processes[#processes]
+    MiniTest.expect.equality(session:inspect().mcp, {
+      status = "configured",
+      servers = { { name = "audit", transport = "stdio" } },
+    })
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+    local request = assert(Protocol.decode(process.writes[2]:sub(1, -2)))
+    MiniTest.expect.equality(request.method, "session/" .. method)
+    MiniTest.expect.equality(request.params.mcpServers, {
+      {
+        name = "audit",
+        command = "/test/mcp",
+        args = { "echo" },
+        env = { { name = "TOKEN", value = "private-token" } },
+      },
+    })
+    MiniTest.expect.equality(session:inspect().mcp.status, "sent")
+    local snapshot = session:inspect()
+    snapshot.mcp.servers[1].name = "changed"
+    MiniTest.expect.equality(session:inspect().mcp.servers[1].name, "audit")
+    MiniTest.expect.equality(nvim.inspect(session:inspect()):find("private-", 1, true), nil)
+    respond(process, 2, method == "new" and { sessionId = "created" } or {})
+    wait_ready(session)
+    session:dispose()
+  end
+end
+
+T["MCP"]["Agent selections replace defaults and empty selections disable forwarding"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({
+    chosen = { provider = "test", command = "agent", mcp_servers = { "remote" } },
+    disabled = { provider = "test", command = "agent", mcp_servers = {} },
+  }, nil, { mcp = mcp_config() }))
+  for _, name in ipairs({ "chosen", "disabled" }) do
+    local session = assert(api:create_session(name))
+    local process = processes[#processes]
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = { mcpCapabilities = { http = true } } })
+    local params = assert(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params)
+    MiniTest.expect.equality(params.mcpServers, name == "disabled" and {} or {
+      {
+        name = "remote",
+        type = "http",
+        url = "https://example.test/mcp",
+        headers = { { name = "Authorization", value = "private-header" } },
+      },
+    })
+    MiniTest.expect.equality(session:inspect().mcp.status, name == "disabled" and "disabled" or "sent")
+  end
+end
+
+T["MCP"]["refuses unsupported HTTP before session creation with a safe actionable error"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({
+    agent = { provider = "test", command = "agent", mcp_servers = { "remote" } },
+  }, nil, { mcp = mcp_config() }))
+  for _, capabilities in ipairs({ {}, { mcpCapabilities = { http = false } }, { mcpCapabilities = { http = "true" } } }) do
+    local failure
+    local session = assert(api:create_session("agent", {}, function(_, err)
+      failure = err
+    end))
+    local process = processes[#processes]
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = capabilities })
+    MiniTest.expect.equality(#process.writes, 1)
+    MiniTest.expect.equality(session:inspect().status, "error")
+    MiniTest.expect.equality(session:inspect().mcp.status, "rejected")
+    MiniTest.expect.equality(failure, "Agent does not advertise HTTP MCP support required by server 'remote'")
+    MiniTest.expect.equality(session:inspect().mcp.error, failure)
+  end
+end
+
+T["MCP"]["suppresses MCP for selected-content, explicit replay and contained Sessions"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test", command = "agent" } }, nil, { mcp = mcp_config() }))
+  local selected = { version = 1, max_tokens = 100, input_bytes = 1000, output_bytes = 1000, timeout_ms = 1000 }
+  for _, options in ipairs({
+    { disable_mcp = true },
+    { selected_content = selected },
+    {
+      broker_session_id = "worker",
+      launch_request = {
+        schema = "louiselm.launch.request/2",
+        protocol_version = 1,
+        request_id = "launch",
+        authorization_id = "authorization",
+        session_id = "worker",
+        run_id = "run",
+        agent_id = "agent",
+        envelope_id = "envelope",
+        envelope_revision = 1,
+        skill_generation_id = "sha256:" .. string.rep("a", 64),
+        session_input_manifest_id = "sha256:" .. string.rep("b", 64),
+      },
+    },
+  }) do
+    local session = assert(api:create_session("agent", options))
+    local process = processes[#processes]
+    respond(process, 1, {
+      protocolVersion = 1,
+      agentCapabilities = {
+        _meta = { ["io.github.euri10.louiselm.selectedContent"] = { version = 1 } },
+      },
+    })
+    local params = assert(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).params)
+    MiniTest.expect.equality(params.mcpServers, {})
+    MiniTest.expect.equality(session:inspect().mcp, { status = "disabled", servers = {} })
+  end
+end
+
+T["MCP"]["rejects unknown server references before starting an Agent"] = function()
+  local processes = fake_processes()
+  local api, errors = new_api({ agent = { provider = "test", command = "agent", mcp_servers = { "missing" } } })
+  MiniTest.expect.equality(api, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.agent.mcp_servers[1]")
+  MiniTest.expect.equality(#processes, 0)
+end
+
+T["MCP"]["startup failures never display credential-bearing peer errors or stderr"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test", command = "agent" } }, nil, { mcp = mcp_config() }))
+  for _, failure_kind in ipairs({ "rpc", "exit" }) do
+    local failure
+    local events = {}
+    local session = assert(api:create_session("agent", {
+      on_event = function(event)
+        events[#events + 1] = event
+      end,
+    }, function(_, err)
+      failure = err
+    end))
+    local process = processes[#processes]
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+    if failure_kind == "rpc" then
+      respond_error(process, 2, { code = -32603, message = "failed with private-token and private-header" })
+      MiniTest.expect.equality(failure, "Agent rejected session/new with configured MCP servers (ACP error -32603)")
+    else
+      process.options.stderr(nil, "failed with private-token and private-header")
+      process.on_exit({ code = 23, signal = 0 })
+      MiniTest.expect.equality(failure, "agent process exited with code 23")
+    end
+    MiniTest.expect.equality(session:inspect().mcp.status, "rejected")
+    MiniTest.expect.equality(nvim.inspect(events):find("private-", 1, true), nil)
+    MiniTest.expect.equality(nvim.inspect(session:inspect()):find("private-", 1, true), nil)
+  end
+end
+
+T["MCP"]["never replays buffered MCP startup stderr after a successful startup"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test", command = "agent" } }, nil, { mcp = mcp_config() }))
+  local failure
+  local session = assert(api:create_session("agent", {
+    on_event = function(event)
+      if event.type == "error" then
+        failure = event.data.message
+      end
+    end,
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  process.options.stderr(nil, "launch warning contains private-token")
+  respond(process, 2, { sessionId = "created" })
+  wait_ready(session)
+  process.on_exit({ code = 23, signal = 0 })
+  MiniTest.expect.equality(failure, "agent process exited with code 23")
+end
+
 T["compaction"] = MiniTest.new_set()
 T["compaction"]["negotiates generic compactions and owns isolated snapshots"] = function()
   local processes, original_system = fake_processes()
@@ -1719,6 +1905,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     source = "new",
     agent = "one",
     acp_session_id = "one-acp",
+    mcp = { servers = {}, status = "disabled" },
     status = "ready",
     working_dir = "/tmp/one",
     current_turn = 0,
@@ -1736,6 +1923,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     source = "new",
     agent = "two",
     acp_session_id = "two-acp",
+    mcp = { servers = {}, status = "disabled" },
     status = "ready",
     working_dir = "/tmp/two",
     current_turn = 0,

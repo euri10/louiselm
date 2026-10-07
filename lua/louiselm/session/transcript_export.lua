@@ -13,6 +13,7 @@
 ---comment for the exact stdout/stderr/exit-code contract a shell caller depends on.
 
 local Session = require("louiselm.session")
+local Agent = require("louiselm.agent")
 local Transcript = require("louiselm.session.transcript")
 local Provenance = require("louiselm.output_provenance")
 local PrivateFile = require("louiselm.private_file")
@@ -71,6 +72,7 @@ function M.export(api, agent_name, acp_session_id, path, timeout_ms)
   local ready_error ---@type string?
   local ready = false
   local session, start_error = api:load_session(agent_name, acp_session_id, {
+    disable_mcp = true,
     on_event = function(event)
       transcript:record(event)
     end,
@@ -128,7 +130,19 @@ end
 ---@param io_hooks? louiselm.session.TranscriptExportIoHooks Injected for tests; defaults to real stdout/stderr/`:cquit`.
 function M.run(definitions, agent_name, acp_session_id, path, io_hooks)
   local hooks = nvim.tbl_extend("force", DEFAULT_IO_HOOKS, io_hooks or {})
-  local api, errors = Session.new(definitions)
+  -- This replay-only entrypoint needs no MCP catalog. Validate before clearing
+  -- selections on owned definitions so malformed input still fails explicitly.
+  local owned, errors = Agent.normalize(definitions)
+  if owned == nil then
+    hooks.write_err("louiselm: invalid agent configuration (" .. #errors .. " errors)\n")
+    hooks.quit()
+    return
+  end
+  for _, definition in pairs(owned) do
+    definition.mcp_servers = {}
+  end
+  local api
+  api, errors = Session.new(owned)
   if api == nil then
     hooks.write_err("louiselm: invalid agent configuration (" .. #errors .. " errors)\n")
     hooks.quit()

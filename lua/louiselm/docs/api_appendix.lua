@@ -45,6 +45,7 @@ M.SECTIONS = {
     files = {
       "lua/louiselm/agent/init.lua",
       "lua/louiselm/agent/config.lua",
+      "lua/louiselm/mcp.lua",
       "lua/louiselm/agent/health.lua",
       "lua/louiselm/agent/spawn.lua",
     },

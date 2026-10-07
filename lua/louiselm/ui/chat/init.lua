@@ -104,6 +104,7 @@ local nvim = vim
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
 ---@field inspect_tool fun(self: louiselm.ui.Chat): boolean, string? Open the raw payload under the cursor.
+---@field inspect_mcp fun(self: louiselm.ui.Chat): boolean, string? Inspect MCP server names, transports, and configuration status.
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
 ---@field winbar_click fun(self: louiselm.ui.Chat, target: integer, clicked_window?: integer): boolean, string? Follow a winbar click target.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
@@ -1927,6 +1928,37 @@ function Chat:inspect_tool()
     return false, "cursor is not on a tool-call line"
   end
   return open_tool_inspector(self, view, id)
+end
+
+---Inspect the Session's MCP configuration snapshot without exposing connection settings.
+---@param self louiselm.ui.Chat
+---@return boolean opened
+---@return string? error_message Disposed UI or no attached Session.
+function Chat:inspect_mcp()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local mcp = view.session:inspect().mcp
+  local lines = { "MCP servers", "Status: " .. mcp.status, "" }
+  if #mcp.servers == 0 then
+    lines[#lines + 1] = "No LouiseLM-supplied MCP servers."
+  else
+    for _, server in ipairs(mcp.servers) do
+      lines[#lines + 1] = single_line(server.name) .. " (" .. server.transport .. ")"
+    end
+  end
+  if mcp.error ~= nil then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "Error: " .. single_line(mcp.error)
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Configuration snapshot only; the Agent manages connections and tools."
+  open_payload_inspector(self, lines)
+  return true
 end
 
 ---Report whether a session id is attached, without switching to it or

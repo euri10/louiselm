@@ -10,6 +10,7 @@ local Recording = require("louiselm.session.recording")
 local Paths = require("louiselm.paths")
 local Qualification = require("louiselm.routing.qualification")
 local SelectedContent = require("louiselm.session.selected_content")
+local Mcp = require("louiselm.mcp")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -35,6 +36,7 @@ local nvim = vim
 
 ---@class louiselm.session.Registry: louiselm.session.Api
 ---@field definitions louiselm.agent.Definitions Normalized named definitions.
+---@field mcp louiselm.mcp.Config Owned MCP catalog and default selection.
 ---@field sessions table<string, louiselm.session.Session> Live sessions by local id.
 ---@field readers table<louiselm.routing.Reader, boolean> Owned reading jobs, including pending qualification reads.
 ---@field order string[] Session ids in creation order.
@@ -128,6 +130,7 @@ local function has_only_permission_store(value)
       and key ~= "forensics_directory"
       and key ~= "usage_directory"
       and key ~= "qualification_path"
+      and key ~= "mcp"
     then
       return false
     end
@@ -189,6 +192,7 @@ local function valid_options(value)
       and key ~= "broker_session_id"
       and key ~= "launch_request"
       and key ~= "selected_content"
+      and key ~= "disable_mcp"
     then
       return false
     end
@@ -204,6 +208,7 @@ local function valid_options(value)
     end
   end
   return (value.cwd == nil or type(value.cwd) == "string")
+    and (value.disable_mcp == nil or type(value.disable_mcp) == "boolean")
     and (value.name == nil or (type(value.name) == "string" and value.name ~= ""))
     and (
       value.broker_session_id == nil
@@ -218,12 +223,16 @@ end
 ---@return louiselm.session.Registry? registry
 ---@return louiselm.agent.ConfigError[] errors
 function M.new(definitions, default_skills_policy, options)
-  local normalized, errors = normalize_definitions(definitions, default_skills_policy)
-  if normalized == nil then
-    return nil, errors
-  end
   if options ~= nil and (type(options) ~= "table" or not has_only_permission_store(options)) then
     return nil, { { path = "session", message = "unknown session API option" } }
+  end
+  local normalized, errors = normalize_definitions(definitions, default_skills_policy)
+  local mcp, mcp_errors = Mcp.normalize(options and options.mcp, definitions)
+  for _, err in ipairs(mcp_errors) do
+    errors[#errors + 1] = err
+  end
+  if normalized == nil or mcp == nil then
+    return nil, errors
   end
   local permission_store = options and options.permission_store or Permission.store()
   if not valid_permission_store(permission_store) then
@@ -244,6 +253,7 @@ function M.new(definitions, default_skills_policy, options)
   end
   local registry = setmetatable({
     definitions = normalized,
+    mcp = mcp,
     sessions = {},
     readers = {},
     order = {},
@@ -596,6 +606,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     broker_session_id = options.broker_session_id,
     launch_request = options.launch_request and nvim.deepcopy(options.launch_request) or nil,
     selected_content = options.selected_content and nvim.deepcopy(options.selected_content) or nil,
+    disable_mcp = options.disable_mcp,
     permission_policy = permission_policy,
     permission_store = self.permission_store,
     schedule = options.schedule,

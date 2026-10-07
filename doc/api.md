@@ -32,6 +32,7 @@ API reference.
 ### louiselm.session.ApiOptions
 
 - `forensics_directory: string?` -- Override the private Session Forensics directory.
+- `mcp: (louiselm.ConfigMcp)?` -- Shared MCP catalog and optional default selection, validated and copied at construction.
 - `permission_store: (louiselm.permission.Store)?` -- Explicit remembered-permission store.
 - `qualification_path: string?` -- Private comparison approval path; defaults to the shared routing qualification store.
 - `usage_directory: string?` -- Absolute private directory for durable turn recording; defaults to usage/ in the shared LouiseLM state directory.
@@ -108,6 +109,7 @@ string|table
 - `embedded_context: boolean` -- Whether the Agent accepts embedded resource prompt context.
 - `id: string` -- Local session identifier.
 - `manual_pair: { model: boolean|string, effort: boolean|string }?` -- Whole effective pair protected after an operator option change.
+- `mcp: louiselm.session.McpState` -- Safe snapshot of configured MCP servers and ACP forwarding, never connection health.
 - `name: string` -- User-facing session name.
 - `recording_error: (louiselm.session.RecordingError)?` -- Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
 - `recording_pending: boolean` -- Whether the registry has unacknowledged writes.
@@ -122,6 +124,12 @@ string|table
 - `usage: (louiselm.session.TurnUsage)?` -- Latest agent-reported completed-turn usage.
 - `working_dir: string` -- ACP working directory.
 
+### louiselm.session.McpState
+
+- `error: string?` -- Safe startup failure without peer payloads.
+- `servers: louiselm.mcp.Summary[]` -- Names and transports only; never commands, URLs, arguments or credentials.
+- `status: "configured"|"disabled"|"rejected"|"sent"` -- Whether the frozen selection was forwarded over ACP.
+
 ### louiselm.session.AvailableCommand
 
 - `description: string` -- Human-readable command description.
@@ -131,6 +139,7 @@ string|table
 
 - `broker_session_id: string?` -- Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 - `cwd: string?` -- Working directory for the ACP session.
+- `disable_mcp: boolean?` -- Suppress LouiseLM-supplied MCP servers, for example during transcript replay. Does not control Agent-native configuration.
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `launch_request: (louiselm.acp.LaunchRequest)?` -- Launch through the installed supervisor instead of the configured command.
 - `name: string?` -- User-facing session name.
@@ -161,6 +170,7 @@ string|table
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `load_session_id: string?` -- Agent-side session identifier to load.
+- `mcp_servers: louiselm.mcp.WireServer[]` -- Owned ACP configuration; never included in inspectable state or recordings.
 - `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+8))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
@@ -264,6 +274,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `list_permissions: fun(self: louiselm.session.Registry):louiselm.permission.Rule[]?, string?`
 - `list_sessions: fun(self: louiselm.session.Registry):string[]`
 - `load_session: fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session?: louiselm.session.Session, error?: string)):(louiselm.session.Session)?, string?`
+- `mcp: louiselm.mcp.Config` -- Owned MCP catalog and default selection.
 - `next_discovery_id: integer` -- Next discovery operation number.
 - `next_id: integer` -- Next local session number.
 - `on_agent_limits: fun(self: louiselm.session.Registry, callback: fun(state: louiselm.session.LimitsState)):fun()?, string?`
@@ -840,6 +851,7 @@ louiselm.permission.Lifetime:
 - `command: string` -- Executable to start.
 - `env: table<string, string>?` -- Environment variables for the process.
 - `latest: (louiselm.agent.CommandCheck)?` -- Optional command that resolves the latest available version.
+- `mcp_servers: string[]?` -- Ordered MCP catalog names; omission inherits global defaults and an empty list disables LouiseLM-supplied servers.
 - `options: table<string, unknown>?` -- Agent-specific options. `options._meta`, when present, is threaded
 - `provider: string|louiselm.agent.ProviderPrefixes|louiselm.agent.ProviderRoute[]` -- Explicit access/quota service, exact option routes, or literal option prefixes; required before prompting.
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
@@ -870,6 +882,35 @@ louiselm.agent.ConfigErrorType:
 ```lua
 table<string, louiselm.agent.Definition>
 ```
+
+### louiselm.mcp.Server
+
+- `args: string[]?` -- Stdio arguments, empty by default.
+- `command: string?` -- Absolute executable path for stdio.
+- `env: table<string, string>?` -- Stdio environment, empty by default.
+- `headers: table<string, string>?` -- HTTP headers, empty by default.
+- `type: "http"|"stdio"` -- Transport passed to the Agent.
+- `url: string?` -- HTTP(S) MCP endpoint for Streamable HTTP.
+
+### louiselm.mcp.Config
+
+- `default_servers: string[]` -- Ordered selection inherited by Agents without an override.
+- `servers: table<string, louiselm.mcp.Server>` -- Shared named server catalog.
+
+### louiselm.mcp.WireServer
+
+- `args: string[]?` -- Stdio arguments.
+- `command: string?` -- Absolute stdio executable path.
+- `env: { name: string, value: string }[]?` -- Stdio environment.
+- `headers: { name: string, value: string }[]?` -- HTTP headers.
+- `name: string` -- Configured server name.
+- `type: "http"?` -- ACP v1 omits the type discriminator for stdio.
+- `url: string?` -- Streamable HTTP endpoint.
+
+### louiselm.mcp.Summary
+
+- `name: string` -- Configured server name, safe to display.
+- `transport: "http"|"stdio"` -- Transport, without command, URL or credentials.
 
 ### louiselm.agent.HealthResult
 

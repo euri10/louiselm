@@ -377,7 +377,7 @@ function M.register()
     end
   end
 
-  ---@param method "switch_session"|"hand_off"|"inspect_tool"|"close_session"|"cancel"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
+  ---@param method "switch_session"|"hand_off"|"inspect_tool"|"inspect_mcp"|"close_session"|"cancel"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
   ---@return fun()
   local function chat_command(method)
     return function()
@@ -434,7 +434,9 @@ function M.register()
       nvim.notify("louiselm: " .. (policy_error or "invalid skills policy"), nvim.log.levels.ERROR)
       return nil
     end
-    local sessions, session_errors = session_module().new(definitions, default_policy)
+    local sessions, session_errors = session_module().new(definitions, default_policy, {
+      mcp = configured and configured.mcp,
+    })
     if sessions == nil then
       nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
       return nil
@@ -898,6 +900,12 @@ function M.register()
   )
 
   nvim.api.nvim_create_user_command(
+    "LouiselmMcp",
+    chat_command("inspect_mcp"),
+    { desc = "Inspect the current Session's MCP configuration", force = true }
+  )
+
+  nvim.api.nvim_create_user_command(
     "LouiselmSessionClose",
     chat_command("close_session"),
     { desc = "Close the current louiselm session", force = true }
@@ -994,7 +1002,9 @@ function M.register()
         nvim.notify("louiselm: " .. (policy_error or "invalid skills policy"), nvim.log.levels.ERROR)
         return
       end
-      local sessions, session_errors = session_module().new(definitions, default_policy)
+      local sessions, session_errors = session_module().new(definitions, default_policy, {
+        mcp = configured and configured.mcp,
+      })
       if sessions == nil then
         nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
         return

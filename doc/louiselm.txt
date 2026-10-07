@@ -373,6 +373,10 @@ Commands                                                   *louiselm-commands*
     Inspect account limits for the active or named louiselm Agent
     Arguments: optional
 
+:LouiselmMcp                                                    *:LouiselmMcp*
+    Inspect the current Session's MCP configuration
+    Arguments: none
+
 :LouiselmMentionBuffer                                *:LouiselmMentionBuffer*
     Queue the source buffer as louiselm context
     Arguments: none
@@ -461,6 +465,16 @@ Commands                                                   *louiselm-commands*
 
 ==============================================================================
 Configuration                                         *louiselm-configuration*
+
+  MCP: define named servers in mcp.servers and choose mcp.default_servers.
+  Agent mcp_servers lists replace the defaults; omission inherits and an empty
+  list disables supplied servers. Stdio uses an absolute executable path; HTTP
+  requires the Agent's advertised support. env and headers are string maps.
+  New and loaded Sessions use the selected catalog; live Sessions keep their
+  configuration. |:LouiselmMcp| shows names, transports and forwarding status
+  only, never connection health or credentials. Selected-content, transcript
+  replay and supervisor-launched Sessions receive no supplied MCP servers.
+  Agent-native configuration remains owned by the Agent.
 
 ------------------------------------------------------------------------------
 agents                                                *louiselm-config-agents*
@@ -575,6 +589,12 @@ agents.<name>.latest.env              *louiselm-config-agents-name-latest-env*
     Type: string-keyed map of string
     Default: {}
     Description: Environment variables passed to the process.
+
+------------------------------------------------------------------------------
+agents.<name>.mcp_servers            *louiselm-config-agents-name-mcp-servers*
+    Type: array of string
+    Description: Ordered MCP server names replacing global defaults; omission
+    inherits and an empty list disables LouiseLM-supplied MCP servers.
 
 ------------------------------------------------------------------------------
 agents.<name>.provider                  *louiselm-config-agents-name-provider*
@@ -752,6 +772,60 @@ keymaps                                              *louiselm-config-keymaps*
     them.
 
 ------------------------------------------------------------------------------
+mcp                                                      *louiselm-config-mcp*
+    Type: table
+    Default: {}
+    Description: MCP servers supplied to ACP Agents; the Agent owns server
+    connections and tools.
+
+------------------------------------------------------------------------------
+mcp.default_servers                      *louiselm-config-mcp-default-servers*
+    Type: array of string
+    Default: {}
+    Description: Ordered server names inherited by ordinary Sessions unless
+    their Agent overrides the selection; empty by default.
+
+------------------------------------------------------------------------------
+mcp.servers                                      *louiselm-config-mcp-servers*
+    Type: string-keyed map of table
+    Default: {}
+    Description: Shared named server catalog; registering a server does not
+    enable it.
+
+------------------------------------------------------------------------------
+mcp.servers.<name>.args                *louiselm-config-mcp-servers-name-args*
+    Type: array of string
+    Description: Stdio arguments; omission uses an empty list.
+
+------------------------------------------------------------------------------
+mcp.servers.<name>.command          *louiselm-config-mcp-servers-name-command*
+    Type: string
+    Description: Required for stdio: absolute executable path, as required by
+    ACP v1.
+
+------------------------------------------------------------------------------
+mcp.servers.<name>.env                  *louiselm-config-mcp-servers-name-env*
+    Type: string-keyed map of string
+    Description: Stdio environment variables; omission uses an empty map.
+    Values are never displayed in MCP inspection.
+
+------------------------------------------------------------------------------
+mcp.servers.<name>.headers          *louiselm-config-mcp-servers-name-headers*
+    Type: string-keyed map of string
+    Description: HTTP headers; omission uses an empty map. Values are never
+    displayed in MCP inspection.
+
+------------------------------------------------------------------------------
+mcp.servers.<name>.type                *louiselm-config-mcp-servers-name-type*
+    Type: string
+    Description: Required transport: stdio or http (Streamable HTTP).
+
+------------------------------------------------------------------------------
+mcp.servers.<name>.url                  *louiselm-config-mcp-servers-name-url*
+    Type: string
+    Description: Required for http: absolute HTTP(S) Streamable HTTP endpoint.
+
+------------------------------------------------------------------------------
 skills                                                *louiselm-config-skills*
     Type: table
     Default: {}
@@ -846,6 +920,15 @@ Optional capabilities                         *louiselm-optional-capabilities*
 
 ==============================================================================
 Session API                                                     *louiselm-api*
+
+  Pass the shared MCP catalog with Session.new(agents, nil, { mcp = mcp_config
+  }). Session creation/loading accepts disable_mcp=true to suppress supplied
+  servers for replay-only consumers. session:inspect().mcp contains server
+  names/transports and configured/sent/rejected/disabled status, without
+  connection settings. sent confirms ACP forwarding, not successful server
+  connection. MCP startup errors retain safe context and numeric protocol
+  codes; raw Agent errors and process stderr are withheld because they may
+  contain credentials.
 
   api:read_selected_content(job, callback) answers one explicit question about
   selected line snapshots in a separate tool-less Session. A current approved

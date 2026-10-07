@@ -34,6 +34,7 @@ for _, bytes in ipairs({ 8192, 65536, 262144 }) do
       local renderer
       if mode ~= "recorder" then
         renderer = ChatBuffer.new({
+          mcp = { servers = {}, status = "disabled" },
           id = "bench",
           name = "bench",
           source = "new",

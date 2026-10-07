@@ -29,6 +29,22 @@ end
 
 T["setup"] = MiniTest.new_set()
 
+T["setup"]["rejects MCP references before registering configuration"] = function()
+  local ok, report = capture_setup({
+    agents = { agent = { provider = "test", command = "agent", mcp_servers = { "missing" } } },
+    mcp = { default_servers = { "also-missing" } },
+    unknown = true,
+  })
+  MiniTest.expect.equality(ok, false)
+  local paths = {}
+  for _, err in ipairs(report.errors) do
+    paths[err.path] = true
+  end
+  MiniTest.expect.equality(paths["agents.agent.mcp_servers[1]"], true)
+  MiniTest.expect.equality(paths["mcp.default_servers[1]"], true)
+  MiniTest.expect.equality(paths.unknown, true)
+end
+
 T["setup"]["accepts independent explicit optional capability opt-ins"] = function()
   local config = {
     attention = { enabled = true },

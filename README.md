@@ -133,6 +133,57 @@ ambiguous active routes leave the Session ready and report how to fix attributio
 and the complete supported option tuple at prompt start; later option changes
 do not rewrite it. Durable turn recording preserves this attribution with usage history.
 
+### MCP servers
+
+Define a shared server catalog and select the defaults to send to ordinary
+Sessions. Registering a server does not enable it. An Agent's `mcp_servers`
+list replaces the defaults; omit it to inherit them, or use `{}` to disable
+LouiseLM-supplied MCP servers for that Agent.
+
+```lua
+require("louiselm").setup({
+  mcp = {
+    servers = {
+      docs = { type = "http", url = "https://docs.example.com/mcp" },
+      audit = { type = "stdio", command = "/absolute/path/to/audit-mcp", args = {} },
+    },
+    default_servers = { "docs" },
+  },
+  agents = {
+    codex = { command = "codex-acp", provider = "OpenAI" },
+    qa = { command = "codex-acp", provider = "OpenAI", mcp_servers = { "audit" } },
+  },
+})
+```
+
+Stdio `command` values must be absolute paths. Optional stdio `env` and HTTP
+`headers` use string maps, such as `env = { TOKEN = "..." }`.
+
+LouiseLM passes the selected definitions to the Agent when creating or loading
+a Session. The Agent starts stdio servers or connects to Streamable HTTP
+servers and owns their tools and connection lifecycle. HTTP requires the
+Agent to advertise ACP support; unsupported transport selections fail with
+the server name. MCP tool calls use the Agent's existing approval behavior
+and LouiseLM's permission policy, including configured automatic approval.
+
+Use `:LouiselmMcp` to inspect the current Session's server names, transports,
+and configuration status, even while starting, responding, or reporting an
+error. The view is a snapshot; reopen it for the latest state. `sent` means
+the definitions were sent to the Agent, not that its servers connected or
+its tools became available. The view omits commands, arguments, URLs,
+environment values, and headers. Server settings stay fixed for an existing
+Session; loading a Session uses the current configuration.
+
+Selected-content readers, transcript export, and Sessions launched through the
+installed supervisor receive no LouiseLM-supplied MCP servers. This does not
+disable servers discovered independently by an Agent from its native settings.
+Startup errors for MCP Sessions report safe context and protocol codes; raw
+peer error text and process stderr are withheld because they can echo credentials.
+
+The headless API accepts the same catalog as its third constructor argument:
+`Session.new(agents, nil, { mcp = mcp_config })`. Pass `disable_mcp = true` in
+Session creation/loading options when an operation needs no supplied servers.
+
 ## Features
 
 - **Chat in Neovim.** Stream replies, reasoning when supplied, tool activity,
@@ -265,7 +316,7 @@ entry points are grouped by purpose:
   `:LouiselmHandOff`, `:LouiselmResume`.
 - Context and control: `:LouiselmPickFile`, `:LouiselmPickSkill`,
   `:LouiselmPermissions`, `:LouiselmCancel`.
-- Inspection: `:LouiselmInspectTool`, `:LouiselmInspectProvenance`,
+- Inspection: `:LouiselmMcp`, `:LouiselmInspectTool`, `:LouiselmInspectProvenance`,
   `:LouiselmToMarkdown`, `:LouiselmForensics`.
 - Optional capture and Park: `:LouiselmCapture`, `:LouiselmCaptureInbox`,
   `:LouiselmPark`, `:LouiselmResumePark`.

@@ -5,6 +5,7 @@
 ---@field capture? louiselm.ConfigCapture Durable speech-capture command settings.
 ---@field context? louiselm.ConfigContext Project-context injection settings.
 ---@field keymaps? boolean Install LouiseLM's global default keymaps; false disables them.
+---@field mcp? louiselm.ConfigMcp MCP servers supplied to ACP Agents; the Agent owns server connections and tools.
 ---@field skills? louiselm.ConfigSkills Agent Skill discovery and injection settings.
 ---@field workflows? louiselm.ConfigWorkflows Workflow Run and Park integration; ordinary Handoff remains available independently.
 
@@ -15,6 +16,7 @@
 ---@field command string Executable to start.
 ---@field env? table<string, string> Environment variables passed to the process.
 ---@field latest? louiselm.ConfigAgentsValueLatest Optional command that resolves the agent's latest available version, e.g. `npm view <pkg> version`; omission disables the staleness check.
+---@field mcp_servers? string[] Ordered MCP server names replacing global defaults; omission inherits and an empty list disables LouiseLM-supplied MCP servers.
 ---@field provider string|louiselm.ConfigAgentsValueProviderOption2Item[]|louiselm.ConfigAgentsValueProviderOption3 Required access/quota service: a fixed name, exact typed option routes, or { option, prefixes } mapping literal prefixes of an advertised string option to services. Exactly one route or prefix must match before each prompt; display names never determine Provider.
 ---@field skills? louiselm.ConfigAgentsValueSkills Agent-specific Agent Skills policy override; paths remain global and the effective value is fixed when a session is created.
 ---@field transcript_layout? string Optional Provenance layout override for this Agent's historical transcripts: claude, codex, openai-compatible, or copilot; live chat transcripts need no configuration; omission searches all supported layouts.
@@ -68,6 +70,18 @@
 
 ---@class louiselm.ConfigContext
 ---@field instructions_file? string Project-root filename attached as a resource_link on new sessions; empty disables.
+
+---@class louiselm.ConfigMcp
+---@field default_servers? string[] Ordered server names inherited by ordinary Sessions unless their Agent overrides the selection; empty by default.
+---@field servers? table<string, louiselm.ConfigMcpServersValue> Shared named server catalog; registering a server does not enable it.
+
+---@class louiselm.ConfigMcpServersValue
+---@field args? string[] Stdio arguments; omission uses an empty list.
+---@field command? string Required for stdio: absolute executable path, as required by ACP v1.
+---@field env? table<string, string> Stdio environment variables; omission uses an empty map. Values are never displayed in MCP inspection.
+---@field headers? table<string, string> HTTP headers; omission uses an empty map. Values are never displayed in MCP inspection.
+---@field type string Required transport: stdio or http (Streamable HTTP).
+---@field url? string Required for http: absolute HTTP(S) Streamable HTTP endpoint.
 
 ---@class louiselm.ConfigSkills
 ---@field management? louiselm.ConfigSkillsManagement Trusted skill-management integration; independent of skill invocation and Admission.

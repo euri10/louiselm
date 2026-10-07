@@ -101,6 +101,7 @@ end
 
 T["streaming another Session does not postpone an unseen ready turn"] = function()
   local owner = Buffer.new({
+    mcp = { servers = {}, status = "disabled" },
     id = "streaming",
     name = "streaming",
     source = "new",

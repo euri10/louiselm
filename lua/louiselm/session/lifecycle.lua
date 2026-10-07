@@ -6,6 +6,7 @@ local Compaction = require("louiselm.session.compaction")
 local Provider = require("louiselm.agent.provider")
 local Routing = require("louiselm.routing.routing")
 local SelectedContent = require("louiselm.session.selected_content")
+local Mcp = require("louiselm.mcp")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -20,6 +21,7 @@ local nvim = vim
 ---@field options table<string, string|boolean> Complete supported option tuple at prompt start.
 
 ---@class louiselm.session.State
+---@field mcp louiselm.session.McpState Safe snapshot of configured MCP servers and ACP forwarding, never connection health.
 ---@field id string Local session identifier.
 ---@field name string User-facing session name.
 ---@field source "new"|"loaded" Whether the session was created or restored.
@@ -49,6 +51,11 @@ local nvim = vim
 ---@field commands louiselm.session.AvailableCommand[] Latest agent-advertised commands, replaced wholesale on each update.
 ---@field compactions louiselm.session.Compaction[] Compaction snapshots in first-seen order, including replay.
 
+---@class louiselm.session.McpState
+---@field servers louiselm.mcp.Summary[] Names and transports only; never commands, URLs, arguments or credentials.
+---@field status "disabled"|"configured"|"sent"|"rejected" Whether the frozen selection was forwarded over ACP.
+---@field error? string Safe startup failure without peer payloads.
+
 ---@class louiselm.session.AvailableCommand
 ---@field name string Command name as advertised by the agent.
 ---@field description string Human-readable command description.
@@ -61,6 +68,7 @@ local nvim = vim
 ---@field broker_session_id? string Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 ---@field launch_request? louiselm.acp.LaunchRequest Launch through the installed supervisor instead of the configured command.
 ---@field selected_content? louiselm.session.SelectedContentLimits Immutable tool-less one-attempt contract; unsupported Agents fail before session/new.
+---@field disable_mcp? boolean Suppress LouiseLM-supplied MCP servers, for example during transcript replay. Does not control Agent-native configuration.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store? louiselm.permission.Store Remembered-permission owner.
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -95,6 +103,7 @@ local nvim = vim
 ---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
 ---@field definition louiselm.agent.Definition Agent process definition.
 ---@field options louiselm.session.Options Session options.
+---@field mcp_servers louiselm.mcp.WireServer[] Owned ACP configuration; never included in inspectable state or recordings.
 ---@field permission_policy louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store louiselm.permission.Store Remembered-permission owner.
 ---@field schedule fun(delay_ms: integer, callback: fun()) Testable scheduling boundary.
@@ -310,6 +319,15 @@ local function fail(self, message, peer_response)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
+  local private_startup = self.state.status == "starting" and #self.mcp_servers > 0
+  if private_startup then
+    self.state.mcp.status = "rejected"
+    -- Startup diagnostics may echo the credential-bearing descriptions we sent.
+    -- Preserve only explicitly safe local context, never peer text or stderr.
+    message = self.state.mcp.error
+      or "Session startup failed with configured MCP servers; check Agent and server configuration"
+    self.state.mcp.error = message
+  end
   local turn = self.recording_turn
   recover_economical(
     self,
@@ -334,7 +352,9 @@ local function fail(self, message, peer_response)
   if client ~= nil then
     local closed, close_error = client:close()
     if not closed then
-      message = message .. "; ACP cleanup failed: " .. (close_error or "unknown error")
+      message = message
+        .. "; ACP cleanup failed"
+        .. (private_startup and "" or ": " .. (close_error or "unknown error"))
     end
   end
   local prompt_callback = self.prompt_callback
@@ -920,7 +940,9 @@ local function handle_exit(self, result)
     message = "agent process exited with code " .. tostring(result.code)
   end
   local stderr = self.stderr_buffer:match("^%s*(.-)%s*$")
-  if stderr ~= "" then
+  if self.state.status == "starting" and #self.mcp_servers > 0 then
+    self.state.mcp.error = message
+  elseif #self.mcp_servers == 0 and stderr ~= "" then
     message = message .. ": " .. stderr
   end
   fail(self, message)
@@ -1140,6 +1162,15 @@ local function handle_initialized(self, result, rpc_error)
     return
   end
   local prompt_capabilities = client.agent_capabilities.promptCapabilities
+  for _, server in ipairs(self.mcp_servers) do
+    local capabilities = client.agent_capabilities.mcpCapabilities
+    if server.type == "http" and (type(capabilities) ~= "table" or capabilities.http ~= true) then
+      local message = "Agent does not advertise HTTP MCP support required by server '" .. server.name .. "'"
+      self.state.mcp.error = message
+      fail(self, message)
+      return
+    end
+  end
   local selected_content = self.options.selected_content
   if selected_content ~= nil then
     local meta = client.agent_capabilities._meta
@@ -1165,7 +1196,18 @@ local function handle_initialized(self, result, rpc_error)
         )
         return
       end
-      fail(self, "ACP session/" .. method .. " failed: " .. error_message(session_error))
+      if #self.mcp_servers > 0 then
+        -- A peer may echo the server URL or credentials in its startup error.
+        -- Keep the protocol code and stage, never its untrusted payload.
+        local message = "Agent rejected session/" .. method .. " with configured MCP servers"
+        if type(session_error) == "table" then
+          message = message .. " (ACP error " .. session_error.code .. ")"
+        end
+        self.state.mcp.error = message
+        fail(self, message)
+      else
+        fail(self, "ACP session/" .. method .. " failed: " .. error_message(session_error))
+      end
       return
     end
     if self.load_session_id == nil then
@@ -1224,14 +1266,14 @@ local function handle_initialized(self, result, rpc_error)
     meta[SelectedContent.key] = nvim.deepcopy(selected_content)
   end
   if self.load_session_id == nil then
-    local params = { cwd = self.state.working_dir, mcpServers = {} }
+    local params = { cwd = self.state.working_dir, mcpServers = self.mcp_servers }
     if meta ~= nil then
       params._meta = meta
     end
     request_id, request_error = client:new_session(params, on_session_ready)
   else
     self.acp_session_id = self.load_session_id
-    local params = { sessionId = self.load_session_id, cwd = self.state.working_dir, mcpServers = {} }
+    local params = { sessionId = self.load_session_id, cwd = self.state.working_dir, mcpServers = self.mcp_servers }
     if meta ~= nil then
       params._meta = meta
     end
@@ -1239,6 +1281,8 @@ local function handle_initialized(self, result, rpc_error)
   end
   if request_id == nil then
     fail(self, "ACP session/" .. method .. " failed: " .. (request_error or "request could not be sent"))
+  elseif #self.mcp_servers > 0 and self.state.status ~= "error" and self.state.status ~= "disposed" then
+    self.state.mcp.status = "sent"
   end
 end
 
@@ -1307,8 +1351,16 @@ end
 function M.new(owner, id, agent_name, definition, options, ready_callback, load_session_id)
   ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
   local working_dir = options.cwd or vim.fn.getcwd()
+  -- These consumers intentionally cannot acquire desktop MCP capabilities.
+  local mcp_servers = (options.disable_mcp or options.selected_content ~= nil or options.launch_request ~= nil) and {}
+    or Mcp.resolve(owner.mcp, definition.mcp_servers)
+  local mcp_summaries = {}
+  for _, server in ipairs(mcp_servers) do
+    mcp_summaries[#mcp_summaries + 1] = { name = server.name, transport = server.type or "stdio" }
+  end
   local session = setmetatable({
     state = {
+      mcp = { servers = mcp_summaries, status = #mcp_servers == 0 and "disabled" or "configured" },
       id = id,
       name = options.name or id,
       source = load_session_id == nil and "new" or "loaded",
@@ -1335,6 +1387,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     owner = owner,
     definition = definition,
     options = options,
+    mcp_servers = mcp_servers,
     acp_session_id = load_session_id,
     load_session_id = load_session_id,
     permission_policy = options.permission_policy or Permission.policy(),

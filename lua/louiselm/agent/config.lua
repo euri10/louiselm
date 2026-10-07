@@ -2,6 +2,7 @@ local Policy = require("louiselm.skills.policy")
 local Provider = require("louiselm.agent.provider")
 local Routing = require("louiselm.routing.routing")
 local Schema = require("louiselm.schema")
+local MCP = require("louiselm.mcp")
 
 ---@class louiselm.routing.SelectionRule
 ---@field model string Candidate advertised Model.
@@ -34,6 +35,7 @@ local Schema = require("louiselm.schema")
 ---`display = "omitted"`, which streams signature-only reasoning with no visible `[thinking]` text.
 ---Summarized display trades a small amount of extra streaming latency for a visible reasoning trace.
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
+---@field mcp_servers? string[] Ordered MCP catalog names; omission inherits global defaults and an empty list disables LouiseLM-supplied servers.
 ---@field version? louiselm.agent.CommandCheck Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 ---@field latest? louiselm.agent.CommandCheck Optional command that resolves the latest available version.
 ---@field upgrade? string[]|string Upgrade executable and arguments, or nonblank manual update instructions. Displayed only, never executed by LouiseLM; only argv can join the combined upgrade command.
@@ -58,6 +60,7 @@ local allowed_keys = {
   command = true,
   env = true,
   latest = true,
+  mcp_servers = true,
   options = true,
   provider = true,
   skills = true,
@@ -438,6 +441,27 @@ function M.normalize(definitions, default_skills_policy)
         end
       end
 
+      local mcp_servers
+      if definition.mcp_servers ~= nil then
+        local selection_errors = Schema.validate(MCP.selection_schema, { mcp_servers = definition.mcp_servers })
+        for _, selection_error in ipairs(selection_errors) do
+          add_error(
+            errors,
+            child_path(path, selection_error.path),
+            provider_error_types[selection_error.type],
+            selection_error.message or "must be a dense array of unique MCP server names",
+            selection_error.expected,
+            selection_error.got
+          )
+        end
+        if #selection_errors == 0 then
+          mcp_servers = {}
+          for index, server_name in ipairs(definition.mcp_servers) do
+            mcp_servers[index] = server_name
+          end
+        end
+      end
+
       local auto
       if definition.auto ~= nil then
         local auto_path = child_path(path, "auto")
@@ -557,6 +581,7 @@ function M.normalize(definitions, default_skills_policy)
         env = process.env,
         options = options,
         capabilities = capabilities,
+        mcp_servers = mcp_servers,
         transcript_layout = transcript_layout,
         skills = { policy = effective_skill_policy },
         latest = latest,

@@ -4,6 +4,7 @@ local Schema = require("louiselm.schema")
 local CaptureCommand = require("louiselm.capture.command")
 local Command = require("louiselm.ui.chat.command")
 local Keymaps = require("louiselm.ui.keymaps")
+local Mcp = require("louiselm.mcp")
 
 local M = {}
 
@@ -25,7 +26,23 @@ end
 function M.setup(config)
   local schema = Config.schema
 
-  local report = Schema.report(Schema.validate(schema, config))
+  local errors = Schema.validate(schema, config)
+  -- Check references even when another section is malformed; report each
+  -- structural field once and never hide an error by applying defaults first.
+  if type(config) == "table" then
+    local seen = {}
+    for _, err in ipairs(errors) do
+      seen[err.path] = true
+    end
+    local _, mcp_errors = Mcp.normalize(config.mcp, config.agents)
+    for _, err in ipairs(mcp_errors) do
+      if not seen[err.path] then
+        errors[#errors + 1] = { type = "validation_failed", path = err.path, message = err.message }
+        seen[err.path] = true
+      end
+    end
+  end
+  local report = Schema.report(errors)
   if not report.ok then
     -- Neovim provides the severity constants used by its notification API.
     ---@diagnostic disable-next-line: undefined-global

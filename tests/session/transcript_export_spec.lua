@@ -95,6 +95,7 @@ T["export"]["times out and disposes the session when the agent never becomes rea
       MiniTest.expect.equality(agent_name, "mock")
       MiniTest.expect.equality(acp_session_id, "never-ready")
       MiniTest.expect.equality(type(options.on_event), "function")
+      MiniTest.expect.equality(options.disable_mcp, true)
       -- `ready_callback` is intentionally never invoked: this models an agent that
       -- hangs during session/load.
       return fake_session
@@ -223,6 +224,24 @@ T["run"]["writes the exported path to stdout and never force-quits on success"] 
   MiniTest.expect.equality(nvim.fn.filereadable(path), 1)
 
   nvim.fn.delete(path)
+end
+
+T["run"]["exports Agents with MCP overrides without requiring or changing their catalog"] = function()
+  local hooks, calls = fake_io()
+  local path = nvim.fn.tempname() .. ".md"
+  MiniTest.finally(function()
+    nvim.fn.delete(path)
+  end)
+  local definition = mock_definition()
+  definition.mcp_servers = { "audit" }
+  local original = nvim.deepcopy(definition)
+
+  TranscriptExport.run({ mock = definition }, "mock", "prior-acp-session", path, hooks)
+
+  MiniTest.expect.equality(calls.err, {})
+  MiniTest.expect.equality(calls.quit, 0)
+  MiniTest.expect.equality(calls.out, { path .. "\n" })
+  MiniTest.expect.equality(definition, original)
 end
 
 return T
