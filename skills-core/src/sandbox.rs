@@ -41,7 +41,7 @@ use std::{
 
 use rustix::{
     event::{PollFd, PollFlags, Timespec, poll},
-    process::{Signal, pidfd_send_signal},
+    process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -770,6 +770,10 @@ impl SandboxedSession {
     /// die normally. Call [`SandboxedSession::dispose`] for an actual
     /// zero-survivors guarantee.
     ///
+    /// Pins targets before signalling and rechecks their cgroup membership.
+    /// Already-exited targets are skipped; the count includes only accepted
+    /// signal deliveries, never a recycled PID outside the Session tree.
+    ///
     /// # Errors
     /// Returns membership, signalling, child-exit, or freeze/restoration errors. Interrupt is not a zero-survivors guarantee.
     pub fn interrupt(&mut self) -> Result<usize, SandboxError> {
@@ -777,16 +781,17 @@ impl SandboxedSession {
     }
 
     fn interrupt_with_timeout(&mut self, timeout: Duration) -> Result<usize, SandboxError> {
-        let cgroup = self
-            .cgroup
-            .as_ref()
-            .filter(|cgroup| cgroup.supports_freeze())
-            .cloned();
-        let was_frozen = cgroup.as_ref().map(Cgroup::frozen_state).transpose()?;
+        let cgroup = self.cgroup.clone().ok_or_else(|| {
+            SandboxError::NoCgroup("complete Session process membership is unavailable".to_owned())
+        })?;
+        let was_frozen = cgroup
+            .supports_freeze()
+            .then(|| cgroup.frozen_state())
+            .transpose()?;
         let outcome = (|| {
-            let processes = if let Some(cgroup) = &cgroup {
+            let processes = if was_frozen.is_some() {
                 cgroup.request_freeze_and_wait(timeout)?;
-                wait_for_stable_membership(cgroup)?
+                wait_for_stable_membership(&cgroup)?
             } else {
                 self.processes()?
             };
@@ -810,10 +815,10 @@ impl SandboxedSession {
                     reason: "the Session exited before Interrupt was applied".to_owned(),
                 });
             }
-            signal(&processes, "-INT", self.backend)
+            signal(&processes, &cgroup)
         })();
-        if let Some(cgroup) = &cgroup {
-            let restored = if was_frozen == Some(true) {
+        if let Some(was_frozen) = was_frozen {
+            let restored = if was_frozen {
                 cgroup.request_freeze_and_wait(timeout)
             } else {
                 cgroup.request_thaw_and_wait(timeout)
@@ -1233,27 +1238,41 @@ fn wait_for_stable_membership(cgroup: &Cgroup) -> Result<Vec<u32>, SandboxError>
     }
 }
 
-/// Sends one signal to every pid in `processes` with a single `kill` call.
-fn signal(processes: &[u32], signal: &str, backend: &'static str) -> Result<usize, SandboxError> {
-    if processes.is_empty() {
-        return Ok(0);
-    }
-    let mut command = Command::new("/usr/bin/kill");
-    command.arg(signal);
-    for pid in processes {
-        command.arg(pid.to_string());
-    }
-    let status = command.status().map_err(|source| SandboxError::Io {
-        path: "/usr/bin/kill".to_owned(),
+/// Pin every target before signalling; one exit can tear down other members.
+fn signal(processes: &[u32], cgroup: &Cgroup) -> Result<usize, SandboxError> {
+    let result = (|| {
+        let mut targets = Vec::new();
+        for pid in processes {
+            let process = i32::try_from(*pid)
+                .ok()
+                .and_then(Pid::from_raw)
+                .filter(|pid| pid.as_raw_nonzero().get() > 1)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            match pidfd_open(process, PidfdFlags::empty()) {
+                Ok(fd) => targets.push((*pid, fd)),
+                Err(rustix::io::Errno::SRCH) => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        // Recheck after pinning so a recycled PID outside this tree is excluded.
+        let current = cgroup.try_processes()?;
+        let mut signalled = 0;
+        for (pid, fd) in targets {
+            if !current.contains(&pid) {
+                continue;
+            }
+            match pidfd_send_signal(&fd, Signal::INT) {
+                Ok(()) => signalled += 1,
+                Err(rustix::io::Errno::SRCH) => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(signalled)
+    })();
+    result.map_err(|source| SandboxError::Io {
+        path: "Session Interrupt".to_owned(),
         source,
-    })?;
-    if !status.success() {
-        return Err(SandboxError::SpawnFailed {
-            backend,
-            reason: "kill refused to signal the Session tree".to_owned(),
-        });
-    }
-    Ok(processes.len())
+    })
 }
 
 fn startup_failed(
@@ -2460,6 +2479,67 @@ mod tests {
     fn clean_up_test_child(session: &mut SandboxedSession) {
         let _ = session.child.kill();
         session.child.wait().expect("child is reaped");
+    }
+
+    #[test]
+    fn interrupt_signals_survivors_after_an_enumerated_target_exits() {
+        let fixture = tempfile::tempdir().expect("membership fixture opens");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+        let mut exited = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("exiting target starts");
+        let mut survivor = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("surviving target starts");
+        let processes = [exited.id(), survivor.id()];
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", survivor.id()),
+        )
+        .expect("surviving membership writes");
+        exited.kill().expect("first enumerated target exits");
+        exited
+            .wait()
+            .expect("first target is reaped before signalling");
+
+        let result = signal(&processes, &cgroup);
+        let _ = survivor.kill();
+        survivor.wait().expect("surviving target is reaped");
+
+        assert_eq!(
+            result.expect("an exited target must not abort Interrupt"),
+            1,
+            "only the surviving target receives Interrupt",
+        );
+    }
+
+    #[test]
+    fn interrupt_does_not_signal_a_target_outside_current_membership() {
+        let fixture = tempfile::tempdir().expect("membership fixture opens");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("empty current membership writes");
+        let mut target = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("target starts");
+
+        let result = signal(&[target.id()], &cgroup);
+        let was_running = target
+            .try_wait()
+            .expect("target status is readable")
+            .is_none();
+        let _ = target.kill();
+        target.wait().expect("target is reaped");
+
+        assert_eq!(result.expect("membership is readable"), 0);
+        assert!(was_running, "a PID outside the tree must not be signalled");
     }
 
     #[test]
