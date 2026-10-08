@@ -25,9 +25,11 @@ monitor, reaper and authenticated Agent are different processes. See
 and [Linux ptrace events](https://man7.org/linux/man-pages/man2/ptrace.2.html).
 
 No runtime wrapper, `--as-pid-1`, root daemon or takeover process is introduced.
-No process memory or registers are read. The narrow ptrace FFI is necessary
-because stdlib and rustix 1.1.4 expose the pidfd/wait/socket operations but not
-ptrace controls. Its pre-implementation review is in issue comment 1446.
+No process memory or registers are read. stdlib and rustix expose the
+pidfd/wait/socket operations but not ptrace controls, so the scalar controls
+(seize, setoptions, cont, detach, getevent) use nix's safe `sys::ptrace` API;
+skills-core declares no ptrace FFI of its own (louiselm-byrw2). The original
+pre-implementation review is in issue comment 1446.
 
 Unsupported fork/exec shapes fail closed. A shebang script is not the executable
 inode the kernel runs: register the actual measured executable with fixed

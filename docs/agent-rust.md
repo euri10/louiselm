@@ -106,13 +106,14 @@ but must not silently weaken it.
 
 #### Sender guard mount isolation
 
-The Sender guard uses existing rustix mount APIs and one reviewed
-`unshare_unsafe(NEWNS | FS)` call to create a private pin namespace. Safe stdlib
-has no namespace operation; rustix's old safe `unshare` is deprecated because
-`FILES` can invalidate cross-thread descriptor ownership. We never request
-`FILES`, change descriptor tables, or fork. `NEWNS | FS` only isolates the
-calling thread's mount/filesystem context; subsequent absolute-path mounts are
-made private before bpffs is mounted. No external privileged helper or new
-dependency is needed. Namespace descriptors accompany endpoint ownership; no
+The Sender guard uses existing rustix mount APIs and one
+`nix::sched::unshare(CLONE_NEWNS | CLONE_FS)` call to create a private pin
+namespace. Safe stdlib has no namespace operation; rustix's safe `unshare` is
+deprecated because `FILES` can invalidate cross-thread descriptor ownership, so
+skills-core uses nix's safe wrapper instead of `unsafe` (louiselm-byrw2). We
+never request `FILES`, change descriptor tables, or fork. `NEWNS | FS` only
+isolates the calling thread's mount/filesystem context; subsequent absolute-path
+mounts are made private before bpffs is mounted. No external privileged helper
+is needed. Namespace descriptors accompany endpoint ownership; no
 cleanup path unmounts or removes live pins. libbpf-rs supplies the BPF boundary
 without handwritten FFI. See louiselm-qbr.5.1.3.2.4.2 and louiselm-8a8id.

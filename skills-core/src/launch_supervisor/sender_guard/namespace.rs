@@ -1,27 +1,22 @@
 //! Private bpffs ownership; never explicitly unpin or unmount live enforcement.
 
 use super::GuardError;
-use rustix::{
-    mount::{MountFlags, MountPropagationFlags},
-    thread::{UnshareFlags, unshare_unsafe},
-};
+use nix::sched::{CloneFlags, unshare};
+use rustix::mount::{MountFlags, MountPropagationFlags};
 use std::{fs::File, os::unix::fs::MetadataExt};
 
 pub(super) struct PinNamespace(File);
 
 impl PinNamespace {
-    #[expect(
-        unsafe_code,
-        reason = "Reviewed NEWNS|FS boundary; see docs/agent-rust.md."
-    )]
     pub(super) fn create() -> Result<Self, GuardError> {
         if !rustix::process::geteuid().is_root() {
             return Err(GuardError::Unavailable);
         }
-        // SAFETY: NEWNS|FS never requests FILES or changes the shared fd table.
-        // Owned/BorrowedFd values therefore remain valid on every thread. Mount
-        // propagation is made private before creating the thread-local bpffs.
-        unsafe { unshare_unsafe(UnshareFlags::NEWNS | UnshareFlags::FS) }
+        // NEWNS|FS isolates only this thread's mount/filesystem context. Never
+        // add FILES: unsharing the descriptor table would invalidate
+        // Owned/BorrowedFd values shared with other threads. Mount propagation
+        // is made private before creating the thread-local bpffs.
+        unshare(CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_FS)
             .map_err(|_| GuardError::Unavailable)?;
         rustix::mount::mount_change(
             "/",
