@@ -137,7 +137,18 @@ impl Parsed {
 }
 
 pub(crate) fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    lower_hex(&Sha256::digest(bytes))
+}
+
+/// Renders raw digest output as two lowercase hex digits per byte.
+pub(crate) fn lower_hex(raw: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(raw.len() * 2);
+    for byte in raw {
+        hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    hex
 }
 
 pub(crate) fn timestamp(value: &Value) -> Option<i64> {
@@ -188,5 +199,19 @@ pub(crate) fn output(call: &mut Call, value: &Value) {
         call.retained_output_bytes = Some(content.len() as u64);
         call.output_lines = Some(content.lines().count() as u64);
         call.output_fingerprint = Some(digest(content.as_bytes()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digests_render_as_lowercase_hex() {
+        assert_eq!(
+            digest(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(lower_hex(&[0x00, 0x0f, 0xa0, 0xff]), "000fa0ff");
     }
 }
