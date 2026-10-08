@@ -21,7 +21,7 @@ NON_PLUGIN_FILES = {
     "scripts/test-skills-core", "scripts/test-skills-core-git-isolation",
     "scripts/acp-log-backup", "scripts/test-acp-log-backup.py",
     "scripts/agent-liveness-snapshot", "scripts/test-agent-liveness-snapshot.sh",
-    "rust-toolchain.toml",
+    "rust-toolchain.toml", "scripts/stage-beads-records", "scripts/test-stage-beads-records.py",
 }
 
 # This convention applies prospectively, independently of release-note history.
