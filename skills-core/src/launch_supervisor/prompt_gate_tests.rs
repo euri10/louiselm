@@ -96,7 +96,7 @@ fn held_input_requests_enrollment_and_flushes_only_after_opening() {
     assert!(!gate.take_request(), "enrollment is requested once");
     output.clear();
     assert!(!gate.admit_into(&mut output), "held input stays staged");
-    assert!(output.is_empty());
+    assert_eq!(output, [] as [u8; 0]);
     assert!(
         !gate.read(&mut b"more".as_slice()).unwrap(),
         "no read-ahead while held"

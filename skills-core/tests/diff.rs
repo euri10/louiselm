@@ -70,7 +70,7 @@ fn an_identical_package_diffs_to_nothing() {
     let (package, _) = fixture.capture(&candidate).expect("capture succeeds");
     let diff = PackageDiff::between(&package, &package).expect("diff runs");
 
-    assert!(diff.entries.is_empty());
+    assert_eq!(diff.entries, [] as [louiselm_skills::DiffEntry; 0]);
     assert!(!diff.has_changes());
 }
 
@@ -120,7 +120,7 @@ fn binary_content_is_reported_as_changed_without_pretending_to_show_lines() {
 
     let entry = &diff.entries[0];
     assert_eq!(entry.change, Change::ContentChanged);
-    assert!(entry.lines.is_empty());
+    assert_eq!(entry.lines, [] as [louiselm_skills::diff::DiffLine; 0]);
     assert_eq!(entry.note.as_deref(), Some("binary content"));
 }
 

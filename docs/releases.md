@@ -200,7 +200,7 @@ bump the plugin. Mixed interface/client changes may release both components.
 
 The existing publisher also checks capture release PR approval and exact PR/main
 CI before building. It builds only a Git archive of the approved source using
-Rust 1.97.1, locked dependencies and `x86_64-unknown-linux-gnu` on the workflow's
+the Rust toolchain pinned by that source's `rust-toolchain.toml`, locked dependencies and `x86_64-unknown-linux-gnu` on the workflow's
 Ubuntu 24.04 runner. The download requires Linux x86-64 with glibc 2.39 or newer;
 it is not a portable static binary. No other target is advertised.
 

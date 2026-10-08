@@ -145,7 +145,10 @@ fn reads_apply_source_validity_without_renewing_or_expiring_launch_proof() {
             current.freshness.last_verified_at_ms,
             runtime(&statuses[1]).freshness.last_verified_at_ms
         );
-        assert!(status.allowed_actions.is_empty());
+        assert_eq!(
+            status.allowed_actions,
+            [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+        );
         for dimension in &status.posture.dimensions {
             if dimension.dimension != DimensionName::Runtime {
                 assert_eq!(dimension.freshness.basis, FreshnessBasis::Missing);
@@ -277,7 +280,10 @@ fn restart_consumes_loss_park_and_terminal_suffix_without_refreshing_launch() {
                 )
                 .unwrap();
             assert_eq!(status.state, state, "reconnect/read must not Resume");
-            assert!(status.allowed_actions.is_empty());
+            assert_eq!(
+                status.allowed_actions,
+                [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+            );
             let runtime = runtime(&status);
             assert_eq!(
                 runtime.state,

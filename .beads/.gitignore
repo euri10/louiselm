@@ -25,6 +25,8 @@ last-touched
 # `br doctor --repair`. Filename suffix `.truncated-wal` slips past the
 # generic `*.db-wal` glob above, so it needs an explicit entry (#271).
 .br_recovery/
+# WAL-index recovery staging directories (louiselm-ha7ic)
+.br-wal-index-*/
 
 # Sync state (local-only, per-machine)
 .sync.lock

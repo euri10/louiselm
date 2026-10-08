@@ -102,7 +102,7 @@ pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/4"
 pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/7";
 
 /// Schema for a response to a request.
-pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/3";
+pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/4";
 
 /// An authorized public lifecycle mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1829,6 +1829,12 @@ pub enum ResponseResult {
         /// Exact enrollment being acknowledged.
         enrollment: GuardEnrollment,
     },
+    /// Supervisor established the kernel policy after actual runtime enrollment.
+    /// This observation grants nothing and is trusted only on its original channel.
+    SenderGuardActivated {
+        /// Exact activated endpoint and networking revision.
+        enrollment: GuardEnrollment,
+    },
     /// Supervisor revoked authority and requires closure of all broker copies.
     SenderGuardClosing {
         /// Exact endpoint whose descriptor ownership must end.
@@ -1967,6 +1973,7 @@ impl ProtocolResponse {
             | ResponseResult::SenderGuardUpstreamAccepted { socket } => socket.validate(),
             ResponseResult::SenderGuardEnrolled { enrollment }
             | ResponseResult::SenderGuardAccepted { enrollment }
+            | ResponseResult::SenderGuardActivated { enrollment }
             | ResponseResult::SenderGuardClosing { enrollment }
             | ResponseResult::SenderGuardClosed { enrollment } => enrollment.validate(),
             ResponseResult::WaiverChanged { change } => {

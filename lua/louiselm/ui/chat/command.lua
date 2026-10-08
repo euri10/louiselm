@@ -12,6 +12,7 @@ local Qualification = require("louiselm.routing.qualification")
 local Paths = require("louiselm.paths")
 local Config = require("louiselm.config")
 local AttentionPaste = require("louiselm.ui.attention_paste")
+local Decisions = require("louiselm.ui.chat.decisions")
 
 local M = {}
 local configured ---@type table?
@@ -357,11 +358,11 @@ function M.register()
     dispose_registered()
     dispose_registered = nil
   end
-  local chat
+  local chat ---@type louiselm.ui.Chat?
   local attention_paste = AttentionPaste.new()
   local usage ---@type louiselm.ui.UsageView?
   local attention_view ---@type louiselm.ui.AttentionView?
-  local inline
+  local inline ---@type louiselm.ui.Inline?
   local jsonl ---@type louiselm.ui.JsonlView?
   local export_cancel ---@type fun()?
   local view_cancel ---@type fun()?
@@ -376,6 +377,40 @@ function M.register()
       nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
     end
   end
+
+  local decisions = Decisions.new({
+    is_live = function(session)
+      if disposed then
+        return false
+      end
+      if inline ~= nil and not inline.disposed and inline.session == session then
+        return inline.buffer ~= nil and nvim.api.nvim_buf_is_valid(inline.buffer)
+      end
+      if chat == nil or chat.disposed then
+        return false
+      end
+      local view = chat.views[session:inspect().id]
+      return view ~= nil and view.session == session and nvim.api.nvim_buf_is_valid(view.renderer.buffer)
+    end,
+    report_error = function(session, message)
+      local view = chat and chat.views[session:inspect().id]
+      if view ~= nil and view.session == session then
+        view.renderer:append({ "Error: " .. message })
+      else
+        report_error(message)
+      end
+    end,
+    resolved = function(session, request_id)
+      if chat == nil then
+        return
+      end
+      local view = chat.views[session:inspect().id]
+      local session_id = session:inspect().acp_session_id
+      if view ~= nil and view.session == session and chat.attention ~= nil and session_id ~= nil then
+        chat.attention:permission_resolved(session_id, request_id)
+      end
+    end,
+  })
 
   ---@param method "switch_session"|"hand_off"|"inspect_tool"|"inspect_mcp"|"close_session"|"cancel"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
   ---@return fun()
@@ -457,6 +492,7 @@ function M.register()
     end
     local new_chat, chat_error = require("louiselm.ui.chat").new(sessions, {
       agents = names,
+      decisions = decisions,
       skills = skills,
       skill_paths = configured and configured.skills and configured.skills.paths or nil,
       skill_catalog = skill_catalog,
@@ -550,7 +586,7 @@ function M.register()
       return
     end
     local buffer = chat and chat:buffer() or nil
-    if buffer == nil or nvim.api.nvim_get_current_buf() ~= buffer then
+    if chat == nil or buffer == nil or nvim.api.nvim_get_current_buf() ~= buffer then
       report_error("no chat session is open")
       return
     end
@@ -743,12 +779,23 @@ function M.register()
     -- chat is the thing that is broken. Only the bare form needs a chat, and
     -- only because that is what supplies the diagnosing Session and the queue.
     if #arguments.fargs > 0 then
-      if #arguments.fargs ~= 2 then
-        report_error("use :LouiselmForensics AGENT ACP_SESSION_ID, or no argument for the current Session")
+      if #arguments.fargs ~= 2 and #arguments.fargs ~= 3 then
+        report_error(
+          "use :LouiselmForensics AGENT ACP_SESSION_ID [acp_log:/PATH|agent_transcript:/PATH], or no argument for the current Session"
+        )
         return
       end
+      local options
+      if arguments.fargs[3] ~= nil then
+        local kind, path = arguments.fargs[3]:match("^([^:]+):(.+)$")
+        if (kind ~= "acp_log" and kind ~= "agent_transcript") or path == nil then
+          report_error("Forensics source must be acp_log:/absolute/path or agent_transcript:/absolute/path")
+          return
+        end
+        options = { source = { kind = kind, path = path } }
+      end
       local started, forensics_error =
-        session_module().collect_forensics(arguments.fargs[1], arguments.fargs[2], nil, report_path)
+        session_module().collect_forensics(arguments.fargs[1], arguments.fargs[2], options, report_path)
       if not started then
         report_error(forensics_error)
       end
@@ -911,11 +958,25 @@ function M.register()
     { desc = "Close the current louiselm session", force = true }
   )
 
-  nvim.api.nvim_create_user_command(
-    "LouiselmCancel",
-    chat_command("cancel"),
-    { desc = "Cancel the current louiselm turn", force = true }
-  )
+  nvim.api.nvim_create_user_command("LouiselmCancel", function()
+    local buffer = nvim.api.nvim_get_current_buf()
+    local active = decisions:active_session()
+    if inline ~= nil and inline.running and buffer == inline.buffer then
+      local _, err = inline:cancel()
+      report_error(err)
+    elseif chat ~= nil and buffer == chat:buffer() then
+      local _, err = chat:cancel()
+      report_error(err)
+    elseif inline ~= nil and inline.running and active == inline.session then
+      local _, err = inline:cancel()
+      report_error(err)
+    elseif active ~= nil then
+      local _, err = active:cancel()
+      report_error(err)
+    else
+      chat_command("cancel")()
+    end
+  end, { desc = "Cancel the current louiselm turn", force = true })
 
   nvim.api.nvim_create_user_command(
     "LouiselmSessionOptions",
@@ -1009,10 +1070,18 @@ function M.register()
         nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
         return
       end
-      inline = assert(require("louiselm.ui.inline").new(sessions, { agents = names, cwd = nvim.fn.getcwd() }))
+      inline = assert(require("louiselm.ui.inline").new(sessions, {
+        agents = names,
+        cwd = nvim.fn.getcwd(),
+        decisions = decisions,
+      }))
+    end
+    if decisions:is_active() then
+      report_error("a louiselm permission decision is open; answer it first")
+      return
     end
     nvim.ui.input({ prompt = "louiselm inline: " }, function(prompt)
-      if prompt == nil then
+      if prompt == nil or disposed or inline == nil then
         return
       end
       local _, inline_error = inline:run(prompt)
@@ -1053,8 +1122,10 @@ function M.register()
     end
     if inline ~= nil then
       inline:dispose()
+      inline.api:dispose()
       inline = nil
     end
+    decisions:dispose()
     attention_paste:dispose()
   end
   return true

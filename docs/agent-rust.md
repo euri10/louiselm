@@ -11,9 +11,10 @@ but must not silently weaken it.
 
 #### Toolchain and lints
 
-- Use stable Rust matching `RUST_VERSION` in CI and default rustfmt. Keep the
-  edition explicit in each manifest. Declare an MSRV only when it is tested;
-  do not claim compatibility from an untested `rust-version` field.
+- Use the stable Rust pinned in the root `rust-toolchain.toml` and default
+  rustfmt. Keep the edition explicit in each manifest. Declare an MSRV only
+  when it is tested; do not claim compatibility from an untested
+  `rust-version` field.
 - Configure package-wide Cargo lints so libraries, binaries, and tests are all
   covered. Deny `clippy::all` and `clippy::pedantic`, with group priority `-1`;
   individual lints keep priority `0`. Also deny `missing_docs`,
@@ -33,18 +34,15 @@ but must not silently weaken it.
 
 #### Unsafe and failure handling
 
-- Forbid `unsafe_code` in capture-service and usage-cli. Deny it by default in skills-core;
-  exceptions are limited to reviewed platform operations. Before adding or
-  expanding one, record why safe stdlib/existing-dependency APIs do not suffice,
-  the alternatives considered, and the evidence supporting the chosen boundary.
-  Existing unsafe code receives no automatic exemption.
-- Each unsafe operation needs a precise `// SAFETY:` argument covering its
-  actual obligations, including descriptor ownership and post-fork restrictions
-  where applicable. Keep unsafe blocks minimal and encapsulate them behind a
-  safe API that enforces its invariants. Tests supplement the argument; a green
-  test or the absence of the keyword does not establish soundness.
+- Forbid `unsafe_code` in capture-service, skills-core and usage-cli, including
+  binaries and tests. Use safe stdlib or approved dependency APIs for platform
+  operations; do not weaken the lint or add local exceptions. The broker adopts
+  systemd's listener through stdin, then redirects stdin to `/dev/null` before
+  starting threads or children (louiselm-80j95). Safe wrappers still require
+  validation of descriptor authority and lifecycle; a green test or the absence
+  of the keyword does not establish soundness.
 - No `static mut`. Raw-pointer operations, manual `Send`/`Sync`, FFI, and
-  lifetime manipulation follow the same unsafe exception policy; they are not
+  lifetime manipulation follow the same prohibition; they are not
   shortcuts around Rust's ownership model.
 - Expected input, I/O, configuration, and protocol failures return typed
   `Result` errors. Preserve their causes and sanitize them at presentation
@@ -105,13 +103,14 @@ but must not silently weaken it.
 
 #### Sender guard mount isolation
 
-The Sender guard uses existing rustix mount APIs and one reviewed
-`unshare_unsafe(NEWNS | FS)` call to create a private pin namespace. Safe stdlib
-has no namespace operation; rustix's old safe `unshare` is deprecated because
-`FILES` can invalidate cross-thread descriptor ownership. We never request
-`FILES`, change descriptor tables, or fork. `NEWNS | FS` only isolates the
-calling thread's mount/filesystem context; subsequent absolute-path mounts are
-made private before bpffs is mounted. No external privileged helper or new
-dependency is needed. Namespace descriptors accompany endpoint ownership; no
+The Sender guard uses existing rustix mount APIs and one
+`nix::sched::unshare(CLONE_NEWNS | CLONE_FS)` call to create a private pin
+namespace. Safe stdlib has no namespace operation; rustix's safe `unshare` is
+deprecated because `FILES` can invalidate cross-thread descriptor ownership, so
+skills-core uses nix's safe wrapper instead of `unsafe` (louiselm-byrw2). We
+never request `FILES`, change descriptor tables, or fork. `NEWNS | FS` only
+isolates the calling thread's mount/filesystem context; subsequent absolute-path
+mounts are made private before bpffs is mounted. No external privileged helper
+is needed. Namespace descriptors accompany endpoint ownership; no
 cleanup path unmounts or removes live pins. libbpf-rs supplies the BPF boundary
 without handwritten FFI. See louiselm-qbr.5.1.3.2.4.2 and louiselm-8a8id.

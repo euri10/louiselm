@@ -131,7 +131,10 @@ fn dependency_chunks_publish_only_opaque_cache_bytes_and_never_run_scripts() {
     );
     assert!(!marker.exists());
     assert!(!harness.root.path().join("escaped").exists());
-    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(
+        harness.audit.entries().unwrap(),
+        [] as [crate::broker::audit::AuditEntry; 0]
+    );
     harness.owner.handle_command(CommandMessage {
         operation: CommandOperation::DependencyResult {
             status: DependencyStatus::Complete { artifact },

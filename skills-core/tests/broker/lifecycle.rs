@@ -653,10 +653,9 @@ fn allowed_actions_follow_caller_scope_session_state_and_quarantine() {
     );
 
     // Terminal state offers nothing to anyone.
-    assert!(
-        operator
-            .allowed_actions(&launch, SessionState::Terminal, false, 2_000)
-            .is_empty()
+    assert_eq!(
+        operator.allowed_actions(&launch, SessionState::Terminal, false, 2_000),
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
     );
 
     // An Agent capability channel has no lifecycle authority at any state.
@@ -665,18 +664,16 @@ fn allowed_actions_follow_caller_scope_session_state_and_quarantine() {
         SessionState::Parked,
         SessionState::Terminal,
     ] {
-        assert!(
-            LifecycleCaller::Agent
-                .allowed_actions(&launch, state, false, 2_000)
-                .is_empty()
+        assert_eq!(
+            LifecycleCaller::Agent.allowed_actions(&launch, state, false, 2_000),
+            [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
         );
     }
 
     // Expired scope, foreign Run and a non-descendant target all offer nothing.
-    assert!(
-        coordinator
-            .allowed_actions(&launch, SessionState::Running, false, 3_000)
-            .is_empty()
+    assert_eq!(
+        coordinator.allowed_actions(&launch, SessionState::Running, false, 3_000),
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
     );
     let foreign = LifecycleCaller::Coordinator {
         session_id: "coordinator".into(),
@@ -685,17 +682,16 @@ fn allowed_actions_follow_caller_scope_session_state_and_quarantine() {
         envelope_revision: launch.envelope_revision,
         expires_at_ms: 3_000,
     };
-    assert!(
-        foreign
-            .allowed_actions(&launch, SessionState::Running, false, 2_000)
-            .is_empty()
+    assert_eq!(
+        foreign.allowed_actions(&launch, SessionState::Running, false, 2_000),
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
     );
-    assert!(
+    assert_eq!(
         LifecycleCaller::Operator {
             uid: CONTROLLER_UID + 1,
         }
-        .allowed_actions(&launch, SessionState::Running, false, 2_000)
-        .is_empty()
+        .allowed_actions(&launch, SessionState::Running, false, 2_000),
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
     );
 }
 
@@ -807,13 +803,19 @@ fn session_status_composes_supervisor_mechanics_with_broker_posture_and_caller_s
 
     // The same mechanical state offers an Agent channel nothing at all.
     let agent = read(&mut session, &LifecycleCaller::Agent);
-    assert!(agent.allowed_actions.is_empty());
+    assert_eq!(
+        agent.allowed_actions,
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+    );
     assert_eq!(agent.state, status.state);
 
     // A serialized operation in flight withdraws every advertised action.
     let pending = read(&mut session, &operator());
     assert!(pending.pending_operation.is_some());
-    assert!(pending.allowed_actions.is_empty());
+    assert_eq!(
+        pending.allowed_actions,
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+    );
     peer.join().unwrap();
 }
 
@@ -867,7 +869,10 @@ fn an_agent_reads_only_its_own_session_and_never_learns_of_another() {
     assert_eq!(status.session_id, "session-1");
     assert_eq!(status.state, SessionState::Running);
     // An Agent capability channel has no lifecycle authority, at any state.
-    assert!(status.allowed_actions.is_empty());
+    assert_eq!(
+        status.allowed_actions,
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+    );
     assert_eq!(
         SessionStatus::parse_canonical(&status.canonical_bytes()).unwrap(),
         *status,
@@ -948,7 +953,10 @@ fn an_agent_and_its_operator_read_one_session_differing_only_by_scope() {
         panic!("normal worker dispatch answers Agent status")
     };
 
-    assert!(agent.allowed_actions.is_empty());
+    assert_eq!(
+        agent.allowed_actions,
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+    );
     assert_eq!(
         operator.allowed_actions,
         vec![

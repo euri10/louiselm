@@ -6,6 +6,8 @@
     reason = "Behavioral fixtures abort on setup failure."
 )]
 
+mod support;
+
 use louiselm_capture::{
     AttentionSocket, AttentionStore, BrokerAttentionConfig, BrokerAttentionSocket,
 };
@@ -15,6 +17,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     time::Duration,
 };
+use support::lower_hex;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -32,7 +35,7 @@ async fn projection_requires_both_kernel_identity_and_scoped_credential() {
     let config = BrokerAttentionConfig {
         socket: runtime.join("project.sock"),
         broker_uid: uid,
-        capability_sha256: format!("{:x}", Sha256::digest(TOKEN)),
+        capability_sha256: lower_hex(&Sha256::digest(TOKEN)),
     };
     let store = AttentionStore::new(
         root.path().join("attention"),
@@ -161,7 +164,10 @@ async fn operator_endpoint_never_accepts_broker_projections() {
         .await
         .unwrap();
     assert!(lines.next_line().await.unwrap().is_none());
-    assert!(store.snapshot().unwrap().items.is_empty());
+    assert_eq!(
+        store.snapshot().unwrap().items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
@@ -221,7 +227,10 @@ async fn producer_token_cannot_authorize_ordinary_attention_or_run_mutations() {
         assert_eq!(reply["type"], "mutation_error");
         assert_eq!(reply["message"], "operator capability is invalid");
     }
-    assert!(attention.snapshot().unwrap().items.is_empty());
+    assert_eq!(
+        attention.snapshot().unwrap().items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     attention_server.abort();
     run_server.abort();
     assert!(attention_server.await.unwrap_err().is_cancelled());

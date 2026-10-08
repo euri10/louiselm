@@ -175,6 +175,13 @@ maintainer rather than falling back to one.
   case belonging to the fix committed separately as `c5a7046`. Run
   `git status --short` before staging and account for every path you did not
   write.
+- Stage Beads records with `scripts/stage-beads-records <id>...`, never with
+  `git add .beads/issues.jsonl` or hand-picked hunks. The working file holds
+  every live session's flushed records, so staging it whole commits theirs.
+  Hand-editing hunks committed unsorted and hand-trimmed records, and each
+  later diff then showed fake moves that the next session staged half of
+  (louiselm-ha7ic, `fb0c41f`). The script stages the index's file plus only the
+  named records, sorted by id as `br` exports them; CI runs its `--check`.
 
 ### Live-instance introspection
 

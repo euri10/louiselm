@@ -7,6 +7,7 @@ pub mod cli;
 pub mod compatibility;
 mod fcm;
 mod generation;
+mod hex;
 mod identity;
 mod model;
 mod network;

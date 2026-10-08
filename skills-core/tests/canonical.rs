@@ -15,7 +15,7 @@
 
 use louiselm_skills::{
     Digest, Manifest, ManifestEntry, ManifestError, PathError,
-    canonical::CanonicalPath,
+    canonical::{CanonicalPath, Hasher},
     manifest::MANIFEST_SCHEMA,
     policy::{POLICY_SCHEMA, Policy},
 };
@@ -212,6 +212,17 @@ fn canonical_paths_reject_everything_that_could_escape_a_package() {
             .as_deref(),
         Some("sh"),
     );
+}
+
+#[test]
+fn content_digests_render_as_lowercase_hex() {
+    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let mut hasher = Hasher::new();
+    hasher.update(b"a");
+    hasher.update(b"bc");
+
+    assert_eq!(Digest::of(b"abc").hex(), ABC_SHA256);
+    assert_eq!(hasher.finish().hex(), ABC_SHA256);
 }
 
 #[test]

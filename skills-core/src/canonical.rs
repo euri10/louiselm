@@ -152,7 +152,18 @@ impl Digest {
     /// Computes the digest of `bytes`.
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
-        Self(format!("{:x}", Sha256::digest(bytes)))
+        Self::from_raw(&Sha256::digest(bytes))
+    }
+
+    /// Renders a raw SHA-256 output as two lowercase hex digits per byte.
+    fn from_raw(raw: &[u8]) -> Self {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut hex = String::with_capacity(raw.len() * 2);
+        for byte in raw {
+            hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+        }
+        Self(hex)
     }
 
     /// Parses `sha256:<hex>`, `sha256-<hex>`, or a bare lowercase hex digest.
@@ -222,6 +233,6 @@ impl Hasher {
     /// Consumes the hasher and returns the content address.
     #[must_use]
     pub fn finish(self) -> Digest {
-        Digest(format!("{:x}", self.0.finalize()))
+        Digest::from_raw(&self.0.finalize())
     }
 }

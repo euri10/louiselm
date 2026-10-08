@@ -375,7 +375,10 @@ fn authenticated_checks_expire_without_reads_renewing_or_rewriting_admission() {
             SessionStatus::parse_canonical(&result.canonical_bytes()).unwrap(),
             *result
         );
-        assert!(result.allowed_actions.is_empty());
+        assert_eq!(
+            result.allowed_actions,
+            [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+        );
     }
     assert_eq!(
         service

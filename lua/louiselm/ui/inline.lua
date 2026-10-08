@@ -1,6 +1,7 @@
 ---@class louiselm.ui.InlineOptions
 ---@field agents? string[] Agent names shown when starting a session.
 ---@field cwd? string Working directory for newly created sessions.
+---@field decisions? louiselm.ui.Decisions Shared permission owner; the caller retains its lifecycle.
 
 ---@class louiselm.ui.Inline
 ---@field api louiselm.session.Api Headless session API.
@@ -10,6 +11,9 @@
 ---@field unsubscribe fun()? Session listener removal function.
 ---@field disposed boolean Whether the controller has been disposed.
 ---@field running boolean Whether a prompt is active.
+---@field cancelled boolean Whether further output from the current turn must be ignored.
+---@field decisions louiselm.ui.Decisions Permission presentation and responders.
+---@field owns_decisions boolean Whether Disposal owns the permission controller.
 ---@field buffer integer? Buffer being edited.
 ---@field start_row integer? Zero-based replacement start row.
 ---@field start_col integer? Zero-based replacement start column.
@@ -19,7 +23,9 @@
 ---@field new fun(api: louiselm.session.Api, options?: louiselm.ui.InlineOptions): louiselm.ui.Inline?, string?
 ---@field run fun(self: louiselm.ui.Inline, prompt: string, agent_name?: string): string|number?, string? Start the prompt; returns the session id while startup is pending.
 ---@field dispose fun(self: louiselm.ui.Inline): boolean
+---@field cancel fun(self: louiselm.ui.Inline): boolean, string? Cancel this inline turn without affecting other Sessions.
 
+local Decisions = require("louiselm.ui.chat.decisions")
 local M = {}
 local Inline = {}
 Inline.__index = Inline
@@ -51,12 +57,20 @@ local function copy_agents(value)
 end
 
 ---@param self louiselm.ui.Inline
+---@param session louiselm.session.Session
 ---@param event louiselm.session.Event
-local function handle_event(self, event)
-  if self.disposed or self.session == nil or event.session_id ~= self.session:inspect().id then
+local function handle_event(self, session, event)
+  if self.disposed or self.session ~= session then
+    if event.type == "permission_requested" then
+      self.decisions:request(session, nil, event.respond)
+    end
     return
   end
-  if event.type == "chunk" then
+  if event.type == "permission_requested" then
+    self.decisions:request(session, event.data, event.respond)
+  elseif event.type == "permission_cancelled" then
+    self.decisions:cancel(session, type(event.data) == "table" and event.data.request_ids or nil)
+  elseif event.type == "chunk" and not self.cancelled then
     local data = event.data
     local text = type(data) == "table" and data.text or nil
     if text == nil and type(data) == "table" and type(data.content) == "table" then
@@ -80,7 +94,7 @@ local function handle_event(self, event)
     local lines = nvim.split(self.response, "\n", { plain = true })
     self.end_row = assert(self.start_row) + #lines - 1
     self.end_col = #lines == 1 and assert(self.start_col) + #lines[1] or #lines[#lines]
-  elseif event.type == "turn_done" or event.type == "error" then
+  elseif event.type == "turn_done" or event.type == "error" or event.type == "prompt_rejected" then
     self.running = false
   end
 end
@@ -90,31 +104,42 @@ end
 ---@return string? error_message
 local function capture_context(self)
   local buffer = nvim.api.nvim_get_current_buf()
-  local start = nvim.api.nvim_buf_get_mark(buffer, "<")
-  local finish = nvim.api.nvim_buf_get_mark(buffer, ">")
-  local selected = start[1] > 0 and finish[1] > 0
-  if selected and (start[1] > finish[1] or (start[1] == finish[1] and start[2] > finish[2])) then
-    start, finish = finish, start
-  end
-  if not selected then
-    local cursor = nvim.api.nvim_win_get_cursor(0)
-    start = { cursor[1], cursor[2] }
-    finish = { cursor[1], cursor[2] }
-  end
-  local lines = nvim.api.nvim_buf_get_lines(buffer, start[1] - 1, finish[1], false)
-  if selected and #lines > 0 then
-    if #lines == 1 then
-      lines[1] = lines[1]:sub(start[2] + 1, finish[2] + 1)
-    else
-      lines[1] = lines[1]:sub(start[2] + 1)
-      lines[#lines] = lines[#lines]:sub(1, finish[2] + 1)
+  local start = nvim.fn.getpos("'<")
+  local finish = nvim.fn.getpos("'>")
+  local lines
+  if start[2] > 0 and finish[2] > 0 then
+    local mode = nvim.fn.visualmode()
+    if mode == "\22" then
+      return nil, "inline does not support blockwise selections; use a characterwise or linewise selection"
     end
+    if mode ~= "v" and mode ~= "V" then
+      return nil, "inline selection mode is unavailable; select the text again"
+    end
+    -- Neovim owns Visual mode, exclusive endpoints and multibyte geometry.
+    local captured, selected, regions = pcall(function()
+      return nvim.fn.getregion(start, finish, { type = mode }),
+        nvim.fn.getregionpos(start, finish, { type = mode, eol = true })
+    end)
+    if not captured then
+      return nil, "could not capture inline selection: " .. tostring(selected)
+    end
+    if #selected == 0 or #regions == 0 then
+      return nil, "inline selection is unavailable; select the text again"
+    end
+    lines = selected
+    local first = regions[1][1]
+    local last = regions[#regions][1]
+    self.start_row, self.start_col = first[2] - 1, first[3] - 1
+    self.end_row = last[2] - 1
+    local last_line = nvim.api.nvim_buf_get_lines(buffer, self.end_row, self.end_row + 1, false)[1]
+    self.end_col = math.min(#last_line, last[3] - 1 + #lines[#lines])
+  else
+    local cursor = nvim.api.nvim_win_get_cursor(0)
+    self.start_row, self.start_col = cursor[1] - 1, cursor[2]
+    self.end_row, self.end_col = self.start_row, self.start_col
+    lines = nvim.api.nvim_buf_get_lines(buffer, self.start_row, self.start_row + 1, false)
   end
   self.buffer = buffer
-  self.start_row = start[1] - 1
-  self.start_col = start[2]
-  self.end_row = finish[1] - 1
-  self.end_col = finish[2] + (selected and 1 or 0)
   local path = nvim.fs.normalize(nvim.api.nvim_buf_get_name(buffer))
   return "File: " .. (path == "" and "[No Name]" or path) .. "\nSelected text:\n" .. table.concat(lines, "\n"), nil
 end
@@ -131,6 +156,9 @@ function M.new(api, options)
   if options ~= nil and type(options) ~= "table" then
     return nil, "inline options must be a table"
   end
+  if options ~= nil and options.decisions ~= nil and type(options.decisions) ~= "table" then
+    return nil, "inline decisions must be a permission controller"
+  end
   local agents, agents_error = copy_agents(options and options.agents)
   if agents == nil then
     return nil, agents_error
@@ -138,16 +166,31 @@ function M.new(api, options)
   if options and options.cwd ~= nil and type(options.cwd) ~= "string" then
     return nil, "inline cwd must be a string"
   end
-  return setmetatable({
+  local inline = setmetatable({
     api = api,
     agents = agents,
     cwd = options and options.cwd,
     unsubscribe = nil,
     disposed = false,
     running = false,
+    cancelled = false,
+    owns_decisions = options == nil or options.decisions == nil,
     response = "",
-  }, Inline),
-    nil
+  }, Inline)
+  inline.decisions = options and options.decisions
+    or Decisions.new({
+      is_live = function(session)
+        return not inline.disposed
+          and inline.session == session
+          and inline.buffer ~= nil
+          and nvim.api.nvim_buf_is_valid(inline.buffer)
+      end,
+      report_error = function(_, message)
+        nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
+      end,
+      resolved = function() end,
+    })
+  return inline, nil
 end
 
 ---Start an inline prompt and replace the current selection with its response.
@@ -179,17 +222,25 @@ function Inline:run(prompt, agent_name)
     self.unsubscribe = nil
   end
   if self.session ~= nil then
+    self.decisions:retire(self.session)
     self.session:dispose()
     self.session = nil
   end
   self.response = ""
   self.running = true
-  local function submit(session)
+  self.cancelled = false
+  local session, session_error
+  local function ready(ready_session, ready_error)
     nvim.schedule(function()
-      if self.disposed or self.session ~= session then
+      if self.disposed or session == nil or self.session ~= session or self.cancelled then
         return
       end
-      local request_id, prompt_error = session:prompt({
+      if ready_session == nil then
+        self.running = false
+        nvim.notify("louiselm: " .. (ready_error or "inline session failed to start"), nvim.log.levels.ERROR)
+        return
+      end
+      local request_id, prompt_error = ready_session:prompt({
         { type = "text", text = context },
         { type = "text", text = prompt },
       })
@@ -199,18 +250,7 @@ function Inline:run(prompt, agent_name)
       end
     end)
   end
-  local session, session_error = self.api:create_session(
-    agent_name,
-    { cwd = self.cwd },
-    function(ready_session, ready_error)
-      if ready_session == nil then
-        self.running = false
-        nvim.notify("louiselm: " .. (ready_error or "inline session failed to start"), nvim.log.levels.ERROR)
-        return
-      end
-      submit(ready_session)
-    end
-  )
+  session, session_error = self.api:create_session(agent_name, { cwd = self.cwd }, ready)
   if session == nil then
     self.running = false
     return nil, session_error
@@ -218,10 +258,40 @@ function Inline:run(prompt, agent_name)
   self.session = session
   self.unsubscribe = session:on(function(event)
     nvim.schedule(function()
-      handle_event(self, event)
+      handle_event(self, session, event)
     end)
   end)
+  self.decisions:present_next()
   return session:inspect().id, nil
+end
+
+---Cancel this inline turn and discard late output; startup cancellation disposes its unsent Session.
+---@param self louiselm.ui.Inline
+---@return boolean cancelled Whether cancellation succeeded.
+---@return string? error_message Lifecycle or ACP cancellation failure.
+function Inline:cancel()
+  if self.disposed then
+    return false, "inline UI is disposed"
+  end
+  local session = self.session
+  if session == nil or not self.running then
+    return false, "no inline prompt is running"
+  end
+  local status = session:inspect().status
+  if status == "starting" or status == "ready" then
+    self.cancelled = true
+    self.running = false
+    self.decisions:retire(session)
+    session:dispose()
+    self.session = nil
+    self.decisions:present_next()
+    return true
+  end
+  local sent, err = session:cancel()
+  if sent then
+    self.cancelled = true
+  end
+  return sent, err
 end
 
 ---Dispose the inline controller and its active session.
@@ -237,8 +307,14 @@ function Inline:dispose()
     self.unsubscribe = nil
   end
   if self.session ~= nil then
+    self.decisions:retire(self.session)
     self.session:dispose()
     self.session = nil
+  end
+  if self.owns_decisions then
+    self.decisions:dispose()
+  else
+    self.decisions:present_next()
   end
   return true
 end

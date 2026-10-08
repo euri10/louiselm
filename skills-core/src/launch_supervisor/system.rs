@@ -2012,6 +2012,10 @@ impl SystemRunningAgent {
         if activate {
             guard.activate(&scope).map_err(map_guard)?;
         }
+        drop(guard);
+        if activate {
+            self.publish_guard_activation(timeout)?;
+        }
         Ok(())
     }
 
@@ -2363,6 +2367,7 @@ impl RunningAgent for SystemRunningAgent {
         )
         .activate(scope)
         .map_err(map_guard)?;
+        self.publish_guard_activation(Duration::from_secs(5))?;
         self.descendant
             .as_ref()
             .ok_or(SupervisorError::IsolationRejected)?

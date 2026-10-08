@@ -165,7 +165,7 @@ fn expired_disposal_clears_park_and_rejects_late_delivery_callbacks() {
         1
     );
     let cleared = attention.snapshot().unwrap();
-    assert!(cleared.items.is_empty());
+    assert_eq!(cleared.items, [] as [louiselm_capture::AttentionItem; 0]);
     assert_eq!(cleared.generation, 3);
     assert_eq!(attention.upsert(park_alert()).unwrap(), cleared);
     assert!(attention.set_eligible(&park_key(), true).is_err());
@@ -191,7 +191,10 @@ fn expired_park_is_not_deliverable_while_cleanup_is_still_pending() {
     let runs = RunStore::new(root.path().join("runs")).unwrap();
     park(&runs, 1);
     let attention = AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
-    assert!(attention.upsert(park_alert()).unwrap().items.is_empty());
+    assert_eq!(
+        attention.upsert(park_alert()).unwrap().items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     assert_eq!(runs.view(RUN).unwrap().state, "cold_parked");
     assert_eq!(attention.snapshot().unwrap().generation, 0);
 }
@@ -261,7 +264,10 @@ fn another_observer_preserves_local_park_timestamp_and_generation() {
         .unwrap();
         runs.finalize_resume(RUN, runs.view(RUN).unwrap().revision, OTHER_OPERATION, true)
             .unwrap();
-        assert!(attention.snapshot().unwrap().items.is_empty());
+        assert_eq!(
+            attention.snapshot().unwrap().items,
+            [] as [louiselm_capture::AttentionItem; 0]
+        );
         runs.park_cold(
             RunDraft {
                 id: RUN.into(),

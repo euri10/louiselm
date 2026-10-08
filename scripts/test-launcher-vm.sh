@@ -145,6 +145,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 for checkout in "$test_dir/checkout-one" "$test_dir/checkout two"; do
   mkdir -p "$checkout/scripts" "$checkout/skills-core"
   cp -- "$vm" "$script_dir/verifier-toolchain" "$checkout/scripts/"
+  cp -- "$script_dir/../rust-toolchain.toml" "$checkout/"
   git -C "$script_dir/.." show HEAD:skills-core/Cargo.lock >"$checkout/skills-core/Cargo.lock"
   git init -q --template= --initial-branch=main "$checkout"
   git -C "$checkout" add -- skills-core/Cargo.lock
@@ -165,12 +166,23 @@ git -C "$changed_checkout" -c user.name=Fixture -c user.email=fixture@example.in
 changed_base=$(bash "$changed_checkout/scripts/launcher-vm" plan | jq -r .base_image)
 [[ $changed_base != "$base" ]] || { echo 'changed HEAD lockfile reused the VM base' >&2; exit 1; }
 for change in 's/^image_sha=/image_sha=changed-/' \
-  's/^rust_toolchain=/rust_toolchain=changed-/' \
   's/^packages=(bubblewrap/packages=(changed-package bubblewrap/'; do
   sed "$change" "$vm" >"$test_dir/checkout-one/scripts/launcher-vm"
   changed_base=$(bash "$test_dir/checkout-one/scripts/launcher-vm" plan | jq -r .base_image)
-  [[ $changed_base != "$base" ]] || { echo "changed provisioning input reused the VM base: $change" >&2; exit 1; }
+  [[ -n $changed_base && $changed_base != "$base" ]] || { echo "changed provisioning input reused the VM base: $change" >&2; exit 1; }
 done
+# The guest toolchain is the repository's one Rust pin.
+cp -- "$vm" "$test_dir/checkout-one/scripts/launcher-vm"
+pin="$test_dir/checkout-one/rust-toolchain.toml"
+sed 's/^channel = .*/channel = "1.0.0"/' "$script_dir/../rust-toolchain.toml" >"$pin"
+changed_base=$(bash "$test_dir/checkout-one/scripts/launcher-vm" plan | jq -r .base_image)
+[[ -n $changed_base && $changed_base != "$base" ]] || { echo 'changed Rust toolchain reused the VM base' >&2; exit 1; }
+sed 's/^channel = .*/channel = "stable"/' "$script_dir/../rust-toolchain.toml" >"$pin"
+if message=$(bash "$test_dir/checkout-one/scripts/launcher-vm" plan 2>&1); then
+  echo 'planned a VM base from a floating Rust toolchain' >&2; exit 1
+fi
+grep -Fq 'exact stable release' <<<"$message" || { echo "unhelpful toolchain refusal: $message" >&2; exit 1; }
+cp -- "$script_dir/../rust-toolchain.toml" "$pin"
 # louiselm-6y1ee: a base built from other provisioning inputs is never used.
 touch "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2"
 export VM_TEST_ACTIVE=0 VM_TEST_LOAD=not-found

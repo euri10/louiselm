@@ -7,9 +7,20 @@
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs;
 mod common;
 use common::Fixture;
+
+/// Lowercase hex, as sha2 0.10's `{:x}` rendered the stored source digests.
+fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            write!(hex, "{byte:02x}").unwrap();
+            hex
+        })
+}
 
 fn events() -> Vec<Value> {
     // Shape observed in rollout-2026-09-17T10-24-54-01a0ae77-ff80-7f92-82c7-989d3557a351.jsonl.
@@ -81,10 +92,7 @@ fn normalizer_upgrade_reimports_unchanged_source_once() {
     fixture.ok(&["index", "--source", &source]);
     // Emulate the pre-upgrade fingerprint and classification on identical history.
     let content = fs::read(fixture.0.join("history.jsonl")).unwrap();
-    let old_digest = format!(
-        "{:x}",
-        Sha256::digest(format!("4:{:x}", Sha256::digest(content)))
-    );
+    let old_digest = sha256_hex(format!("4:{}", sha256_hex(content)));
     let connection = rusqlite::Connection::open(fixture.0.join("state/index.sqlite3")).unwrap();
     connection
         .execute("UPDATE sources SET digest=?1", [&old_digest])

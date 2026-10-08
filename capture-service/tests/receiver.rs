@@ -6,6 +6,8 @@
     reason = "Test fixtures abort on setup failure and assert failures directly."
 )]
 
+mod support;
+
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -21,6 +23,7 @@ use louiselm_capture::{
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use support::lower_hex;
 use tower::ServiceExt;
 
 fn now_ms() -> u64 {
@@ -108,7 +111,7 @@ async fn pairing_then_authenticated_upload_is_retry_safe() {
 
     let id = uuid::Uuid::new_v4().to_string();
     let audio = b"garden idea";
-    let digest = format!("{:x}", Sha256::digest(audio));
+    let digest = lower_hex(&Sha256::digest(audio));
     let request = || {
         Request::put(format!("/v1/captures/{id}"))
             .header("authorization", format!("Bearer {credential}"))
@@ -232,7 +235,7 @@ async fn failed_uploads_do_not_record_device_delivery() {
         .header("x-louiselm-duration-ms", "4200")
         .header(
             "x-louiselm-sha256",
-            format!("{:x}", Sha256::digest(conflicting_audio)),
+            lower_hex(&Sha256::digest(conflicting_audio)),
         )
         .body(Body::from(conflicting_audio.as_slice()))
         .expect("conflicting request");

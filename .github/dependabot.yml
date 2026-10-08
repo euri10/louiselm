@@ -1,0 +1,73 @@
+# Upgrades arrive as pull requests that run the full CI, so commit CI never
+# depends on upstream release timing (louiselm-0yd76). Minor and patch updates
+# are grouped per ecosystem; each major update gets its own pull request and
+# waits for the maintainer. Squash-merge only: the commit policy
+# (scripts/check-release-commits.py) can reject a merge commit's message.
+# Not tracked here, pinned by hand: StyLua, LuaLS, restic and the Android SDK
+# platform in .github/workflows/ci.yml, mini.nvim in scripts/install-test-deps,
+# and the verifier toolchain in scripts/verifier-toolchain.
+# A release must age a week (cooldown) before it is proposed; most broken or
+# malicious versions are yanked within days.
+version: 2
+
+updates:
+  - package-ecosystem: gradle
+    directory: /android
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: cargo
+    directories: [/capture-service, /skills-core, /usage-cli]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

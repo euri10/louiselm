@@ -76,7 +76,7 @@ fn control_command(uid: u32, group: &str, verb: &str, id: &str) -> std::process:
 fn waiver_refusal(uid: u32, id: &str, error: crate::broker::waiver::WaiverError) {
     let output = control_command(uid, "waiver", "inspect", id);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let actual: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(
         actual,
@@ -127,7 +127,7 @@ fn privileged_initial_waiver_prepares_approves_then_launches() {
         return;
     }
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert_eq!(output.stderr, b"louiselm-launch: conformance preparation refused; restore host evidence or inspect launcher policy\n");
     assert!(!paths.state_root.join("pre-admission/session.json").exists());
     incomplete_guard_certificate(&paths);
@@ -491,7 +491,7 @@ pub(super) fn refusal(uid: u32, id: &str, error: InspectError) {
         Some(i32::from(error.exit_code())),
         "{output:?}"
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert_eq!(output.stderr, error.canonical_bytes());
     if error != InspectError::StatusUnavailable {
         let evidence = session_command(uid, "conformance", id);
@@ -500,7 +500,7 @@ pub(super) fn refusal(uid: u32, id: &str, error: InspectError) {
             Some(i32::from(error.exit_code())),
             "{evidence:?}"
         );
-        assert!(evidence.stdout.is_empty());
+        assert_eq!(evidence.stdout, [] as [u8; 0]);
         assert_eq!(evidence.stderr, error.canonical_bytes());
     }
 }
@@ -522,15 +522,18 @@ pub(super) fn status(config: &LauncherConfig, id: &str) -> SessionStatus {
         );
         thread::sleep(Duration::from_millis(20));
     };
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     let status = SessionStatus::parse_canonical(&output.stdout).unwrap();
     assert_eq!(status.canonical_bytes(), output.stdout);
     assert_eq!(status.session_id, id);
     assert_eq!(status.posture.dimensions.len(), 6);
-    assert!(!status.allowed_actions.is_empty());
+    assert_ne!(
+        status.allowed_actions,
+        [] as [crate::launch_protocol::LifecycleAction; 0]
+    );
     let evidence_output = session_command(config.operator_uid, "conformance", id);
     assert!(evidence_output.status.success(), "{evidence_output:?}");
-    assert!(evidence_output.stderr.is_empty());
+    assert_eq!(evidence_output.stderr, [] as [u8; 0]);
     let evidence = crate::broker::conformance_inspection::ConformanceInspection::parse_canonical(
         &evidence_output.stdout,
     )
@@ -596,7 +599,10 @@ pub(super) fn agent(session: LaunchedSession, config: &LauncherConfig) {
     else {
         panic!("expected Agent status, got {reply:?}");
     };
-    assert!(self_status.allowed_actions.is_empty());
+    assert_eq!(
+        self_status.allowed_actions,
+        [] as [crate::launch_protocol::LifecycleAction; 0]
+    );
     let mut operator = status(config, &id);
     operator.allowed_actions.clear();
     assert_eq!(operator.canonical_bytes(), self_status.canonical_bytes());

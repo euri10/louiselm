@@ -58,25 +58,20 @@ impl Drop for Foreground<'_> {
 }
 
 #[cfg(target_os = "linux")]
-#[expect(
-    unsafe_code,
-    reason = "Reviewed SIGTTOU-only mask around foreground restoration; louiselm-qnow."
-)]
 fn restore_foreground(terminal: &File, original: Pid) -> io::Result<()> {
-    use rustix::runtime::{self, How, KernelSigSet};
-    let mut mask = KernelSigSet::empty();
-    mask.insert(process::Signal::TTOU);
-    // SAFETY: Only the calling thread's SIGTTOU bit changes, for an intentional
-    // foreground handoff. SIGTTOU is not libc-reserved and no memory/lifecycle
-    // invariant relies on its delivery here. No threads or children are spawned
+    use nix::sys::signal::{SigSet, SigmaskHow, Signal};
+    let mut mask = SigSet::empty();
+    mask.add(Signal::SIGTTOU);
+    // Block only SIGTTOU, only on the calling thread, for this intentional
+    // foreground handoff (louiselm-qnow). No threads or children are spawned
     // in this scope, and no other signal is blocked, unblocked or overwritten.
-    let previous = unsafe { runtime::kernel_sigprocmask(How::BLOCK, Some(&mask)) }?;
+    let previous = mask.thread_swap_mask(SigmaskHow::SIG_BLOCK)?;
     let result = termios::tcsetpgrp(terminal, original).map_err(io::Error::from);
-    if !previous.contains(process::Signal::TTOU) {
-        // SAFETY: Undo only the SIGTTOU bit this call added, on this same thread.
-        // Restoring the complete old kernel mask could touch libc-reserved bits;
-        // using the singleton mask preserves every unrelated bit instead.
-        unsafe { runtime::kernel_sigprocmask(How::UNBLOCK, Some(&mask)) }?;
+    if !previous.contains(Signal::SIGTTOU) {
+        // Undo only the SIGTTOU bit this call added, on this same thread. The
+        // singleton unblock leaves every unrelated bit as it was, instead of
+        // overwriting the whole mask with the earlier snapshot.
+        mask.thread_unblock()?;
     }
     result
 }

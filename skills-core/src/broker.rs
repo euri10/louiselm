@@ -32,6 +32,7 @@ mod dependency_service;
 mod history;
 pub mod installed;
 pub mod lifecycle;
+mod network_posture;
 pub mod operator;
 mod posture;
 mod posture_attention;

@@ -66,7 +66,7 @@ fn path_parsing_never_panics_and_never_accepts_what_it_forbids() {
                 continue;
             };
             assert_eq!(path.as_str(), raw, "an accepted path is unchanged");
-            assert!(!path.as_str().is_empty());
+            assert_ne!(path.as_str(), "");
             assert!(!path.as_str().starts_with('/'));
             assert!(
                 !path

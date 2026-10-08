@@ -570,7 +570,7 @@ fn broker_reconnect_is_closed_correlated_and_compares_exact_heads() {
         BROKER_RECONNECT_SCHEMA,
         "louiselm.launch.broker-reconnect/1"
     );
-    assert_eq!(RESPONSE_SCHEMA, "louiselm.launch.response/3");
+    assert_eq!(RESPONSE_SCHEMA, "louiselm.launch.response/4");
 
     let launcher = broker_reconnect("reconnect-1");
     launcher
@@ -613,7 +613,7 @@ fn broker_reconnect_is_closed_correlated_and_compares_exact_heads() {
         String::from_utf8(response.canonical_bytes()).expect("response JSON is UTF-8"),
         format!(
             concat!(
-                r#"{{"schema":"louiselm.launch.response/3","protocol_version":1,"#,
+                r#"{{"schema":"louiselm.launch.response/4","protocol_version":1,"#,
                 r#""request_id":"reconnect-1","result":{{"kind":"broker_reconnect","#,
                 r#""reconnect":{}}}}}"#,
             ),
@@ -849,7 +849,10 @@ fn terminal_audit_can_follow_a_mechanic_without_a_process_exit_classification() 
                 Vec::new(),
             )
             .unwrap();
-            assert!(composed.allowed_actions.is_empty());
+            assert_eq!(
+                composed.allowed_actions,
+                [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+            );
             assert_eq!(composed.process_exit, None);
             status.pending_operation.as_mut().unwrap().phase = PendingPhase::Applying;
             assert!(

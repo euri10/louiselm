@@ -205,7 +205,7 @@ fn real_verifier_accepts_backed_up_registration_and_consumes_each_attempt() {
     );
     let response = registration(&options["publicKey"]["challenge"], "http://localhost:45081");
     let registered = pending.finish(&trust, &response).unwrap();
-    assert!(!registered.credential().fingerprint().unwrap().is_empty());
+    assert_ne!(registered.credential().fingerprint().unwrap(), "");
     assert!(pending.finish(&trust, &response).is_err());
     assert_eq!(TrustStore::load(&fixture.store()).unwrap(), Some(trust));
 }

@@ -27,8 +27,13 @@
 ---@field skill? string Explicit selected Skill name.
 ---@field phase? louiselm.routing.PhaseMetadata Explicit phase; inferred names cannot select a route.
 
+---@class louiselm.session.ForensicsSource
+---@field kind "acp_log"|"agent_transcript" Caller-declared evidence format; collection does not verify it.
+---@field path string Exact absolute source path, at most 4096 bytes without NUL.
+
 ---@class louiselm.session.ForensicsOptions
 ---@field diagnosing_session_id? string Durable identity of the diagnosing Session.
+---@field source? louiselm.session.ForensicsSource One caller-declared source for the named subject. Collection checks metadata asynchronously, never reads contents or verifies Session ownership.
 
 ---@alias louiselm.session.ForensicsCallback fun(path: string?, error_message: string?)
 

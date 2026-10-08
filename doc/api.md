@@ -44,9 +44,15 @@ API reference.
 - `skill: string?` -- Explicit selected Skill name.
 - `workload: string?` -- Explicit exact workload key.
 
+### louiselm.session.ForensicsSource
+
+- `kind: "acp_log"|"agent_transcript"` -- Caller-declared evidence format; collection does not verify it.
+- `path: string` -- Exact absolute source path, at most 4096 bytes without NUL.
+
 ### louiselm.session.ForensicsOptions
 
 - `diagnosing_session_id: string?` -- Durable identity of the diagnosing Session.
+- `source: (louiselm.session.ForensicsSource)?` -- One caller-declared source for the named subject. Collection checks metadata asynchronously, never reads contents or verifies Session ownership.
 
 ### louiselm.session.ForensicsCallback
 

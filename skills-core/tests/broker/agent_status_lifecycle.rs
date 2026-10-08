@@ -73,7 +73,10 @@ fn agent_status_after_resume_preserves_registered_recovery_and_admission_history
                 };
                 assert_eq!(status.state, SessionState::Running);
                 assert_eq!(status.channel_state, ChannelState::Enabled);
-                assert!(status.allowed_actions.is_empty());
+                assert_eq!(
+                    status.allowed_actions,
+                    [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+                );
                 assert_eq!(status.canonical_bytes(), operator.canonical_bytes());
                 assert!(
                     matches!(&status.recovery, louiselm_skills::launch_protocol::RecoveryReadiness::Ready { operation_id, expires_at_ms }

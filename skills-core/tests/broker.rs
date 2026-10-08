@@ -80,6 +80,8 @@ mod skill_requests;
 #[path = "broker/dependencies.rs"]
 mod dependencies;
 
+#[path = "broker/network_posture.rs"]
+mod network_posture;
 #[path = "broker/posture.rs"]
 mod posture;
 
@@ -756,11 +758,11 @@ fn a_receipt_that_skips_its_predecessor_is_not_stored() {
         verify_fixture_signature,
     );
     assert!(matches!(refusal, Err(BrokerError::ReceiptRefused(_))));
-    assert!(
+    assert_eq!(
         receipts
             .stored_bytes(&authorization.session_id)
-            .expect("stored chain")
-            .is_empty()
+            .expect("stored chain"),
+        [] as [std::vec::Vec<u8>; 0]
     );
 }
 
@@ -795,11 +797,11 @@ fn a_receipt_answering_another_authorization_is_not_stored() {
         matches!(refusal, Err(BrokerError::ReceiptUnauthorized)),
         "unexpected refusal: {refusal:?}"
     );
-    assert!(
+    assert_eq!(
         receipts
             .stored_bytes(&authorization.session_id)
-            .expect("stored chain")
-            .is_empty()
+            .expect("stored chain"),
+        [] as [std::vec::Vec<u8>; 0]
     );
 }
 
@@ -1361,11 +1363,11 @@ fn a_receipt_that_cannot_be_stored_is_never_acknowledged() {
         matches!(failure, Err(BrokerError::Storage(_))),
         "a receipt that never reached the disk is not acknowledged: {failure:?}"
     );
-    assert!(
+    assert_eq!(
         receipts
             .stored_bytes(&authorization.session_id)
-            .expect("stored chain")
-            .is_empty()
+            .expect("stored chain"),
+        [] as [std::vec::Vec<u8>; 0]
     );
 }
 

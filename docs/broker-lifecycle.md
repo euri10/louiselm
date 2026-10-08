@@ -66,12 +66,14 @@ inspection does not authorize new work. Its independent
 Attention worker delivers queued projections without waiting for a Session
 connection.
 
-`SeqpacketListener::adopt` accepts an owned, listening Unix `SOCK_SEQPACKET`
-descriptor. `inherited_descriptor` validates that `LISTEN_PID` names this
-process and `LISTEN_FDS` names exactly one descriptor. The daemon must acquire
-ownership of that descriptor at its process-entry boundary; parsing alone does
-not acquire it. Adoption applies and verifies credential/buffer settings and
-sets close-on-exec. Listener cancellation wakes the accept worker without
+The service uses `StandardInput=socket` to receive its sole listening Unix
+`SOCK_SEQPACKET` socket on stdin. systemd passes no `LISTEN_PID`/`LISTEN_FDS`
+handover or extra descriptor in this mode. Before starting any threads or
+children, the daemon safely clones stdin into an owned, close-on-exec descriptor
+and redirects stdin to `/dev/null`, preventing child inheritance of the listener.
+`SeqpacketListener::adopt` validates its type and listening state, applies and
+verifies credential/buffer settings, and retains close-on-exec. Listener
+cancellation wakes the accept worker without
 shutting down the socket shared with the service manager, so the manager's
 descriptor remains usable across broker close and restart.
 
@@ -154,6 +156,12 @@ receive a typed refusal, but only the installed operator UID reaches a request
 read or Session lookup. This directory must not replace the private supervisor
 rendezvous directory.
 
+The service explicitly sends stdout and stderr to the journal; neither may
+inherit the socket on stdin. Direct `louiselm-control serve` invocations without
+the listener on stdin fail with a socket-handover diagnostic. The former fd-3
+environment handover is unsupported. Socket ownership, queued credentials and
+restart buffering remain the socket unit's responsibility.
+
 Both units are enabled: the service runs even without new connections, so
 Attention delivery and reconciliation continue. A crash restarts it after
 250ms. Stopping or restarting only the service preserves the socket inode and
@@ -168,7 +176,8 @@ is a disposable-VM-only gate, also run in privileged CI. It exercises these
 unit files with real PID 1, substituting temporary paths, an unprivileged test
 identity and a socket probe for the daemon. It verifies enablement, ownership,
 credential-bearing queued packets, idle crash restart, socket preservation and
-durable state. The separate installed-daemon gate above covers the measured
+durable state, as well as stdin-only handover with separate log descriptors.
+The separate installed-daemon gate above covers the measured
 binary, launch/reconnect, additional-group refusal and durable receipts; neither
 gate claims acceptance in the maintainer's live editor.
 
@@ -592,7 +601,22 @@ release and signing key. The existing receipt store retains original admission
 history. The broker loads a private runtime-evidence record at launch or
 authenticated reattachment, using the original successful launch-proof audit
 time. A missing audit observation has no fabricated success timestamp and
-leaves runtime unverified. Isolation and network still need their own producers.
+leaves runtime unverified. Current isolation and network use their separate
+source-owned producers; neither borrows the runtime verdict.
+
+Network evidence arrives as `SenderGuardActivated` on the authenticated Session
+response channel (`louiselm.launch.response/4`), only after the launch supervisor
+successfully activates the actual Sender guard policy. Descriptor enrollment
+alone is insufficient, including while a descendant initializes or Resume is
+pending. The broker binds the observation to the signed guarded Start, exact
+Session/Run/envelope/guard revision and its live listener ownership. Reads use
+the same evaluator as Attention, require connected Running/Enabled mechanics,
+and honor quarantine, Provider holds and wall-clock/monotonic expiry. Closure,
+cancelled ownership or a lifted hold invalidate the old observation; duplicate
+packets do not renew its successful timestamp. This process-owned proof is not
+recreated from receipts after broker reattachment. Status carries a bounded
+receipt reference, never socket addresses, namespace identities or credentials.
+It does not supply Provider disclosure or establish full Verified posture.
 
 Signed conformance admission additionally binds exact canonical observations
 retained by the receipt store. Digest-bearing receipts cannot be acknowledged
@@ -681,8 +705,9 @@ unreadable or corrupt proof refuses reattachment. Conformance deadlines,
 waivers and quarantine continue to belong to their source-specific producers;
 missing producers remain explicitly unverified, with no synthetic expiry.
 
-The maintainer-confirmed design is `louiselm-rn38`. Supply/disclosure producer
-integration is `louiselm-d6fv.6.11`; network integration remains `.6.13`;
+The maintainer-confirmed design is `louiselm-rn38`. Supply/disclosure retention
+is `louiselm-d6fv.6.11`; its installed integration remains `louiselm-d6fv.9`.
+Network integration is `louiselm-d6fv.6.13`;
 conformance, waiver and quarantine owners retain their existing policies. This
 partial status path does not establish the installed Verified cutover in
 `louiselm-d6fv.9`.

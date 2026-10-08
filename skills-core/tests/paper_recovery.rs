@@ -32,7 +32,7 @@ fn paper_check_requires_installed_authority_without_creating_a_store() {
         .expect("CLI runs");
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("trusted installed tool"));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert!(!absent.exists());
 }
 
@@ -54,7 +54,7 @@ fn paper_check_rejects_secret_and_mutation_arguments_without_echoing_them() {
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("invalid recovery arguments"));
         assert!(!error.contains("never-echo"));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
     }
     let help = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
         .args(["recovery", "--help"])

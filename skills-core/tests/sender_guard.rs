@@ -25,7 +25,7 @@ fn launcher_exports_its_embedded_bpf_object_without_privilege() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     assert_eq!(
         output.stdout,
         louiselm_skills::launch_supervisor::SENDER_GUARD_OBJECT
@@ -42,6 +42,6 @@ fn guard_export_refuses_a_caller_selected_object() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert_eq!(output.stderr, b"louiselm-launch: unexpected arguments\n");
 }

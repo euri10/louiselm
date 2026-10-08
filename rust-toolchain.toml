@@ -1,0 +1,6 @@
+# The one Rust pin: local cargo, CI, the launcher VM and capture releases read
+# it. Dependabot proposes updates (.github/dependabot.yml).
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

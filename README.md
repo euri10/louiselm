@@ -202,8 +202,11 @@ Session creation/loading options when an operation needs no supplied servers.
   You review the context and supply the takeover task before sending; the
   source Agent is never asked for another turn to prepare the Handoff.
 - **Send editor context.** Queue the current buffer, a file, a Visual selection,
-  or diagnostics for the next prompt. `:LouiselmInline` replaces a selection
-  as the response streams.
+  or diagnostics for the next prompt. `:LouiselmInline` replaces a characterwise
+  or linewise selection as the response streams. Blockwise selections are
+  currently refused; rectangular replacement semantics remain undecided.
+  Inline uses the same permission review as chat; `:LouiselmCancel` from its
+  source buffer or permission review cancels that inline turn.
 - **Control side effects.** Permission requests require a human decision by
   default. Review proposed file edits in a diff when the Agent supplies one.
   Remembered decisions stay scoped to the Agent command and workspace, and
@@ -224,6 +227,11 @@ Session creation/loading options when an operation needs no supplied servers.
   plain text, showing which evidence is still readable and which is gone.
   [Evidence export](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/evidence-export.md) creates a bounded,
   redacted artifact from selected observations or JSONL ranges for sharing.
+  Include one exact JSONL pointer with
+  `:LouiselmForensics AGENT ACP_SESSION_ID acp_log:/absolute/session.jsonl`
+  (or `agent_transcript:/absolute/session.jsonl`). Collection records this
+  caller-declared source using metadata only; it does not verify Session
+  ownership or read its contents.
   New Forensics and transcript exports report broker-derived output taint when
   available; a missing or unavailable broker never counts as clean. Markdown
   exports prepend a provenance comment and keep the full transcript text intact.

@@ -214,7 +214,8 @@ or run destructive Git/filesystem commands without explicit instruction.
   approval. Never vendor a dependency or utility for convenience.
 - Before an authorized commit, run `br sync --flush-only`. Inspect
   `git status --short`, account for unrelated paths, and stage only named paths
-  you changed, including relevant Beads records. Never `git add .`/`git add -A`.
+  you changed; Beads records via `scripts/stage-beads-records`. No
+  `git add .`/`-A`.
 
 If it passes tests but violates an invariant, it is still wrong. If correct but
 needlessly complicated, simplify before handoff.

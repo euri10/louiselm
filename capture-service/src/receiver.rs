@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
 use crate::time::now_ms;
 use crate::{
@@ -374,7 +375,7 @@ async fn stream_body(mut body: Body, path: &Path) -> Result<(u64, String), ApiEr
         .sync_all()
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
-    Ok((bytes, format!("{:x}", hasher.finalize())))
+    Ok((bytes, lower_hex(&hasher.finalize())))
 }
 
 #[derive(Serialize)]

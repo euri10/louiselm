@@ -49,6 +49,13 @@ local function current_availability(editor, source)
     end
     return RECORDED_AVAILABILITY[source.state]
   end
+  local before, _, stat_code = editor.uv.fs_lstat(source.path)
+  if before == nil then
+    return is_missing(stat_code) and "missing" or "unreadable"
+  end
+  if before.type ~= "file" then
+    return "unreadable"
+  end
   local read_flags = editor.uv.constants.O_RDONLY + editor.uv.constants.O_NONBLOCK
   local file, _, open_code = editor.uv.fs_open(source.path, read_flags, 384)
   if file == nil then
@@ -56,7 +63,13 @@ local function current_availability(editor, source)
   end
   local opened_stat = editor.uv.fs_fstat(file)
   local closed = editor.uv.fs_close(file)
-  if opened_stat == nil or opened_stat.type ~= "file" or not closed then
+  if
+    opened_stat == nil
+    or opened_stat.type ~= "file"
+    or opened_stat.dev ~= before.dev
+    or opened_stat.ino ~= before.ino
+    or not closed
+  then
     return "unreadable"
   end
   return "available"

@@ -24,10 +24,15 @@ def run(*args):
 
 
 def probe():
-    assert int(os.environ["LISTEN_PID"]) == os.getpid()
-    assert os.environ["LISTEN_FDS"] == "1"
-    with socket.socket(fileno=3) as listener:
+    assert "LISTEN_PID" not in os.environ
+    assert "LISTEN_FDS" not in os.environ
+    assert not Path("/proc/self/fd/3").exists(), "unexpected second activation descriptor"
+    for descriptor in (1, 2):
+        assert os.fstat(descriptor).st_ino != os.fstat(0).st_ino, "logs must not use the listener"
+    with socket.socket(fileno=0) as listener:
+        assert listener.family == socket.AF_UNIX
         assert listener.type == socket.SOCK_SEQPACKET
+        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1
         assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) == 1
         while True:
             with listener.accept()[0] as peer:

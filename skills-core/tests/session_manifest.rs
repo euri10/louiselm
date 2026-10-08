@@ -587,9 +587,18 @@ fn absent_snapshots_are_distinct_from_explicitly_empty_snapshots() {
     inputs.tool_schemas = Some(vec![]);
     inputs.plugin_schemas = Some(vec![]);
     let manifest = SessionInputManifest::build(inputs).unwrap();
-    assert!(manifest.project_instructions.is_empty());
-    assert!(manifest.tool_schemas.is_empty());
-    assert!(manifest.plugin_schemas.is_empty());
+    assert_eq!(
+        manifest.project_instructions,
+        [] as [louiselm_skills::session_manifest::MeasuredInput; 0]
+    );
+    assert_eq!(
+        manifest.tool_schemas,
+        [] as [louiselm_skills::session_manifest::MeasuredInput; 0]
+    );
+    assert_eq!(
+        manifest.plugin_schemas,
+        [] as [louiselm_skills::session_manifest::MeasuredInput; 0]
+    );
 }
 
 #[test]

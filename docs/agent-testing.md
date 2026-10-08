@@ -419,6 +419,18 @@ available: keep it open until the maintainer confirms the acceptance. A
 diagnostic- or tracking-only commit is not a build to retest; say so explicitly
 and do not sync it as though behavior changed.
 
+### Dependency upgrades
+
+Commit CI checks only what a commit controls: a newer upstream release is not a
+defect in that commit (louiselm-9gjnk). `.github/dependabot.yml` proposes
+upgrades as pull requests that run the full CI. An Agent may squash-merge a
+green `minor-and-patch` group pull request (`gh pr merge --squash`); a major
+update waits for the maintainer. Never use a merge commit: the release commit
+policy can reject its message. Pins Dependabot cannot read are listed in that
+file and are bumped by hand, deliberately. The Rust toolchain has one pin,
+`rust-toolchain.toml`, read by local Cargo, CI, the launcher VM and capture
+releases.
+
 ### Background CI monitoring
 
 A `Monitor` loop that greps a CLI's human-readable status words to decide when

@@ -66,7 +66,7 @@ fn installed_store_provisions_empty_and_reopens_without_changing_acls() {
     let uid = rustix::process::geteuid().as_raw();
     let gid = rustix::process::getegid().as_raw();
     let store = ProviderCredentialStore::installed(state.path(), uid, gid).unwrap();
-    assert!(store.providers().is_empty());
+    assert_eq!(store.providers(), [] as [&str; 0]);
     let root = ProviderCredentialStore::root_in(state.path());
     assert_eq!(fs::metadata(&root).unwrap().mode() & 0o7777, 0o700);
     fs::set_permissions(&root, fs::Permissions::from_mode(0o750)).unwrap();

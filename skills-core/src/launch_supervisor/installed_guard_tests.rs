@@ -302,6 +302,11 @@ pub(super) fn park_and_dispose(
         expected_receipt_sequence: Some(sequence),
         envelope_revision: 1,
     };
+    let activated = (!already_parked).then(|| network_posture(broker, session, &caller));
+    if let Some(activated) = &activated {
+        // Provider exhaustion may already have invalidated the successful observation.
+        assert!(activated.freshness.last_verified_at_ms.is_some());
+    }
     if !already_parked {
         broker
             .request_lifecycle(
@@ -318,6 +323,14 @@ pub(super) fn park_and_dispose(
     }
     while broker.inspect("session").unwrap().unwrap().state != SessionState::Parked {
         assert!(!broker.step(session).unwrap());
+    }
+    let parked = network_posture(broker, session, &caller);
+    assert_eq!(parked.state, crate::posture::DimensionState::Failed);
+    if let Some(activated) = activated {
+        assert_eq!(
+            parked.freshness.last_verified_at_ms,
+            activated.freshness.last_verified_at_ms
+        );
     }
     if !already_parked {
         println!("BROKER_PARKED");
@@ -353,6 +366,20 @@ pub(super) fn park_and_dispose(
         SessionState::Terminal
     );
     println!("BROKER_TERMINAL");
+}
+
+fn network_posture(
+    broker: &InstalledBroker,
+    session: &mut BrokerSession,
+    caller: &LifecycleCaller,
+) -> crate::launch_protocol::DimensionStatus {
+    let status = broker.session_status(session, caller).unwrap();
+    status
+        .posture
+        .dimensions
+        .into_iter()
+        .find(|dimension| dimension.dimension == crate::posture::DimensionName::Network)
+        .unwrap()
 }
 
 #[test]
