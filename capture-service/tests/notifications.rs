@@ -219,7 +219,10 @@ fn revocation_waits_for_current_submission_and_removes_all_future_authority() {
             .register_notification_installation(&device.credential, "cnewtoken0000000000000")
             .is_err()
     );
-    assert!(registry.notification_status().unwrap().devices.is_empty());
+    assert_eq!(
+        registry.notification_status().unwrap().devices,
+        [] as [louiselm_capture::NotificationTargetStatus; 0]
+    );
 }
 
 #[test]

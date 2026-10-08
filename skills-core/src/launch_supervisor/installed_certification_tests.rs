@@ -76,7 +76,10 @@ fn privileged_installed_certification_owns_probes_and_retains_exact_evidence() {
     assert!(certificate.is_current(&host));
     let status = CertificateStore::inspect(&paths.state_root.join("conformance"), &host).unwrap();
     assert!(!status.pending);
-    assert!(status.history.failures.is_empty());
+    assert_eq!(
+        status.history.failures,
+        [] as [crate::conformance::Failure; 0]
+    );
     assert_installed_admission(&paths, &config, &certificate.observations, deadline);
     assert_eq!(status.certificate, Some(certificate));
     for slot in 0..3 {

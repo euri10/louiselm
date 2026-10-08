@@ -20,7 +20,7 @@ fn generated_help_needs_no_installed_authority_or_stdin_payload() {
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
     }
 }
 
@@ -40,7 +40,7 @@ fn validates_verbs_confirmation_and_socket_activation() {
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(
             error.contains(if arguments == ["serve"] {
@@ -80,7 +80,7 @@ fn beads_inspection_cli_refuses_mutating_forms_before_broker_exchange() {
             output.status.code(),
             Some(i32::from(InspectError::InvalidRequest.exit_code()))
         );
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert_eq!(
             output.stderr,
             InspectError::InvalidRequest.canonical_bytes()
@@ -102,7 +102,7 @@ fn waiver_refusals_are_typed_and_do_not_echo_private_input() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
         assert_eq!(
             error,
@@ -135,7 +135,7 @@ fn provider_extension_refusals_are_typed_before_any_broker_exchange() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
         assert_eq!(
             error,
@@ -162,7 +162,7 @@ fn inspection_refusals_are_typed_and_stdout_stays_empty() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(i32::from(error.exit_code())));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert_eq!(output.stderr, error.canonical_bytes());
     }
 }
@@ -188,7 +188,7 @@ fn inspection_argument_errors_use_the_same_typed_contract() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert_eq!(
             output.stderr,
             InspectError::InvalidRequest.canonical_bytes()
@@ -204,7 +204,7 @@ fn adoption_requires_the_installed_broker_and_sudo_operator() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
@@ -225,7 +225,7 @@ fn forged_activation_without_fd_three_is_rejected_safely() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()

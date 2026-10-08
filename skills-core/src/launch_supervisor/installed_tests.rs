@@ -825,7 +825,7 @@ fn installed_broker_effects(
     };
     assert_eq!(result.exit_code, 0, "{result:?}");
     assert_eq!(result.stdout, "done");
-    assert!(result.stderr.is_empty());
+    assert_eq!(result.stderr, "");
     assert_eq!(
         fs::read(sessions.join("session/workspace/effect")).unwrap(),
         b"authorized"

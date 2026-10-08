@@ -849,7 +849,10 @@ fn terminal_audit_can_follow_a_mechanic_without_a_process_exit_classification() 
                 Vec::new(),
             )
             .unwrap();
-            assert!(composed.allowed_actions.is_empty());
+            assert_eq!(
+                composed.allowed_actions,
+                [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+            );
             assert_eq!(composed.process_exit, None);
             status.pending_operation.as_mut().unwrap().phase = PendingPhase::Applying;
             assert!(

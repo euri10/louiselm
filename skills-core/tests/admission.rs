@@ -642,7 +642,7 @@ fn a_held_trust_lock_refuses_activation_readers_and_other_writers() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert!(String::from_utf8_lossy(&output.stderr).contains("busy"));
     flock(&lock, FlockOperation::Unlock).unwrap();
     drop(lock);
@@ -845,7 +845,7 @@ fn quarantine_all_yields_only_to_a_newly_admitted_generation() {
     let status = admission::status(&reopened).expect("replacement status is readable");
     assert_eq!(status.state, Some(GenerationState::Current));
     assert_eq!(status.effective_members, vec![second_member.to_string()]);
-    assert!(status.excluded_members.is_empty());
+    assert_eq!(status.excluded_members, [] as [std::string::String; 0]);
 
     let rollback = admission::activate(&reopened, &first.digest(), 6)
         .expect_err("the quarantined predecessor cannot be restored");
@@ -863,7 +863,7 @@ fn quarantine_all_yields_only_to_a_newly_admitted_generation() {
         &first.generation,
         &first.payload.member_digests(),
     );
-    assert!(effective.is_empty());
+    assert_eq!(effective, [] as [std::string::String; 0]);
     assert_eq!(excluded, first.payload.member_digests());
 }
 

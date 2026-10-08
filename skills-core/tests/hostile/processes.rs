@@ -26,7 +26,10 @@ pub fn run(fixture: &Fixture) {
         &mut first,
         &mut second,
     ] {
-        assert!(agent.request(&[]).is_empty());
+        assert_eq!(
+            agent.request(&[]),
+            [] as [louiselm_skills::conformance::Observation; 0]
+        );
     }
     let targets = [
         ("operator", operator.pid()),

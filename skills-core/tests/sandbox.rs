@@ -768,7 +768,10 @@ fn host_identity_changes_outer_credentials_and_owns_private_directories() {
     let monitor_groups = process_status_values(session.monitor_pid(), "Gid:");
     assert!(outer_uids.iter().all(|&uid| uid == session_identity));
     assert!(monitor_groups.iter().all(|&gid| gid == session_identity));
-    assert!(process_status_values(session.monitor_pid(), "Groups:").is_empty());
+    assert_eq!(
+        process_status_values(session.monitor_pid(), "Groups:"),
+        [] as [u32; 0]
+    );
     let sandbox_leader_pid = session
         .sandbox_leader_pid()
         .expect("Bubblewrap reports its host-view sandbox leader");
@@ -787,7 +790,10 @@ fn host_identity_changes_outer_credentials_and_owns_private_directories() {
             .iter()
             .all(|&gid| gid == session_identity),
     );
-    assert!(process_status_values(sandbox_leader_pid, "Groups:").is_empty());
+    assert_eq!(
+        process_status_values(sandbox_leader_pid, "Groups:"),
+        [] as [u32; 0]
+    );
     assert_maps_assigned_identity(sandbox_leader_pid, "uid_map", session_identity);
     assert_maps_assigned_identity(sandbox_leader_pid, "gid_map", session_identity);
     assert!(

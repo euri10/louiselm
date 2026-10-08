@@ -249,7 +249,7 @@ fn obsolete_recovery_role_and_rotation_commands_are_refused_without_mutation() {
     for command in ["rotation-payload", "rotate"] {
         let output = run(&fixture, &["trust", command]);
         assert_eq!(output.status, 1);
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, "");
         assert_eq!(
             std::fs::read(fixture.path("store/trust/roles.json")).unwrap(),
             before

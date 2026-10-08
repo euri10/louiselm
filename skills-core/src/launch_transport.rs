@@ -723,7 +723,7 @@ fn send_one(
     bytes: &[u8],
     descriptors: Option<&[OwnedFd; 3]>,
 ) -> Result<(), TransportError> {
-    debug_assert!(!bytes.is_empty());
+    debug_assert_ne!(bytes, [] as [u8; 0]);
     debug_assert!(bytes.len() <= MAX_PACKET_BYTES);
     let packet = decode_packet(bytes)?;
     if descriptors.is_some()

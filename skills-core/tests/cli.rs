@@ -117,7 +117,7 @@ fn a_refused_candidate_exits_nonzero_and_says_why() {
         "stderr was: {}",
         output.stderr,
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, "");
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn malformed_arguments_are_redacted_before_store_creation() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert!(!String::from_utf8_lossy(&output.stderr).contains("private-"));
         assert!(!store.exists());
     }
@@ -323,7 +323,7 @@ fn subcommand_help_succeeds_without_a_store() {
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
         assert!(!store.exists());
     }
 }

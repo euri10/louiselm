@@ -311,7 +311,10 @@ fn native_controls_follow_connection_lifetime_without_expiring_frozen_inputs() {
                 verify_fixture_signature,
             )
             .unwrap();
-        assert!(status.allowed_actions.is_empty());
+        assert_eq!(
+            status.allowed_actions,
+            [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+        );
         assert_eq!(status.posture.dimensions[0].state, DimensionState::Verified);
         assert_eq!(status.posture.dimensions[5].state, DimensionState::Verified);
         assert_eq!(
@@ -447,7 +450,10 @@ fn existing_quarantine_owner_invalidates_supply_without_rewriting_admission() {
         ) {
             assert_eq!(dimension.failure_code, Some(FailureCode::Quarantined));
             assert_eq!(dimension.freshness.last_verified_at_ms, Some(3000));
-            assert!(!dimension.evidence.is_empty());
+            assert_ne!(
+                dimension.evidence,
+                [] as [louiselm_skills::launch_protocol::StatusEvidence; 0]
+            );
         }
     }
     assert_eq!(
@@ -643,7 +649,10 @@ fn producer_failures_are_independent_and_keep_last_success() {
             failed.freshness.basis,
             louiselm_skills::launch_protocol::FreshnessBasis::Invalidated
         );
-        assert!(!failed.evidence.is_empty());
+        assert_ne!(
+            failed.evidence,
+            [] as [louiselm_skills::launch_protocol::StatusEvidence; 0]
+        );
         assert_eq!(
             status.posture.dimensions[2].state,
             DimensionState::Verified,

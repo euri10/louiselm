@@ -681,8 +681,8 @@ fn require_trusted_tree(root: &Path) -> Result<(), RegistryError> {
             path: directory.display().to_string(),
             source,
         };
-        for entry in fs::read_dir(&directory).map_err(&directory_error)? {
-            let path = entry.map_err(&directory_error)?.path();
+        for entry in fs::read_dir(&directory).map_err(directory_error)? {
+            let path = entry.map_err(directory_error)?.path();
             let metadata = fs::symlink_metadata(&path).map_err(|source| RegistryError::Io {
                 path: path.display().to_string(),
                 source,

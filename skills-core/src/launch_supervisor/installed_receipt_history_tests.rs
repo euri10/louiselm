@@ -294,11 +294,9 @@ fn privileged_installed_receipt_history_survives_rotation_and_upgrade() {
             )
             .is_err()
     );
-    assert!(
-        reopened_store
-            .stored_bytes(&failed.session_id)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        reopened_store.stored_bytes(&failed.session_id).unwrap(),
+        [] as [Vec<u8>; 0]
     );
     fs::remove_dir(&failed_binding).unwrap();
     rustix::fs::mkfifoat(

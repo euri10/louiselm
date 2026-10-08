@@ -2958,7 +2958,7 @@ fn known_unsupported_integration_refuses_before_authorization_or_spawn() {
         Some(SupervisorError::ToolIsolationUnproven)
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
-    assert!(setup.broker.receipts().is_empty());
+    assert_eq!(setup.broker.receipts(), [] as [std::vec::Vec<u8>; 0]);
     let events = event_snapshot(&setup.events);
     assert!(!events.iter().any(|event| matches!(
         event.as_str(),
@@ -3170,7 +3170,7 @@ fn conformance_refusal_cleans_prepared_tree_without_starting_or_signing() {
         ),
         "conformance refusal must reach the launch consumer"
     );
-    assert!(setup.signer.payloads().is_empty());
+    assert_eq!(setup.signer.payloads(), [] as [std::vec::Vec<u8>; 0]);
     assert!(!lock(&setup.platform.agent).started);
     let events = event_snapshot(&setup.events);
     assert!(events.iter().any(|event| event == "agent.dispose"));
@@ -3210,7 +3210,7 @@ fn brokered_launch_refuses_without_a_live_provider_deadline() {
             receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
             Err(error) if error == expected
         ));
-        assert!(setup.signer.payloads().is_empty());
+        assert_eq!(setup.signer.payloads(), [] as [std::vec::Vec<u8>; 0]);
         assert!(!lock(&setup.platform.agent).started);
     }
 }
@@ -3261,7 +3261,7 @@ fn brokered_launch_refuses_unevaluated_host_conformance() {
         receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
         Err(SupervisorError::ConformanceUnavailable)
     ));
-    assert!(setup.signer.payloads().is_empty());
+    assert_eq!(setup.signer.payloads(), [] as [std::vec::Vec<u8>; 0]);
     assert!(!lock(&setup.platform.agent).started);
 }
 
@@ -9975,7 +9975,7 @@ fn privileged_supervisor_case(ending: PrivilegedEnding) {
             .unwrap();
     assert!(actual_agent.uids.iter().all(|uid| *uid == assigned));
     assert!(actual_agent.gids.iter().all(|gid| *gid == assigned));
-    assert!(actual_agent.groups.is_empty());
+    assert_eq!(actual_agent.groups, [] as [u32; 0]);
     assert_ne!(
         agent_pid,
         lock(&observation).as_ref().unwrap().sandbox_leader_pid

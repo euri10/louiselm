@@ -241,7 +241,10 @@ fn views_route_shared_and_system_packages_by_signed_agent_membership() {
     ];
     expected.sort();
     assert_eq!(entries(views["codex"].skills_root()), expected);
-    assert!(entries(views["unused"].skills_root()).is_empty());
+    assert_eq!(
+        entries(views["unused"].skills_root()),
+        [] as [std::string::String; 0]
+    );
     assert_eq!(
         views["unused"].generation(),
         Some(record.generation.as_str())
@@ -298,7 +301,7 @@ fn skills_off_is_one_real_empty_artifact_without_any_generation_or_trust() {
     let view = instruction_view::empty(&first.store()).unwrap();
     assert_eq!(view.generation(), None);
     assert!(view.skills_root().is_dir());
-    assert!(entries(view.skills_root()).is_empty());
+    assert_eq!(entries(view.skills_root()), [] as [std::string::String; 0]);
     assert_eq!(
         view.digest(),
         instruction_view::empty(&second.store()).unwrap().digest()
@@ -517,7 +520,10 @@ fn the_cli_materializes_current_views_and_the_empty_mask() {
     let result = invoke(&["view", "empty"]);
     assert!(result.status.success());
     let view: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert!(entries(Path::new(view["skills_root"].as_str().unwrap())).is_empty());
+    assert_eq!(
+        entries(Path::new(view["skills_root"].as_str().unwrap())),
+        [] as [std::string::String; 0]
+    );
     fs::set_permissions(skills, fs::Permissions::from_mode(0o755)).unwrap();
     write_file(&skills.join("\u{1b}[31m"), "untrusted addition");
     fs::set_permissions(skills, fs::Permissions::from_mode(0o555)).unwrap();
@@ -528,7 +534,7 @@ fn the_cli_materializes_current_views_and_the_empty_mask() {
         supply.registry.root().to_str().unwrap(),
     ]);
     assert!(!result.status.success());
-    assert!(result.stdout.is_empty());
+    assert_eq!(result.stdout, [] as [u8; 0]);
     assert!(
         !result.stderr.contains(&0x1b),
         "untrusted filenames must not control the terminal"

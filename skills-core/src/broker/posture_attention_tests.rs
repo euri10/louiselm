@@ -106,7 +106,10 @@ fn dimensions_keep_identity_until_exact_resolution_and_restart_preserves_order()
     store
         .observe(&auth, &failed, true, false, 101, &outbox)
         .unwrap();
-    assert!(drain(&outbox).is_empty());
+    assert_eq!(
+        drain(&outbox),
+        [] as [crate::broker::attention::ProjectionChange; 0]
+    );
     let waived = posture(&auth, DimensionState::Waived, FailureCode::WitnessMissing);
     store
         .observe(&auth, &waived, true, false, 102, &outbox)
@@ -127,7 +130,10 @@ fn dimensions_keep_identity_until_exact_resolution_and_restart_preserves_order()
         store.observe(&auth, &failed, true, false, 101, &outbox),
         Err(BrokerError::InvalidGrant)
     ));
-    assert!(drain(&outbox).is_empty());
+    assert_eq!(
+        drain(&outbox),
+        [] as [crate::broker::attention::ProjectionChange; 0]
+    );
     store
         .observe(&auth, &failed, true, false, 103, &outbox)
         .unwrap();
@@ -185,7 +191,10 @@ fn pending_projection_survives_storage_outage_and_terminal_subjects_never_reopen
     store
         .observe(&auth, &failed, true, false, 101, &outbox)
         .unwrap();
-    assert!(drain(&outbox).is_empty());
+    assert_eq!(
+        drain(&outbox),
+        [] as [crate::broker::attention::ProjectionChange; 0]
+    );
     store.end_run(&auth.run_id, &outbox).unwrap();
     let mut sibling = auth.clone();
     sibling.session_id = "late-sibling".into();
@@ -198,7 +207,10 @@ fn pending_projection_survives_storage_outage_and_terminal_subjects_never_reopen
         .observe(&sibling, &late, true, false, 102, &outbox)
         .unwrap();
     assert!(store.read("late-sibling").unwrap().is_none());
-    assert!(drain(&outbox).is_empty());
+    assert_eq!(
+        drain(&outbox),
+        [] as [crate::broker::attention::ProjectionChange; 0]
+    );
     let mut malformed = serde_json::to_value(store.read("session").unwrap().unwrap()).unwrap();
     malformed["arbitrary_producer_text"] = serde_json::json!("not evidence");
     fs::write(
@@ -259,7 +271,10 @@ fn session_end_preserves_siblings_and_run_end_preserves_other_runs() {
     assert!(store.read(&sibling.session_id).unwrap().unwrap().ended);
     assert!(!store.read(&other.session_id).unwrap().unwrap().ended);
     store.reconcile(&outbox).unwrap();
-    assert!(drain(&outbox).is_empty());
+    assert_eq!(
+        drain(&outbox),
+        [] as [crate::broker::attention::ProjectionChange; 0]
+    );
 }
 
 #[test]
@@ -302,7 +317,10 @@ fn quarantine_replaces_dimension_items_and_survives_restart_without_duplicates()
     store
         .observe(&auth, &failed, true, true, 102, &outbox)
         .unwrap();
-    assert!(drain(&outbox).is_empty());
+    assert_eq!(
+        drain(&outbox),
+        [] as [crate::broker::attention::ProjectionChange; 0]
+    );
     assert_eq!(
         store
             .read("session")

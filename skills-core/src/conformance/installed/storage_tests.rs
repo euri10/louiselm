@@ -122,7 +122,10 @@ fn failures_survive_reboot_and_incomplete_runs_but_covered_pass_clears_them() {
         .finish(&Certificate::new(rebooted.clone(), report()).unwrap())
         .unwrap();
     let status = CertificateStore::inspect_owned(&root, &rebooted, uid).unwrap();
-    assert!(status.history.failures.is_empty());
+    assert_eq!(
+        status.history.failures,
+        [] as [crate::conformance::Failure; 0]
+    );
     assert!(status.certificate.is_some());
     // The failed old-host certificate remains inspectable, never passing.
     assert!(

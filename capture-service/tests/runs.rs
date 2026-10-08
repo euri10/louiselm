@@ -303,7 +303,7 @@ fn a_generator_reservation_larger_than_remaining_capacity_cannot_start() {
     assert_eq!(parked.state, "parked");
     assert_eq!(parked.generated_work.consumed, 3);
     assert_eq!(parked.generated_work.reserved, 0);
-    assert!(oversized_pending.is_empty());
+    assert_eq!(oversized_pending, [] as [std::string::String; 0]);
 }
 
 #[test]
@@ -588,7 +588,7 @@ fn failed_cleanup_stays_durable_for_a_later_retry() {
 
     let retry = store.reap_expired(3_601_000, |_| Ok(())).expect("retry");
     assert_eq!(retry.disposed, 1);
-    assert!(retry.failed.is_empty());
+    assert_eq!(retry.failed, [] as [(String, String); 0]);
     assert_eq!(store.run(run_id).expect("run").state, "disposed");
 }
 

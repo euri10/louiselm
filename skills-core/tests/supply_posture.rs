@@ -266,7 +266,7 @@ fn assert_supply_states(posture: &Posture, failed: Option<DimensionName>) {
             "{name:?}"
         );
         assert_eq!(dimension.failure_code.is_some(), Some(name) == failed);
-        assert!(!dimension.next_action.id.is_empty());
+        assert_ne!(dimension.next_action.id, "");
     }
     assert!(
         !posture.is_fully_verified(),
@@ -329,8 +329,11 @@ fn missing_artifacts_never_verify_by_default() {
     for (_, dimension) in posture.dimensions.ordered() {
         assert_eq!(dimension.state, DimensionState::Failed);
         assert!(dimension.failure_code.is_some());
-        assert!(dimension.evidence.is_empty());
-        assert!(!dimension.next_action.id.is_empty());
+        assert_eq!(
+            dimension.evidence,
+            [] as [louiselm_skills::posture::EvidenceRef; 0]
+        );
+        assert_ne!(dimension.next_action.id, "");
     }
 }
 
