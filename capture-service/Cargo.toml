@@ -6,7 +6,7 @@ license = "MIT"
 description = "Local-first durable speech capture service for LouiseLM"
 
 [dependencies]
-aws-lc-rs = { version = "=1.18.0", default-features = false, features = ["non-fips"] }
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["non-fips"] }
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 base64 = "=0.22.1"
