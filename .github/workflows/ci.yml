@@ -36,7 +36,10 @@
 # incomplete translation resources. Existing lint warnings: louiselm-16a6.
 #
 # Tool versions are pinned rather than floated so an upstream release
-# cannot silently turn this pipeline red (or, worse, green).
+# cannot silently turn this pipeline red (or, worse, green). Dependabot
+# proposes upgrades as pull requests (.github/dependabot.yml); the Rust
+# toolchain comes from rust-toolchain.toml. Neovim `stable` floats on purpose:
+# a Neovim plugin wants to learn at once that a new stable release breaks it.
 
 name: CI
 
@@ -66,9 +69,6 @@ env:
   # Local development currently runs 3.18.2-dev, which is not a
   # downloadable release; 3.19.1 is the closest published stable.
   LUALS_VERSION: 3.19.1
-  # Matches the locally verified toolchain (rustc/cargo 1.97.1). capture-service
-  # is edition 2024, so an older toolchain cannot build it at all.
-  RUST_VERSION: 1.97.1
 
 jobs:
   plugin-release-contract:
@@ -131,8 +131,7 @@ jobs:
       - name: Install Rust and SQLite development library
         run: |
           set -eu
-          rustup toolchain install "${RUST_VERSION}" --profile minimal --component rustfmt,clippy
-          rustup default "${RUST_VERSION}"
+          rustup toolchain install
           sudo apt-get update
           sudo apt-get install --yes libsqlite3-dev pkg-config
       - uses: actions/cache@v6
@@ -140,7 +139,7 @@ jobs:
           path: |
             ~/.cargo/registry
             usage-cli/target
-          key: cargo-usage-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('usage-cli/Cargo.lock') }}
+          key: cargo-usage-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('usage-cli/Cargo.lock') }}
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo test --all-features --locked
@@ -260,8 +259,8 @@ jobs:
         run: |
           git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/install-broker-beads.py scripts/install-broker-attention.py |
             ./scripts/launcher-vm exec tar -x -C /home/vm
-          rustup toolchain install "$RUST_VERSION" --profile minimal
-          cargo +"$RUST_VERSION" build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
+          rustup toolchain install
+          cargo build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
           ./scripts/launcher-vm put capture-service/target/debug/louiselm-capture /var/tmp/louiselm-test-capture
           nvim_root=$(nvim --headless --noplugin -u NONE -c 'lua io.write(vim.fs.dirname(vim.fs.dirname(vim.v.progpath)))' -c 'qa!')
           test -x "$nvim_root/bin/nvim" && test -d "$nvim_root/share/nvim/runtime"
@@ -547,9 +546,7 @@ jobs:
       - name: Install Rust
         run: |
           set -eu
-          rustup toolchain install "${RUST_VERSION}" --profile minimal \
-            --component rustfmt,clippy
-          rustup default "${RUST_VERSION}"
+          rustup toolchain install
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -558,7 +555,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             capture-service/target
-          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('capture-service/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('capture-service/Cargo.lock') }}
 
       - name: Format
         run: cargo fmt --check
@@ -630,9 +627,7 @@ jobs:
       - name: Install Rust
         run: |
           set -eu
-          rustup toolchain install "${RUST_VERSION}" --profile minimal \
-            --component rustfmt,clippy
-          rustup default "${RUST_VERSION}"
+          rustup toolchain install
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -641,7 +636,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ${{ env.CARGO_TARGET_DIR }}
-          key: cargo-skills-line-tables-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
+          key: cargo-skills-line-tables-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('skills-core/Cargo.lock') }}
 
       - name: Record runner resources
         run: |

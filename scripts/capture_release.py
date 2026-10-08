@@ -14,7 +14,6 @@ import tempfile
 import tomllib
 
 TARGET = "x86_64-unknown-linux-gnu"
-TOOLCHAIN = "1.97.1"
 
 
 def require(condition, message):
@@ -35,13 +34,20 @@ def check_versions(root):
     return version
 
 
-def package(binary, output, sha, version, metadata):
+def pinned_toolchain(root):
+    channel = tomllib.loads((Path(root) / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
+    require(re.fullmatch(r"1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", channel),
+            "rust-toolchain.toml must pin an exact stable release")
+    return channel
+
+
+def package(binary, output, sha, version, metadata, toolchain):
     require(re.fullmatch(r"[0-9a-f]{40}", sha), "invalid source commit")
     require(metadata["component"] == "capture" and metadata["version"] == version,
             "built binary has the wrong identity")
     output.mkdir(parents=True, exist_ok=True)
     name = f"louiselm-capture-{version}-{TARGET}"
-    record = dict(metadata, source_commit=sha, target=TARGET, rust=TOOLCHAIN,
+    record = dict(metadata, source_commit=sha, target=TARGET, rust=toolchain,
                   binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest())
     encoded = (json.dumps(record, sort_keys=True, indent=2) + "\n").encode()
     archive = output / (name + ".tar.gz")
@@ -69,17 +75,18 @@ def build(sha, output):
         with tarfile.open(fileobj=io.BytesIO(archive)) as source:
             source.extractall(root, filter="data")
         version = check_versions(root)
+        toolchain = pinned_toolchain(root)
         env = {key: value for key, value in os.environ.items()
                if key in ("PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "TMPDIR")}
         env["RUSTFLAGS"] = f"--remap-path-prefix={root}=/source"
         env["SOURCE_DATE_EPOCH"] = "0"
-        subprocess.run(["cargo", f"+{TOOLCHAIN}", "build", "--release", "--locked", "--target", TARGET],
+        subprocess.run(["cargo", f"+{toolchain}", "build", "--release", "--locked", "--target", TARGET],
                        cwd=root / "capture-service", env=env, check=True)
         binary = root / "capture-service/target" / TARGET / "release/louiselm-capture"
         require(subprocess.check_output([str(binary), "--version"], text=True, env=env).strip() == f"louiselm-capture {version}",
                 "built binary version disagrees with source")
         metadata = json.loads(subprocess.check_output([str(binary), "metadata"], text=True, env=env))
-        return package(binary, Path(output), sha, version, metadata)
+        return package(binary, Path(output), sha, version, metadata, toolchain)
 
 
 def upload_missing(repository, release, files, api, upload):
@@ -122,7 +129,9 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.check:
-        print(check_versions(Path(__file__).resolve().parent.parent))
+        root = Path(__file__).resolve().parent.parent
+        version, toolchain = check_versions(root), pinned_toolchain(root)
+        print(version, toolchain)
     else:
         require(args.sha and args.output, "building requires --sha and --output")
         print(json.dumps([str(path) for path in build(args.sha, args.output)]))

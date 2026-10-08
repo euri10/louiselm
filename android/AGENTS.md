@@ -172,7 +172,9 @@ then clarity, simplicity, and performance.
   diagnostic and explains the unavoidable boundary.
 - Keep SDK/dependency upgrades intentional and tested. Target SDK changes can
   alter runtime permissions; cover denial/revocation as well as granted access.
-  Do not weaken security to satisfy a version advisory.
+  Do not weaken security to satisfy a version advisory. Dependabot proposes
+  library, plugin and wrapper upgrades; Lint's version advisories are disabled
+  so a new upstream release cannot fail an unrelated commit (louiselm-0yd76).
 - CI runs the same Android gates. Report unavailable/failed checks; do not claim
   that merely configuring a gate proves it passed. Compiler, Android Lint and
   JUnit/Robolectric own their separate checks; no unapproved overlapping tools.

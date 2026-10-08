@@ -31,7 +31,7 @@ production relay/loss composition. It is a component gate, not installed authori
   The explicit recovery-only YubiKey exception is described below; ordinary
   `start` and `prepare` do not enable it.
 - `prepare` temporarily allows guest egress to install distro packages and
-  Rust 1.97.1. Normal `start` uses QEMU `restrict=on`: guest-originated traffic
+  the Rust toolchain pinned in `rust-toolchain.toml`. Normal `start` uses QEMU `restrict=on`: guest-originated traffic
   cannot reach the host or outside networks. Explicit host-to-guest SSH remains.
 - `start --provider-egress` is an explicit opt-in for the live Provider
   acceptance in `louiselm-qbr.5.1.3.13`. It allows outbound networking from

@@ -43,8 +43,11 @@ android {
     lint {
         abortOnError = true
         warningsAsErrors = true
-        // Toolchain upgrades are deliberate; a new Gradle release is not an app defect.
-        disable.add("AndroidGradlePluginVersion")
+        // A newer upstream release is not a defect in this commit: these checks
+        // turned unrelated commits red on Maven's release calendar
+        // (louiselm-dy2mp, louiselm-g4uf3, louiselm-9gjnk). Dependabot proposes
+        // upgrades as tested pull requests instead (.github/dependabot.yml).
+        disable.addAll(listOf("AndroidGradlePluginVersion", "GradleDependency", "NewerVersionAvailable"))
     }
 }
 

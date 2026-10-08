@@ -11,9 +11,10 @@ but must not silently weaken it.
 
 #### Toolchain and lints
 
-- Use stable Rust matching `RUST_VERSION` in CI and default rustfmt. Keep the
-  edition explicit in each manifest. Declare an MSRV only when it is tested;
-  do not claim compatibility from an untested `rust-version` field.
+- Use the stable Rust pinned in the root `rust-toolchain.toml` and default
+  rustfmt. Keep the edition explicit in each manifest. Declare an MSRV only
+  when it is tested; do not claim compatibility from an untested
+  `rust-version` field.
 - Configure package-wide Cargo lints so libraries, binaries, and tests are all
   covered. Deny `clippy::all` and `clippy::pedantic`, with group priority `-1`;
   individual lints keep priority `0`. Also deny `missing_docs`,
