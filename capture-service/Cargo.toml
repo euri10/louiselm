@@ -9,7 +9,7 @@ description = "Local-first durable speech capture service for LouiseLM"
 aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["non-fips"] }
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 clap = { version = "4.6", features = ["derive"] }
 fs2 = "0.4"
 httpdate = "=1.0.3"
