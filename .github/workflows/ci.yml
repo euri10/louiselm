@@ -78,6 +78,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # The commit policy checks the commits that will be squash-merged,
+          # not GitHub's synthetic pull-request merge commit (louiselm-pgp4t).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
