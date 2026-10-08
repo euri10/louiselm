@@ -1,5 +1,127 @@
 # Changelog
 
+## [0.2.0](https://github.com/euri10/louiselm/compare/plugin-v0.1.0...plugin-v0.2.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **launcher:** bump closed guard, receipt and status wire schemas.
+* **inputs:** input manifest, preflight and retention use v2 records.
+* **qualification:** launch grants require an explicit role; launch authorization and receipt schemas advance to /4 and /6.
+* **capture:** enabled capture, Run and Attention integrations require a capture companion advertising interface 1. Update the companion before reloading the plugin; core chat remains independent.
+* **broker:** conformance updates use schema v2 with a required waiver decision revision.
+
+### Features
+
+* **attention:** track waiting posture episodes ([432f2a9](https://github.com/euri10/louiselm/commit/432f2a908ac5a6173d9c358d10caf85653bbcf47))
+* **attention:** wire broker state into Neovim ([ed737fe](https://github.com/euri10/louiselm/commit/ed737fe8c04c23a06b0716c402d598d3f5e76eb0))
+* **beads:** expose mutation output taint ([d72f47d](https://github.com/euri10/louiselm/commit/d72f47dd72c5d905241b500af425c4d37ada16cc))
+* **broker:** add live conformance waivers ([bc6fc5a](https://github.com/euri10/louiselm/commit/bc6fc5ae53ee2c8d92f557bd5b82508aba3e7243))
+* **broker:** bind Sessions to Run grants ([a13bfee](https://github.com/euri10/louiselm/commit/a13bfeea8ce7395a4f7584bfec104c47b01177d1))
+* **broker:** guard Provider transport ([accfc43](https://github.com/euri10/louiselm/commit/accfc4316dde3a5a3331653adcd4010283c76a7e))
+* **broker:** lift Provider holds by extension ([486409a](https://github.com/euri10/louiselm/commit/486409a4e44290d88bc702b2a54e8d527b799fd1))
+* **broker:** propagate skill quarantine ([fc2fdea](https://github.com/euri10/louiselm/commit/fc2fdeab3f262ed655370a6db37ba8e2d9b188ab))
+* **broker:** serve brokered Responses requests ([d4b6e10](https://github.com/euri10/louiselm/commit/d4b6e100ec7a9e63f9fb2dc63481be0587d26df4))
+* **capture:** release and check companion ([98b6f05](https://github.com/euri10/louiselm/commit/98b6f05b2590aa9a81aca276d4eb64427da08f01))
+* carry output taint in diagnostic exports ([48f8a1e](https://github.com/euri10/louiselm/commit/48f8a1efc1b7edd11131023699c11c1240bcd07b))
+* **chat:** add secondary navigation motions ([911a2e6](https://github.com/euri10/louiselm/commit/911a2e61f67172d1017c2cc54614c026b6ffb0aa))
+* **chat:** align tables and inspect overflow ([bd25d12](https://github.com/euri10/louiselm/commit/bd25d125cce26bd097a3d0ac581fdd32bb401d01))
+* **chat:** fold the skill catalog as a resource ([b68d4ad](https://github.com/euri10/louiselm/commit/b68d4ad5c45bedaa917724ce34795e8515b4f48b))
+* **guard:** authenticate socket handoff ([139dd6e](https://github.com/euri10/louiselm/commit/139dd6e7122589b0cd9e5e49cdf34d669985627e))
+* **guard:** enroll a frozen measured descendant ([11ba0bb](https://github.com/euri10/louiselm/commit/11ba0bbaed4d05cca654bdcec9b06162f5383b1d))
+* **guard:** require host conformance proof ([1b2c16c](https://github.com/euri10/louiselm/commit/1b2c16cd8b40026f07cff46a5df052d457c70656))
+* **inputs:** prepare inactive Runs ([56c8604](https://github.com/euri10/louiselm/commit/56c860475e4661f8b603c16c4fd0f9e876d0ce36))
+* **jsonl:** add opt-in inline summaries ([e84a2b3](https://github.com/euri10/louiselm/commit/e84a2b36c3c3b8dd47b7c1c5e7d317632a02ef3b))
+* **launch:** accept stock Codex ACP integration contract ([4bea388](https://github.com/euri10/louiselm/commit/4bea388654b6a92ffe17d80eb4b380992e69309c))
+* **launch:** enable guarded Brokered network ([c371bf2](https://github.com/euri10/louiselm/commit/c371bf2c78283fc8114dc3fd61d3de7a744cb132))
+* **launch:** enroll Codex descendant before first prompt ([a2de3ac](https://github.com/euri10/louiselm/commit/a2de3ac4ec8d202248f9caf703e007a7e667e760))
+* **launcher:** own Sender guard lifetime ([86bff46](https://github.com/euri10/louiselm/commit/86bff4658372d344762d3ca55997418c877ee069))
+* **launcher:** support guarded warm Resume ([73b0c9a](https://github.com/euri10/louiselm/commit/73b0c9a650b0b35e1c2ed2574f00b20662514723))
+* **launch:** gate stock Codex ACP chain ([aa5e691](https://github.com/euri10/louiselm/commit/aa5e691b8d2cdb8961436a46d01fb292317859db))
+* **launch:** stage Code Mode host ([89fb30d](https://github.com/euri10/louiselm/commit/89fb30d04e1d466f157a3e9f1a7929fedc394a7a))
+* **launch:** wire installed sender guard ([ff95515](https://github.com/euri10/louiselm/commit/ff9551547c95e4c33d011cc63a0094030f3b4a1c))
+* **mcp:** forward configured servers over ACP ([9d55701](https://github.com/euri10/louiselm/commit/9d5570194f8d72108d6592fda751f5a320d37a86))
+* **provider:** bind metadata disclosure profile ([1ea05cc](https://github.com/euri10/louiselm/commit/1ea05cc37dea9457ad3595d4f4c62a54909d351e))
+* **qualification:** enable paired trials ([a9ee432](https://github.com/euri10/louiselm/commit/a9ee432c1de78b5a18f42acf425e7def5069b203))
+* **qualification:** preview curated runs ([a2e6585](https://github.com/euri10/louiselm/commit/a2e658537b5e849f6078a44d0963348a324925c5))
+* **routing:** add qualified bounded readers ([94c02b0](https://github.com/euri10/louiselm/commit/94c02b067feb891d97d5e5b08687c0637f27116f))
+* **routing:** approve scoped comparisons ([7881e2e](https://github.com/euri10/louiselm/commit/7881e2ea240ef887bd88727961d98346b192e0c3))
+* **routing:** recover failed economical turns ([ff82c26](https://github.com/euri10/louiselm/commit/ff82c26800df7e88ff72b8b62ab11457d28fa149))
+* **routing:** select approved economical pairs ([f9b3656](https://github.com/euri10/louiselm/commit/f9b3656e4c2b6537ed410abc4219938bc5ed4af8))
+* **run:** add reviewed VM operator entrypoint ([b7f66e8](https://github.com/euri10/louiselm/commit/b7f66e802f96eeb754f469dc9e065033134e6476))
+* **run:** promote accepted Beads ([8a85325](https://github.com/euri10/louiselm/commit/8a85325f6006129e1fc3a1de8dbf39a52acb9423))
+* **run:** record Bead failures and summary ([fd8d661](https://github.com/euri10/louiselm/commit/fd8d661c6c8519ea0ee90a7a4144529635d10d92))
+* **session:** confirm Auto baseline before submit ([6758c47](https://github.com/euri10/louiselm/commit/6758c47379cdb98b6ea3c56d0b2dc689776aae07))
+* **session:** persist Auto routing choices ([124365e](https://github.com/euri10/louiselm/commit/124365e35f03ddc05beb00b3cc2701c27b591346))
+* **skills:** check paper without recovery ([739ee22](https://github.com/euri10/louiselm/commit/739ee22cf168aa1761a6ffa1c3ac389fbf8d19d0))
+* **ui:** show completed compaction count ([ad6a04c](https://github.com/euri10/louiselm/commit/ad6a04c12bcffbbc1372d9c659372a105e6ca2ab))
+* **usage:** add history explorer ([9940c8f](https://github.com/euri10/louiselm/commit/9940c8f639a29ad1351713abc50a7d6735d35eba))
+* **verifier:** pin confined Lua toolchain ([c5fd337](https://github.com/euri10/louiselm/commit/c5fd3373817f63a75981479de2802ba25f77a8ad))
+* **vm:** add explicit Provider egress mode ([9890c92](https://github.com/euri10/louiselm/commit/9890c92646c869613361976f8b0534f33226c899))
+* **waiver:** approve conformance before launch ([9d4bcf1](https://github.com/euri10/louiselm/commit/9d4bcf1a00d93b89c57f588f6bf6134749bb0ed1))
+* **workflow:** add ecosystem radar pilot ([c6e49ff](https://github.com/euri10/louiselm/commit/c6e49ff60153a685c083c0417f512c63055d5e4a))
+* **workflow:** run contained Bead workers ([a64cbb0](https://github.com/euri10/louiselm/commit/a64cbb090cbb27157653d3c63e8765026dd96b2f))
+* **workflow:** verify worker bundles ([ed9d496](https://github.com/euri10/louiselm/commit/ed9d4969888a4ccad067fd83f4a30b91240a7692))
+* **workspace:** approve exact tainted promotion ([e458767](https://github.com/euri10/louiselm/commit/e458767877efaec6a8fe9554597f2506e1b26835))
+
+
+### Bug Fixes
+
+* **acp:** preserve null JSON-RPC IDs ([697c22a](https://github.com/euri10/louiselm/commit/697c22a338e844d1429a930a2b5e8a61d039022a))
+* **acp:** reject unhandled Agent requests ([56661f9](https://github.com/euri10/louiselm/commit/56661f99c1a38179c9776bba638b2874f1d1d648))
+* **attention:** count paste as activity ([5180db8](https://github.com/euri10/louiselm/commit/5180db84a408e8559b9bddd1aed45ce44d1abdfe))
+* **backups:** clear stale restic locks once ([cec5ee8](https://github.com/euri10/louiselm/commit/cec5ee8bedaf398c5fc83d777294015a2bf2dfbf))
+* **broker:** keep Brokered launch fail-closed ([a6ba956](https://github.com/euri10/louiselm/commit/a6ba956f5f66ad1862064c96434b07c3316f4940))
+* **capture:** preserve broker identities ([256f0c9](https://github.com/euri10/louiselm/commit/256f0c93f368d45e550b1de0aaffc8cb13758197))
+* **capture:** use installed operator identity ([f3ccb02](https://github.com/euri10/louiselm/commit/f3ccb02739a090a7861e93e4cb767c53bb58a4b2))
+* **chat:** focus input after entering Insert mode ([d344926](https://github.com/euri10/louiselm/commit/d34492671073a257c8ee25937e52ab3a18ba9767))
+* **chat:** fold long standalone tool calls ([f6949b1](https://github.com/euri10/louiselm/commit/f6949b1b7465a64a3305ae6eac6d4645e396e937))
+* **chat:** give table inspectors room to breathe ([71ded94](https://github.com/euri10/louiselm/commit/71ded943c60f57aaa7f4b666356b58bf8ba13eee))
+* **chat:** preserve pending prompt drafts ([0e87905](https://github.com/euri10/louiselm/commit/0e87905b8331e2c3926350c565e362a651228824))
+* **chat:** preserve positions through undo ([07ff238](https://github.com/euri10/louiselm/commit/07ff23885ab2c2f92231422a475a5ae6baaa3f9a))
+* **chat:** restore reasoning folds on re-entry ([341b576](https://github.com/euri10/louiselm/commit/341b576f66c3e3e26f96557ab0826ecf6c1019a2))
+* **ci:** bind Neovim API in guard probe ([3cc6986](https://github.com/euri10/louiselm/commit/3cc698670aff39f9e20dacb7f228653a1974477b))
+* **ci:** isolate Attention setup with OverlayFS ([bb9dc8e](https://github.com/euri10/louiselm/commit/bb9dc8e882cd124b56eacef2b6432a521b487aab))
+* **ci:** isolate Session API test resources ([be8f15d](https://github.com/euri10/louiselm/commit/be8f15d8e7e6c8ee7eb53eb1d4c02d789a3b33ac))
+* **ci:** restore VM and Android gates ([1f8cf07](https://github.com/euri10/louiselm/commit/1f8cf079ee197da057f33c0e616ac497f3956492))
+* **ci:** run verification with trusted tools ([5ae5fa9](https://github.com/euri10/louiselm/commit/5ae5fa9e4449e62058449e0d3349093fd1cbca3c))
+* close reality-check integration gaps ([0d84957](https://github.com/euri10/louiselm/commit/0d84957e64779b6c280eea7bfb582983eba01e44))
+* **conformance:** verify installed admission ([e49bfd1](https://github.com/euri10/louiselm/commit/e49bfd10659f59f301b4f337757c59c224326d5b))
+* **demo:** restore chat startup and guide ([5151b9d](https://github.com/euri10/louiselm/commit/5151b9dae9494309c9248a79be1462a2e9cb1d08))
+* **docs:** refuse by-name LuaLS alias exports ([ae35a89](https://github.com/euri10/louiselm/commit/ae35a894c57ad41df56e6e0001c998d46bc65df8))
+* **guard:** revoke during upstream handoff ([6f42857](https://github.com/euri10/louiselm/commit/6f428570be791fb1a31c001fd6a4972cf1bb40ef))
+* **isolation:** distinguish ambient network route ([c5f0fa8](https://github.com/euri10/louiselm/commit/c5f0fa828e266081a1992fcfc2091554c3a6500f))
+* **launcher-vm:** version base by provisioning inputs ([e3e52b0](https://github.com/euri10/louiselm/commit/e3e52b0540e7e00eb0dee58e399c46659f754aa3))
+* **launcher:** stabilize stock Codex launch ([2fdd0a5](https://github.com/euri10/louiselm/commit/2fdd0a5e5453d5d80151b9d1d2f5be12166bc42a))
+* **permission:** accept sparse MCP approvals ([3286dd9](https://github.com/euri10/louiselm/commit/3286dd90b12d68571359c4adf3edc3970c707657))
+* **permission:** forward MCP lifetime choices ([2be1ee2](https://github.com/euri10/louiselm/commit/2be1ee24075ddbc72785f063db931a6564a689d1))
+* **quarantine:** bind all to Generation ([72b8095](https://github.com/euri10/louiselm/commit/72b80952893b95d17dbdb8e85dc303d699c96aa4))
+* refresh Agent upgrade warnings ([b974105](https://github.com/euri10/louiselm/commit/b9741059e544c5b40112b5e0f821b3b75da1688b))
+* **release:** retry failed component proposals ([f146a15](https://github.com/euri10/louiselm/commit/f146a1586b2696f57c295832846099740229fbc6))
+* **release:** scope immutability read credentials ([b25dfb4](https://github.com/euri10/louiselm/commit/b25dfb4e6c48d758e91333f3c1543776a5664215))
+* **release:** scope immutability read credentials ([3fbd505](https://github.com/euri10/louiselm/commit/3fbd5051ee6d8fbbafb99899bb4a3fa49494f379))
+* **skills:** use explicit Unicode counting ([0f3bb05](https://github.com/euri10/louiselm/commit/0f3bb059bf587f1969d494bdb9a9e3a329e5321f))
+* stabilize skills CI and workspace capture ([fd87239](https://github.com/euri10/louiselm/commit/fd87239922197b3973e0a9cce2fe5b555235e83b))
+* **ui:** show unsupported account limits ([6d6447e](https://github.com/euri10/louiselm/commit/6d6447e8f50cbea359d00a066283277d3da3ab8d))
+* **usage:** focus returned result rows ([b61d922](https://github.com/euri10/louiselm/commit/b61d9228845916e9685f92ef45b531681195ebea))
+* **usage:** highlight history as Markdown ([bfad69a](https://github.com/euri10/louiselm/commit/bfad69ade06a80ec57435eddc27149ae7f8f4c9d))
+* **usage:** name the failing argument ([abb1b70](https://github.com/euri10/louiselm/commit/abb1b7041f07d09db0456de8530222afbd7ad79f))
+* **usage:** retain previous-page input ([992162f](https://github.com/euri10/louiselm/commit/992162febba7bc93ecc3c81391a3a56048e29a99))
+* **vm:** archive Provider disclosure fixture ([5865438](https://github.com/euri10/louiselm/commit/58654387a856659201063d8586333336aa208798))
+* **vm:** bind commands to the active cache ([ca0d99e](https://github.com/euri10/louiselm/commit/ca0d99ec645728e034d4c3a11aa717339fe018d1))
+* **vm:** include required build inputs ([7615ead](https://github.com/euri10/louiselm/commit/7615eadb71c9ec889ca2018104035682b509c529))
+* **vm:** make base IDs independent of paths ([eaca00b](https://github.com/euri10/louiselm/commit/eaca00bd2c7302b288dd4371b211880f6bb4609e))
+* **vm:** prevent provisioning cache OOM ([0cf2cfb](https://github.com/euri10/louiselm/commit/0cf2cfb7d3a2b2b929dc17c674312ed9709e4288))
+* **vm:** require usable FIDO before startup ([d8e242e](https://github.com/euri10/louiselm/commit/d8e242ebd5bf8464373f9c89058727b4b1febd9f))
+* **workspace:** preserve session output taint ([d7b6386](https://github.com/euri10/louiselm/commit/d7b63867621fb03e1ba7d7499e92069701e20422))
+
+
+### Performance Improvements
+
+* **skills:** optimize dev SHA-256 ([c4c1224](https://github.com/euri10/louiselm/commit/c4c12245d9b753817549313bc14745e52be88a4f))
+* **skills:** optimize dev SHA-256 ([fd00845](https://github.com/euri10/louiselm/commit/fd0084504df7efc952afa5a401107b16d6860688))
+* **usage:** reuse ungrouped summary totals ([4aa1242](https://github.com/euri10/louiselm/commit/4aa1242eef043ced077c12264b407960a0713624))
+
 ## 0.1.0 (2026-09-18)
 
 
