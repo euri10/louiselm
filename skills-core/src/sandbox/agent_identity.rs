@@ -5,7 +5,6 @@
 //! tracer remains on the preparing thread until all tracees are detached.
 
 use std::{
-    ffi::{c_int, c_long, c_uint, c_ulong, c_void},
     fs, io,
     marker::PhantomData,
     os::fd::{AsFd, OwnedFd},
@@ -15,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nix::sys::ptrace::{self, Options};
 use rustix::process::{
     Pid, PidfdFlags, Signal, WaitId, WaitIdOptions, kill_process, pidfd_open, pidfd_send_signal,
     waitid,
@@ -22,14 +22,6 @@ use rustix::process::{
 
 use crate::launch_transport::{KernelCredentials, KernelProcess};
 
-const SEIZE: c_uint = 0x4206;
-const SETOPTIONS: c_uint = 0x4200;
-const GETEVENTMSG: c_uint = 0x4201;
-const CONT: c_uint = 7;
-const DETACH: c_uint = 17;
-const TRACEFORK: usize = 1 << 1;
-const TRACEEXEC: usize = 1 << 4;
-const EXITKILL: usize = 1 << 20;
 const EVENT_FORK: i32 = 1;
 const EVENT_EXEC: i32 = 4;
 const EVENT_STOP: i32 = 128;
@@ -56,7 +48,10 @@ impl Trace {
     pub fn attach_child(pid: u32) -> io::Result<Self> {
         let pid = checked_pid(pid)?;
         let pin = pidfd_open(pid, PidfdFlags::empty())?;
-        operation(SEIZE, pid, TRACEFORK | EXITKILL)?;
+        ptrace::seize(
+            nix_pid(pid),
+            Options::PTRACE_O_TRACEFORK | Options::PTRACE_O_EXITKILL,
+        )?;
         Ok(Self {
             tracees: vec![Tracee {
                 pid,
@@ -73,7 +68,7 @@ impl Trace {
         let monitor = self.current;
         let reaper = self.fork_child(monitor, Instant::now() + TIMEOUT)?;
         self.detach(monitor)?;
-        operation(CONT, reaper, 0)?;
+        ptrace::cont(nix_pid(reaper), None)?;
         self.current = reaper;
         Ok(reaper.as_raw_nonzero().get().unsigned_abs())
     }
@@ -96,8 +91,11 @@ impl Trace {
         let reaper = self.current;
         let agent = self.fork_child(reaper, deadline)?;
         self.detach(reaper)?;
-        operation(SETOPTIONS, agent, TRACEFORK | TRACEEXEC | EXITKILL)?;
-        operation(CONT, agent, 0)?;
+        ptrace::setoptions(
+            nix_pid(agent),
+            Options::PTRACE_O_TRACEFORK | Options::PTRACE_O_TRACEEXEC | Options::PTRACE_O_EXITKILL,
+        )?;
+        ptrace::cont(nix_pid(agent), None)?;
         let event = wait_event(agent, deadline)?;
         if event == EVENT_FORK {
             self.capture_child(agent, deadline)?;
@@ -167,7 +165,7 @@ impl Trace {
 
     fn detach(&mut self, pid: Pid) -> io::Result<()> {
         let index = self.index(pid)?;
-        operation(DETACH, pid, 0)?;
+        ptrace::detach(nix_pid(pid), None)?;
         self.tracees.swap_remove(index);
         Ok(())
     }
@@ -284,50 +282,16 @@ fn verify_credentials(pid: u32, uid: u32, gid: u32) -> io::Result<()> {
     Ok(())
 }
 
-#[allow(
-    unsafe_code,
-    reason = "Linux ptrace has no stdlib/rustix binding; only owned startup tracees and scalar control operations are accepted (qbr.5.1.1.2 comment 1446)."
-)]
-unsafe extern "C" {
-    fn ptrace(request: c_uint, pid: c_int, address: *mut c_void, ...) -> c_long;
+/// Converts an already-validated startup tracee PID for nix's ptrace calls.
+/// Only scalar controls (seize, setoptions, cont, detach, getevent) are used,
+/// always on this thread's owned tracees; never tracee memory or registers.
+fn nix_pid(pid: Pid) -> nix::unistd::Pid {
+    nix::unistd::Pid::from_raw(pid.as_raw_pid())
 }
 
-#[allow(
-    unsafe_code,
-    reason = "Narrow Linux scalar ptrace controls; no tracee memory or register access (qbr.5.1.1.2 comment 1446)."
-)]
-fn operation(request: c_uint, pid: Pid, value: usize) -> io::Result<()> {
-    // SAFETY: request is one of the private scalar-only control constants;
-    // pid belongs to this thread's trace transaction. The null address is
-    // required by these requests, and data is an integer, never dereferenced.
-    let result = unsafe { ptrace(request, pid.as_raw_pid(), std::ptr::null_mut(), value) };
-    if result == -1 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[allow(
-    unsafe_code,
-    reason = "PTRACE_GETEVENTMSG writes one c_ulong to a live local variable; no tracee memory access (qbr.5.1.1.2 comment 1446)."
-)]
 fn event_pid(parent: Pid) -> io::Result<Pid> {
-    let mut child: c_ulong = 0;
-    // SAFETY: parent is stopped at the fork event on this tracing thread.
-    // GETEVENTMSG writes exactly one c_ulong to the valid exclusive pointer,
-    // synchronously without retaining it; address must be null.
-    let result = unsafe {
-        ptrace(
-            GETEVENTMSG,
-            parent.as_raw_pid(),
-            std::ptr::null_mut(),
-            &raw mut child,
-        )
-    };
-    if result == -1 {
-        return Err(io::Error::last_os_error());
-    }
+    // parent is stopped at the fork event on this tracing thread.
+    let child = ptrace::getevent(nix_pid(parent))?;
     checked_pid(
         u32::try_from(child).map_err(|_| io::Error::other("invalid kernel fork process ID"))?,
     )

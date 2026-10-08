@@ -7,6 +7,7 @@
 )]
 
 use super::*;
+use nix::sys::signal::{SigSet, Signal};
 
 #[test]
 fn foreground_signer_fixture_child() {
@@ -25,6 +26,10 @@ fn foreground_signer_fixture_child() {
     rustix::process::ioctl_tiocsctty(&terminal).unwrap();
     let group = rustix::process::getpgrp();
     assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
+    // Restoration blocks SIGTTOU around tcsetpgrp; every handoff below must
+    // leave this thread's complete signal mask exactly as it found it.
+    let mask = SigSet::thread_get_mask().unwrap();
+    assert!(!mask.contains(Signal::SIGTTOU));
     assert_prompt_before_input(&master, &terminal);
     assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
     let mut input = master.try_clone().unwrap();
@@ -82,6 +87,29 @@ fn foreground_signer_fixture_child() {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
     }
+    assert_eq!(SigSet::thread_get_mask().unwrap(), mask);
+
+    // A caller that already blocked SIGTTOU keeps it blocked afterwards.
+    let mut ttou = SigSet::empty();
+    ttou.add(Signal::SIGTTOU);
+    ttou.thread_block().unwrap();
+    let blocked = SigSet::thread_get_mask().unwrap();
+    let result = run_signing_command(
+        &CommandInvocation {
+            program: "/bin/sh".into(),
+            arguments: vec!["-c".into(), "exit 0".into()],
+            stdin: vec![],
+            current_dir: None,
+        },
+        Instant::now() + Duration::from_secs(2),
+        Some(&terminal),
+    )
+    .unwrap();
+    assert!(result.success);
+    assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
+    assert_eq!(SigSet::thread_get_mask().unwrap(), blocked);
+    ttou.thread_unblock().unwrap();
+
     // The master must stay alive through all assertions; closing it delivers HUP
     // to this disposable session, never to the maintainer's real terminal.
     std::mem::forget(master);

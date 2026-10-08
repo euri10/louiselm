@@ -25,11 +25,6 @@ updates:
         update-types: [minor, patch]
   - package-ecosystem: cargo
     directories: [/capture-service, /skills-core, /usage-cli]
-    ignore:
-      # skills-core holds rustix at =1.1.4: 1.1.5 made `runtime` private
-      # (louiselm-l7060). Remove with louiselm-byrw2.
-      - dependency-name: rustix
-        versions: [">=1.1.5"]
     schedule:
       interval: weekly
     cooldown:
