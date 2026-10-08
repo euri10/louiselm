@@ -1,6 +1,10 @@
 //! Explicit, source-granular refresh with deterministic replacement of facts.
 
-use crate::{error::Result, model::digest, parse, sources, store};
+use crate::{
+    error::Result,
+    model::{digest, lower_hex},
+    parse, sources, store,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -18,7 +22,7 @@ fn fingerprint(path: &Path) -> Result<String> {
         }
         hash.update(&bytes[..count]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(lower_hex(&hash.finalize()))
 }
 
 pub(crate) fn run(db: &Path, all: bool, explicit: &[String]) -> Result<(Value, u8)> {
