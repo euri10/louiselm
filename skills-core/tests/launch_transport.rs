@@ -1035,30 +1035,3 @@ fn closing_an_adopted_listener_preserves_the_manager_socket() {
     send_packet(&client, status_bytes("restarted-1")).unwrap();
     assert!(receive_packet(&server).is_ok());
 }
-
-#[test]
-fn the_service_manager_handover_names_exactly_one_descriptor_for_this_process() {
-    // Parsed as a pure function so the contract is testable without mutating
-    // process-wide environment state from a parallel test run.
-    assert_eq!(
-        louiselm_skills::launch_transport::inherited_descriptor(Some("42"), Some("1"), 42),
-        Ok(3),
-    );
-    for (pid, fds) in [
-        (Some("41"), Some("1")),   // handover meant for another process
-        (Some("42"), Some("0")),   // no descriptors passed
-        (Some("42"), Some("2")),   // more than the one rendezvous
-        (Some("42"), None),        // no count at all
-        (None, Some("1")),         // no target process
-        (Some("42"), Some("")),    // empty
-        (Some("42"), Some("-1")),  // negative
-        (Some("42"), Some("1x")),  // trailing garbage
-        (Some(""), Some("1")),     // empty target
-        (Some("42"), Some(" 1 ")), // padded
-    ] {
-        assert!(
-            louiselm_skills::launch_transport::inherited_descriptor(pid, fds, 42).is_err(),
-            "accepted LISTEN_PID={pid:?} LISTEN_FDS={fds:?}",
-        );
-    }
-}

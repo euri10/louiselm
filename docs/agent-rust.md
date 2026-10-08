@@ -34,18 +34,15 @@ but must not silently weaken it.
 
 #### Unsafe and failure handling
 
-- Forbid `unsafe_code` in capture-service and usage-cli. Deny it by default in skills-core;
-  exceptions are limited to reviewed platform operations. Before adding or
-  expanding one, record why safe stdlib/existing-dependency APIs do not suffice,
-  the alternatives considered, and the evidence supporting the chosen boundary.
-  Existing unsafe code receives no automatic exemption.
-- Each unsafe operation needs a precise `// SAFETY:` argument covering its
-  actual obligations, including descriptor ownership and post-fork restrictions
-  where applicable. Keep unsafe blocks minimal and encapsulate them behind a
-  safe API that enforces its invariants. Tests supplement the argument; a green
-  test or the absence of the keyword does not establish soundness.
+- Forbid `unsafe_code` in capture-service, skills-core and usage-cli, including
+  binaries and tests. Use safe stdlib or approved dependency APIs for platform
+  operations; do not weaken the lint or add local exceptions. The broker adopts
+  systemd's listener through stdin, then redirects stdin to `/dev/null` before
+  starting threads or children (louiselm-80j95). Safe wrappers still require
+  validation of descriptor authority and lifecycle; a green test or the absence
+  of the keyword does not establish soundness.
 - No `static mut`. Raw-pointer operations, manual `Send`/`Sync`, FFI, and
-  lifetime manipulation follow the same unsafe exception policy; they are not
+  lifetime manipulation follow the same prohibition; they are not
   shortcuts around Rust's ownership model.
 - Expected input, I/O, configuration, and protocol failures return typed
   `Result` errors. Preserve their causes and sanitize them at presentation

@@ -197,7 +197,11 @@ fn process_with_groups(manager: &OwnedFd, uid: u32, seed: bool, groups: &str) ->
             .args([SEED, "--exact", "--nocapture"])
             .env("LOUISELM_DAEMON_SEED", "1");
     } else {
-        command.args(["/bin/sh", "-c", "export LISTEN_PID=$$ LISTEN_FDS=1; exec 3<&0; exec 0</dev/null; exec /usr/local/lib/louiselm/current/bin/louiselm-control serve"]);
+        // Matches the unit's StandardInput=socket: the listener is fd 0.
+        command.args([
+            "/usr/local/lib/louiselm/current/bin/louiselm-control",
+            "serve",
+        ]);
     }
     BrokerChild(command.spawn().unwrap())
 }
@@ -370,6 +374,11 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     );
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);
+    assert_eq!(
+        fs::read_link(format!("/proc/{}/fd/0", daemon.0.id())).unwrap(),
+        Path::new("/dev/null"),
+        "children must not inherit the manager listener through stdin"
+    );
     // Missing endpoint configuration must not prevent startup. Provision it
     // after startup, without restarting the daemon or connecting a Session.
     attention::configure();
@@ -481,6 +490,10 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     attention::reply(retry, &repeated, true);
     attention::wait_ack(sequence);
     inspection::status(&config, "session");
+    assert_eq!(
+        fs::read_link(format!("/proc/{}/fd/0", restarted.0.id())).unwrap(),
+        Path::new("/dev/null")
+    );
     // The retained supervisor reattaches to the same manager-owned socket and
     // then completes the ordinary controller-loss/terminal receipt path.
     session.dispose().unwrap();

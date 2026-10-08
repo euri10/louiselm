@@ -2,7 +2,8 @@
 
 use std::{
     ffi::OsStr,
-    os::fd::{FromRawFd, OwnedFd},
+    fs::File,
+    os::fd::{AsFd, OwnedFd},
     path::Path,
     process::ExitCode,
     sync::Arc,
@@ -11,7 +12,7 @@ use std::{
 
 use louiselm_skills::{
     broker::{BrokerError, InstalledBroker},
-    launch_transport::{SeqpacketListener, TransportError, inherited_descriptor},
+    launch_transport::{SeqpacketListener, TransportError},
     launcher_install::LauncherPaths,
     release,
 };
@@ -94,14 +95,16 @@ fn main() -> ExitCode {
 }
 
 fn start() -> Result<(), String> {
-    // Acquire inherited ownership before opening files or starting any thread.
-    let fd = activated_descriptor().map_err(|_| {
-        "socket activation requires exactly one listening descriptor for this process".to_owned()
+    // Take the listener off stdin before opening files, starting a thread or
+    // spawning a child, so nothing else can observe or inherit fd 0.
+    let fd = activated_listener()?;
+    // Verify it before the installed-authority checks, so a manual start names
+    // the missing socket rather than an unrelated authority refusal.
+    let listener = SeqpacketListener::adopt(fd).map_err(|_| {
+        "serve requires a listening Unix SOCK_SEQPACKET socket on standard input (StandardInput=socket)"
+            .to_owned()
     })?;
     let paths = installed_paths()?;
-    let listener = SeqpacketListener::adopt(fd).map_err(|_| {
-        "socket activation requires a listening Unix SOCK_SEQPACKET socket".to_owned()
-    })?;
     let broker = InstalledBroker::over(&paths, Path::new("/var/lib/louiselm/broker"), listener)
         .map_err(|error| error.to_string())?;
     serve(broker).map_err(|error| error.to_string())
@@ -154,22 +157,20 @@ fn installed_paths() -> Result<LauncherPaths, String> {
     Ok(paths)
 }
 
-#[expect(
-    unsafe_code,
-    reason = "Reviewed single-threaded process-entry ownership of systemd fd3; louiselm-96pv.3."
-)]
-fn activated_descriptor() -> Result<OwnedFd, TransportError> {
-    let raw = inherited_descriptor(
-        std::env::var("LISTEN_PID").ok().as_deref(),
-        std::env::var("LISTEN_FDS").ok().as_deref(),
-        std::process::id(),
-    )?;
-    std::fs::metadata(format!("/proc/self/fd/{raw}"))
-        .map_err(|_| TransportError::InheritedDescriptor)?;
-    // SAFETY: The procfs stat verified that fd3 is open. This fresh process has
-    // opened no descriptors and spawned no threads; no Rust owner or concurrent
-    // closer exists for the inherited fd. Take its sole ownership exactly once.
-    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+/// Takes the socket-activated listener that systemd places on standard input.
+///
+/// The service unit's `StandardInput=socket` hands the manager-held listener
+/// over as fd 0, without `LISTEN_FDS`. A close-on-exec duplicate becomes the
+/// broker's owned listener; fd 0 is then pointed at `/dev/null`, so no child
+/// process can inherit the listener as its standard input.
+fn activated_listener() -> Result<OwnedFd, String> {
+    let fd = std::io::stdin().as_fd().try_clone_to_owned().map_err(|_| {
+        "serve requires the broker socket on standard input (StandardInput=socket)".to_owned()
+    })?;
+    File::open("/dev/null")
+        .and_then(|null| rustix::stdio::dup2_stdin(&null).map_err(std::io::Error::from))
+        .map_err(|_| "serve cannot detach the broker socket from standard input".to_owned())?;
+    Ok(fd)
 }
 
 fn serve(broker: InstalledBroker) -> Result<(), BrokerError> {
