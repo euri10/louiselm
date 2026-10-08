@@ -12,7 +12,11 @@ httparse = "1.10"
 # System libbpf.so.1 only: defaults would compile and statically link libbpf.
 libbpf-rs = { version = "=0.25.0", default-features = false }
 libbpf-sys = { version = "=1.5.1", default-features = false }
-rustix = { version = "1", features = ["fs", "net", "process", "rand", "termios", "pty", "event", "runtime", "thread", "mount", "time"] }
+# Held at 1.1.4: launcher_install/foreground.rs uses runtime::kernel_sigprocmask
+# for its reviewed SIGTTOU-only mask (louiselm-qnow). rustix 1.1.5 made
+# `runtime` crate-private with no public replacement; louiselm-byrw2 removes
+# the call, then this pin.
+rustix = { version = "=1.1.4", features = ["fs", "net", "process", "rand", "termios", "pty", "event", "runtime", "thread", "mount", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Real YAML frontmatter, with bounded parsing and no includes/interpolation.
