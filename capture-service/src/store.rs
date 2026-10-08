@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
 
 use crate::{CaptureDraft, CaptureRecord, CaptureState, Transcript};
@@ -152,7 +153,7 @@ impl Store {
             duration_ms: draft.duration_ms,
             mime_type: draft.mime_type.clone(),
             bytes,
-            sha256: format!("{:x}", hasher.finalize()),
+            sha256: lower_hex(&hasher.finalize()),
         };
         let destination = self.root.join(&draft.id);
         if destination.exists() {

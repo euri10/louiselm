@@ -13,6 +13,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
+use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
 
 #[path = "notifications.rs"]
@@ -465,5 +466,5 @@ fn secret() -> String {
 }
 
 fn hash(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    lower_hex(&Sha256::digest(value.as_bytes()))
 }

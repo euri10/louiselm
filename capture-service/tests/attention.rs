@@ -6,6 +6,8 @@
     reason = "Test fixtures abort on setup failure and assert failures directly."
 )]
 
+mod support;
+
 use std::{fs, time::Duration};
 
 use louiselm_capture::{
@@ -82,6 +84,7 @@ async fn broker_projection_socket_authenticates_and_consumes_the_shared_wire_fix
     use louiselm_capture::{BrokerAttentionConfig, BrokerAttentionSocket};
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use support::lower_hex;
     let temporary = tempfile::tempdir().unwrap();
     let store = AttentionStore::new(
         temporary.path().join("attention"),
@@ -95,7 +98,7 @@ async fn broker_projection_socket_authenticates_and_consumes_the_shared_wire_fix
     let config = BrokerAttentionConfig {
         socket: socket_path.clone(),
         broker_uid: fs::metadata(temporary.path()).unwrap().uid(),
-        capability_sha256: format!("{:x}", Sha256::digest("projection-test-capability")),
+        capability_sha256: lower_hex(&Sha256::digest("projection-test-capability")),
     };
     let socket = BrokerAttentionSocket::bind(config, store.clone())
         .await
@@ -131,7 +134,7 @@ async fn broker_projection_socket_authenticates_and_consumes_the_shared_wire_fix
             };
             assert_eq!(
                 result.digest,
-                format!("{:x}", Sha256::digest(projection.to_string().as_bytes()))
+                lower_hex(&Sha256::digest(projection.to_string().as_bytes()))
             );
             assert!(result.applied);
             let snapshot = store.snapshot().unwrap();
