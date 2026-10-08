@@ -12,6 +12,7 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
 
 /// Input needed to durably admit a Run before it generates work.
@@ -1201,7 +1202,7 @@ fn validate_token(token: &str) -> Result<(), RunStoreError> {
 }
 
 fn token_sha256(token: &str) -> String {
-    format!("{:x}", Sha256::digest(token.as_bytes()))
+    lower_hex(&Sha256::digest(token.as_bytes()))
 }
 
 fn verify_token(run: &Run, token: &str) -> Result<(), RunStoreError> {

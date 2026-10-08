@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
 
 pub(crate) fn load_or_create_capability(path: &Path) -> io::Result<String> {
@@ -42,7 +43,7 @@ pub(crate) fn load_or_create_capability(path: &Path) -> io::Result<String> {
 }
 
 pub(crate) fn token_sha256(token: &str) -> String {
-    format!("{:x}", Sha256::digest(token.as_bytes()))
+    lower_hex(&Sha256::digest(token.as_bytes()))
 }
 
 pub(crate) fn verify_capability(expected_hash: &str, supplied: &str) -> bool {

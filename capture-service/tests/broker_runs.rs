@@ -4,6 +4,8 @@
     reason = "Fixtures assert transport and storage outcomes."
 )]
 
+mod support;
+
 use louiselm_capture::{
     AttentionStore, BrokerAttentionConfig, BrokerAttentionSocket, RunAdmission, RunStore,
 };
@@ -12,6 +14,7 @@ use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
 };
+use support::lower_hex;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -45,7 +48,7 @@ async fn broker_reads_only_exact_run_facts_and_refuses_unavailable_authority() {
     let config = BrokerAttentionConfig {
         socket: runtime.join("project.sock"),
         broker_uid: fs::metadata(&runtime).unwrap().uid(),
-        capability_sha256: format!("{:x}", Sha256::digest(TOKEN)),
+        capability_sha256: lower_hex(&Sha256::digest(TOKEN)),
     };
     let runs = RunStore::new(root.path().join("runs")).unwrap();
     runs.admit(
@@ -129,7 +132,7 @@ async fn cross_crate_requests_survive_restart_park_and_disposal() {
     let config = BrokerAttentionConfig {
         socket: runtime.join("broker.sock"),
         broker_uid: fs::metadata(&runtime).unwrap().uid(),
-        capability_sha256: format!("{:x}", Sha256::digest(TOKEN)),
+        capability_sha256: lower_hex(&Sha256::digest(TOKEN)),
     };
     let token = root.path().join("capability");
     fs::write(&token, TOKEN).unwrap();
@@ -234,7 +237,7 @@ async fn cross_crate_posture_reaches_neovim() {
         let config = BrokerAttentionConfig {
             socket: runtime.join("broker.sock"),
             broker_uid: fs::metadata(root.path()).unwrap().uid(),
-            capability_sha256: format!("{:x}", Sha256::digest(TOKEN)),
+            capability_sha256: lower_hex(&Sha256::digest(TOKEN)),
         };
         let endpoint = root.path().join("endpoint.json");
         fs::write(

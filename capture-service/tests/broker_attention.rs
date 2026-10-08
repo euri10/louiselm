@@ -6,6 +6,8 @@
     reason = "Behavioral fixtures abort on setup failure."
 )]
 
+mod support;
+
 use louiselm_capture::{
     AttentionSocket, AttentionStore, BrokerAttentionConfig, BrokerAttentionSocket,
 };
@@ -15,6 +17,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     time::Duration,
 };
+use support::lower_hex;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -32,7 +35,7 @@ async fn projection_requires_both_kernel_identity_and_scoped_credential() {
     let config = BrokerAttentionConfig {
         socket: runtime.join("project.sock"),
         broker_uid: uid,
-        capability_sha256: format!("{:x}", Sha256::digest(TOKEN)),
+        capability_sha256: lower_hex(&Sha256::digest(TOKEN)),
     };
     let store = AttentionStore::new(
         root.path().join("attention"),

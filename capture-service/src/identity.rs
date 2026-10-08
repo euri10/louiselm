@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
 
 /// TLS identity generation or persistence failure.
@@ -74,7 +75,7 @@ impl TlsIdentity {
         pem::parse(certificate_pem)?;
         let private_key_pem = fs::read_to_string(&private_key_path)?;
         let key_pair = KeyPair::from_pem(&private_key_pem)?;
-        let public_key_sha256 = format!("{:x}", Sha256::digest(key_pair.subject_public_key_info()));
+        let public_key_sha256 = lower_hex(&Sha256::digest(key_pair.subject_public_key_info()));
         Ok(Self {
             certificate_path,
             private_key_path,

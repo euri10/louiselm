@@ -8,6 +8,8 @@ use super::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::hex::lower_hex;
+
 /// One normalized broker-owned condition transition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -93,7 +95,7 @@ impl AttentionStore {
         validate(projection)?;
         // Values use sorted object keys in both crates, independent of struct field order.
         let canonical = serde_json::to_vec(&serde_json::to_value(projection)?)?;
-        let digest = format!("{:x}", Sha256::digest(canonical));
+        let digest = lower_hex(&Sha256::digest(canonical));
         self.with_lock(|store| {
             let mut state = store.load()?;
             let previous = state
