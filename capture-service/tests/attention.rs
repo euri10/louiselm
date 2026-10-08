@@ -64,11 +64,17 @@ fn broker_projection_order_survives_clear_and_receiver_restart() {
     )
     .unwrap();
     assert!(!restarted.project(&created).unwrap().applied);
-    assert!(restarted.snapshot().unwrap().items.is_empty());
+    assert_eq!(
+        restarted.snapshot().unwrap().items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     let mut gap = created;
     gap.sequence = 4;
     assert!(restarted.project(&gap).is_err());
-    assert!(restarted.snapshot().unwrap().items.is_empty());
+    assert_eq!(
+        restarted.snapshot().unwrap().items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
 }
 
 #[tokio::test]
@@ -136,7 +142,10 @@ async fn broker_projection_socket_authenticates_and_consumes_the_shared_wire_fix
                 reply,
                 AttentionSocketMessage::MutationError { .. }
             ));
-            assert!(store.snapshot().unwrap().items.is_empty());
+            assert_eq!(
+                store.snapshot().unwrap().items,
+                [] as [louiselm_capture::AttentionItem; 0]
+            );
         }
     }
     server.abort();
@@ -354,12 +363,9 @@ fn attention_store_is_idempotent_revisioned_and_restart_safe() {
             .generation,
         4
     );
-    assert!(
-        reopened
-            .snapshot()
-            .expect("session cleared")
-            .items
-            .is_empty()
+    assert_eq!(
+        reopened.snapshot().expect("session cleared").items,
+        [] as [louiselm_capture::AttentionItem; 0]
     );
     assert_eq!(
         reopened
@@ -369,7 +375,10 @@ fn attention_store_is_idempotent_revisioned_and_restart_safe() {
         4
     );
     assert_eq!(reopened.clear(&key()).expect("clear").generation, 4);
-    assert!(reopened.snapshot().expect("cleared").items.is_empty());
+    assert_eq!(
+        reopened.snapshot().expect("cleared").items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     assert_eq!(reopened.clear(&key()).expect("replay clear").generation, 4);
 }
 
@@ -544,13 +553,14 @@ async fn attention_socket_requires_capability_and_retries_without_new_generation
         .write_all(format!("{clear_session_kind}\n").as_bytes())
         .await
         .expect("clear session request");
-    assert!(
-        mutation_result(&mut lines, "request-3")
-            .await
-            .items
-            .is_empty()
+    assert_eq!(
+        mutation_result(&mut lines, "request-3").await.items,
+        [] as [louiselm_capture::AttentionItem; 0]
     );
-    assert!(store.snapshot().expect("session cleared").items.is_empty());
+    assert_eq!(
+        store.snapshot().expect("session cleared").items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     server.abort();
     let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
 }

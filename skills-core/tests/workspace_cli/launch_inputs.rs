@@ -181,7 +181,7 @@ fn preparation_never_initializes_or_repairs_a_supply_store() {
         }
         let output = prepare_proposal(&temp);
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert!(
             String::from_utf8_lossy(&output.stderr)
                 .contains("preparation requires an existing supply store")
@@ -203,7 +203,7 @@ fn preparation_refuses_untrusted_registry_without_publishing() {
     let original = fs::read(store.join("provenance.json")).unwrap();
     let output = prepare_proposal(&temp);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("preparation requires a trusted registry")
     );

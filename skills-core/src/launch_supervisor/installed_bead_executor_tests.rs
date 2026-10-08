@@ -456,7 +456,7 @@ fn wait_terminal(id: &str) {
                     .file_name()
                     .to_string_lossy()
                     .ends_with(".receipt.json")
-                    && fs::read(entry.path()).ok().is_some_and(|bytes| {
+                    && fs::read(entry.path()).is_ok_and(|bytes| {
                         crate::launch_receipt::SignedReceipt::parse_canonical(&bytes).is_ok_and(
                             |receipt| {
                                 receipt.payload.session_id == id

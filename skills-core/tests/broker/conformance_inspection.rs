@@ -199,7 +199,10 @@ fn operator_inspection_refuses_damaged_bound_evidence_instead_of_reporting_absen
             "{damage}"
         );
         assert!(!root.path().join("authorizations/history-failures").exists());
-        assert!(service.audit().unwrap().is_empty());
+        assert_eq!(
+            service.audit().unwrap(),
+            [] as [louiselm_skills::broker::AuditEntry; 0]
+        );
     }
 }
 

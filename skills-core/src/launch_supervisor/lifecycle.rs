@@ -164,7 +164,7 @@ impl LaunchedSession {
         broker_loss_grace: Duration,
         startup: StartupCheck,
     ) -> Result<(Self, mpsc::Receiver<()>), SupervisorError> {
-        debug_assert!(!receipts.is_empty());
+        debug_assert_ne!(receipts, [] as [SignedReceipt; 0]);
         let receipt = receipts
             .last()
             .expect("a launched Session has a receipt")

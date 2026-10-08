@@ -37,7 +37,7 @@ fn argument_errors_are_redacted_and_do_not_create_storage() {
         let state = root.path().join("state");
         let output = command(&data, &state).args(args).output().unwrap();
         assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert!(!String::from_utf8_lossy(&output.stderr).contains("private-argument"));
         assert!(!data.exists());
         assert!(!state.exists());
@@ -57,7 +57,7 @@ fn nested_help_succeeds_without_creating_storage() {
         let output = command(&data, &state).args(args).output().unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
         assert!(!data.exists());
         assert!(!state.exists());
     }

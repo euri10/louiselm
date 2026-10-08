@@ -143,7 +143,10 @@ fn assert_admission_status(decision: &ConformanceEvidence, bytes: &[u8]) {
     };
     assert_eq!(*status, agent);
     assert_eq!(agent.posture, operator.posture);
-    assert!(agent.allowed_actions.is_empty());
+    assert_eq!(
+        agent.allowed_actions,
+        [] as [louiselm_skills::launch_protocol::LifecycleAction; 0]
+    );
     for status in [&operator, &agent] {
         assert_projection(status, decision);
     }

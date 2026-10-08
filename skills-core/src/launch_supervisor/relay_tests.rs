@@ -301,7 +301,7 @@ fn cancellation_closes_a_full_controller_output_without_a_reader() {
     assert_eq!(Arc::strong_count(&child.0), 1);
     let mut drained = Vec::new();
     output_peer.read_to_end(&mut drained).unwrap();
-    assert!(!drained.is_empty());
+    assert_ne!(drained, [] as [u8; 0]);
     assert!(drained.iter().all(|byte| *byte == 0x5a));
 }
 

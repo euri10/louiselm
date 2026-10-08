@@ -188,7 +188,10 @@ fn observed_failure_survives_incomplete_and_cancelled_recertification() {
     let restored: FailureHistory =
         serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
     assert_eq!(restored, history);
-    assert!(history.record(&passing()).unwrap().failures.is_empty());
+    assert_eq!(
+        history.record(&passing()).unwrap().failures,
+        [] as [louiselm_skills::conformance::Failure; 0]
+    );
 
     let mut oversized = passing();
     for check in &mut oversized.checks {
@@ -225,7 +228,10 @@ fn a_guest_pass_cannot_clear_an_installed_failure_and_invalid_history_is_not_emp
     assert_eq!(history.record(&passing()).unwrap(), history);
     let mut recertified = passing();
     recertified.scope = Scope::InstalledHost;
-    assert!(history.record(&recertified).unwrap().failures.is_empty());
+    assert_eq!(
+        history.record(&recertified).unwrap().failures,
+        [] as [louiselm_skills::conformance::Failure; 0]
+    );
 
     let mut malformed = history.clone();
     malformed.failures[0].report_digest = "unreadable".into();

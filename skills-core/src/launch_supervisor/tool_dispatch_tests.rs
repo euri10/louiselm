@@ -538,7 +538,10 @@ fn agent_status_crosses_the_authenticated_capability_relay() {
     let mut expected_query = query.clone();
     expected_query["request_id"] = serde_json::json!(forwarded.request_id);
     assert_eq!(serde_json::to_value(&forwarded).unwrap(), expected_query);
-    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(
+        harness.audit.entries().unwrap(),
+        [] as [crate::broker::audit::AuditEntry; 0]
+    );
     let posture = crate::posture::Posture::evaluate(
         "session-1",
         "run-1",
@@ -597,7 +600,10 @@ fn agent_status_crosses_the_authenticated_capability_relay() {
         receive(&harness.agent).canonical_bytes(),
         expected_reply.canonical_bytes()
     );
-    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(
+        harness.audit.entries().unwrap(),
+        [] as [crate::broker::audit::AuditEntry; 0]
+    );
     // A status read leaves the one permitted command usable; after consumption
     // another read must not revive the spent policy or effect sequence.
     let command = harness.request("true");
@@ -721,7 +727,10 @@ fn status_deadline_allows_a_retry_without_restoring_command_authority() {
     };
     assert!(harness.owner.handle_status_reply(&late));
     assert!(harness.owner.commands.status.is_some());
-    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(
+        harness.audit.entries().unwrap(),
+        [] as [crate::broker::audit::AuditEntry; 0]
+    );
 }
 
 #[test]
@@ -790,7 +799,10 @@ fn skill_relay_preserves_retry_identity_and_drops_late_or_wrong_kind_replies() {
     let reply = receive(&harness.agent);
     assert_eq!(reply.request_id, query.request_id);
     assert_eq!(reply.operation, forwarded.operation);
-    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(
+        harness.audit.entries().unwrap(),
+        [] as [crate::broker::audit::AuditEntry; 0]
+    );
     assert_eq!(harness.owner.commands.sequence, 0);
 }
 
@@ -869,7 +881,10 @@ fn beads_relay_correlates_results_and_refuses_after_deadline() {
     ));
     assert!(harness.owner.handle_status_reply(&forwarded));
     assert!(harness.owner.commands.status.is_none());
-    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(
+        harness.audit.entries().unwrap(),
+        [] as [crate::broker::audit::AuditEntry; 0]
+    );
 }
 
 #[test]
@@ -1076,5 +1091,8 @@ fn agent_cannot_supply_its_own_supervisor_attribution_record() {
         harness.tick();
     }
     assert!(harness.owner.commands.pending.is_none());
-    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(
+        harness.audit.entries().unwrap(),
+        [] as [crate::broker::audit::AuditEntry; 0]
+    );
 }

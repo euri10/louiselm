@@ -465,7 +465,7 @@ fn selected_bytes_survive_checkout_mutation_and_get_independent_git_metadata() {
     );
     assert!(work.join(".git").is_dir());
     assert!(!work.join(".git/objects/info/alternates").exists());
-    assert!(git(&work, &["status", "--porcelain"]).stdout.is_empty());
+    assert_eq!(git(&work, &["status", "--porcelain"]).stdout, [] as [u8; 0]);
     assert_ne!(
         fs::metadata(work.join("tracked.txt")).unwrap().ino(),
         fs::metadata(temp.path().join("snapshot/files/tracked.txt"))
@@ -623,10 +623,9 @@ fn source_hooks_filters_and_fsmonitor_cannot_execute_and_binary_bytes_stay_raw()
             .unwrap()
             .contains("probe")
     );
-    assert!(
-        git(&temp.path().join("work"), &["remote"])
-            .stdout
-            .is_empty()
+    assert_eq!(
+        git(&temp.path().join("work"), &["remote"]).stdout,
+        [] as [u8; 0]
     );
 }
 
@@ -774,6 +773,6 @@ fn malformed_commands_never_echo_untrusted_values() {
         let output = run(&args);
         assert_eq!(output.status.code(), Some(1));
         assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_MARKER"));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
     }
 }

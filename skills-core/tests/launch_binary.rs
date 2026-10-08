@@ -22,7 +22,7 @@ fn generated_help_is_public_and_does_not_acquire_authority() {
         assert!(help.contains("Usage:"));
         assert!(!help.contains("__sandbox_bootstrap"));
         assert!(!help.contains("__conformance"));
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
     }
 }
 
@@ -66,7 +66,7 @@ fn development_certifier_cannot_acquire_installed_authority() {
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert!(
             output.stderr == b"louiselm-launch: root launcher authority required\n"
                 || output.stderr == b"louiselm-launch: running launcher release is untrusted\n"

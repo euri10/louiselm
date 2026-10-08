@@ -161,7 +161,10 @@ async fn operator_endpoint_never_accepts_broker_projections() {
         .await
         .unwrap();
     assert!(lines.next_line().await.unwrap().is_none());
-    assert!(store.snapshot().unwrap().items.is_empty());
+    assert_eq!(
+        store.snapshot().unwrap().items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
@@ -221,7 +224,10 @@ async fn producer_token_cannot_authorize_ordinary_attention_or_run_mutations() {
         assert_eq!(reply["type"], "mutation_error");
         assert_eq!(reply["message"], "operator capability is invalid");
     }
-    assert!(attention.snapshot().unwrap().items.is_empty());
+    assert_eq!(
+        attention.snapshot().unwrap().items,
+        [] as [louiselm_capture::AttentionItem; 0]
+    );
     attention_server.abort();
     run_server.abort();
     assert!(attention_server.await.unwrap_err().is_cancelled());
