@@ -70,7 +70,7 @@ pending. Later quarantine or budget holds prohibit fresh Resume, not reading an
 exact recorded result. Only a new explicit request after reconciliation can
 attempt a newer revision.
 
-The closed wire versions are receipt `/7`, signed receipt `/6`, response `/3`,
+The closed wire versions are receipt `/7`, signed receipt `/6`, response `/4`,
 supervisor status `/4`, Session status `/7`, guard socket request/retire `/2`.
 The required disposable-VM installed test
 `privileged_installed_brokered_guard_warm_resume_provider` proves kernel denial
@@ -536,10 +536,19 @@ launch. Installed status/launch consumption remains `louiselm-d6fv.9`.
 
 The broker's canonical `louiselm.launch.session-status/7` includes a
 display-only six-dimension `PostureStatus`, derived from retained trusted facts.
-Callers cannot supply its verdict. The initial runtime producer consumes the
+Callers cannot supply its verdict. The runtime producer consumes the
 authenticated launch/start chain and preserves its original proof-validation
-time; other dimensions remain explicitly unverified until their evidence
-producers are connected. Status reads run no evidence probes and grant no
+time. Network proof additionally requires the supervisor's authenticated
+`sender_guard_activated` observation after actual kernel-policy activation,
+bound to that signed guarded Start and the broker's current listener, Session,
+Run, envelope and guard revision. Enrollment alone is not activation: descendant
+initialization and pending Resume remain unverified. Closure, broker loss,
+revocation, quarantine, Provider holds and wall/monotonic expiry invalidate the
+proof; duplicate observations and reads never refresh its successful timestamp.
+The process-owned observation is not restored on broker reconnect. It neither
+supplies Provider disclosure nor establishes all six dimensions as Verified;
+the remaining supply/native integration is still required. Current conformance
+is independently source-owned. Status reads run no evidence probes and grant no
 authority. The same response includes broker-owned cold-recovery readiness,
 with typed missing/pending evidence reasons and the original retained-point
 expiry. Readiness grants no admission and promises no future load success.

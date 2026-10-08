@@ -601,7 +601,22 @@ release and signing key. The existing receipt store retains original admission
 history. The broker loads a private runtime-evidence record at launch or
 authenticated reattachment, using the original successful launch-proof audit
 time. A missing audit observation has no fabricated success timestamp and
-leaves runtime unverified. Isolation and network still need their own producers.
+leaves runtime unverified. Current isolation and network use their separate
+source-owned producers; neither borrows the runtime verdict.
+
+Network evidence arrives as `SenderGuardActivated` on the authenticated Session
+response channel (`louiselm.launch.response/4`), only after the launch supervisor
+successfully activates the actual Sender guard policy. Descriptor enrollment
+alone is insufficient, including while a descendant initializes or Resume is
+pending. The broker binds the observation to the signed guarded Start, exact
+Session/Run/envelope/guard revision and its live listener ownership. Reads use
+the same evaluator as Attention, require connected Running/Enabled mechanics,
+and honor quarantine, Provider holds and wall-clock/monotonic expiry. Closure,
+cancelled ownership or a lifted hold invalidate the old observation; duplicate
+packets do not renew its successful timestamp. This process-owned proof is not
+recreated from receipts after broker reattachment. Status carries a bounded
+receipt reference, never socket addresses, namespace identities or credentials.
+It does not supply Provider disclosure or establish full Verified posture.
 
 Signed conformance admission additionally binds exact canonical observations
 retained by the receipt store. Digest-bearing receipts cannot be acknowledged
@@ -690,8 +705,9 @@ unreadable or corrupt proof refuses reattachment. Conformance deadlines,
 waivers and quarantine continue to belong to their source-specific producers;
 missing producers remain explicitly unverified, with no synthetic expiry.
 
-The maintainer-confirmed design is `louiselm-rn38`. Supply/disclosure producer
-integration is `louiselm-d6fv.6.11`; network integration remains `.6.13`;
+The maintainer-confirmed design is `louiselm-rn38`. Supply/disclosure retention
+is `louiselm-d6fv.6.11`; its installed integration remains `louiselm-d6fv.9`.
+Network integration is `louiselm-d6fv.6.13`;
 conformance, waiver and quarantine owners retain their existing policies. This
 partial status path does not establish the installed Verified cutover in
 `louiselm-d6fv.9`.

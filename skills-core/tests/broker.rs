@@ -80,6 +80,8 @@ mod skill_requests;
 #[path = "broker/dependencies.rs"]
 mod dependencies;
 
+#[path = "broker/network_posture.rs"]
+mod network_posture;
 #[path = "broker/posture.rs"]
 mod posture;
 

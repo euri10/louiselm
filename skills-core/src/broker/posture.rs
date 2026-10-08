@@ -21,6 +21,7 @@ pub(super) struct LaunchPostureEvidence {
     checked_at_ms: Option<u64>,
     launch_receipt_id: String,
     supply: Option<supply::RetainedSupply>,
+    pub(super) network: Option<super::network_posture::RetainedNetwork>,
     provider_profile: Option<String>,
     pub(super) conformance_admission: ConformanceEvidence,
     conformance_report: Option<EvidenceRef>,
@@ -94,9 +95,13 @@ impl BrokerService {
         let now =
             now_ms.saturating_add(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
         let quarantined = self.lifecycle.is_quarantined(&status.session_id)?;
-        let (posture, _) = session
-            .posture_evidence
-            .evaluate(&status, quarantined, now)?;
+        let (posture, _) = session.posture_evidence.evaluate(
+            &status,
+            quarantined,
+            self.network_provider_invalidated(session)?,
+            now,
+            now,
+        )?;
         let waiting = status.state == SessionState::Parked
             || session
                 .posture_evidence
@@ -220,6 +225,7 @@ impl BrokerService {
             },
             launch_receipt_id: launch.digest().to_string(),
             supply: None,
+            network: None,
             measurement: EvidenceRef::new(
                 EvidenceKind::RuntimeMeasurement,
                 &evidence.runtime_measurement_digest,
@@ -243,9 +249,12 @@ impl LaunchPostureEvidence {
         &self,
         supervisor: &SupervisorStatus,
         quarantined: bool,
+        held: bool,
         now_ms: u64,
+        network_now_ms: u64,
     ) -> Result<PostureStatus, BrokerError> {
-        let (posture, freshness) = self.evaluate(supervisor, quarantined, now_ms)?;
+        let (posture, freshness) =
+            self.evaluate(supervisor, quarantined, held, now_ms, network_now_ms)?;
         Ok(PostureStatus::from_posture(&posture, freshness))
     }
 
@@ -253,7 +262,9 @@ impl LaunchPostureEvidence {
         &self,
         supervisor: &SupervisorStatus,
         quarantined: bool,
+        held: bool,
         now_ms: u64,
+        network_now_ms: u64,
     ) -> Result<(Posture, [EvidenceFreshness; 6]), BrokerError> {
         let missing = EvidenceFreshness {
             basis: FreshnessBasis::Missing,
@@ -262,6 +273,15 @@ impl LaunchPostureEvidence {
         let mut freshness = [missing; 6];
         let mut inputs = Vec::with_capacity(6);
         for (index, dimension) in DimensionName::ALL.into_iter().enumerate() {
+            if dimension == DimensionName::Network
+                && let Some(network) = &self.network
+            {
+                let (input, validity) =
+                    network.dimension(supervisor, quarantined, held, network_now_ms);
+                inputs.push(input);
+                freshness[index] = validity;
+                continue;
+            }
             if dimension == DimensionName::Isolation
                 && let Some(current) = &self.current_conformance
             {

@@ -22,6 +22,7 @@ local nvim = vim
 ---@field retire fun(self: louiselm.ui.Decisions, session: louiselm.session.Session) Retire a closing Session before selecting the survivor.
 ---@field present_next fun(self: louiselm.ui.Decisions) Present pending work after host changes finish.
 ---@field is_active fun(self: louiselm.ui.Decisions): boolean Report active decision authority.
+---@field active_session fun(self: louiselm.ui.Decisions): louiselm.session.Session? Session owning the currently displayed decision.
 ---@field dispose fun(self: louiselm.ui.Decisions): boolean Dispose owned resources.
 
 local M = {}
@@ -400,6 +401,13 @@ end
 ---@return boolean active
 function Decisions:is_active()
   return self.active ~= nil
+end
+
+---Return the Session whose permission UI currently owns the operator's decision.
+---@param self louiselm.ui.Decisions
+---@return louiselm.session.Session? session Nil when no decision is active.
+function Decisions:active_session()
+  return self.active and self.active.session or nil
 end
 
 ---Dispose owned reviews/details and cancel queued requests; late picker choices grant nothing.

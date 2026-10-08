@@ -44,7 +44,7 @@ fn frame() -> Vec<u8> {
     .into_bytes()
 }
 
-fn parsed() -> ProviderRequest {
+pub(super) fn parsed() -> ProviderRequest {
     let mut frames = Frames::new(HOST.into());
     frames.feed(&frame()).unwrap();
     frames.next_request().unwrap().unwrap()
@@ -92,7 +92,7 @@ impl Read for Chunks {
 type Call = (String, String, Vec<(String, String)>, Vec<u8>);
 
 #[derive(Default)]
-struct FakeUpstream {
+pub(super) struct FakeUpstream {
     calls: Mutex<Vec<Call>>,
     status: u16,
     stream: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
@@ -145,7 +145,7 @@ struct Fixture {
     root: TempDir,
 }
 
-fn credentials(root: &Path, provider: Option<&str>) -> ProviderCredentialStore {
+pub(super) fn credentials(root: &Path, provider: Option<&str>) -> ProviderCredentialStore {
     let state = root.join("broker-state");
     let directory = ProviderCredentialStore::root_in(&state);
     std::fs::create_dir_all(&directory).unwrap();

@@ -42,6 +42,7 @@ local nvim = vim
 ---@field beads? boolean Explicit Beads integration opt-in; defaults to false.
 ---@field markdown_highlighting? boolean Whether chat buffers start Markdown tree-sitter highlighting; defaults to true.
 ---@field start_insert_on_switch? boolean Whether switching to a chat starts Insert mode; defaults to true.
+---@field decisions? louiselm.ui.Decisions Shared permission owner; the caller retains its lifecycle.
 
 ---@class louiselm.ui.ChatView
 ---@field renderer louiselm.ui.ChatBuffer Buffer lifecycle and presentation coordinates.
@@ -77,6 +78,7 @@ local nvim = vim
 ---@field start_insert_on_switch boolean Whether switching to a chat starts Insert mode.
 ---@field attention? louiselm.ui.Attention Shared durable Attention controller when enabled.
 ---@field decisions louiselm.ui.Decisions Permission presentation and responder lifecycle.
+---@field owns_decisions boolean Whether Disposal owns the permission controller.
 ---@field usage louiselm.routing.Usage Persistent measured usage ledger.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
@@ -103,6 +105,7 @@ local nvim = vim
 ---@field disposed boolean Whether the chat UI has been disposed.
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
+---@field is_attached fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Check an attached Session identity.
 ---@field inspect_tool fun(self: louiselm.ui.Chat): boolean, string? Open the raw payload under the cursor.
 ---@field inspect_mcp fun(self: louiselm.ui.Chat): boolean, string? Inspect MCP server names, transports, and configuration status.
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
@@ -894,7 +897,7 @@ local function usage_details(summary)
   local details = { summary.turns .. " turns" }
   local tokens = summary.tokens.total_tokens
   if tokens ~= nil then
-    details[#details + 1] = format_number(tokens.average) .. " tokens/turn · token data for " .. tokens.samples
+    details[#details + 1] = string.format("%.0f", tokens.average) .. " tokens/turn · token data for " .. tokens.samples
   else
     details[#details + 1] = "No total-token data"
   end
@@ -1483,6 +1486,7 @@ function M.new(api, options)
         and key ~= "beads"
         and key ~= "markdown_highlighting"
         and key ~= "start_insert_on_switch"
+        and key ~= "decisions"
       then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
@@ -1490,6 +1494,9 @@ function M.new(api, options)
   end
   if options ~= nil and options.attention ~= nil and type(options.attention) ~= "boolean" then
     return nil, "chat attention must be a boolean"
+  end
+  if options ~= nil and options.decisions ~= nil and type(options.decisions) ~= "table" then
+    return nil, "chat decisions must be a permission controller"
   end
   for _, key in ipairs({ "workflows", "beads" }) do
     if options ~= nil and options[key] ~= nil and type(options[key]) ~= "boolean" then
@@ -1573,6 +1580,7 @@ function M.new(api, options)
     winbar_hover_targets = {},
     current_id = nil,
     disposed = false,
+    owns_decisions = options == nil or options.decisions == nil,
   }, Chat)
   chat.handoffs = Handoffs.new({
     submit = function(handoff, text, content)
@@ -1629,27 +1637,28 @@ function M.new(api, options)
       nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
     end,
   })
-  chat.decisions = Decisions.new({
-    is_live = function(session)
-      local view = chat.views[session:inspect().id]
-      return not chat.disposed
-        and view ~= nil
-        and view.session == session
-        and nvim.api.nvim_buf_is_valid(view.renderer.buffer)
-    end,
-    report_error = function(session, message)
-      local view = chat.views[session:inspect().id]
-      if view ~= nil and view.session == session then
-        view.renderer:append({ "Error: " .. message })
-      end
-    end,
-    resolved = function(session, request_id)
-      local state = session:inspect()
-      if chat.attention ~= nil and state.acp_session_id ~= nil then
-        chat.attention:permission_resolved(state.acp_session_id, request_id)
-      end
-    end,
-  })
+  chat.decisions = options and options.decisions
+    or Decisions.new({
+      is_live = function(session)
+        local view = chat.views[session:inspect().id]
+        return not chat.disposed
+          and view ~= nil
+          and view.session == session
+          and nvim.api.nvim_buf_is_valid(view.renderer.buffer)
+      end,
+      report_error = function(session, message)
+        local view = chat.views[session:inspect().id]
+        if view ~= nil and view.session == session then
+          view.renderer:append({ "Error: " .. message })
+        end
+      end,
+      resolved = function(session, request_id)
+        local state = session:inspect()
+        if chat.attention ~= nil and state.acp_session_id ~= nil then
+          chat.attention:permission_resolved(state.acp_session_id, request_id)
+        end
+      end,
+    })
   local limits_unsubscribe, limits_error = api:on_agent_limits(function(state)
     -- ACP notifications can arrive in a fast event; UI work belongs on the main loop.
     nvim.schedule(function()
@@ -3045,7 +3054,14 @@ function Chat:dispose()
     close_limits_timer(self, agent_name)
   end
   restore_winbars(self)
-  self.decisions:dispose()
+  if self.owns_decisions then
+    self.decisions:dispose()
+  else
+    for _, view in pairs(self.views) do
+      self.decisions:retire(view.session)
+    end
+    self.decisions:present_next()
+  end
   for window in pairs(self.tool_inspect_windows) do
     if nvim.api.nvim_win_is_valid(window) then
       nvim.api.nvim_win_close(window, true)

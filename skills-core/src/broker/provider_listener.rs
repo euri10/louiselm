@@ -68,6 +68,10 @@ impl Write for AcceptedProviderStream {
 }
 
 impl ProviderListener {
+    pub(super) fn owner_lease(&self) -> Weak<()> {
+        Arc::downgrade(&self.owner_lease)
+    }
+
     pub(super) fn adopt(
         packet: AuthenticatedPacket,
         supervisor: KernelCredentials,

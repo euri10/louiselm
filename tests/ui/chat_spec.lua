@@ -7594,7 +7594,13 @@ T["chat"]["busy options can be inspected by keyboard and winbar without mutation
   chat:dispose()
 end
 
-T["chat"]["picker distinguishes total turns metric coverage and query failures"] = function()
+T["chat"]["picker distinguishes total turns metric coverage and query failures"] = MiniTest.new_set({
+  parametrize = { { 112699.9090909090883, "112700" }, { 0, "0" }, { 100, "100" } },
+})
+T["chat"]["picker distinguishes total turns metric coverage and query failures"]["rounds only displayed token means"] = function(
+  average,
+  displayed
+)
   local session = fake_session("cohort-ui", "codex")
   session.state.config_options = {
     {
@@ -7605,6 +7611,16 @@ T["chat"]["picker distinguishes total turns metric coverage and query failures"]
       options = { { value = "medium", name = "Medium" }, { value = "high", name = "High" } },
     },
   }
+  local summary = {
+    turns = 4,
+    tokens = { total_tokens = { samples = 2, average = average } },
+    costs = {
+      { currency = "EUR", samples = 1, average = 2 },
+      { currency = "USD", samples = 2, average = 0.0000123456789 },
+    },
+    outcomes = {},
+  }
+  local original_summary = nvim.deepcopy(summary)
   local failure
   function session:option_usage(id, callback)
     MiniTest.expect.equality(id, "reasoning")
@@ -7612,12 +7628,7 @@ T["chat"]["picker distinguishes total turns metric coverage and query failures"]
       callback({
         {
           value = "medium",
-          summary = {
-            turns = 4,
-            tokens = { total_tokens = { samples = 2, average = 100 } },
-            costs = { { currency = "EUR", samples = 1, average = 2 }, { currency = "USD", samples = 2, average = 3 } },
-            outcomes = {},
-          },
+          summary = summary,
         },
         { value = "high", summary = { turns = 1, tokens = {}, costs = {}, outcomes = {} } },
       }, failure)
@@ -7633,14 +7644,20 @@ T["chat"]["picker distinguishes total turns metric coverage and query failures"]
     end
   end
   local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
   assert(chat:attach(session))
   assert(nvim.wait(1000, function()
     return #labels > 0
   end))
   MiniTest.expect.equality(labels, {
-    "Medium (observed: 4 turns · 100 tokens/turn · token data for 2 · 2 EUR/turn · cost data for 1 · 3 USD/turn · cost data for 2)",
+    "Medium (observed: 4 turns · "
+      .. displayed
+      .. " tokens/turn · token data for 2 · 2 EUR/turn · cost data for 1 · 1.23456789e-05 USD/turn · cost data for 2)",
     "High (observed: 1 turns · No total-token data)",
   })
+  MiniTest.expect.equality(summary, original_summary)
   labels = {}
   failure = { code = "locked", message = "database locked" }
   assert(chat:session_options())
@@ -7648,7 +7665,6 @@ T["chat"]["picker distinguishes total turns metric coverage and query failures"]
     return #labels > 0
   end))
   MiniTest.expect.equality(labels[1], "Medium (History unavailable: database locked)")
-  chat:dispose()
 end
 
 T["chat"]["queued history never opens a picker after disposal or confirmed option drift"] = function()

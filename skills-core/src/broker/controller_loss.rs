@@ -136,6 +136,12 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         self.require_trusted_history(session, verify)?;
+        if let LauncherPacket::Response(response) = &packet.packet
+            && let ResponseResult::SenderGuardActivated { enrollment } = &response.result
+        {
+            self.retain_network_activation(session, &packet, enrollment, now_ms, verify)?;
+            return Ok(false);
+        }
         match &packet.packet {
             LauncherPacket::Response(response)
                 if matches!(response.result, ResponseResult::SenderGuardUpstream { .. }) =>

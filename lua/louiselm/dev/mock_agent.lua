@@ -305,7 +305,7 @@ local function handle_message(message, state, options)
         sessionId = prompt.session_id,
         toolCall = {
           kind = "edit",
-          rawInput = { path = "mock.txt", diff = "-old\n+new" },
+          rawInput = { path = "mock.txt", diff = "--- a/mock.txt\n+++ b/mock.txt\n@@ -1 +1 @@\n-old\n+new\n" },
         },
         options = {
           { optionId = "allow-once", kind = "allow_once" },

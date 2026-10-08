@@ -4,6 +4,29 @@
 selections in one Forensics record. It works without an open chat. Nothing is
 uploaded or attached automatically; the record and its source files stay unchanged.
 
+To include JSONL evidence, collect Forensics for a named live Session with one
+explicit source pointer:
+
+```vim
+:LouiselmForensics AGENT ACP_SESSION_ID acp_log:/absolute/session.jsonl
+```
+
+Use `agent_transcript:/absolute/session.jsonl` for an Agent's native transcript.
+The source path must be absolute, at most 4096 bytes, and contain no NUL. Escape
+spaces with a backslash. Collection checks file metadata asynchronously and
+records whether the selected regular file is present, missing, or inaccessible;
+symlinks and nonregular files are inaccessible. It never reads source content,
+searches for logs, or verifies that the file belongs to the named Session. The
+record and view explicitly label this as a caller-declared source. A later
+export rechecks and reads only its bounded selections, so presence at collection
+does not guarantee later availability or valid JSONL.
+
+The headless `collect_forensics` options accept the same single pointer as
+`source = { kind = "acp_log", path = "/absolute/session.jsonl" }`, with
+`"agent_transcript"` as the other supported kind. Omit it to retain ordinary
+collection without a log pointer. An explicit ACP log replaces the omitted
+ACP entry; a native transcript follows the existing ACP and Git entries.
+
 First inspect the record with `:LouiselmForensicsView /path/to/record.json`.
 Choose observation fields or inclusive line ranges from its `evidence_sources`
 array (indices start at 1), then supply a new output path:
@@ -34,9 +57,10 @@ Selectors are `observation:FIELD` and `source:INDEX:FIRST:LAST`. Observation fie
 are `agent`, `agent_version`, `cwd`, `model`, `options`, `capabilities`,
 `neovim_version`, `louiselm_version`, `git_commit`, `git_branch`, and `dirty_files`.
 Source ranges support indexed `acp_log` and `agent_transcript` regular JSONL files.
-Collection may have no log pointer: export reports that selection as missing;
-it does not discover or load another Session's logs. Use observation selections
-for recorded Git state; export does not execute Git or follow source symlinks.
+Collection without an explicit source has no log pointer: export reports that
+selection as missing; it does not discover or load another Session's logs. Use
+observation selections for recorded Git state; export does not execute Git or
+follow source symlinks.
 
 The versioned artifact uses `kind: evidence_export`, `schema_version: 1`, and
 `redaction: structure-only-v1`. Each item carries its selection and a state:

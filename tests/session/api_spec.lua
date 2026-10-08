@@ -810,6 +810,200 @@ T["forensics"]["collects an asynchronous private record for a live Session"] = f
   MiniTest.expect.equality(record.id:match("^%d+%-%d+$") ~= nil, true)
 end
 
+local function forensics_fixture()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent" } }, nil, {
+    forensics_directory = nvim.fs.joinpath(root, "records"),
+  }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  start_ready_session(api, processes, "agent", root)
+  return api, root
+end
+
+T["forensics"]["owns an exact declared source without reading its content"] = function()
+  local api, root = forensics_fixture()
+  local directory = nvim.fs.joinpath(root, string.rep("long-directory/", 22))
+  assert(nvim.fn.mkdir(directory, "p") == 1)
+  local source = nvim.fs.joinpath(directory, "source.jsonl")
+  assert(nvim.fn.writefile({ "PRIVATE_CONTENT_NOT_EVEN_JSON" }, source) == 0)
+  local original_open = nvim.uv.fs_open
+  rawset(nvim.uv, "fs_open", function(path, ...)
+    assert(path ~= source, "collection must not open source contents")
+    return original_open(path, ...)
+  end)
+  MiniTest.finally(function()
+    rawset(nvim.uv, "fs_open", original_open)
+  end)
+  local options = { source = { kind = "acp_log", path = source } }
+  local path, failure, callbacks = nil, nil, 0
+  assert(api:collect_forensics("agent", "agent-acp", options, function(value, err)
+    MiniTest.expect.equality(nvim.in_fast_event(), false)
+    path, failure, callbacks = value, err, callbacks + 1
+  end))
+  MiniTest.expect.equality(callbacks, 0)
+  options.source.path = root .. "/different-session.jsonl"
+  options.source.kind = "agent_transcript"
+  assert(nvim.wait(1000, function()
+    return callbacks > 0
+  end))
+  MiniTest.expect.equality(failure, nil)
+  MiniTest.expect.equality(callbacks, 1)
+  local bytes = table.concat(nvim.fn.readfile(path), "\n")
+  local record = nvim.json.decode(bytes)
+  MiniTest.expect.equality(record.subject, { agent = "agent", acp_session_id = "agent-acp" })
+  MiniTest.expect.equality(record.evidence_sources[1], {
+    kind = "acp_log",
+    path = source,
+    state = "present",
+    mutable = true,
+    reason = "Caller-declared source; contents and Session identity not verified",
+  })
+  MiniTest.expect.equality(bytes:find("PRIVATE_CONTENT_NOT_EVEN_JSON", 1, true), nil)
+end
+
+T["forensics"]["rejects malformed source declarations before collection"] = function()
+  local api, root = forensics_fixture()
+  local cases = {
+    { false, "Forensics source must contain only kind and path" },
+    { { kind = "acp_log", path = root, other = true }, "Forensics source must contain only kind and path" },
+    { { kind = "git", path = root }, "Forensics source kind must be acp_log or agent_transcript" },
+  }
+  for _, path in ipairs({ false, "", "relative.jsonl", "/tmp/invalid\0path", "/" .. string.rep("x", 4096) }) do
+    cases[#cases + 1] = {
+      { kind = "acp_log", path = path },
+      "Forensics source path must be an absolute path of at most 4096 bytes without NUL",
+    }
+  end
+  local callbacks = 0
+  for _, case in ipairs(cases) do
+    local started, error_message = api:collect_forensics("agent", "agent-acp", { source = case[1] }, function()
+      callbacks = callbacks + 1
+    end)
+    MiniTest.expect.equality(started, false)
+    MiniTest.expect.equality(error_message, case[2])
+  end
+  MiniTest.expect.equality(callbacks, 0)
+  MiniTest.expect.equality(nvim.fn.isdirectory(root .. "/records"), 0)
+end
+
+T["forensics"]["records missing and nonregular sources without following them"] = function()
+  local api, root = forensics_fixture()
+  local link = root .. "/source-link"
+  local source = root .. "/source.jsonl"
+  assert(nvim.fn.writefile({ "{}" }, source) == 0)
+  assert(nvim.uv.fs_symlink(source, link))
+  local cases = {
+    { path = root .. "/absent.jsonl", state = "absent", reason = "selected path is missing" },
+    { path = root, state = "inaccessible", reason = "selected path is not a regular file" },
+    { path = link, state = "inaccessible", reason = "selected path is not a regular file" },
+  }
+  for _, case in ipairs(cases) do
+    local path, failure
+    assert(api:collect_forensics("agent", "agent-acp", {
+      source = { kind = "agent_transcript", path = case.path },
+    }, function(value, err)
+      path, failure = value, err
+    end))
+    assert(nvim.wait(1000, function()
+      return path ~= nil or failure ~= nil
+    end))
+    MiniTest.expect.equality(failure, nil)
+    local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+    MiniTest.expect.equality(record.evidence_sources[1].state, "omitted")
+    MiniTest.expect.equality(record.evidence_sources[3].state, case.state)
+    MiniTest.expect.equality(record.evidence_sources[3].path, case.path)
+    MiniTest.expect.equality(record.evidence_sources[3].reason:find(case.reason, 1, true) ~= nil, true)
+  end
+end
+
+T["forensics"]["suppresses publication after disposal during source inspection"] = function()
+  local api, root = forensics_fixture()
+  local source = root .. "/source.jsonl"
+  local original_lstat = nvim.uv.fs_lstat
+  local metadata_callback
+  rawset(nvim.uv, "fs_lstat", function(path, callback)
+    if path == source then
+      assert(type(callback) == "function", "source inspection must be asynchronous")
+      metadata_callback = callback
+      return {}
+    end
+    return original_lstat(path, callback)
+  end)
+  MiniTest.finally(function()
+    rawset(nvim.uv, "fs_lstat", original_lstat)
+  end)
+  local callbacks = 0
+  assert(api:collect_forensics("agent", "agent-acp", {
+    source = { kind = "acp_log", path = source },
+  }, function()
+    callbacks = callbacks + 1
+  end))
+  assert(nvim.wait(1000, function()
+    return metadata_callback ~= nil
+  end))
+  api:dispose()
+  local timer = assert(nvim.uv.new_timer())
+  local drained = false
+  timer:start(0, 0, function()
+    timer:close()
+    metadata_callback(nil, { type = "file" })
+    nvim.schedule(function()
+      drained = true
+    end)
+  end)
+  assert(nvim.wait(1000, function()
+    return drained
+  end))
+  MiniTest.expect.equality(callbacks, 0)
+  MiniTest.expect.equality(nvim.fn.isdirectory(root .. "/records"), 0)
+end
+
+T["forensics"]["distinguishes denied reads from a source disappearing during metadata checks"] = function()
+  local api, root = forensics_fixture()
+  local source = root .. "/source.jsonl"
+  assert(nvim.fn.writefile({ "{}" }, source) == 0)
+  local original_access = nvim.uv.fs_access
+  local access_error
+  rawset(nvim.uv, "fs_access", function(path, mode, callback)
+    if path ~= source then
+      return original_access(path, mode, callback)
+    end
+    assert(type(callback) == "function", "source access check must be asynchronous")
+    local timer = assert(nvim.uv.new_timer())
+    timer:start(0, 0, function()
+      timer:close()
+      callback(access_error, false)
+    end)
+    return timer
+  end)
+  MiniTest.finally(function()
+    rawset(nvim.uv, "fs_access", original_access)
+  end)
+  for _, case in ipairs({
+    { error = "EACCES: permission denied", state = "inaccessible" },
+    { error = "ENOENT: no such file", state = "absent" },
+  }) do
+    access_error = case.error
+    local path, failure
+    assert(
+      api:collect_forensics("agent", "agent-acp", { source = { kind = "acp_log", path = source } }, function(value, err)
+        path, failure = value, err
+      end)
+    )
+    assert(nvim.wait(1000, function()
+      return path ~= nil or failure ~= nil
+    end))
+    MiniTest.expect.equality(failure, nil)
+    local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+    MiniTest.expect.equality(record.evidence_sources[1].state, case.state)
+  end
+end
+
 T["forensics"]["keeps a managed broker binding private for later fresh inspection"] = function()
   local root = nvim.fn.tempname()
   assert(nvim.fn.mkdir(root, "p") == 1)

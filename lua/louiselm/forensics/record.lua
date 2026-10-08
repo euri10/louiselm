@@ -7,7 +7,7 @@
 ---@field state "present"|"absent"|"inaccessible"|"unsupported"|"omitted" State observed during collection.
 ---@field path? string Known source path, when present.
 ---@field mutable? boolean Whether the source can change after observation.
----@field reason? string Bounded reason for a non-present state.
+---@field reason? string Bounded source declaration or explanation of an unavailable state.
 
 ---@class louiselm.forensics.Record
 ---@field schema_version integer Record schema version.
@@ -32,6 +32,7 @@ local M = {}
 local VERSION = 1
 local MAX_DIRTY_FILES = 100
 local MAX_TEXT = 256
+local MAX_PATH = 4096
 -- Agent transcripts preserve conversation content; only ACP wire logs preserve frame ordering.
 local SOURCE_PROPERTIES = {
   acp_log = { "conversation_content", "wire_ordering" },
@@ -113,7 +114,10 @@ local function evidence_sources(value)
     if type(source) ~= "table" or type(source.kind) ~= "string" or type(source.state) ~= "string" then
       return nil
     end
-    if source.path ~= nil and bounded_string(source.path, MAX_TEXT) == nil then
+    if
+      source.path ~= nil
+      and (type(source.path) ~= "string" or source.path == "" or #source.path > MAX_PATH or source.path:find("%z"))
+    then
       return nil
     end
     if source.reason ~= nil and bounded_string(source.reason, MAX_TEXT) == nil then
@@ -131,7 +135,7 @@ local function evidence_sources(value)
     result[#result + 1] = {
       kind = source.kind,
       state = source.state,
-      path = bounded_string(source.path, MAX_TEXT),
+      path = source.path,
       mutable = source.mutable == true,
       reason = bounded_string(source.reason, MAX_TEXT),
     }

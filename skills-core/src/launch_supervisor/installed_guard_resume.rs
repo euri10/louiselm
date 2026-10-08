@@ -118,6 +118,8 @@ fn request(
 
 pub(super) fn park_resume(broker: &InstalledBroker, session: &mut BrokerSession, uid: u32) {
     let caller = LifecycleCaller::Operator { uid };
+    let activated = network_posture(broker, session, &caller);
+    assert_eq!(activated.state, crate::posture::DimensionState::Verified);
     let parked = broker
         .request_lifecycle(
             session,
@@ -126,6 +128,12 @@ pub(super) fn park_resume(broker: &InstalledBroker, session: &mut BrokerSession,
         )
         .unwrap();
     assert_eq!(parked.payload.resulting_state, SessionState::Parked);
+    let parked = network_posture(broker, session, &caller);
+    assert_eq!(parked.state, crate::posture::DimensionState::Failed);
+    assert_eq!(
+        parked.freshness.last_verified_at_ms,
+        activated.freshness.last_verified_at_ms
+    );
     println!("BROKER_WARM_PARKED");
     let resume = request(
         "warm-resume",
@@ -136,6 +144,9 @@ pub(super) fn park_resume(broker: &InstalledBroker, session: &mut BrokerSession,
     let running = broker.request_lifecycle(session, &caller, &resume).unwrap();
     assert_eq!(running.payload.sequence, 3);
     assert_eq!(running.payload.resulting_state, SessionState::Running);
+    let resumed = network_posture(broker, session, &caller);
+    assert_eq!(resumed.state, crate::posture::DimensionState::Verified);
+    assert!(resumed.freshness.last_verified_at_ms > activated.freshness.last_verified_at_ms);
     // Exact replay cannot allocate or thaw again.
     assert_eq!(
         broker.request_lifecycle(session, &caller, &resume).unwrap(),

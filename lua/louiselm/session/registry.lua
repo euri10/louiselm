@@ -445,6 +445,31 @@ function Registry:collect_forensics(agent_name, acp_session_id, options, callbac
     return false, "forensics options must be a table"
   end
   options = options or {}
+  local source
+  if options.source ~= nil then
+    if type(options.source) ~= "table" then
+      return false, "Forensics source must contain only kind and path"
+    end
+    for key in pairs(options.source) do
+      if key ~= "kind" and key ~= "path" then
+        return false, "Forensics source must contain only kind and path"
+      end
+    end
+    if options.source.kind ~= "acp_log" and options.source.kind ~= "agent_transcript" then
+      return false, "Forensics source kind must be acp_log or agent_transcript"
+    end
+    local path = options.source.path
+    if type(path) ~= "string" or path:sub(1, 1) ~= "/" or #path > 4096 or path:find("%z") then
+      return false, "Forensics source path must be an absolute path of at most 4096 bytes without NUL"
+    end
+    source = {
+      kind = options.source.kind,
+      path = path,
+      state = "inaccessible",
+      mutable = true,
+      reason = "Caller-declared source; contents and Session identity not verified",
+    }
+  end
   if
     options.diagnosing_session_id ~= nil
     and (type(options.diagnosing_session_id) ~= "string" or options.diagnosing_session_id == "")
@@ -498,7 +523,10 @@ function Registry:collect_forensics(agent_name, acp_session_id, options, callbac
       { kind = "git", state = "unsupported", mutable = true, reason = "Git status is unavailable" },
     },
   }
-  local function finish()
+  if source ~= nil then
+    record.evidence_sources[source.kind == "acp_log" and 1 or 3] = source
+  end
+  local function persist()
     if self.disposed then
       return
     end
@@ -515,6 +543,52 @@ function Registry:collect_forensics(agent_name, acp_session_id, options, callbac
       end
     end)
     self.forensics_reads[cancel] = true
+  end
+  local function finish()
+    if self.disposed then
+      return
+    end
+    if source == nil then
+      persist()
+      return
+    end
+    local selected = source
+    local function unavailable(error_message, reason)
+      local missing = error_message ~= nil
+        and (error_message:match("^ENOENT:") ~= nil or error_message:match("^ENOTDIR:") ~= nil)
+      selected.state = missing and "absent" or "inaccessible"
+      selected.reason = selected.reason .. (missing and "; selected path is missing" or "; " .. reason)
+      persist()
+    end
+    nvim.uv.fs_lstat(selected.path, function(error_message, stat)
+      nvim.schedule(function()
+        if self.disposed then
+          return
+        end
+        if error_message ~= nil or stat == nil then
+          unavailable(error_message, "metadata is unreadable")
+        elseif stat.type ~= "file" then
+          selected.reason = selected.reason .. "; selected path is not a regular file"
+          persist()
+        else
+          -- Access checks only metadata. Export separately validates and reads
+          -- its selected ranges; presence here never certifies source contents.
+          nvim.uv.fs_access(selected.path, "R", function(access_error)
+            nvim.schedule(function()
+              if self.disposed then
+                return
+              end
+              if access_error ~= nil then
+                unavailable(access_error, "selected file is unreadable")
+              else
+                selected.state = "present"
+                persist()
+              end
+            end)
+          end)
+        end
+      end)
+    end)
   end
   local cwd = subject.working_dir
   if type(cwd) ~= "string" or cwd == "" then

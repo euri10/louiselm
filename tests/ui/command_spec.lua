@@ -318,6 +318,97 @@ T["command"]["writes a record for an explicit Session named beside an open chat"
   MiniTest.expect.equality(message:find(state_home, 1, true) ~= nil, true)
 end
 
+T["command"]["collects an explicit source then exports its selected redacted JSONL range"] = function()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p", 448) == 1)
+  local source = nvim.fs.joinpath(root, "subject: transcript.jsonl")
+  local source_lines = {
+    '{"method":"session/update","params":{"sessionId":"PRIVATE_SENTINEL","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"PRIVATE_SENTINEL"}}}}',
+    '{"text":"UNSELECTED_SENTINEL"}',
+  }
+  assert(nvim.fn.writefile(source_lines, source) == 0)
+  local process, original_system = fake_process()
+  local api = assert(Session.new({ subject = { provider = "test-service", command = "agent" } }, nil, {
+    forensics_directory = nvim.fs.joinpath(root, "records"),
+    usage_directory = nvim.fs.joinpath(root, "usage"),
+  }))
+  local original_notify = nvim.notify
+  local messages = {}
+  local view_buffer
+  rawset(nvim, "notify", function(message)
+    messages[#messages + 1] = message
+  end)
+  MiniTest.finally(function()
+    api:dispose()
+    Command.register()
+    if view_buffer and nvim.api.nvim_buf_is_valid(view_buffer) then
+      nvim.api.nvim_buf_delete(view_buffer, { force = true })
+    end
+    rawset(nvim, "system", original_system)
+    rawset(nvim, "notify", original_notify)
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("subject", { cwd = root }))
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "subject-acp" })
+  assert(nvim.wait(5000, function()
+    return session:inspect().status == "ready"
+  end))
+  for _, args in ipairs({
+    { "subject", "subject-acp", "source.jsonl" },
+    { "subject", "subject-acp", "git:" .. source },
+    { "subject", "subject-acp", "acp_log:" .. source, "extra" },
+  }) do
+    local count = #messages
+    nvim.api.nvim_cmd({ cmd = "LouiselmForensics", args = args }, {})
+    MiniTest.expect.equality(#messages, count + 1)
+    MiniTest.expect.equality(messages[#messages]:find("Forensics", 1, true) ~= nil, true)
+  end
+  MiniTest.expect.equality(nvim.fn.isdirectory(root .. "/records"), 0)
+  messages = {}
+  -- Exercise Ex escaping as typed by an operator; no Chat is needed.
+  nvim.cmd("LouiselmForensics subject subject-acp agent_transcript:" .. nvim.fn.fnameescape(source))
+  assert(nvim.wait(2000, function()
+    return #messages > 0
+  end))
+  local record_path = messages[1]:match("Forensics record written to (.+)$")
+  assert(record_path, messages[1])
+  local record_bytes = table.concat(nvim.fn.readfile(record_path), "\n")
+  local record = nvim.json.decode(record_bytes)
+  MiniTest.expect.equality(record.subject, { agent = "subject", acp_session_id = "subject-acp" })
+  MiniTest.expect.equality(record.evidence_sources[1].state, "omitted")
+  MiniTest.expect.equality(record.evidence_sources[3].path, source)
+  MiniTest.expect.equality(record.evidence_sources[3].state, "present")
+  MiniTest.expect.equality(
+    record.evidence_sources[3].reason,
+    "Caller-declared source; contents and Session identity not verified"
+  )
+  MiniTest.expect.equality(record_bytes:find("PRIVATE_SENTINEL", 1, true), nil)
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensicsView", args = { record_path } }, {})
+  assert(nvim.wait(1000, function()
+    return nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()) == "louiselm://forensics-view"
+  end))
+  view_buffer = nvim.api.nvim_get_current_buf()
+  local view_text = table.concat(nvim.api.nvim_buf_get_lines(view_buffer, 0, -1, false), "\n")
+  MiniTest.expect.equality(view_text:find(record.evidence_sources[3].reason, 1, true) ~= nil, true)
+  local output = nvim.fs.joinpath(root, "selected evidence.json")
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensicsExport", args = { record_path, output, "source:3:1:1" } }, {})
+  assert(nvim.wait(2000, function()
+    return nvim.fn.filereadable(output) == 1
+  end))
+  local exported_bytes = table.concat(nvim.fn.readfile(output), "\n")
+  local artifact = nvim.json.decode(exported_bytes)
+  MiniTest.expect.equality(artifact.items[1].state, "exported")
+  MiniTest.expect.equality(#artifact.items[1].lines, 1)
+  MiniTest.expect.equality(artifact.items[1].lines[1].line, 1)
+  MiniTest.expect.equality(artifact.items[1].lines[1].value.method, "session/update")
+  MiniTest.expect.equality(artifact.items[1].lines[1].value.params.sessionId, "[redacted]")
+  MiniTest.expect.equality(exported_bytes:find("PRIVATE_SENTINEL", 1, true), nil)
+  MiniTest.expect.equality(exported_bytes:find("UNSELECTED_SENTINEL", 1, true), nil)
+  MiniTest.expect.equality(nvim.fn.readfile(source), source_lines)
+  MiniTest.expect.equality(table.concat(nvim.fn.readfile(record_path), "\n"), record_bytes)
+end
+
 T["command"]["renders a Forensics record as a human projection, not raw JSON"] = function()
   local root = nvim.fn.tempname()
   local store = assert(ForensicsStore.new(nvim.fs.joinpath(root, "forensics")))
@@ -1777,6 +1868,245 @@ T["command"]["attaches a project instructions resource_link on a new session thr
   })
   delete_chat_buffers()
   nvim.fn.delete(project, "rf")
+end
+
+T["command"]["inline permission controls"] =
+  MiniTest.new_set({ parametrize = { { "allow" }, { "deny" }, { "dismiss" }, { "cancel" } } })
+
+T["command"]["inline permission controls"]["answer the request without an open Chat"] = function(choice)
+  local process, original_system = fake_process()
+  local original_select = nvim.ui.select
+  local picker
+  nvim.ui.select = function(items, _, callback)
+    picker = { items = items, callback = callback }
+  end
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "old" })
+  nvim.api.nvim_set_current_buf(buffer)
+  MiniTest.finally(function()
+    Command.register()
+    Command.configure(nil)
+    nvim.ui.select = original_select
+    rawset(nvim, "system", original_system)
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end)
+  assert(Command.configure({ agents = { mock = { provider = "test-service", command = "mock-agent" } } }))
+  Command.register()
+  nvim.api.nvim_feedkeys(":LouiselmInline\rrewrite\r", "xt", false)
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "inline-acp" })
+  assert(nvim.wait(1000, function()
+    return #process.writes >= 3
+  end, 1))
+  local session = Session.exit_verdict()[1].session
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    if not timer:is_closing() then
+      timer:close()
+    end
+  end)
+  timer:start(0, 0, function()
+    process.options.stdout(nil, assert(Protocol.encode(assert(Protocol.request(9, "session/request_permission", {
+      sessionId = "inline-acp",
+      toolCall = { toolCallId = "tool", kind = "execute", title = "Test command" },
+      options = {
+        { optionId = "allow", kind = "allow_once" },
+        { optionId = "deny", kind = "reject_once" },
+      },
+    })))) .. "\n")
+  end)
+  assert(
+    nvim.wait(1000, function()
+      return picker ~= nil
+    end, 1),
+    "inline did not present its permission request"
+  )
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  if choice == "cancel" then
+    nvim.cmd.LouiselmCancel()
+  elseif choice == "dismiss" then
+    picker.callback(nil)
+  else
+    for _, item in ipairs(picker.items) do
+      if item.optionId == choice then
+        picker.callback(item)
+        break
+      end
+    end
+  end
+  local outcomes, cancels = {}, 0
+  for _, encoded in ipairs(process.writes) do
+    local message = assert(Protocol.decode(encoded:sub(1, -2)))
+    if message.id == 9 then
+      outcomes[#outcomes + 1] = message.result.outcome
+    elseif message.method == "session/cancel" then
+      cancels = cancels + 1
+    end
+  end
+  MiniTest.expect.equality(outcomes, {
+    (choice == "cancel" or choice == "dismiss") and { outcome = "cancelled" }
+      or { outcome = "selected", optionId = choice },
+  })
+  MiniTest.expect.equality(cancels, choice == "cancel" and 1 or 0)
+  respond(process, 3, { stopReason = choice == "cancel" and "cancelled" or "end_turn" })
+  assert(nvim.wait(1000, function()
+    return session:inspect().status == "ready"
+  end, 1))
+end
+
+T["command"]["inline and Chat share permission ownership while cancellation follows focus"] = function()
+  local chat_process, original_system = fake_process()
+  local original_select = nvim.ui.select
+  local picks = {}
+  nvim.ui.select = function(items, _, callback)
+    picks[#picks + 1] = { items = items, callback = callback }
+  end
+  local source = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_lines(source, 0, -1, false, { "source" })
+  nvim.api.nvim_set_current_buf(source)
+  MiniTest.finally(function()
+    Command.register()
+    Command.configure(nil)
+    nvim.ui.select = original_select
+    rawset(nvim, "system", original_system)
+    if nvim.api.nvim_buf_is_valid(source) then
+      nvim.api.nvim_buf_delete(source, { force = true })
+    end
+  end)
+  assert(Command.configure({ agents = { mock = { provider = "test-service", command = "mock-agent" } } }))
+  Command.register()
+  nvim.cmd.LouiselmChat()
+  respond(chat_process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(chat_process, 2, { sessionId = "chat-acp" })
+  local chat_buffer = nvim.api.nvim_get_current_buf()
+  local chat_session = Session.exit_verdict()[1].session
+  assert(chat_session:prompt("chat work"))
+  local inline_process = fake_process()
+  nvim.api.nvim_set_current_buf(source)
+  nvim.api.nvim_feedkeys(":LouiselmInline\rrewrite\r", "xt", false)
+  respond(inline_process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(inline_process, 2, { sessionId = "inline-acp" })
+  assert(nvim.wait(1000, function()
+    return #chat_process.writes >= 3 and #inline_process.writes >= 3
+  end, 1))
+  local inline_session
+  for _, verdict in ipairs(Session.exit_verdict()) do
+    if verdict.session ~= chat_session then
+      inline_session = verdict.session
+    end
+  end
+  assert(inline_session ~= nil)
+  local function permission(process, acp_id, request_id)
+    process.options.stdout(
+      nil,
+      assert(Protocol.encode(assert(Protocol.request(request_id, "session/request_permission", {
+        sessionId = acp_id,
+        toolCall = { toolCallId = "tool", kind = "execute", title = acp_id },
+        options = { { optionId = "allow", kind = "allow_once" }, { optionId = "deny", kind = "reject_once" } },
+      })))) .. "\n"
+    )
+  end
+  permission(chat_process, "chat-acp", 9)
+  permission(inline_process, "inline-acp", 10)
+  assert(nvim.wait(1000, function()
+    return #picks > 0 and inline_session:inspect().status == "waiting_permission"
+  end, 1))
+  MiniTest.expect.equality(#picks, 1)
+  nvim.api.nvim_set_current_buf(chat_buffer)
+  nvim.cmd.LouiselmCancel()
+  assert(nvim.wait(1000, function()
+    return chat_session:inspect().status == "cancelling"
+  end, 1))
+  MiniTest.expect.equality(inline_session:inspect().status, "waiting_permission")
+  nvim.schedule(function()
+    picks[1].callback(picks[1].items[2])
+  end)
+  assert(nvim.wait(1000, function()
+    return #picks == 2
+  end, 1))
+  nvim.api.nvim_set_current_buf(source)
+  nvim.cmd.LouiselmCancel()
+  MiniTest.expect.equality(inline_session:inspect().status, "cancelling")
+  nvim.schedule(function()
+    picks[2].callback(picks[2].items[2])
+  end)
+  for _, process in ipairs({ chat_process, inline_process }) do
+    local cancellations, responses = 0, {}
+    for _, encoded in ipairs(process.writes) do
+      local message = assert(Protocol.decode(encoded:sub(1, -2)))
+      if message.method == "session/cancel" then
+        cancellations = cancellations + 1
+      elseif message.result ~= nil and (message.id == 9 or message.id == 10) then
+        responses[#responses + 1] = message.result.outcome
+      end
+    end
+    MiniTest.expect.equality(cancellations, 1)
+    MiniTest.expect.equality(responses, { { outcome = "cancelled" } })
+    respond(process, 3, { stopReason = "cancelled" })
+  end
+end
+
+T["command"]["inline process permission flow"] = MiniTest.new_set({
+  parametrize = { { "allow" }, { "reject" }, { "cancel" }, { "no_request" } },
+})
+
+T["command"]["inline process permission flow"]["uses native controls with the mock ACP peer"] = function(action)
+  local cwd = nvim.fn.getcwd()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local path = nvim.fs.joinpath(root, "mock.txt")
+  assert(nvim.fn.writefile({ "old" }, path) == 0)
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "old" })
+  nvim.api.nvim_set_current_buf(buffer)
+  local definition = mock_definition()
+  nvim.list_extend(definition.args, { "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", project_root) .. ")" })
+  definition.env = {
+    LOUISELM_MOCK_MODE = action == "no_request" and "static" or "permission",
+    LOUISELM_MOCK_RESPONSE = "replacement",
+  }
+  MiniTest.finally(function()
+    Command.register()
+    Command.configure(nil)
+    nvim.api.nvim_cmd({ cmd = "lcd", args = { cwd } }, {})
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+    nvim.fn.delete(root, "rf")
+  end)
+  nvim.api.nvim_cmd({ cmd = "lcd", args = { root } }, {})
+  assert(Command.configure({ agents = { mock = definition } }))
+  Command.register()
+  nvim.api.nvim_feedkeys("ggV" .. nvim.keycode("<Esc>"), "nx!", false)
+  nvim.api.nvim_feedkeys(":LouiselmInline\rrewrite\r", "xt", false)
+  local session = Session.exit_verdict()[1].session
+  if action ~= "no_request" then
+    assert(
+      nvim.wait(2000, function()
+        return nvim.api.nvim_buf_get_name(0):match("^louiselm%-diff://") ~= nil
+      end, 1),
+      "mock permission did not open a usable diff review"
+    )
+    MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+    if action == "cancel" then
+      nvim.cmd.LouiselmCancel()
+    else
+      nvim.api.nvim_feedkeys(action == "allow" and "a" or "d", "xt!", false)
+    end
+  end
+  assert(nvim.wait(2000, function()
+    return session:inspect().current_turn == 1
+      and session:inspect().status == "ready"
+      and nvim.api.nvim_get_current_buf() == buffer
+      and (action == "cancel" or nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1] == "replacement")
+  end, 1))
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), {
+    action == "cancel" and "old" or "replacement",
+  })
+  -- The scripted peer acknowledges the decision; it never applies the proposed edit.
+  MiniTest.expect.equality(nvim.fn.readfile(path), { "old" })
 end
 
 return T

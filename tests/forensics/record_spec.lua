@@ -61,6 +61,19 @@ T["build"]["rejects missing subject identity"] = function()
   MiniTest.expect.equality(error_message, "forensics subject requires an ACP Session ID")
 end
 
+T["build"]["preserves exact evidence paths and refuses oversized or NUL paths"] = function()
+  local value = input()
+  local path = "/" .. string.rep("long-directory/", 22) .. "session.jsonl"
+  value.evidence_sources[1].path = path
+  MiniTest.expect.equality(assert(Record.build(value)).evidence_sources[1].path, path)
+  for _, invalid in ipairs({ string.rep("x", 4097), "/tmp/invalid\0path" }) do
+    value.evidence_sources[1].path = invalid
+    local record, error_message = Record.build(value)
+    MiniTest.expect.equality(record, nil)
+    MiniTest.expect.equality(error_message, "forensics evidence sources are malformed")
+  end
+end
+
 T["store"] = MiniTest.new_set()
 
 T["store"]["publishes and reads an immutable private record"] = function()
@@ -173,6 +186,46 @@ T["store"]["reports an existing referent that cannot be opened as unreadable"] =
 
   local inspected = assert(store:inspect(path))
 
+  MiniTest.expect.equality(inspected.evidence_availability, {
+    conversation_content = "unreadable",
+    wire_ordering = "unreadable",
+  })
+end
+
+T["store"]["does not describe a source symlink as currently readable evidence"] = function()
+  local source = nvim.fs.joinpath(temp_dir, "source.jsonl")
+  local link = nvim.fs.joinpath(temp_dir, "source-link.jsonl")
+  assert(nvim.fn.writefile({ "{}" }, source) == 0)
+  assert(nvim.uv.fs_symlink(source, link))
+  local value = input()
+  value.evidence_sources[1].path = link
+  value.evidence_sources[1].state = "inaccessible"
+  local store = assert(Store.new(nvim.fs.joinpath(temp_dir, "forensics")))
+  local path = assert(store:write(value))
+  local inspected = assert(store:inspect(path))
+  MiniTest.expect.equality(inspected.evidence_availability, {
+    conversation_content = "unreadable",
+    wire_ordering = "unreadable",
+  })
+end
+
+T["store"]["refuses an opened regular file whose identity differs from the selected source"] = function()
+  local source = nvim.fs.joinpath(temp_dir, "source.jsonl")
+  local replacement = nvim.fs.joinpath(temp_dir, "replacement.jsonl")
+  assert(nvim.fn.writefile({ "{}" }, source) == 0)
+  assert(nvim.fn.writefile({ "{}" }, replacement) == 0)
+  local value = input()
+  value.evidence_sources[1].path = source
+  local store = assert(Store.new(nvim.fs.joinpath(temp_dir, "forensics")))
+  local path = assert(store:write(value))
+  local original_open = nvim.uv.fs_open
+  rawset(nvim.uv, "fs_open", function(target, flags, mode)
+    return original_open(target == source and replacement or target, flags, mode)
+  end)
+  MiniTest.finally(function()
+    rawset(nvim.uv, "fs_open", original_open)
+  end)
+  local inspected = assert(store:inspect(path))
   MiniTest.expect.equality(inspected.evidence_availability, {
     conversation_content = "unreadable",
     wire_ordering = "unreadable",

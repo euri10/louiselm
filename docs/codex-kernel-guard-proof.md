@@ -37,6 +37,15 @@ by the maintainer; no libbpf sources are bundled.
 5. Activation requires completed enrollment, an acknowledged handoff and the exact
    live scope. A revision must increase; the broker authorizes its new deadline.
    It revokes and shuts down old sockets and requires a new owner response.
+6. Only after actual policy activation, the supervisor sends the exact
+   `SenderGuardActivated` observation on the retained authenticated response
+   channel. Failed delivery revokes policy and follows the existing containment
+   failure path. Initial deferred enrollment sends no activation observation
+   until the frozen descendant is enrolled and activation succeeds. Warm Resume
+   sends it after receipt acknowledgment and before reporting completion.
+   The broker combines that observation with current ownership and mechanics
+   for display-only network posture; enrollment/configuration never substitutes
+   for this proof, and no Provider request is needed to collect it.
 
 After enrollment, the LSM intentionally denies cross-process executable procfs
 reads, even from the supervisor. `KernelProcess` therefore retains the frozen

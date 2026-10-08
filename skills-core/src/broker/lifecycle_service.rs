@@ -220,6 +220,10 @@ impl BrokerService {
                     )?;
                     continue;
                 }
+                if matches!(response.result, ResponseResult::SenderGuardActivated { .. }) {
+                    self.lifecycle_packet(session, packet, verify)?;
+                    continue;
+                }
                 if response.request_id != request.request_id {
                     return Err(BrokerError::InvalidGrant);
                 }
@@ -390,12 +394,16 @@ impl BrokerService {
                     now_ms,
                 )
             };
-            let posture = session
-                .posture_evidence
-                .status(&status, quarantined, now_ms)?;
-            // The mechanical query may outlive the retained point's deadline.
             let observed_at_ms = now_ms
                 .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+            let posture = session.posture_evidence.status(
+                &status,
+                quarantined,
+                self.network_provider_invalidated(session)?,
+                now_ms,
+                observed_at_ms,
+            )?;
+            // The mechanical query may outlive the retained point's deadline.
             let recovery =
                 self.recovery_readiness(&session.authorization.session_id, observed_at_ms)?;
             Ok(SessionStatus::compose(
