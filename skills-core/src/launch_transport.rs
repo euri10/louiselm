@@ -14,7 +14,7 @@ use std::{
     io::{IoSlice, IoSliceMut},
     mem::MaybeUninit,
     os::{
-        fd::{BorrowedFd, OwnedFd, RawFd},
+        fd::{BorrowedFd, OwnedFd},
         unix::{ffi::OsStrExt, net::UnixStream},
     },
     panic::{AssertUnwindSafe, catch_unwind},
@@ -208,8 +208,8 @@ pub enum TransportError {
     /// The listener backlog is full; a later connection attempt may succeed.
     #[error("launcher socket listener is busy")]
     ConnectBusy,
-    /// The service manager's descriptor handover was absent, ambiguous, or not
-    /// a listening `SOCK_SEQPACKET` socket.
+    /// The descriptor handed over by the service manager was not a listening
+    /// Unix `SOCK_SEQPACKET` socket.
     #[error("inherited rendezvous descriptor is unusable")]
     InheritedDescriptor,
     /// A fixed background worker could not be started.
@@ -1402,42 +1402,3 @@ fn connect_one(
     }
     SeqpacketChannel::from_connected(fd, pin, actual)
 }
-
-/// Resolves the single rendezvous descriptor a service manager handed over.
-///
-/// Pure so the handover contract is checkable without mutating process-wide
-/// environment state. `listen_pid` and `listen_fds` are the raw `LISTEN_PID`
-/// and `LISTEN_FDS` values; `self_pid` is this process's own PID.
-///
-/// Exactly one descriptor is accepted. A handover addressed to another process,
-/// or carrying more than the one rendezvous, is refused rather than guessed at:
-/// picking the first of several would mean serving an unknown socket.
-///
-/// # Errors
-/// Returns [`TransportError::InheritedDescriptor`] for an absent, malformed,
-/// misaddressed, empty, or ambiguous handover.
-pub fn inherited_descriptor(
-    listen_pid: Option<&str>,
-    listen_fds: Option<&str>,
-    self_pid: u32,
-) -> Result<RawFd, TransportError> {
-    let exact = |value: Option<&str>| -> Result<u32, TransportError> {
-        let raw = value.ok_or(TransportError::InheritedDescriptor)?;
-        let parsed: u32 = raw
-            .parse()
-            .map_err(|_| TransportError::InheritedDescriptor)?;
-        // Reject anything whose text is not exactly its canonical number, so
-        // padding and leading zeroes cannot smuggle a different value through.
-        if parsed.to_string() != raw {
-            return Err(TransportError::InheritedDescriptor);
-        }
-        Ok(parsed)
-    };
-    if exact(listen_pid)? != self_pid || exact(listen_fds)? != 1 {
-        return Err(TransportError::InheritedDescriptor);
-    }
-    Ok(SD_LISTEN_FDS_START)
-}
-
-/// First descriptor number a service manager assigns to a passed socket.
-const SD_LISTEN_FDS_START: RawFd = 3;

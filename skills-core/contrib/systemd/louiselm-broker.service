@@ -12,6 +12,10 @@ StateDirectoryMode=0700
 RuntimeDirectory=louiselm-operator
 RuntimeDirectoryMode=0755
 UMask=0077
+# Pass the sole listener through a safely borrowable standard descriptor.
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
 ExecStart=/usr/local/lib/louiselm/current/bin/louiselm-control serve
 Restart=on-failure
 RestartSec=250ms
