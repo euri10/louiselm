@@ -151,6 +151,11 @@ disposable VM/private mount namespace with `LOUISELM_REQUIRE_BROKER_ADMISSION=1`
 The skills CI job requires this distinct-UID gate. It tests the actual CLI,
 read-only provisioning, durable broker handler and restart after delivery failure;
 it does not certify physical signing or an installed desktop Session.
+Its unprivileged companion, `python3 scripts/test-broker-admission-diagnostics.py`,
+checks the consumed private-`/etc` boundary and payload-free phase/stack diagnostics.
+Use the shared OverlayFS helper instead of copying the runner's unrelated `/etc`
+tree; retain the 120s watchdog and one 90s diagnostic stack dump
+(louiselm-xp2y2). CI requires both checks.
 
 The installed Attention gate runs `scripts/test-broker-attention.py` only inside
 a disposable VM/private mount namespace with `LOUISELM_REQUIRE_BROKER_ATTENTION=1`

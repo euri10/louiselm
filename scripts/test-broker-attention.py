@@ -30,12 +30,12 @@ UNIT = Path("/etc/systemd/system/louiselm-capture.service")
 
 
 @contextmanager
-def diagnostics(timeout=90):
+def diagnostics(timeout=90, component="broker-attention"):
     """Report static phases and one stack before CI's unchanged 120s watchdog."""
     started = time.monotonic()
 
     def phase(label):
-        print(f"[broker-attention] {time.monotonic() - started:.3f}s {label}",
+        print(f"[{component}] {time.monotonic() - started:.3f}s {label}",
               file=sys.stderr, flush=True)
 
     # Stack locations only: no locals, credentials, requests or child output.

@@ -13,18 +13,25 @@ FIXTURE = Path(__file__).with_name("test-broker-attention.py")
 
 
 class Diagnostics(unittest.TestCase):
-    def probe(self, body):
+    component = None
+
+    def diagnostics_setup(self):
         setup = ("import runpy, time\n"
                  f"diagnostics = runpy.run_path({str(FIXTURE)!r})['diagnostics']\n")
-        result = subprocess.run([sys.executable, "-c", setup + textwrap.dedent(body)],
+        if self.component is not None:
+            setup += ("from functools import partial\n"
+                      f"diagnostics = partial(diagnostics, component={self.component!r})\n")
+        return setup
+
+    def probe(self, body):
+        result = subprocess.run([sys.executable, "-c", self.diagnostics_setup() + textwrap.dedent(body)],
                                 text=True, capture_output=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
     def test_phase_flushes_before_waiting_for_input(self):
-        script = ("import runpy, sys\n"
+        script = (self.diagnostics_setup() + "import sys\n"
                   "sys.stderr.reconfigure(line_buffering=False, write_through=False)\n"
-                  f"diagnostics = runpy.run_path({str(FIXTURE)!r})['diagnostics']\n"
                   "with diagnostics() as phase:\n"
                   "    phase('waiting-for-input')\n"
                   "    input()\n")
@@ -34,7 +41,8 @@ class Diagnostics(unittest.TestCase):
             with selectors.DefaultSelector() as ready:
                 ready.register(child.stderr, selectors.EVENT_READ)
                 self.assertTrue(ready.select(timeout=3), "phase buffered until process exit")
-            self.assertRegex(child.stderr.readline(), r"\[broker-attention\] \d+\.\d{3}s waiting-for-input")
+            component = self.component or "broker-attention"
+            self.assertRegex(child.stderr.readline(), rf"\[{component}\] \d+\.\d{{3}}s waiting-for-input")
             stdout, stderr = child.communicate("\n", timeout=3)
             self.assertEqual(child.returncode, 0, stderr)
             self.assertEqual((stdout, stderr), ("", ""))
@@ -53,7 +61,8 @@ class Diagnostics(unittest.TestCase):
                 stalled()
             print("still-running")
         ''')
-        self.assertRegex(result.stderr, r"\[broker-attention\] \d+\.\d{3}s synthetic-wait")
+        component = self.component or "broker-attention"
+        self.assertRegex(result.stderr, rf"\[{component}\] \d+\.\d{{3}}s synthetic-wait")
         self.assertEqual(result.stderr.count("Timeout ("), 1)
         self.assertIn("in stalled", result.stderr)
         self.assertNotIn("synthetic-private-capability", result.stderr + result.stdout)

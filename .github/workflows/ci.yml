@@ -681,6 +681,7 @@ jobs:
 
       - name: Linked Admission across operator and read-only broker identities
         run: |
+          python3 ../scripts/test-broker-admission-diagnostics.py
           broker_test=$(cargo test --locked --test broker --no-run --message-format=json |
             jq -r 'select(.reason == "compiler-artifact" and .target.name == "broker" and .executable != null) | .executable')
           sudo env LOUISELM_REQUIRE_BROKER_ADMISSION=1 \

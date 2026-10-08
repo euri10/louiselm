@@ -21,21 +21,29 @@ command = COMMON["command"]
 @unittest.skipUnless(os.environ.get("LOUISELM_REQUIRE_BROKER_ADMISSION") == "1",
                      "requires explicit disposable VM privileged gate")
 class LinkedAdmission(unittest.TestCase):
+    def setUp(self):
+        self.phase = self.enterContext(COMMON["diagnostics"](component="broker-admission"))
+
     def test_cli_outage_restart_and_read_only_evidence(self):
+        self.phase("validate disposable environment")
         self.assertEqual(os.geteuid(), 0)
         self.assertNotEqual(os.readlink("/proc/self/ns/mnt"), os.readlink("/proc/1/ns/mnt"))
+        self.phase("locate test binaries")
         builder = runpy.run_path(str(REPO / "scripts/test-skill-requests"))
         broker_binary = os.environ.get("LOUISELM_TEST_ADMISSION_BROKER") or builder["test_binary"]("skills-core", "broker")
         skills_binary = Path(os.environ["LOUISELM_TEST_SKILLS"])
+        self.phase("create scratch directory")
         with tempfile.TemporaryDirectory(prefix="admission-gate-", dir="/var/tmp") as temporary:
             scratch = Path(temporary)
-            shutil.copytree("/etc", scratch / "etc", symlinks=True)
-            command("mount", "--bind", str(scratch / "etc"), "/etc")
+            self.phase("mount private /etc")
+            COMMON["mount_private_etc"](scratch)
             for target in ("/var/lib", "/run", "/usr/local/lib"):
+                self.phase(f"mount private {target}")
                 command("mount", "-t", "tmpfs", "-o", "mode=0755", "tmpfs", target)
             root = Path("/var/lib/louiselm-admission-gate")
             root.mkdir(mode=0o755)
             for original, name in ((broker_binary, "broker-test"), (skills_binary, "skills")):
+                self.phase(f"copy {name} executable")
                 shutil.copyfile(original, root / name)
                 (root / name).chmod(0o555)
             source_config = Path("/etc/louiselm-broker-admission.json")
@@ -44,6 +52,7 @@ class LinkedAdmission(unittest.TestCase):
             server = None
             try:
                 for name in ("louiselm-admission-operator", "louiselm-admission-reader"):
+                    self.phase("create fixture account")
                     command("useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", name)
                     accounts.append(pwd.getpwnam(name))
                 operator, broker = accounts
@@ -67,17 +76,22 @@ class LinkedAdmission(unittest.TestCase):
                 def cli(*args):
                     return json.loads(as_user(operator, root / "skills", *args, "--store", store, "--robot-json").stdout)
 
+                self.phase("generate fixture signing keys")
                 for name in ("primary", "release"):
                     as_user(operator, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", private / name)
+                self.phase("bootstrap fixture trust")
                 cli("trust", "bootstrap", "--primary", private / "primary.pub", "--release", private / "release.pub")
                 candidate = private / "candidate"
                 candidate.mkdir(mode=0o755)
                 os.chown(candidate, operator.pw_uid, operator.pw_gid)
                 (candidate / "SKILL.md").write_text("---\nname: skill\ndescription: Test skill.\n---\nBody.\n")
+                self.phase("package fixture skill")
                 package = cli("package", candidate)["digest"]
+                self.phase("admit standalone skill")
                 standalone = cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "primary")
                 self.assertNotIn("approval_operation", standalone["payload"])
                 self.assertFalse(source_config.exists(), "standalone must not configure linkage")
+                self.phase("reject unconfigured linkage")
                 with self.assertRaisesRegex(RuntimeError, "not configured"):
                     cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "primary",
                         "--skill-request", "12345678-1234-4234-8234-123456789abc")
@@ -90,10 +104,13 @@ class LinkedAdmission(unittest.TestCase):
                 authority.write_text(json.dumps({"operator_uid": operator.pw_uid, "broker_uid": broker.pw_uid, "broker_gid": broker.pw_gid}))
                 authority.chmod(0o444)
                 installer = REPO / "scripts/install-broker-admission.py"
+                self.phase("provision read-only admission source")
                 command(sys.executable, str(installer), "--store", str(store))
                 original = source_config.read_bytes()
+                self.phase("verify idempotent provisioning")
                 command(sys.executable, str(installer), "--store", str(store))
                 self.assertEqual(source_config.read_bytes(), original)
+                self.phase("verify read-only skill evidence")
                 as_user(broker, "test", "-r", store / "trust/roles.json")
                 as_user(broker, "test", "!", "-w", store / "trust/roles.json")
                 as_user(broker, "test", "!", "-r", private / "primary")
@@ -118,15 +135,19 @@ class LinkedAdmission(unittest.TestCase):
                         time.sleep(0.02)
                     return child
 
+                self.phase("start broker before signing")
                 server = start(1)  # Lose broker after preflight, before signing finishes.
                 operation = (state / "operation").read_text()
+                self.phase("admit with broker loss")
                 linked = cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "primary", "--skill-request", operation)
                 self.assertEqual(server.wait(timeout=10), 0)
                 self.assertEqual(linked["admission"]["state"], "pending_witness")
                 self.assertIsNone(linked["broker_status"])
                 self.assertEqual(linked["resolution_error"], "broker_unavailable")
                 self.assertEqual(json.loads((state / "status").read_bytes())["outcome"], "pending")
+                self.phase("restart broker for durable evidence")
                 server = start(2)  # Startup reconciles actual durable evidence; no new signature.
+                self.phase("retry durable admission")
                 retry = cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "missing-key", "--skill-request", operation)
                 self.assertEqual(server.wait(timeout=10), 0)
                 self.assertEqual(retry["admission"], linked["admission"])
@@ -135,12 +156,17 @@ class LinkedAdmission(unittest.TestCase):
                 as_user(broker, "test", "!", "-w", store / "generations")
                 self.assertFalse((store / "pins.jsonl").exists(), "approval never activates supply")
             finally:
+                self.phase("cleanup broker")
                 if server is not None and server.poll() is None:
                     server.terminate()
                     server.wait(timeout=5)
                 for account in reversed(accounts):
+                    self.phase("delete fixture account")
                     command("userdel", account.pw_name)
+                self.phase("unmount private /etc")
                 command("umount", "/etc")
+                self.phase("remove scratch directory")
+        self.phase("complete")
 
 
 if __name__ == "__main__":
