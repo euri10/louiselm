@@ -11,7 +11,7 @@ clap = { version = "4.6", features = ["derive"] }
 httparse = "1.10"
 # System libbpf.so.1 only: defaults would compile and statically link libbpf.
 libbpf-rs = { version = "=0.25.0", default-features = false }
-libbpf-sys = { version = "=1.5.1", default-features = false }
+libbpf-sys = { version = "=1.7.0", default-features = false }
 # Safe signal-mask, ptrace and unshare wrappers, so skills-core declares no
 # FFI or unsafe of its own for them (louiselm-byrw2).
 nix = { version = "0.31.3", default-features = false, features = ["signal", "ptrace", "sched"] }
