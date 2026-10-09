@@ -203,6 +203,54 @@ pub struct LifecycleStore {
 }
 
 impl LifecycleStore {
+    /// Reads an exact completed intent without preparing or authorizing new work.
+    /// The caller supplies broker-verified terminal history, never peer claims.
+    pub(super) fn recorded_result(
+        &self,
+        caller: &LifecycleCaller,
+        request: &LifecycleRequest,
+        receipts: &[SignedReceipt],
+    ) -> Result<Option<SignedReceipt>, BrokerError> {
+        request.validate()?;
+        let _guard = lock(&self.preparing);
+        let path = self
+            .root
+            .join(&request.session_id)
+            .join("requests")
+            .join(format!(
+                "{}.json",
+                Digest::of(request.request_id.as_bytes()).hex()
+            ));
+        let Some(accepted) = read_record::<AcceptedRequest>(&path)? else {
+            return Ok(None);
+        };
+        if accepted.request != *request || accepted.caller != caller.identity() {
+            return Err(ProtocolError::new(ErrorCode::RequestIdConflict, None, None).into());
+        }
+        if let Some(error) = self.failure(request)? {
+            return Err(error.into());
+        }
+        let receipt = receipts
+            .iter()
+            .find(|receipt| receipt.payload.request_id == request.request_id);
+        if let Some(receipt) = receipt {
+            if !matches!(
+                receipt.payload.outcome,
+                ReceiptOutcome::Park {
+                    authority: ReceiptAuthority::Authorized(_)
+                } | ReceiptOutcome::Resume { .. }
+                    | ReceiptOutcome::Interrupt { .. }
+                    | ReceiptOutcome::Disposal {
+                        authority: ReceiptAuthority::Authorized(_)
+                    }
+            ) {
+                return Err(BrokerError::ReceiptUnauthorized);
+            }
+            self.check_receipt(receipt)?;
+        }
+        Ok(receipt.cloned())
+    }
+
     /// Serializes promotion admission with quarantine and lifecycle authorization.
     pub(super) fn promotion_guard(&self) -> std::sync::MutexGuard<'_, ()> {
         lock(&self.preparing)

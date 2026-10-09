@@ -40,6 +40,43 @@ One Control broker serves exactly one operator identity, enforced by
 instances, identities, sockets and state; a
 partitioned multi-operator broker is not supported.
 
+### Explicit installed operator lifecycle
+
+`louiselm-control lifecycle --json` reads one bounded, closed `LifecycleRequest`
+from stdin. It supports `park`, `resume` and `disposal`; the record names the
+exact Run, Session, authorization, request ID, envelope revision, observed state
+and receipt-head sequence. It supplies no caller role, UID, new deadline or
+renewed budget. The operator socket authenticates the kernel peer UID against
+the installed operator **before** reading input or looking up the Session.
+
+The existing owning Session worker executes the request over its retained
+supervisor channel; no second reader, replacement controller or Agent authority
+is introduced. Resume uses the same guarded lifecycle service as every other
+authenticated operator request. Certification and inspection do not Resume.
+
+Success is canonical `{"Ok": SIGNED_RECEIPT}` on stdout with exit 0, preserving
+the actual durable outcome. A policy refusal is canonical `{"Err": PROTOCOL_ERROR}`
+on stdout with exit 7; it retains the exact code, state/head context and safe
+next action. Transport, authentication and request errors retain the existing
+`louiselm.operator-error/1` stderr schema and exit codes 2–6. The client checks
+the trusted broker UID, canonical reply and exact receipt/request/action binding.
+Signature verification remains the installed broker's responsibility.
+
+A retry names the **same exact request bytes**; a changed request under the same
+ID is refused. After signed terminal cleanup, verified retained outcomes can be
+read even after daemon restart, without creating an intent or reviving a Session.
+This is historical completion, not current liveness; revoked or corrupt history
+still refuses. A nonterminal Session without its owning worker is unavailable,
+not an invitation to create one. Timeouts or lost replies may leave durable work
+unresolved: inspect and retain the evidence, never automatically replay or extend
+authority. The queue is bounded and expired queued requests are not executed.
+
+The socket/CLI tests cover closed input, foreign identities, mismatched receipts,
+typed refusals and bounded queue expiry. The disposable installed-daemon gate
+`inspection::lifecycle::privileged_activated_daemon_operator_lifecycle` additionally
+uses the actual CLI and supervisor for Park, Resume, Disposal, exact replay,
+restart and conflicting-request refusal. It is not desktop acceptance.
+
 Every launch grant explicitly names `agent` or `fixed_verifier`. The broker
 persists that role across restart and returns it under authorization schema 4;
 the launcher binds it into signed sequence-zero evidence. A fixed verifier

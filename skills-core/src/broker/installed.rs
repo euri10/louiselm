@@ -531,6 +531,19 @@ impl InstalledBroker {
             None => result,
         }
     }
+    /// Reads an exact completed lifecycle result from verified terminal history.
+    /// It grants no liveness or authority and never creates a new durable intent.
+    /// # Errors
+    /// Refuses unknown/foreign Sessions, changed requests, recorded failures and
+    /// corrupt, quarantined or revoked history under current installed authority.
+    pub fn recorded_lifecycle_result(
+        &self,
+        caller: &LifecycleCaller,
+        request: &LifecycleRequest,
+    ) -> Result<Option<SignedReceipt>, BrokerError> {
+        self.service
+            .recorded_lifecycle_result(caller, request, now_ms()?)
+    }
     /// Opens installed public authority and binds its exact local rendezvous.
     /// Provision the state/rendezvous directories under the installed broker
     /// identity first. An existing socket is never replaced.

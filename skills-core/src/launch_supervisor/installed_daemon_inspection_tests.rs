@@ -6,6 +6,9 @@ use crate::{
     launch_protocol::{COMMAND_SCHEMA, SessionStatus},
 };
 
+#[path = "installed_operator_lifecycle_tests.rs"]
+mod lifecycle;
+
 pub(super) fn provision() {
     let directory = Path::new("/run/louiselm-operator");
     fs::create_dir(directory).unwrap();

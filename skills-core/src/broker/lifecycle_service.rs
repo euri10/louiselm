@@ -14,6 +14,50 @@ use crate::{
 };
 
 impl BrokerService {
+    /// Reads an exact recorded lifecycle result after signed terminal cleanup.
+    /// No supervisor channel or new intent is created, and a historical receipt
+    /// is not a claim of current liveness. Unresolved work is never replayed.
+    /// # Errors
+    /// Refuses foreign callers/subjects, conflicting bytes, recorded policy
+    /// failures, unknown Sessions and untrusted or revoked receipt history.
+    pub fn recorded_lifecycle_result(
+        &self,
+        caller: &LifecycleCaller,
+        request: &LifecycleRequest,
+        now_ms: u64,
+    ) -> Result<Option<SignedReceipt>, BrokerError> {
+        request.validate()?;
+        let authorization = self
+            .authorizations
+            .consumed_for_session(&request.session_id)?
+            .ok_or(BrokerError::UnknownAuthorization)?
+            .launch_authorization();
+        if authorization.session_id != request.session_id || authorization.run_id != request.run_id
+        {
+            return Err(ProtocolError::new(ErrorCode::SubjectMismatch, None, None).into());
+        }
+        if authorization.envelope_revision != request.envelope_revision {
+            return Err(ProtocolError::new(ErrorCode::EnvelopeRevisionMismatch, None, None).into());
+        }
+        if !caller.permits(&authorization, request, now_ms) {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None).into());
+        }
+        self.check_history(&request.session_id)?;
+        let receipts = self.history_result(
+            &request.session_id,
+            self.receipts.inspection_chain(&authorization),
+        )?;
+        if receipts
+            .last()
+            .is_none_or(|receipt| receipt.payload.resulting_state != SessionState::Terminal)
+        {
+            return Ok(None);
+        }
+        let result = self.lifecycle.recorded_result(caller, request, &receipts);
+        self.check_history(&request.session_id)?;
+        result
+    }
+
     /// Revokes broker approvals before requesting an authorized quarantine Park.
     /// Revocation uses the existing command owner; no grants are reconstructed.
     /// A send only requests enforcement, and the signed Park receipt proves it.

@@ -129,6 +129,7 @@ fn start_operator_server(broker: Arc<InstalledBroker>, root: &Path, uid: u32) {
         loop {
             server
                 .serve_once(
+                    |_, _| Err(crate::broker::operator::InspectError::UnknownSession),
                     |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |request| {

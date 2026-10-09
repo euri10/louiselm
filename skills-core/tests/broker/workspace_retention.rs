@@ -39,6 +39,7 @@ fn retention_operator_path_survives_restart_and_reports_quarantine_without_paylo
     let worker = thread::spawn(move || {
         endpoint
             .serve_once(
+                |_, _| Err(InspectError::UnknownSession),
                 |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("authorization request not expected"),

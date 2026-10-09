@@ -46,6 +46,7 @@ fn extension_reply_must_answer_the_exact_request_and_session() {
             }
             server
                 .serve_once(
+                    |_, _| Err(InspectError::UnknownSession),
                     |_| panic!("not launch-input staging"),
                     |_, _| panic!("not verification control"),
                     |_| panic!("authorization request not expected"),

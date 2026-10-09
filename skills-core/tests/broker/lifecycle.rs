@@ -18,6 +18,125 @@ use louiselm_skills::{
 #[path = "agent_status_lifecycle.rs"]
 mod status_continuity;
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One retained-intent scenario proves nonterminal absence, terminal replay, restart, caller/refusal checks and no new authority."
+)]
+fn terminal_lifecycle_replay_reads_exact_history_without_creating_authority() {
+    let root = TempDir::new().unwrap();
+    let launch = consumed_authorization(root.path(), &request("session-1"));
+    let service = verification::reopen(root.path(), "broker.sock");
+    let caller = LifecycleCaller::Operator {
+        uid: CONTROLLER_UID,
+    };
+    let mut disposal = park(&launch);
+    disposal.action = LifecycleAction::Disposal;
+    disposal.request_id = "dispose-1".into();
+    let initial = launch_receipt(&launch);
+    let start = start_receipt(&launch, &initial);
+    for receipt in [&initial, &start] {
+        service
+            .receipts()
+            .append(
+                &launch,
+                &receipt.canonical_bytes(),
+                None,
+                verify_fixture_signature,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        service
+            .recorded_lifecycle_result(&caller, &disposal, 2000)
+            .unwrap(),
+        None
+    );
+    let intents = root.path().join("authorizations/lifecycle");
+    let store = LifecycleStore::open(&intents).unwrap();
+    let accepted = store
+        .prepare(
+            &launch,
+            &status(&launch),
+            &caller,
+            &disposal,
+            2000,
+            &[initial, start],
+        )
+        .unwrap();
+    let terminal = signed(
+        accepted
+            .execute_intent()
+            .unwrap()
+            .receipt_payload(
+                &trusted_release().release_id,
+                &trusted_release().signing_key_id,
+            )
+            .unwrap(),
+    );
+    assert_eq!(
+        service
+            .recorded_lifecycle_result(&caller, &disposal, 2000)
+            .unwrap(),
+        None
+    );
+    service
+        .receipts()
+        .append(
+            &launch,
+            &terminal.canonical_bytes(),
+            None,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    drop(service);
+    let service = verification::reopen(root.path(), "restarted.sock");
+    assert_eq!(
+        service
+            .recorded_lifecycle_result(&caller, &disposal, 40_000)
+            .unwrap(),
+        Some(terminal.clone())
+    );
+    for foreign in [
+        LifecycleCaller::Agent,
+        LifecycleCaller::Operator {
+            uid: CONTROLLER_UID + 1,
+        },
+    ] {
+        assert!(
+            matches!(service.recorded_lifecycle_result(&foreign, &disposal, 40_000), Err(BrokerError::Policy(error)) if error.code == ErrorCode::InvalidRequest)
+        );
+    }
+    let mut conflict = disposal.clone();
+    conflict.authorization_id = "changed".into();
+    assert!(
+        matches!(service.recorded_lifecycle_result(&caller, &conflict, 40_000), Err(BrokerError::Policy(error)) if error.code == ErrorCode::RequestIdConflict)
+    );
+    let mut unknown = disposal.clone();
+    unknown.request_id = "new-request".into();
+    assert_eq!(
+        service
+            .recorded_lifecycle_result(&caller, &unknown, 40_000)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        fs::read_dir(intents.join("session-1/requests"))
+            .unwrap()
+            .count(),
+        1
+    );
+    let failure = ProtocolError::new(
+        ErrorCode::LifecycleMechanicUnavailable,
+        Some(SessionState::Parked),
+        Some(2),
+    );
+    store.record_failure(&disposal, &failure).unwrap();
+    assert!(
+        matches!(service.recorded_lifecycle_result(&caller, &disposal, 40_000), Err(BrokerError::Policy(error)) if error == failure)
+    );
+}
+
 pub(super) fn status(authorization: &LaunchAuthorization) -> SupervisorStatus {
     let start = start_receipt(authorization, &launch_receipt(authorization));
     let head = ReceiptHead {

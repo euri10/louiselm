@@ -70,6 +70,7 @@ pub(super) fn command() -> Command {
         .subcommand(group("run", &["authorize"], false))
         .subcommand(group("launch-inputs", &["stage"], false))
         .subcommand(Command::new("verification").arg(json()))
+        .subcommand(Command::new("lifecycle").arg(json()))
         .subcommand(group("promotion", &["preview", "commit"], false))
         .subcommand(dependencies)
         .subcommand(waiver)
@@ -91,4 +92,23 @@ pub(super) fn operation(
     input: Result<&clap::ArgMatches, ()>,
 ) -> Result<(&str, &clap::ArgMatches), ()> {
     input?.subcommand().ok_or(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lifecycle_accepts_only_the_json_entrypoint() {
+        assert!(
+            super::command()
+                .try_get_matches_from(["control", "lifecycle", "--json"])
+                .is_ok()
+        );
+        for args in [
+            vec!["control", "lifecycle"],
+            vec!["control", "lifecycle", "--json", "--uid", "0"],
+            vec!["control", "lifecycle", "--json", "session"],
+        ] {
+            assert!(super::command().try_get_matches_from(args).is_err());
+        }
+    }
 }

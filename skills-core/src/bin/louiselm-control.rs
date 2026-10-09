@@ -29,6 +29,8 @@ mod dependencies;
 mod inspection;
 #[path = "control/launch_inputs.rs"]
 mod launch_inputs;
+#[path = "control/lifecycle.rs"]
+mod lifecycle;
 #[path = "control/promotion.rs"]
 mod promotion;
 #[path = "control/provider_extension.rs"]
@@ -76,6 +78,7 @@ fn main() -> ExitCode {
         "run" => return ExitCode::from(run_authorization::cli(input)),
         "launch-inputs" => return ExitCode::from(launch_inputs::cli(input)),
         "verification" => return ExitCode::from(verification::cli(input)),
+        "lifecycle" => return ExitCode::from(lifecycle::cli(input)),
         "promotion" => return ExitCode::from(promotion::cli(input)),
         "skill-request" => return ExitCode::from(inspection::skill_cli(input)),
         _ => (),

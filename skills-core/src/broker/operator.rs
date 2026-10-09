@@ -1,8 +1,10 @@
 //! Bounded local operator inspection and skill decisions, authenticated before lookup.
 
 mod launch_inputs;
+mod lifecycle;
 mod wire;
 pub use launch_inputs::{LaunchInputBinding, LaunchInputsRequest, stage_launch_inputs};
+pub use lifecycle::{lifecycle, validate_lifecycle_request};
 
 use super::conformance_inspection::{ConformanceInspection, MAX_INSPECTION_BYTES};
 use crate::Digest;
@@ -97,6 +99,8 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-lifecycle/1")]
+    Lifecycle { request: Box<LifecycleRequest> },
     #[serde(rename = "louiselm.operator-launch-inputs/1")]
     LaunchInputs { request: Box<LaunchInputsRequest> },
     #[serde(rename = "louiselm.operator-promotion/1")]
@@ -964,6 +968,13 @@ impl OperatorServer {
     )]
     pub fn serve_once(
         &self,
+        lifecycle: impl FnOnce(
+            &LifecycleRequest,
+            Instant,
+        ) -> Result<
+            Result<crate::launch_receipt::SignedReceipt, crate::launch_protocol::ProtocolError>,
+            InspectError,
+        >,
         launch_inputs: impl FnOnce(&LaunchInputsRequest) -> Result<LaunchInputBinding, InspectError>,
         verification: impl FnOnce(
             &VerificationControlRequest,
@@ -1018,6 +1029,11 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::Lifecycle { request } => {
+                    validate_lifecycle_request(&request)?;
+                    serde_json::to_vec(&lifecycle(&request, deadline)?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
                 Request::LaunchInputs { request } => {
                     request.validate()?;
                     serde_json::to_vec(&launch_inputs(&request)?)

@@ -776,6 +776,7 @@ jobs:
             privileged_activated_daemon_serves_launches_and_restart \
             state::privileged_activated_daemon_upgrades_and_adopts_state \
             inspection::privileged_activated_daemon_refuses_foreign_inspection \
+            inspection::lifecycle::privileged_activated_daemon_operator_lifecycle \
             inspection::privileged_certified_admission_retains_report_and_suspends_on_evidence_loss \
             inspection::privileged_initial_waiver_prepares_approves_then_launches; do
             test_name="launch_supervisor::system::installed_tests::daemon::$scenario"

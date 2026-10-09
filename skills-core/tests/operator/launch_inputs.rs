@@ -77,6 +77,7 @@ fn launch_inputs_client_requires_every_exact_binding_and_authenticates_the_opera
         let worker = thread::spawn(move || {
             server
                 .serve_once(
+                    |_, _| Err(InspectError::UnknownSession),
                     |received| {
                         assert_ne!(scenario, "foreign", "authentication precedes source lookup");
                         let mut reply = binding(received);

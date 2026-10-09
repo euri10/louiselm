@@ -1,5 +1,8 @@
 //! Operator CLI and daemon routing into the one owning Session worker.
 
+#[path = "operator_lifecycle.rs"]
+mod operator_lifecycle;
+
 use louiselm_skills::broker::provider_extension::{
     ExtensionError, ExtensionOutcome, ExtensionRequest,
 };
@@ -9,7 +12,8 @@ use louiselm_skills::{
         lifecycle::LifecycleCaller,
         operator::{self, InspectError, OperatorServer},
     },
-    launch_protocol::SessionStatus,
+    launch_protocol::{LifecycleRequest, ProtocolError, SessionStatus},
+    launch_receipt::SignedReceipt,
     launch_transport::TransportError,
 };
 use std::{
@@ -130,6 +134,11 @@ struct Query {
 }
 
 enum WorkerQuery {
+    Lifecycle {
+        expires: Instant,
+        request: Box<LifecycleRequest>,
+        reply: SyncSender<Result<Result<SignedReceipt, ProtocolError>, InspectError>>,
+    },
     Promotion(UnixStream),
     Verification {
         expires: Instant,
@@ -331,6 +340,7 @@ impl Queries {
             .spawn(move || {
                 loop {
                     if let Err(error) = endpoint.serve_once(
+                        |request, deadline| owner.lifecycle(&broker, request, deadline),
                         |request| {
                             broker.stage_operator_launch_inputs(request).map_err(
                                 |error| match error {
@@ -519,9 +529,19 @@ impl Queries {
             .map_err(|_| WaiverError::Unavailable)?
     }
 
-    /// Answers one operator query on the Session's own worker turn.
-    fn answer(&self, broker: &InstalledBroker, session: &mut BrokerSession, query: WorkerQuery) {
+    /// Answers one query on the sole worker, returning only proven terminal cleanup.
+    fn answer(
+        &self,
+        broker: &InstalledBroker,
+        session: &mut BrokerSession,
+        query: WorkerQuery,
+    ) -> bool {
         match query {
+            WorkerQuery::Lifecycle {
+                expires,
+                request,
+                reply,
+            } => return self.answer_lifecycle(broker, session, &request, expires, &reply),
             WorkerQuery::Promotion(stream) => {
                 // The original authenticated worker owns the full operator transaction.
                 let _ = broker.serve_promotion(session, stream);
@@ -619,6 +639,7 @@ impl Queries {
                 }
             }
         }
+        false
     }
 
     pub(super) fn run_session(
@@ -664,7 +685,9 @@ impl Queries {
                     posture_check = Instant::now() + Duration::from_secs(1);
                 }
                 if let Ok(query) = requests.try_recv() {
-                    self.answer(broker, session, query);
+                    if self.answer(broker, session, query) {
+                        return Ok(());
+                    }
                     if session.channel().is_closed() {
                         return Err(BrokerError::Transport(TransportError::Closed));
                     }

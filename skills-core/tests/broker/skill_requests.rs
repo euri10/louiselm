@@ -381,6 +381,7 @@ fn installed_linked_admission_server() {
     for _ in 0..calls {
         server
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_| panic!("not launch-input staging"),
                 |_, _| panic!("not verification control"),
                 |_| panic!("authorization request not expected"),
