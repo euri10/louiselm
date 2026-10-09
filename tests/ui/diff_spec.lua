@@ -156,6 +156,130 @@ end
 
 T["review"] = MiniTest.new_set()
 
+T["review"]["previews rawInput replacement fragments without deleting surrounding content"] = function()
+  -- old_text/new_text shape and hello.py reproduction from louiselm-hht64's
+  -- maintainer report (2026-10-09, acp-llm-adapter 0.9.1). No event order is assumed.
+  local old = 'def greet(name):\n    return "Hello, " + name + "!"'
+  local new =
+    'def greet(name):\n    """Return a friendly greeting for the given name."""\n    return "Hello, " + name + "!"'
+  local suffix = '\n\n\nif __name__ == "__main__":\n    print(greet("world"))\n'
+  local path = temp_file(nvim.split(old .. suffix, "\n", { plain = true, trimempty = true }))
+  MiniTest.finally(function()
+    nvim.fn.delete(path)
+  end)
+
+  for _, fields in ipairs({ { "old_text", "new_text" }, { "oldText", "newText" }, { "old_string", "new_string" } }) do
+    for _, with_entry in ipairs({ false, true }) do
+      local raw_input = { path = path, [fields[1]] = old, [fields[2]] = new }
+      local diff = Diff.new()
+      MiniTest.finally(function()
+        diff:dispose()
+      end)
+      local response
+      assert(diff:open({
+        operation = { kind = "file_edit", path = path },
+        toolCall = {
+          rawInput = raw_input,
+          content = with_entry and { { type = "diff", path = path, oldText = old, newText = new } } or nil,
+        },
+        options = { { optionId = "allow-once", kind = "allow_once" } },
+      }, function(result)
+        response = result
+        return true
+      end))
+
+      MiniTest.expect.equality(diff.preview.original, old .. suffix)
+      MiniTest.expect.equality(diff.preview.proposed, new .. suffix)
+      local lines = nvim.api.nvim_buf_get_lines(diff.buffer, 0, -1, false)
+      MiniTest.expect.equality(
+        nvim.tbl_contains(lines, '+    """Return a friendly greeting for the given name."""'),
+        true
+      )
+      MiniTest.expect.equality(nvim.tbl_contains(lines, '-if __name__ == "__main__":'), false)
+      MiniTest.expect.equality(nvim.tbl_contains(lines, "\\ No newline at end of file"), false)
+      assert(diff:accept())
+      MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-once" } })
+      MiniTest.expect.equality(Apply.read(path), old .. suffix)
+    end
+  end
+end
+
+T["review"]["honors rawInput first replacement, replace_all and empty new text"] = function()
+  local path = temp_file({ "before", "before", "tail" })
+  MiniTest.finally(function()
+    nvim.fn.delete(path)
+  end)
+  for _, case in ipairs({
+    { new = "after", all = false, proposed = "after\nbefore\ntail\n" },
+    { new = "after", all = true, proposed = "after\nafter\ntail\n" },
+    { new = "", all = false, proposed = "\nbefore\ntail\n" },
+  }) do
+    local diff = Diff.new()
+    MiniTest.finally(function()
+      diff:dispose()
+    end)
+    assert(diff:open({
+      operation = { kind = "file_edit", path = path },
+      toolCall = { rawInput = { path = path, old_text = "before", new_text = case.new, replace_all = case.all } },
+      options = { "deny" },
+    }, function()
+      return true
+    end))
+    MiniTest.expect.equality(diff.preview.proposed, case.proposed)
+    diff:dispose()
+  end
+end
+
+T["review"]["rejects invalid or absent replacement text without a whole-file preview"] = function()
+  local path = temp_file({ "before", "tail" })
+  MiniTest.finally(function()
+    nvim.fn.delete(path)
+  end)
+  for _, case in ipairs({
+    { old = "absent", new = "after", error = "diff edit replacement text is not in the file" },
+    { old = "", new = "after", error = "diff edit replacement must have non-empty old text" },
+    { old = 42, new = "after", error = "diff edit replacement must have non-empty old text" },
+    { old = false, new = "after", error = "diff edit replacement must have non-empty old text" },
+    { old = "before", error = "diff edit replacement must have new text" },
+    { old = "before", new = 42, error = "diff edit replacement must have new text" },
+  }) do
+    local diff = Diff.new()
+    MiniTest.finally(function()
+      diff:dispose()
+    end)
+    local opened, open_error = diff:open({
+      operation = { kind = "file_edit", path = path },
+      toolCall = { rawInput = { path = path, old_text = case.old, new_text = case.new } },
+    }, function()
+      return true
+    end)
+    MiniTest.expect.equality({ opened, open_error }, { false, case.error })
+    MiniTest.expect.equality(diff.buffer, nil)
+  end
+end
+
+T["review"]["keeps new text without old text as whole-file content"] = function()
+  local path = temp_file({ "before", "tail" })
+  MiniTest.finally(function()
+    nvim.fn.delete(path)
+  end)
+  for _, field in ipairs({ "content", "newText", "new_text" }) do
+    local diff = Diff.new()
+    MiniTest.finally(function()
+      diff:dispose()
+    end)
+    assert(diff:open({
+      operation = { kind = "file_edit", path = path },
+      toolCall = { rawInput = { path = path, [field] = "after\n" } },
+      options = { "deny" },
+    }, function()
+      return true
+    end))
+    MiniTest.expect.equality(diff.preview.proposed, "after\n")
+    diff:dispose()
+  end
+end
+
 T["review"]["shows an edit and sends an allow response"] = function()
   local path = temp_file({ "before" })
   local response
@@ -241,13 +365,12 @@ T["review"]["reviews an edit carried only in ACP diff content"] = function()
   local path = temp_file({ "hello" })
   local response
   local diff = Diff.new()
-  -- Shaped like a claude-agent-acp Edit request: tool arguments verbatim in rawInput,
-  -- reviewable text only in the ACP diff content entry.
+  -- With no text in rawInput, review the ACP diff content entry.
   assert(diff:open({
     operation = { kind = "file_edit", path = path },
     toolCall = {
       kind = "edit",
-      rawInput = { file_path = path, old_string = "hello", new_string = "hello world", replace_all = false },
+      rawInput = { file_path = path },
       content = { { type = "diff", path = path, oldText = "hello", newText = "hello world" } },
     },
     options = { { optionId = "allow-once", kind = "allow_once" }, { optionId = "reject", kind = "reject_once" } },

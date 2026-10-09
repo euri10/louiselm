@@ -208,7 +208,9 @@ Session creation/loading options when an operation needs no supplied servers.
   Inline uses the same permission review as chat; `:LouiselmCancel` from its
   source buffer or permission review cancels that inline turn.
 - **Control side effects.** Permission requests require a human decision by
-  default. Review proposed file edits in a diff when the Agent supplies one.
+  default. Review proposed file edits in a diff from the Agent's whole-file
+  content or exact text replacement. Replacement previews preserve the rest
+  of the file and refuse review when the old text does not match.
   Remembered decisions stay scoped to the Agent command and workspace, and
   `:LouiselmCancel` stops only the current turn.
 - **Inspect the work.** Inspect raw tool payloads and Beads issues, browse

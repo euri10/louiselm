@@ -59,14 +59,26 @@ local function request_edit(request)
   local edit = {
     path = raw_input.path or raw_input.filePath or raw_input.file_path or operation.path,
     diff = raw_input.diff or operation.diff,
-    content = raw_input.content or raw_input.newText or raw_input.new_text,
+    content = raw_input.content,
   }
-  if edit.diff ~= nil or edit.content ~= nil then
+  local old_text = raw_input.old_text
+  if old_text == nil then
+    old_text = raw_input.oldText
+  end
+  if old_text == nil then
+    old_text = raw_input.old_string
+  end
+  local new_text = raw_input.new_text or raw_input.newText or raw_input.new_string
+  if old_text ~= nil then
+    edit.replacement = { old = old_text, new = new_text, all = raw_input.replace_all == true }
+  else
+    edit.content = edit.content or new_text
+  end
+  if edit.diff ~= nil or edit.content ~= nil or edit.replacement ~= nil then
     return edit
   end
-  -- An agent that forwards its edit tool arguments verbatim leaves nothing reviewable in
-  -- rawInput and carries the text in the ACP diff content entry instead: whole-file text
-  -- when it has no old text, otherwise the exact fragment it expects to replace.
+  -- When rawInput has no reviewable text, use the ACP diff content entry:
+  -- whole-file text without old text, otherwise an exact fragment replacement.
   local entry = acp_diff_entry(tool_call)
   if entry == nil then
     return edit
