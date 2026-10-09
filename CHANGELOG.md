@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/euri10/louiselm/compare/plugin-v0.2.0...plugin-v0.3.0) (2026-10-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **broker:** OperatorServer handlers include lifecycle routing.
+
+### Features
+
+* **broker:** expose operator lifecycle control ([1cdc887](https://github.com/euri10/louiselm/commit/1cdc8877af9c62d13cbb90b65937db1a2c527929))
+
+
+### Bug Fixes
+
+* **diff:** preview raw text replacements ([e2d44d7](https://github.com/euri10/louiselm/commit/e2d44d786a45393c8f7655e96c67a80bd0452b91))
+
 ## [0.2.0](https://github.com/euri10/louiselm/compare/plugin-v0.1.0...plugin-v0.2.0) (2026-10-08)
 
 
