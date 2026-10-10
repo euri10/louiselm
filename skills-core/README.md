@@ -1151,9 +1151,11 @@ schema set, and every resulting byte into one manifest. Its digest is the
 release identity. The **Release** credential signs it in its own namespace,
 distinct from Primary even on one token. Neither recovery method can sign it.
 
-The standard bundle includes `louiselm-skills`, `louiselm-launch`, and
-`louiselm-control`. If any declared executable is absent after the locked Cargo
-build, assembly fails without publishing a release manifest.
+The standard bundle includes `louiselm-skills`, `louiselm-launch`,
+`louiselm-control`, and the deterministic `louiselm-tool-test-agent`. The latter
+is the measured offline QA integration, not a vendor Agent or Provider wrapper.
+If any declared executable is absent after the locked Cargo build, assembly
+fails without publishing a release manifest.
 
 Installing is content-addressed and atomic. Each release lands in its own
 immutable directory and the prefix's `current` symlink is replaced by a rename,

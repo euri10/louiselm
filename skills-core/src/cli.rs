@@ -905,14 +905,19 @@ fn quarantine_command(options: &Options) -> Result<i32, CliError> {
 }
 
 fn release_component_inputs(source: &Path) -> Vec<ComponentInput> {
-    ["louiselm-skills", "louiselm-launch", "louiselm-control"]
-        .into_iter()
-        .map(|name| ComponentInput {
-            name: name.to_owned(),
-            path: source.join("target/release").join(name),
-            kind: ComponentKind::Executable,
-        })
-        .collect()
+    [
+        "louiselm-skills",
+        "louiselm-launch",
+        "louiselm-control",
+        "louiselm-tool-test-agent",
+    ]
+    .into_iter()
+    .map(|name| ComponentInput {
+        name: name.to_owned(),
+        path: source.join("target/release").join(name),
+        kind: ComponentKind::Executable,
+    })
+    .collect()
 }
 
 #[expect(
@@ -1267,12 +1272,18 @@ mod tests {
 
     #[test]
     fn release_build_binds_all_binaries_and_refuses_missing_outputs() {
-        let executables = ["louiselm-skills", "louiselm-launch", "louiselm-control"];
+        let executables = [
+            "louiselm-skills",
+            "louiselm-launch",
+            "louiselm-control",
+            "louiselm-tool-test-agent",
+        ];
         for missing in [
             None,
             Some(executables[0]),
             Some(executables[1]),
             Some(executables[2]),
+            Some(executables[3]),
         ] {
             let source = tempfile::tempdir().unwrap();
             let built = source.path().join("target/release");
