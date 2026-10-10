@@ -645,7 +645,8 @@ impl InstalledBroker {
             .service
             .tracker
             .as_ref()
-            .is_some_and(|tracker| envelope.bead_scope.project_digest != tracker.project_digest())
+            .zip(envelope.bead_scope.as_ref())
+            .is_some_and(|(tracker, scope)| scope.project_digest != tracker.project_digest())
         {
             return Err(BrokerError::InvalidGrant);
         }

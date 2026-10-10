@@ -40,7 +40,7 @@ The JSON selection must be an operator-owned regular file, mode `0600`, at most
 | `policy_revision` | Exact comparison policy revision |
 | `workload` | `{"kind":"main","id":"<chosen workload>"}` |
 | `retention_days` | `7`, acknowledging the installed workspace retention |
-| `envelope` | Complete resolved `louiselm.broker.run-envelope/1` record |
+| `envelope` | Complete resolved `louiselm.broker.run-envelope/2` record |
 | `input_manifest` | Complete resolved `louiselm.session.input-manifest/3` record, including explicit skills mode |
 | `cache` | Absolute path to the trusted immutable cache |
 | `snapshot_parent` | Absolute operator-owned directory, mode `0750`, owned by `input_group` |
@@ -55,8 +55,9 @@ The envelope names a fresh Run, the exact generated verification-plan digest,
 exactly four fresh Sessions, both selected Models, the applicable effort ceiling,
 and the manifest's whole-Run request cap. Its Provider expiry equals the Run
 expiry, which must fit within `limits.elapsed_seconds`. Command authority is
-absent. The current Run schema also requires a valid Beads scope; the trial
-never passes it to a child, requests a tracker mutation, or discloses a tracker.
+absent, and `bead_scope` is `null`: the trial denies Beads authority rather than
+inventing a project or positive mutation budget. It never passes a Beads grant
+to a child, requests a tracker mutation, or discloses a tracker.
 Worker children receive only their own selected Model/effort under the shared
 Run cap. Verifiers explicitly receive the `fixed_verifier` role and no Provider,
 tracker, dependency, Skill-request, arbitrary-command or cold-recovery grant.

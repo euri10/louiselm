@@ -210,23 +210,13 @@ fn fixture_run_envelope(
     now_ms: u64,
 ) -> crate::broker::run_envelope::RunEnvelope {
     crate::broker::run_envelope::RunEnvelope {
-        schema: "louiselm.broker.run-envelope/1".into(),
+        schema: "louiselm.broker.run-envelope/2".into(),
         run_id: grant.request.run_id.clone(),
         envelope_id: grant.request.envelope_id.clone(),
         envelope_revision: grant.request.envelope_revision,
         controller_uid: grant.controller_uid,
-        bead_scope: crate::beads_mutation::ApprovedBeadsMutations {
-            project_digest: Digest::of(b"project").to_string(),
-            role: crate::beads_mutation::BeadsRole::Coordinator,
-            issue_ids: vec!["louiselm-a".into()],
-            effects: vec![crate::beads_mutation::BeadsEffect::CommentAdd],
-            max_mutations: 1,
-            expires_at_ms: now_ms + 120_000,
-        },
-        provider_requests: grant
-            .provider_requests
-            .clone()
-            .unwrap_or_else(|| guard::approval(now_ms)),
+        bead_scope: grant.beads_mutations.clone(),
+        provider_requests: grant.provider_requests.clone(),
         commands: grant.commands.clone(),
         verification_plan_digest,
         max_sessions: 2,
@@ -471,13 +461,32 @@ fn installed_broker_worker() {
             expires_at_ms: now + 60_000,
         }),
     };
-    broker
-        .authorize_run(&fixture_run_envelope(
-            &grant,
-            Digest::of(b"fixture-plan").to_string(),
-            now,
-        ))
-        .unwrap();
+    let run = fixture_run_envelope(&grant, Digest::of(b"fixture-plan").to_string(), now);
+    let approval = broker.authorize_run(&run).unwrap();
+    if root.join("skills-off").exists() {
+        assert!(run.bead_scope.is_none());
+        assert!(run.provider_requests.is_none());
+        let mut widened = grant.clone();
+        widened.provider_requests = Some(guard::approval(now));
+        assert!(matches!(
+            broker.authorize_child(&widened, &approval.envelope_digest),
+            Err(crate::broker::BrokerError::InvalidGrant)
+        ));
+        widened = grant.clone();
+        widened.beads_mutations = Some(crate::beads_mutation::ApprovedBeadsMutations {
+            project_digest: Digest::of(b"denied project").to_string(),
+            role: crate::beads_mutation::BeadsRole::Worker,
+            issue_ids: vec!["denied-issue".into()],
+            effects: vec![crate::beads_mutation::BeadsEffect::CommentAdd],
+            max_mutations: 1,
+            expires_at_ms: grant.expires_at_ms,
+        });
+        assert!(matches!(
+            broker.authorize_child(&widened, &approval.envelope_digest),
+            Err(crate::broker::BrokerError::InvalidGrant)
+        ));
+        println!("UNUSED_RUN_FAMILIES_DENIED");
+    }
     broker.authorize(&grant).unwrap();
     println!("BROKER_READY");
     let launched = broker.serve_launch();

@@ -33,10 +33,10 @@ pub struct RunEnvelope {
     pub envelope_revision: u64,
     /// Installed operator UID that approved this Run.
     pub controller_uid: u32,
-    /// Exact Beads project, issue IDs and effects available to children.
-    pub bead_scope: ApprovedBeadsMutations,
-    /// Upper bound on Provider access and the single shared Run request total.
-    pub provider_requests: ApprovedProviderRequests,
+    /// Exact Beads authority; `None` (wire null) denies this family.
+    pub bead_scope: Option<ApprovedBeadsMutations>,
+    /// Shared Provider authority; `None` (wire null) denies this family.
+    pub provider_requests: Option<ApprovedProviderRequests>,
     /// One exact privileged command scope, when the Run needs it.
     pub commands: Option<ApprovedCommands>,
     /// Digest of the fixed verification plan selected at Run start.
@@ -61,17 +61,19 @@ impl RunEnvelope {
     }
 
     fn validate(&self, now_ms: u64) -> Result<(), BrokerError> {
-        if self.schema != "louiselm.broker.run-envelope/1"
+        if self.schema != "louiselm.broker.run-envelope/2"
             || record_name(&self.run_id).is_err()
             || record_name(&self.envelope_id).is_err()
             || self.envelope_revision == 0
             || self.controller_uid == 0
             || !(1..=32).contains(&self.max_sessions)
             || now_ms >= self.expires_at_ms
-            || !self.bead_scope.valid(now_ms)
-            || self.bead_scope.expires_at_ms > self.expires_at_ms
-            || !self.provider_requests.valid(now_ms)
-            || self.provider_requests.expires_at_ms > self.expires_at_ms
+            || self.bead_scope.as_ref().is_some_and(|scope| {
+                !scope.valid(now_ms) || scope.expires_at_ms > self.expires_at_ms
+            })
+            || self.provider_requests.as_ref().is_some_and(|scope| {
+                !scope.valid(now_ms) || scope.expires_at_ms > self.expires_at_ms
+            })
             || self.commands.as_ref().is_some_and(|commands| {
                 commands.expires_at_ms > self.expires_at_ms
                     || commands.policy(&self.envelope_id, now_ms).is_err()
@@ -111,26 +113,30 @@ impl RunEnvelope {
                     } => {}
             _ => return Err(BrokerError::InvalidGrant),
         }
-        if grant.beads_mutations.as_ref().is_some_and(|child| {
-            !child.valid(now_ms)
-                || child.project_digest != self.bead_scope.project_digest
-                || child.role == BeadsRole::Coordinator
-                    && self.bead_scope.role != BeadsRole::Coordinator
-                || child.max_mutations > self.bead_scope.max_mutations
-                || child.expires_at_ms > self.bead_scope.expires_at_ms
+        if let Some(child) = &grant.beads_mutations {
+            let parent = self.bead_scope.as_ref().ok_or(BrokerError::InvalidGrant)?;
+            if !child.valid(now_ms)
+                || child.project_digest != parent.project_digest
+                || child.role == BeadsRole::Coordinator && parent.role != BeadsRole::Coordinator
+                || child.max_mutations > parent.max_mutations
+                || child.expires_at_ms > parent.expires_at_ms
                 || !child
                     .issue_ids
                     .iter()
-                    .all(|id| self.bead_scope.issue_ids.contains(id))
+                    .all(|id| parent.issue_ids.contains(id))
                 || !child
                     .effects
                     .iter()
-                    .all(|effect| self.bead_scope.effects.contains(effect))
-        }) {
-            return Err(BrokerError::InvalidGrant);
+                    .all(|effect| parent.effects.contains(effect))
+            {
+                return Err(BrokerError::InvalidGrant);
+            }
         }
         if let Some(child) = &grant.provider_requests {
-            let parent = &self.provider_requests;
+            let parent = self
+                .provider_requests
+                .as_ref()
+                .ok_or(BrokerError::InvalidGrant)?;
             if !child.valid(now_ms)
                 || child.disclosure_profile != parent.disclosure_profile
                 || child.provider != parent.provider
@@ -321,13 +327,17 @@ impl RunEnvelopeStore {
         let _serial = lock(&self.serial);
         let current = self.current(run_id)?.ok_or(BrokerError::InvalidGrant)?;
         current.validate(now_ms)?;
+        let scope = current
+            .bead_scope
+            .as_ref()
+            .ok_or(BrokerError::InvalidGrant)?;
         if current.controller_uid != controller_uid
             || Digest::of(&current.canonical_bytes()).to_string() != envelope_digest
-            || !current.bead_scope.issue_ids.iter().any(|id| id == bead_id)
+            || !scope.issue_ids.iter().any(|id| id == bead_id)
         {
             return Err(BrokerError::InvalidGrant);
         }
-        Ok((current.bead_scope, current.envelope_revision))
+        Ok((scope.clone(), current.envelope_revision))
     }
 
     fn current(&self, run_id: &str) -> Result<Option<RunEnvelope>, BrokerError> {

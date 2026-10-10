@@ -73,7 +73,7 @@ local function fixture()
       cache_base_digest = DIGEST,
     },
     envelope = {
-      schema = "louiselm.broker.run-envelope/1",
+      schema = "louiselm.broker.run-envelope/2",
       run_id = "trial-1",
       envelope_id = "env",
       envelope_revision = 1,
@@ -509,6 +509,12 @@ end
 
 T["unsupported Providers, widened budgets and reused identities refuse before effects"] = function()
   for _, mutate in ipairs({
+    function(s)
+      s.envelope.provider_requests = nvim.NIL
+    end,
+    function(s)
+      s.envelope.provider_requests = nil
+    end,
     function(s)
       s.manifest.routes.candidate.provider = "other"
     end,

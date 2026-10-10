@@ -196,8 +196,8 @@ fn privileged_installed_lua_bead_executor() {
         fs::set_permissions(&plan, fs::Permissions::from_mode(0o444)).unwrap();
         let plan_digest = Digest::of(&fs::read(&plan).unwrap()).to_string();
         let mut envelope = fixture_run_envelope(&grant, plan_digest.clone(), now);
-        envelope.bead_scope = grant.beads_mutations.clone().unwrap();
-        envelope.bead_scope.role = crate::beads_mutation::BeadsRole::Coordinator;
+        envelope.bead_scope.clone_from(&grant.beads_mutations);
+        envelope.bead_scope.as_mut().unwrap().role = crate::beads_mutation::BeadsRole::Coordinator;
         envelope.max_sessions = 2;
         cases.push(
             serde_json::json!({"bead_id":bead_id,"envelope":envelope,"grant":grant,
@@ -428,6 +428,12 @@ fn operator_selection(
     envelope["bead_scope"]["issue_ids"] =
         serde_json::json!(["operator-1", "operator-2", "operator-3"]);
     envelope["bead_scope"]["max_mutations"] = serde_json::json!(3);
+    // This operator workflow really uses Provider authority. The generic Run
+    // fixture now denies it, so select the full positive scope explicitly here.
+    envelope["provider_requests"] = serde_json::to_value(guard::approval(
+        envelope["expires_at_ms"].as_u64().unwrap() - 120_000,
+    ))
+    .unwrap();
     envelope["provider_requests"]["models"] = serde_json::json!(["gpt-5.6-luna"]);
     envelope["provider_requests"]["max_effort"] = serde_json::json!("high");
     envelope["provider_requests"]["max_run_requests"] = serde_json::json!(6);

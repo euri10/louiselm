@@ -10,6 +10,7 @@ local function fixture()
   f.selection = {
     schema = "louiselm.operator.bead-run/1",
     envelope = {
+      schema = "louiselm.broker.run-envelope/2",
       run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       envelope_id = "env",
       envelope_revision = 1,
@@ -129,6 +130,22 @@ T["prepares exact HEAD and fresh scoped worker/verifier grants"] = function()
   MiniTest.expect.equality(f.prepared.base_commit, head)
   MiniTest.expect.equality(f.selection.manifest.source_snapshot_digest, nil)
   assert(f.controller:dispose())
+end
+
+T["denied Run families refuse the Bead workflow before effects"] = function()
+  for _, family in ipairs({ "bead_scope", "provider_requests" }) do
+    for _, denied in ipairs({ nvim.NIL, false }) do
+      local f = fixture()
+      f.selection.envelope[family] = denied
+      if denied == false then
+        f.selection.envelope[family] = nil
+      end
+      local controller, err = require("louiselm.workflow.operator").new(f.selection, f.options)
+      MiniTest.expect.equality(controller, nil)
+      MiniTest.expect.equality(type(err), "string")
+      MiniTest.expect.equality(#f.calls, 0)
+    end
+  end
 end
 
 T["reuses only confirmed identical input binding without resending staging"] = function()

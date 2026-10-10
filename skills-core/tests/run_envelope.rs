@@ -20,12 +20,12 @@ use louiselm_skills::{
 
 fn envelope() -> RunEnvelope {
     RunEnvelope {
-        schema: "louiselm.broker.run-envelope/1".into(),
+        schema: "louiselm.broker.run-envelope/2".into(),
         run_id: "run-1".into(),
         envelope_id: "envelope-1".into(),
         envelope_revision: 1,
         controller_uid: 1000,
-        bead_scope: ApprovedBeadsMutations {
+        bead_scope: Some(ApprovedBeadsMutations {
             project_digest: Digest::of(b"project").to_string(),
             role: BeadsRole::Coordinator,
             issue_ids: vec!["louiselm-a".into(), "louiselm-b".into()],
@@ -36,8 +36,8 @@ fn envelope() -> RunEnvelope {
             ],
             max_mutations: 8,
             expires_at_ms: 10_000,
-        },
-        provider_requests: ApprovedProviderRequests {
+        }),
+        provider_requests: Some(ApprovedProviderRequests {
             disclosure_profile: louiselm_skills::provider_request::disclosure::profile_digest(),
             provider: "openai".into(),
             upstream: "https://api.openai.com/v1/responses".into(),
@@ -46,7 +46,7 @@ fn envelope() -> RunEnvelope {
             models: vec!["gpt-5.6-luna".into()],
             max_effort: ReasoningEffort::High,
             expires_at_ms: 10_000,
-        },
+        }),
         commands: None,
         verification_plan_digest: Digest::of(b"fixed plan").to_string(),
         max_sessions: 3,
@@ -55,7 +55,7 @@ fn envelope() -> RunEnvelope {
 }
 
 fn grant() -> GrantRequest {
-    let mut scope = envelope().bead_scope;
+    let mut scope = envelope().bead_scope.unwrap();
     scope.role = BeadsRole::Worker;
     scope.issue_ids = vec!["louiselm-a".into()];
     scope.effects = vec![BeadsEffect::CommentAdd, BeadsEffect::Claim];
@@ -66,7 +66,7 @@ fn grant() -> GrantRequest {
         conformance: ConformanceAuthorization::default(),
         require_cold_recovery: true,
         request: LaunchRequest {
-            schema: "louiselm.launch.request/1".into(),
+            schema: louiselm_skills::launch::REQUEST_SCHEMA.into(),
             protocol_version: PROTOCOL_VERSION,
             request_id: "request-1".into(),
             authorization_id: "authorization-1".into(),
@@ -87,7 +87,128 @@ fn grant() -> GrantRequest {
         commands: None,
         skill_requests: None,
         beads_mutations: Some(scope),
-        provider_requests: Some(envelope().provider_requests),
+        provider_requests: envelope().provider_requests,
+    }
+}
+
+#[test]
+fn explicitly_denied_families_accept_only_capability_free_children_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let mut wire = serde_json::to_value(envelope()).unwrap();
+    wire["schema"] = "louiselm.broker.run-envelope/2".into();
+    wire["bead_scope"] = serde_json::Value::Null;
+    wire["provider_requests"] = serde_json::Value::Null;
+    let denied: RunEnvelope = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&denied).unwrap(), wire);
+    let store = RunEnvelopeStore::open(root.path()).unwrap();
+    let approval = store.approve(&denied, 1_000).unwrap();
+    let mut child = grant();
+    child.request.schema = louiselm_skills::launch::REQUEST_SCHEMA.into();
+    child.beads_mutations = None;
+    child.provider_requests = None;
+    assert!(store.check_child(&child, 1_000).is_ok());
+    let restarted = RunEnvelopeStore::open(root.path()).unwrap();
+    assert!(restarted.check_child(&child, 9_999).is_ok());
+    assert!(restarted.check_child(&child, 10_000).is_err());
+    assert!(
+        restarted
+            .check_bead_failure(
+                "run-1",
+                &approval.envelope_digest,
+                "louiselm-a",
+                1000,
+                1_000
+            )
+            .is_err()
+    );
+    let mut widened = child.clone();
+    widened.beads_mutations = grant().beads_mutations;
+    assert!(restarted.check_child(&widened, 1_000).is_err());
+    widened = child;
+    widened.provider_requests = grant().provider_requests;
+    assert!(restarted.check_child(&widened, 1_000).is_err());
+}
+
+#[test]
+fn denied_families_keep_exact_command_authority_independent_and_bounded() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RunEnvelopeStore::open(root.path()).unwrap();
+    let mut denied = envelope();
+    denied.bead_scope = None;
+    denied.provider_requests = None;
+    denied.commands = Some(louiselm_skills::broker::ApprovedCommands {
+        command_digest: Digest::of(b"printf QA_OK").to_string(),
+        timeout_ms: 5000,
+        uses: Some(2),
+        allow_delegation: false,
+        expires_at_ms: 9000,
+    });
+    store.approve(&denied, 1_000).unwrap();
+    let mut child = grant();
+    child.beads_mutations = None;
+    child.provider_requests = None;
+    child.commands.clone_from(&denied.commands);
+    assert!(store.check_child(&child, 1_000).is_ok());
+    let mutations: [fn(&mut GrantRequest); 5] = [
+        |g| {
+            g.commands.as_mut().unwrap().command_digest = Digest::of(b"another command").to_string();
+        },
+        |g| g.commands.as_mut().unwrap().timeout_ms = 5001,
+        |g| g.commands.as_mut().unwrap().uses = Some(3),
+        |g| g.commands.as_mut().unwrap().uses = None,
+        |g| g.commands.as_mut().unwrap().allow_delegation = true,
+    ];
+    for mutate in mutations {
+        let mut widened = child.clone();
+        mutate(&mut widened);
+        assert!(store.check_child(&widened, 1_000).is_err());
+    }
+    child.commands = None;
+    assert!(store.check_child(&child, 1_000).is_ok());
+}
+
+#[test]
+fn families_are_independent_and_absent_fields_never_create_authority() {
+    for (beads, provider) in [(false, false), (true, false), (false, true), (true, true)] {
+        let root = tempfile::tempdir().unwrap();
+        let mut wire = serde_json::to_value(envelope()).unwrap();
+        if !beads {
+            wire.as_object_mut().unwrap().remove("bead_scope");
+        }
+        if !provider {
+            wire.as_object_mut().unwrap().remove("provider_requests");
+        }
+        let approved: RunEnvelope = serde_json::from_value(wire).unwrap();
+        assert_eq!(approved.bead_scope.is_some(), beads);
+        assert_eq!(approved.provider_requests.is_some(), provider);
+        let store = RunEnvelopeStore::open(root.path()).unwrap();
+        store.approve(&approved, 1000).unwrap();
+        let mut child = grant();
+        if !beads {
+            child.beads_mutations = None;
+        }
+        if !provider {
+            child.provider_requests = None;
+        }
+        assert!(store.check_child(&child, 1000).is_ok());
+        child.beads_mutations = grant().beads_mutations;
+        child.provider_requests = grant().provider_requests;
+        assert_eq!(store.check_child(&child, 1000).is_ok(), beads && provider);
+    }
+    let invalid: [fn(&mut RunEnvelope); 6] = [
+        |e| e.bead_scope.as_mut().unwrap().max_mutations = 0,
+        |e| e.bead_scope.as_mut().unwrap().issue_ids.clear(),
+        |e| e.bead_scope.as_mut().unwrap().expires_at_ms = 10_001,
+        |e| e.provider_requests.as_mut().unwrap().max_run_requests = 0,
+        |e| e.provider_requests.as_mut().unwrap().models.clear(),
+        |e| e.provider_requests.as_mut().unwrap().expires_at_ms = 10_001,
+    ];
+    for mutate in invalid {
+        let root = tempfile::tempdir().unwrap();
+        let store = RunEnvelopeStore::open(root.path()).unwrap();
+        let mut denied = envelope();
+        mutate(&mut denied);
+        assert!(store.approve(&denied, 1000).is_err());
     }
 }
 
@@ -211,8 +332,8 @@ fn closed_run_envelope_refuses_missing_unknown_and_expired_authority() {
     coordinator.beads_mutations.as_mut().unwrap().effects = vec![BeadsEffect::CommentAdd];
     let mut worker_only = envelope();
     worker_only.envelope_revision = 2;
-    worker_only.bead_scope.role = BeadsRole::Worker;
-    worker_only.bead_scope.effects = vec![BeadsEffect::CommentAdd];
+    worker_only.bead_scope.as_mut().unwrap().role = BeadsRole::Worker;
+    worker_only.bead_scope.as_mut().unwrap().effects = vec![BeadsEffect::CommentAdd];
     store.approve(&worker_only, 1_000).unwrap();
     coordinator.request.envelope_revision = 2;
     assert!(store.check_child(&coordinator, 1_000).is_err());

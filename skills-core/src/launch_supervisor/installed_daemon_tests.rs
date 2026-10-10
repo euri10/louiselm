@@ -81,13 +81,13 @@ fn seed_authorizations() {
     });
     let run = broker
         .authorize_run(&crate::broker::run_envelope::RunEnvelope {
-            schema: "louiselm.broker.run-envelope/1".into(),
+            schema: "louiselm.broker.run-envelope/2".into(),
             run_id: named_run_id().into(),
             envelope_id: "envelope".into(),
             envelope_revision: 1,
             controller_uid: config.operator_uid,
-            bead_scope,
-            provider_requests: guard::approval(now),
+            bead_scope: Some(bead_scope),
+            provider_requests: Some(guard::approval(now)),
             commands: None,
             verification_plan_digest: Digest::of(b"daemon-fixture-plan").to_string(),
             max_sessions: u32::try_from(beads::subjects().len()).unwrap(),

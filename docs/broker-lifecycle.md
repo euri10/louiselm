@@ -1199,7 +1199,7 @@ Pre-cutover Sessions have no measured failure to waive. Installing the new fixed
 
 ## Run authorization
 
-The operator approves one closed `louiselm.broker.run-envelope/1` document before
+The operator approves one closed `louiselm.broker.run-envelope/2` document before
 the first Session. It fixes the Run ID and envelope revision, exact Beads scope,
 Provider policy and shared request total, one verification-plan digest, optional
 exact command scope, Session count, and expiry. The broker persists the envelope
@@ -1211,6 +1211,17 @@ a Session. Missing or stale envelopes refuse child launches and verification.
 Cold-resume reconstruction also consumes a Session slot and must remain inside
 the current Run approval; it cannot derive a replacement from an old Session
 to bypass the envelope.
+
+`bead_scope: null` and `provider_requests: null` explicitly deny those families;
+omitted fields also deserialize as denied, never as a default grant. Persisted
+canonical envelopes always include both fields. No dummy project, Provider,
+Model, effect or positive budget is needed. A child carrying a grant for a
+denied family refuses before authorization is stored. Allowed families retain
+all scope, disclosure, shared-budget and original-expiry checks. `commands` is
+independent: a no-Provider/no-Beads Run can allow one exact command with a fixed
+timeout and finite uses while refusing delegation. Existing Bead-operator and
+qualification workflows still require the positive families they actually use;
+they refuse a denied selection instead of inventing permissions.
 
 The installed operator entrypoint accepts a bounded JSON request on stdin and
 returns a typed JSON receipt on stdout:
