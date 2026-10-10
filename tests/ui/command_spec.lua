@@ -17,11 +17,32 @@ local function has_chat_command()
   return nvim.api.nvim_get_commands({ builtin = false }).LouiselmChat ~= nil
 end
 
-local function fake_process()
+-- Delay real recording completions without changing their fast-event context.
+local function fake_process(sqlite_delay_ms)
   local process = { writes = {} }
   local original_system = nvim.system
   rawset(nvim, "system", function(command, options, on_exit)
     if command[1] == "sqlite3" then
+      if sqlite_delay_ms ~= nil and on_exit ~= nil then
+        local delay = sqlite_delay_ms
+        local timer = assert(nvim.uv.new_timer())
+        MiniTest.finally(function()
+          if not timer:is_closing() then
+            timer:close()
+          end
+        end)
+        return original_system(command, options, function(result)
+          if timer:is_closing() then
+            on_exit(result)
+            return
+          end
+          timer:start(delay, 0, function()
+            timer:close()
+            process.sqlite_delayed = nvim.in_fast_event()
+            on_exit(result)
+          end)
+        end)
+      end
       return original_system(command, options, on_exit)
     end
     process.command = command
@@ -50,6 +71,20 @@ end
 
 local function respond(process, id, result)
   process.options.stdout(nil, assert(Protocol.encode(Protocol.response(id, result))) .. "\n")
+end
+
+local function wait_for_prompt(process, session)
+  -- Recording permits a 5s SQLite operation before it can dispatch the prompt.
+  local dispatched = nvim.wait(6000, function()
+    return #process.writes >= 3
+  end, 1)
+  local state = session:inspect()
+  assert(dispatched, "prompt did not dispatch: " .. nvim.inspect({
+    writes = #process.writes,
+    status = state.status,
+    recording_pending = state.recording_pending,
+    recording_error = state.recording_error,
+  }))
 end
 
 local LIMITS_READ_METHOD = "_io.github.euri10.louiselm/account_limits/read"
@@ -1871,10 +1906,13 @@ T["command"]["attaches a project instructions resource_link on a new session thr
 end
 
 T["command"]["inline permission controls"] =
-  MiniTest.new_set({ parametrize = { { "allow" }, { "deny" }, { "dismiss" }, { "cancel" } } })
+  MiniTest.new_set({ parametrize = { { "allow" }, { "deny", 2000 }, { "dismiss" }, { "cancel" } } })
 
-T["command"]["inline permission controls"]["answer the request without an open Chat"] = function(choice)
-  local process, original_system = fake_process()
+T["command"]["inline permission controls"]["answer the request without an open Chat"] = function(
+  choice,
+  sqlite_delay_ms
+)
+  local process, original_system = fake_process(sqlite_delay_ms)
   local original_select = nvim.ui.select
   local picker
   nvim.ui.select = function(items, _, callback)
@@ -1897,10 +1935,9 @@ T["command"]["inline permission controls"]["answer the request without an open C
   nvim.api.nvim_feedkeys(":LouiselmInline\rrewrite\r", "xt", false)
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(process, 2, { sessionId = "inline-acp" })
-  assert(nvim.wait(1000, function()
-    return #process.writes >= 3
-  end, 1))
   local session = Session.exit_verdict()[1].session
+  wait_for_prompt(process, session)
+  MiniTest.expect.equality(process.sqlite_delayed, sqlite_delay_ms ~= nil and true or nil)
   local timer = assert(nvim.uv.new_timer())
   MiniTest.finally(function()
     if not timer:is_closing() then
@@ -1988,9 +2025,6 @@ T["command"]["inline and Chat share permission ownership while cancellation foll
   nvim.api.nvim_feedkeys(":LouiselmInline\rrewrite\r", "xt", false)
   respond(inline_process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(inline_process, 2, { sessionId = "inline-acp" })
-  assert(nvim.wait(1000, function()
-    return #chat_process.writes >= 3 and #inline_process.writes >= 3
-  end, 1))
   local inline_session
   for _, verdict in ipairs(Session.exit_verdict()) do
     if verdict.session ~= chat_session then
@@ -1998,6 +2032,8 @@ T["command"]["inline and Chat share permission ownership while cancellation foll
     end
   end
   assert(inline_session ~= nil)
+  wait_for_prompt(chat_process, chat_session)
+  wait_for_prompt(inline_process, inline_session)
   local function permission(process, acp_id, request_id)
     process.options.stdout(
       nil,
