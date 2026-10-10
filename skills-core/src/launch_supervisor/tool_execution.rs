@@ -41,6 +41,9 @@ pub(super) struct ToolExecutor {
 impl ToolExecutor {
     pub(super) fn verification_context(&self) -> (BubblewrapBackend, ConfinementPlan) {
         let mut plan = self.plan.clone();
+        // Fixed verification uses an independent source copy and no Agent runtime
+        // discovery. It cannot rename/recreate the live workspace's mountpoints.
+        plan.skill_masks = None;
         plan.environment.insert(
             "PATH".to_owned(),
             "/usr/lib/louiselm/verifier/bin:/usr/bin:/bin".to_owned(),
@@ -93,6 +96,10 @@ impl ToolExecutor {
             workspace: agent.workspace.clone(),
             cache: agent.cache.clone(),
             beads_replica: agent.beads_replica.clone(),
+            skill_masks: agent
+                .skill_masks
+                .as_ref()
+                .map(crate::sandbox::SkillMasks::workspace_only),
             system_roots,
             network: NetworkPolicy::Denied,
             identity: agent.identity,

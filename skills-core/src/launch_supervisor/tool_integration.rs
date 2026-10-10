@@ -414,6 +414,7 @@ mod tests {
             workspace: root.join("workspace"),
             cache: None,
             beads_replica: None,
+            skill_masks: None,
             system_roots: vec![],
             identity: IdentityPlan::NamespaceOnly,
             network: NetworkPolicy::Denied,

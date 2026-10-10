@@ -1,7 +1,7 @@
 //! Canonical binding of one Session's resolved inputs.
 //!
 //! This is a record, not an authorization or a measurement API. Trusted callers
-//! supply the result of registry measurement, current Generation/view resolution
+//! supply the result of registry measurement, explicit skills/view resolution
 //! and snapshot capture. Parsing proves structure and identity, never provenance,
 //! native-source control, or continued currency of a stored artifact. Raw records
 //! must not be promoted to Verified posture. No input content is included, but
@@ -24,7 +24,7 @@ mod validation;
 pub use resolution::InputResolutionError;
 
 /// Canonical Session input record schema.
-pub const INPUT_MANIFEST_SCHEMA: &str = "louiselm.session.input-manifest/2";
+pub const INPUT_MANIFEST_SCHEMA: &str = "louiselm.session.input-manifest/3";
 /// Maximum encoded record size, checked before parsing.
 pub const MAX_INPUT_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
@@ -76,10 +76,8 @@ pub struct SessionInputs {
     pub runtime: Option<RuntimeMeasurement>,
     /// Exact Session-independent runtime configuration from its trusted producer.
     pub runtime_configuration_digest: Option<String>,
-    /// Resolved current witnessed Generation identity.
-    pub skill_generation_id: Option<String>,
-    /// Resolved materialized view identity.
-    pub view_digest: Option<String>,
+    /// Explicitly resolved skills mode and exact Instruction view.
+    pub skills: Option<SkillInputs>,
     /// Complete per-Session project-instruction snapshot.
     pub project_instructions: Option<Vec<MeasuredInput>>,
     /// Added tool schemas; built-ins belong to runtime and configuration identity.
@@ -104,14 +102,70 @@ pub struct SessionInputs {
     pub acp_mcp_servers: Option<Vec<String>>,
 }
 
-/// The complete approved supply and this Agent's view of it.
+/// Explicit operator selection; missing supply never implies skills-off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillsMode {
+    /// Use the canonical empty mask without admitting any Skill package.
+    Off,
+    /// Require exact signed and witnessed supply.
+    Enabled,
+}
+
+/// Exact mode and view, shared by manifests, launch requests and receipts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SkillInputs {
-    /// Witnessed Generation content address.
-    pub generation_digest: String,
-    /// Materialized Instruction view content address.
-    pub view_digest: String,
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SkillInputs {
+    /// Canonical empty Instruction view, with no Generation authority.
+    Off {
+        /// Exact empty view content address.
+        view_digest: String,
+    },
+    /// Complete approved supply and this Agent's view of it.
+    Enabled {
+        /// Witnessed Generation content address.
+        generation_digest: String,
+        /// Materialized Instruction view content address.
+        view_digest: String,
+    },
+}
+
+impl SkillInputs {
+    /// Exact Instruction view identity, including the canonical empty mask.
+    #[must_use]
+    pub fn view_digest(&self) -> &str {
+        match self {
+            Self::Off { view_digest } | Self::Enabled { view_digest, .. } => view_digest,
+        }
+    }
+
+    /// Witnessed supply identity; skills-off makes no Generation claim.
+    #[must_use]
+    pub fn generation_digest(&self) -> Option<&str> {
+        match self {
+            Self::Off { .. } => None,
+            Self::Enabled {
+                generation_digest, ..
+            } => Some(generation_digest),
+        }
+    }
+
+    /// Checks canonical mode bindings without establishing provenance.
+    ///
+    /// # Errors
+    /// Refuses invalid digests or a substituted skills-off view identity.
+    pub fn validate(&self) -> Result<(), SessionManifestError> {
+        validation::digest("view_digest", self.view_digest(), true)?;
+        if let Some(generation) = self.generation_digest() {
+            validation::digest("generation_digest", generation, true)?;
+        } else if self.view_digest() != crate::instruction_view::empty_digest().to_string() {
+            return Err(SessionManifestError::Malformed {
+                field: "view_digest",
+                reason: "skills-off requires the canonical empty Instruction view",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Exact capability envelope revision.
@@ -168,8 +222,8 @@ pub struct SessionInputManifest {
     pub runtime: RuntimeMeasurement,
     /// Exact Session-independent configuration; not a native-discovery proof.
     pub runtime_configuration_digest: String,
-    /// Approved supply binding.
-    pub skill_generation: SkillInputs,
+    /// Explicit skills mode and exact Instruction view binding.
+    pub skills: SkillInputs,
     /// Project instructions, never hardware-admitted packages.
     pub project_instructions: Vec<MeasuredInput>,
     /// Measured added tool schemas, excluding runtime built-ins.
@@ -206,18 +260,6 @@ pub enum SessionManifestError {
     /// Runtime measurement is absent or contradictory.
     #[error("runtime: {reason}")]
     UnmeasuredRuntime {
-        /// Fixed refusal reason.
-        reason: &'static str,
-    },
-    /// Current witnessed supply was not resolved.
-    #[error("managed_supply: {reason}")]
-    UnresolvedGeneration {
-        /// Fixed refusal reason.
-        reason: &'static str,
-    },
-    /// Materialized view was not resolved.
-    #[error("managed_supply: {reason}")]
-    UnresolvedView {
         /// Fixed refusal reason.
         reason: &'static str,
     },
@@ -258,16 +300,13 @@ impl SessionManifestError {
     pub fn dimension(&self) -> Option<DimensionName> {
         match self {
             Self::UnmeasuredRuntime { .. } => Some(DimensionName::Runtime),
-            Self::UnresolvedGeneration { .. } | Self::UnresolvedView { .. } => {
-                Some(DimensionName::ManagedSupply)
-            }
             Self::NonEmptyMcp {} => Some(DimensionName::NativeSupply),
             Self::Missing { field } | Self::Malformed { field, .. } | Self::Duplicate { field } => {
                 if field.starts_with("runtime") {
                     Some(DimensionName::Runtime)
                 } else {
                     match *field {
-                        "skill_generation_id" | "view_digest" | "policy_digest" => {
+                        "skills" | "generation_digest" | "view_digest" | "policy_digest" => {
                             Some(DimensionName::ManagedSupply)
                         }
                         "project_instructions"
@@ -315,17 +354,7 @@ impl SessionInputManifest {
             .ok_or(SessionManifestError::UnmeasuredRuntime {
                 reason: "no measured runtime is bound",
             })?;
-        let generation_digest =
-            inputs
-                .skill_generation_id
-                .ok_or(SessionManifestError::UnresolvedGeneration {
-                    reason: "no Skill Generation is bound",
-                })?;
-        let view_digest = inputs
-            .view_digest
-            .ok_or(SessionManifestError::UnresolvedView {
-                reason: "no materialized Instruction view is bound",
-            })?;
+        let skills = required(inputs.skills, "skills")?;
         let provider_disclosure = ProviderDisclosure {
             providers: agent
                 .reachable_providers()
@@ -342,10 +371,7 @@ impl SessionInputManifest {
                 inputs.runtime_configuration_digest,
                 "runtime_configuration_digest",
             )?,
-            skill_generation: SkillInputs {
-                generation_digest,
-                view_digest,
-            },
+            skills,
             project_instructions: required(inputs.project_instructions, "project_instructions")?,
             tool_schemas: required(inputs.tool_schemas, "tool_schemas")?,
             plugin_schemas: required(inputs.plugin_schemas, "plugin_schemas")?,

@@ -19,10 +19,10 @@ use crate::{
 };
 
 /// SSHSIG namespace and schema for the bytes a Launch supervisor signs.
-pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/7";
+pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/8";
 
 /// Schema for the payload plus its launcher signature.
-pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/6";
+pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/7";
 
 /// Largest canonical payload or signed envelope accepted at the trust boundary.
 pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
@@ -153,8 +153,8 @@ pub struct LaunchEvidence {
     pub launch_request_digest: String,
     /// Digest of the runtime measurement used for this launch.
     pub runtime_measurement_digest: String,
-    /// Skill Generation fixed for the Session.
-    pub skill_generation_id: String,
+    /// Explicit skills mode and exact view fixed for the Session.
+    pub skills: crate::session_manifest::SkillInputs,
     /// Complete Session-input manifest fixed for the Session.
     pub session_input_manifest_id: String,
     /// Isolation contract the evidence answers.
@@ -829,7 +829,6 @@ fn validate_launch_evidence(evidence: &LaunchEvidence) -> Result<(), ReceiptErro
             "runtime_measurement_digest",
             &evidence.runtime_measurement_digest,
         ),
-        ("skill_generation_id", &evidence.skill_generation_id),
         (
             "session_input_manifest_id",
             &evidence.session_input_manifest_id,
@@ -841,6 +840,10 @@ fn validate_launch_evidence(evidence: &LaunchEvidence) -> Result<(), ReceiptErro
     ] {
         validate_digest(field, value)?;
     }
+    evidence
+        .skills
+        .validate()
+        .map_err(|_| ReceiptError::InvalidIdentifier { field: "skills" })?;
     if evidence.isolation_contract != CONTRACT_VERSION {
         return Err(ReceiptError::UnsupportedIsolationContract(
             evidence.isolation_contract.clone(),

@@ -144,7 +144,10 @@ fn request(session: &str) -> LaunchRequest {
         agent_id: "demo".to_owned(),
         envelope_id: "envelope-1".to_owned(),
         envelope_revision: 7,
-        skill_generation_id: Digest::of(b"generation").to_string(),
+        skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"generation").to_string(),
+            view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: Digest::of(b"input").to_string(),
     }
 }
@@ -616,7 +619,10 @@ fn pinned_launch_receipt(authorization: &LaunchAuthorization, generation: &str) 
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: authorization.request_digest.clone(),
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
-                skill_generation_id: generation.to_owned(),
+                skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+                    generation_digest: generation.to_owned(),
+                    view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+                },
                 session_input_manifest_id: Digest::of(b"input").to_string(),
                 isolation_contract: "louiselm.isolation/2".to_owned(),
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),
@@ -905,7 +911,13 @@ fn fake_supervisor_for(
     now_ms: u64,
     uid: u32,
 ) -> (LaunchAuthorization, SeqpacketChannel) {
-    fake_supervisor_pinned(socket, request, now_ms, uid, &request.skill_generation_id)
+    fake_supervisor_pinned(
+        socket,
+        request,
+        now_ms,
+        uid,
+        request.skills.generation_digest().unwrap(),
+    )
 }
 
 /// Launches a fake Session whose signed Launch receipt pins `generation`.

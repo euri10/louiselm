@@ -132,8 +132,7 @@ local function validate(s, options)
     or type(inputs) ~= "table"
     or type(inputs.agent) ~= "table"
     or type(inputs.envelope) ~= "table"
-    or type(inputs.skill_generation) ~= "table"
-    or not digest(inputs.skill_generation.generation_digest)
+    or Launch.encode_skills(inputs.skills) == nil
     or not digest(inputs.cache_base_digest)
     or not digest(inputs.source_base_digest)
     or not digest(s.snapshot_digest)
@@ -401,7 +400,7 @@ local function grant(self, arm, verifier)
   return {
     role = verifier and "fixed_verifier" or "agent",
     request = {
-      schema = "louiselm.launch.request/2",
+      schema = "louiselm.launch.request/3",
       protocol_version = 1,
       request_id = id .. "-request",
       authorization_id = id .. "-approval",
@@ -410,7 +409,7 @@ local function grant(self, arm, verifier)
       agent_id = s.input_manifest.agent.id,
       envelope_id = envelope.envelope_id,
       envelope_revision = envelope.envelope_revision,
-      skill_generation_id = s.input_manifest.skill_generation.generation_digest,
+      skills = s.input_manifest.skills,
       session_input_manifest_id = self.manifest_digest,
     },
     controller_uid = envelope.controller_uid,

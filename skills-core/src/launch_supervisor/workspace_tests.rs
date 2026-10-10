@@ -95,8 +95,10 @@ fn manifest_fixture(
         ),
         agent: Some(agent),
         runtime: Some(runtime.measure().unwrap()),
-        skill_generation_id: Some(identity.clone()),
-        view_digest: Some(identity.clone()),
+        skills: Some(crate::session_manifest::SkillInputs::Enabled {
+            generation_digest: identity.clone(),
+            view_digest: identity.clone(),
+        }),
         project_instructions: Some(vec![]),
         tool_schemas: Some(vec![]),
         plugin_schemas: Some(vec![]),
@@ -144,7 +146,7 @@ fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
         agent_id: "agent".into(),
         envelope_id: "empty".into(),
         envelope_revision: 1,
-        skill_generation_id: manifest.skill_generation.generation_digest.clone(),
+        skills: manifest.skills.clone(),
         session_input_manifest_id: manifest.digest().to_string(),
     };
     let owner = (

@@ -22,6 +22,8 @@ mod agent_identity;
 #[doc(hidden)]
 pub mod bootstrap;
 mod host_identity;
+mod skill_masks;
+pub use skill_masks::SkillMasks;
 
 use std::{
     collections::BTreeMap,
@@ -136,6 +138,8 @@ pub struct ConfinementPlan {
     /// Optional publisher-owned directory of disposable local tracker generations.
     /// The launcher supplies exactly beads-replica beneath the protected Session root.
     pub beads_replica: Option<PathBuf>,
+    /// Launcher-owned empty Instruction view mounts, resolved from measured inventory.
+    pub skill_masks: Option<SkillMasks>,
     /// System directories mounted read-only.
     pub system_roots: Vec<PathBuf>,
     /// Whether the Session may reach the network.
@@ -1677,6 +1681,9 @@ impl BubblewrapBackend {
             arguments.push(key.clone());
             arguments.push(value.clone());
         }
+        if let Some(masks) = &plan.skill_masks {
+            arguments.extend(masks.arguments());
+        }
         arguments.push("--chdir".to_owned());
         arguments.push(plan.workspace.display().to_string());
         arguments.push("--".to_owned());
@@ -1701,6 +1708,9 @@ impl BubblewrapBackend {
         reason = "preflight_cgroup rejects HostIdentity without a cgroup before any spawn; the local Option is never cleared."
     )]
     pub fn prepare(&self, plan: &ConfinementPlan) -> Result<PreparedSession, SandboxError> {
+        if let Some(masks) = &plan.skill_masks {
+            masks.verify(plan)?;
+        }
         let host_identity = if let IdentityPlan::HostIdentity { uid, gid } = plan.identity {
             if !rustix::process::geteuid().is_root() {
                 return Err(SandboxError::Refused(
@@ -1938,7 +1948,11 @@ impl BubblewrapBackend {
             session: Some(SandboxedSession {
                 session_id: plan.session_id.clone(),
                 backend: self.name(),
-                evidence: self.evidence(plan.network, cgroup.as_ref(), identity),
+                evidence: {
+                    let mut evidence = self.evidence(plan.network, cgroup.as_ref(), identity);
+                    evidence.skill_masks = plan.skill_masks.as_ref().map(SkillMasks::evidence);
+                    evidence
+                },
                 child,
                 cgroup,
                 sandbox_leader_pid,
@@ -2090,6 +2104,7 @@ impl BubblewrapBackend {
         IsolationEvidence {
             contract_version: CONTRACT_VERSION.to_owned(),
             native_sources: None,
+            skill_masks: None,
             backend: self.name().to_owned(),
             backend_version: self.version().unwrap_or_else(|_| "unknown".to_owned()),
             kernel: self.prerequisites(),
@@ -2807,6 +2822,7 @@ mod tests {
             backend: "test",
             evidence: IsolationEvidence {
                 contract_version: CONTRACT_VERSION.to_owned(),
+                skill_masks: None,
                 native_sources: None,
                 backend: "test".to_owned(),
                 backend_version: "1".to_owned(),
@@ -3008,6 +3024,7 @@ mod tests {
             workspace: sessions_root.join(&session_id).join("workspace"),
             cache: None,
             beads_replica: None,
+            skill_masks: None,
             system_roots: default_system_roots(),
             network: NetworkPolicy::Denied,
             identity: IdentityPlan::HostIdentity {

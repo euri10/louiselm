@@ -36,7 +36,7 @@ local function fixture()
       local index = #f.prepared
       local grant = {
         request = {
-          schema = "louiselm.launch.request/2",
+          schema = "louiselm.launch.request/3",
           protocol_version = 1,
           request_id = "request-" .. index,
           authorization_id = "authorization-" .. index,
@@ -45,7 +45,7 @@ local function fixture()
           envelope_id = "env",
           envelope_revision = 1,
           agent_id = "codex",
-          skill_generation_id = DIGEST,
+          skills = { mode = "enabled", generation_digest = DIGEST, view_digest = "sha256:" .. string.rep("c", 64) },
           session_input_manifest_id = DIGEST,
         },
         beads_mutations = { issue_ids = { id }, role = "worker" },

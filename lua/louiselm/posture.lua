@@ -71,6 +71,7 @@ end
 local EVIDENCE = {
   provider_metadata_profile = true,
   skill_generation = true,
+  instruction_view = true,
   session_input_manifest = true,
   runtime_measurement = true,
   release_manifest = true,
@@ -82,7 +83,7 @@ local EVIDENCE = {
 }
 
 local PRIMARY_EVIDENCE = {
-  managed_supply = { skill_generation = true },
+  managed_supply = { skill_generation = true, instruction_view = true },
   native_supply = { session_input_manifest = true },
   runtime = { runtime_measurement = true, release_manifest = true },
   isolation = { isolation_receipt = true },
@@ -91,7 +92,7 @@ local PRIMARY_EVIDENCE = {
 }
 
 local REQUIREMENTS = {
-  managed_supply = "witnessed_generation",
+  managed_supply = "resolved_instruction_view",
   native_supply = "native_sources_controlled",
   runtime = "measured_runtime",
   isolation = "isolation_contract",

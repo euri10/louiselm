@@ -15,7 +15,7 @@ use louiselm_skills::{
     registry::{AgentRegistration, MeasuredFile, NetworkPolicy, Provider, RuntimeMeasurement},
     session_manifest::{
         INPUT_MANIFEST_SCHEMA, IsolationIntent, MeasuredInput, SessionInputManifest, SessionInputs,
-        SessionManifestError,
+        SessionManifestError, SkillInputs,
     },
 };
 
@@ -56,8 +56,10 @@ fn complete_inputs() -> SessionInputs {
         agent: Some(agent()),
         runtime: Some(runtime()),
         runtime_configuration_digest: Some(Digest::of(b"fixture configuration").to_string()),
-        skill_generation_id: Some(GENERATION.to_owned()),
-        view_digest: Some(VIEW.to_owned()),
+        skills: Some(SkillInputs::Enabled {
+            generation_digest: GENERATION.to_owned(),
+            view_digest: VIEW.to_owned(),
+        }),
         project_instructions: Some(vec![
             measured("AGENTS.md", "rules"),
             measured("docs/x.md", "x"),
@@ -81,6 +83,30 @@ fn complete_inputs() -> SessionInputs {
     }
 }
 
+#[test]
+fn explicit_skills_off_binds_the_empty_view_without_a_generation() {
+    let root = tempfile::tempdir().unwrap();
+    let store = louiselm_skills::Store::open(root.path()).unwrap();
+    let empty = louiselm_skills::instruction_view::empty(&store).unwrap();
+    assert!(empty.generation().is_none());
+    let mut record =
+        serde_json::to_value(SessionInputManifest::build(complete_inputs()).unwrap()).unwrap();
+    record.as_object_mut().unwrap().remove("skill_generation");
+    record["schema"] = "louiselm.session.input-manifest/3".into();
+    record["skills"] = serde_json::json!({"mode":"off", "view_digest":empty.digest().to_string()});
+    let manifest: SessionInputManifest =
+        serde_json::from_value(record).expect("explicit off inputs must not require a Generation");
+    SessionInputManifest::parse(&manifest.canonical_bytes()).unwrap();
+    let canonical = serde_json::to_value(manifest).unwrap();
+    assert_eq!(canonical["skills"]["mode"], "off");
+    assert_eq!(
+        canonical["skills"]["view_digest"],
+        empty.digest().to_string()
+    );
+    assert!(canonical["skills"].get("generation_digest").is_none());
+    assert!(!root.path().join("current").exists());
+}
+
 fn request_with(manifest_digest: &str) -> LaunchRequest {
     LaunchRequest {
         schema: REQUEST_SCHEMA.to_owned(),
@@ -92,9 +118,33 @@ fn request_with(manifest_digest: &str) -> LaunchRequest {
         agent_id: "codex".to_owned(),
         envelope_id: "envelope-7".to_owned(),
         envelope_revision: 7,
-        skill_generation_id: GENERATION.to_owned(),
+        skills: SkillInputs::Enabled {
+            generation_digest: GENERATION.to_owned(),
+            view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: manifest_digest.to_owned(),
     }
+}
+
+#[test]
+fn skills_bindings_refuse_missing_unknown_contradictory_and_substituted_modes() {
+    let baseline =
+        serde_json::to_value(SessionInputManifest::build(complete_inputs()).unwrap()).unwrap();
+    for skills in [
+        serde_json::json!({"view_digest": VIEW}),
+        serde_json::json!({"mode": "automatic", "view_digest": VIEW}),
+        serde_json::json!({"mode": "enabled", "view_digest": VIEW}),
+        serde_json::json!({"mode": "off", "view_digest": louiselm_skills::instruction_view::empty_digest().to_string(), "generation_digest": GENERATION}),
+        serde_json::json!({"mode": "off", "view_digest": VIEW}),
+        serde_json::Value::Null,
+    ] {
+        let mut record = baseline.clone();
+        record["skills"] = skills;
+        assert!(SessionInputManifest::parse(&serde_json::to_vec(&record).unwrap()).is_err());
+    }
+    let mut record = baseline;
+    record.as_object_mut().unwrap().remove("skills");
+    assert!(SessionInputManifest::parse(&serde_json::to_vec(&record).unwrap()).is_err());
 }
 
 #[test]
@@ -102,7 +152,7 @@ fn prospective_isolation_needs_no_future_receipt() {
     let mut json =
         serde_json::to_value(SessionInputManifest::build(complete_inputs()).unwrap()).unwrap();
     json.as_object_mut().unwrap().remove("isolation_receipt");
-    json["schema"] = "louiselm.session.input-manifest/2".into();
+    json["schema"] = INPUT_MANIFEST_SCHEMA.into();
     json["isolation"] = serde_json::json!({
         "contract_version": "louiselm.isolation/2",
         "network": "denied",
@@ -129,8 +179,8 @@ fn builds_and_round_trips_a_complete_manifest() {
         IsolationIntent::new(NetworkPolicy::Denied)
     );
     assert_eq!(manifest.policy_digest, POLICY);
-    assert_eq!(manifest.skill_generation.generation_digest, GENERATION);
-    assert_eq!(manifest.skill_generation.view_digest, VIEW);
+    assert_eq!(manifest.skills.generation_digest(), Some(GENERATION));
+    assert_eq!(manifest.skills.view_digest(), VIEW);
     assert_eq!(
         manifest.provider_disclosure.providers,
         vec!["openai".to_owned()]
@@ -250,9 +300,10 @@ fn every_changed_input_changes_the_digest() {
     };
     let changed_view = {
         let mut inputs = complete_inputs();
-        inputs.view_digest = Some(
-            "sha256:9999999999999999999999999999999999999999999999999999999999999999".to_owned(),
-        );
+        inputs.skills = Some(SkillInputs::Enabled {
+            generation_digest: GENERATION.into(),
+            view_digest: Digest::of(b"changed view").to_string(),
+        });
         SessionInputManifest::build(inputs).unwrap().digest()
     };
     let changed_runtime = {
@@ -339,18 +390,9 @@ fn missing_required_inputs_are_refused_without_defaults() {
             },
         ),
         (
-            "skill generation",
-            |inputs| inputs.skill_generation_id = None,
-            SessionManifestError::UnresolvedGeneration {
-                reason: "no Skill Generation is bound",
-            },
-        ),
-        (
-            "view",
-            |inputs| inputs.view_digest = None,
-            SessionManifestError::UnresolvedView {
-                reason: "no materialized Instruction view is bound",
-            },
+            "skills",
+            |inputs| inputs.skills = None,
+            SessionManifestError::Missing { field: "skills" },
         ),
         (
             "policy",
@@ -398,13 +440,13 @@ fn dimension_refusals_carry_dimension_specific_codes() {
     assert_eq!(error.failure_code(), Some(FailureCode::EvidenceMissing));
 
     let mut generation_missing = complete_inputs();
-    generation_missing.skill_generation_id = None;
+    generation_missing.skills = None;
     let error = SessionInputManifest::build(generation_missing).unwrap_err();
     assert_eq!(error.dimension(), Some(DimensionName::ManagedSupply));
     assert_eq!(error.failure_code(), Some(FailureCode::EvidenceMissing));
 
     let mut view_missing = complete_inputs();
-    view_missing.view_digest = None;
+    view_missing.skills = None;
     let error = SessionInputManifest::build(view_missing).unwrap_err();
     assert_eq!(error.dimension(), Some(DimensionName::ManagedSupply));
     assert_eq!(error.failure_code(), Some(FailureCode::EvidenceMissing));
@@ -445,11 +487,21 @@ fn empty_runtime_and_supply_references_retain_their_failure_dimensions() {
             DimensionName::Runtime,
         ),
         (
-            |i| i.skill_generation_id = Some(String::new()),
+            |i| {
+                i.skills = Some(SkillInputs::Enabled {
+                    generation_digest: String::new(),
+                    view_digest: VIEW.into(),
+                });
+            },
             DimensionName::ManagedSupply,
         ),
         (
-            |i| i.view_digest = Some(String::new()),
+            |i| {
+                i.skills = Some(SkillInputs::Enabled {
+                    generation_digest: GENERATION.into(),
+                    view_digest: String::new(),
+                });
+            },
             DimensionName::ManagedSupply,
         ),
     ];
@@ -487,12 +539,15 @@ fn project_instructions_are_bound_as_measured_inputs() {
 #[test]
 fn malformed_inputs_are_refused() {
     let mut bad_digest = complete_inputs();
-    bad_digest.skill_generation_id = Some("0000".to_owned());
+    bad_digest.skills = Some(SkillInputs::Enabled {
+        generation_digest: "0000".into(),
+        view_digest: VIEW.into(),
+    });
     let error = SessionInputManifest::build(bad_digest).unwrap_err();
     assert!(matches!(
         error,
         SessionManifestError::Malformed {
-            field: "skill_generation_id",
+            field: "generation_digest",
             ..
         }
     ));
@@ -612,8 +667,8 @@ fn required_values_and_nested_wire_fields_are_checked() {
         "/runtime/version",
         "/runtime/origin",
         "/runtime_configuration_digest",
-        "/skill_generation/generation_digest",
-        "/skill_generation/view_digest",
+        "/skills/generation_digest",
+        "/skills/view_digest",
         "/policy_digest",
         "/isolation/contract_version",
         "/envelope/id",
@@ -632,7 +687,7 @@ fn required_values_and_nested_wire_fields_are_checked() {
         "/runtime",
         "/runtime/adapters/0",
         "/envelope",
-        "/skill_generation",
+        "/skills",
         "/provider_disclosure",
         "/project_instructions/0",
     ] {
@@ -707,7 +762,12 @@ fn metadata_changes_are_bound_and_only_set_order_is_normalized() {
         |i| i.tool_schemas.as_mut().unwrap()[0].sha256 = "34".repeat(32),
         |i| i.plugin_schemas.as_mut().unwrap()[0].path = "different.json".into(),
         |i| i.policy_digest = Some(Digest::of(b"new policy").to_string()),
-        |i| i.skill_generation_id = Some(Digest::of(b"new generation").to_string()),
+        |i| {
+            i.skills = Some(SkillInputs::Enabled {
+                generation_digest: Digest::of(b"new generation").to_string(),
+                view_digest: VIEW.into(),
+            });
+        },
         |i| i.isolation.as_mut().unwrap().network = NetworkPolicy::Brokered,
         |i| i.envelope_id = Some("new-envelope".into()),
         |i| i.runtime.as_mut().unwrap().version = "2".into(),

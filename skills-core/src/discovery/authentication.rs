@@ -76,14 +76,19 @@ impl AuthenticatedInputs {
             || request.envelope_id != manifest.envelope.id
             || request.envelope_revision != manifest.envelope.revision
             || receipt.payload.envelope_revision != request.envelope_revision
-            || request.skill_generation_id != manifest.skill_generation.generation_digest
-            || evidence.skill_generation_id != request.skill_generation_id
+            || request.skills != manifest.skills
+            || evidence.skills != request.skills
             || request.session_input_manifest_id != manifest.digest().to_string()
             || evidence.session_input_manifest_id != request.session_input_manifest_id
             || evidence.runtime_measurement_digest != json_digest(&manifest.runtime)?.to_string()
             || evidence.isolation_evidence_digest != json_digest(isolation)?.to_string()
             || evidence.isolation_contract != isolation.contract_version
             || isolation.contract_version != manifest.isolation.contract_version
+            || !crate::discovery_source::skill_masks_match(
+                &request.skills,
+                &manifest.runtime,
+                isolation.skill_masks.as_ref(),
+            )
         {
             return Err(DiscoveryError::Refused("launch_binding_mismatch"));
         }

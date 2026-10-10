@@ -402,7 +402,9 @@ must be refused for a new Admission. Verification/status need no token touch.
 ### Session input binding
 
 `session_manifest::SessionInputs::resolve` reads the registered Agent,
-remeasures its runtime and materializes its current witnessed Instruction view.
+remeasures its runtime and materializes the explicitly selected `SkillsMode`.
+`Enabled` requires current signed and witnessed supply; `Off` produces the
+canonical empty Instruction view without a Generation or trust enrollment.
 The view carries its Generation identity from the same locked resolution,
 including when that Agent has no admitted members. This blocking API refuses
 runtime drift, missing supply and altered views; it never falls back.
@@ -431,7 +433,11 @@ Added schema fields describe only separately supplied extensions. The fixed
 launcher refuses nonempty added schemas, configuration drift, and unknown
 producers; these intended settings do not establish native-discovery control.
 
-`SessionInputManifest::build` creates `louiselm.session.input-manifest/2`.
+`SessionInputManifest::build` creates `louiselm.session.input-manifest/3`.
+Its `skills` field is either `{mode:"off",view_digest:EMPTY_VIEW}` or
+`{mode:"enabled",generation_digest:GENERATION,view_digest:AGENT_VIEW}`.
+Missing/unknown modes, contradictory fields and substituted empty-view identities
+refuse. Requests and receipts bind this entire selection; no implicit fallback exists.
 Its canonical bytes bind all inputs, the governing policy, and disclosure for
 every reachable Provider. File sets and runtime baselines are sorted; Agent
 argument and routing order is preserved. `parse` checks bounded, closed,
@@ -444,6 +450,18 @@ network. Preparation requires no future receipt ID and grants no authority.
 The signed launch receipt separately binds the exact manifest and actual
 isolation evidence. Native-source masks refer to their enclosing signed
 observation record, not to an invented pre-launch evidence reference.
+
+For `skills=off`, the launcher loads the runtime's measured
+`louiselm-discovery.json` inventory and read-only mounts the canonical empty
+view at every declared managed/repository/native/system Skill root. Unregistered,
+changed, missing or symlinked roots refuse, as do overlaps that would hide other
+instructions or schemas. Writable home/workspace ancestors are pinned read-only
+to prevent rename-and-recreate; their siblings consequently remain read-only too.
+Helpers sharing the workspace keep its masks but gain no Agent home/runtime
+mount. Other workspace paths remain editable. Signed isolation evidence binds
+the inventory, roots and empty view before start; missing mask evidence refuses.
+This narrow skills-off control does not establish complete native-supply or
+full Verified posture. Enabled mode still resolves signed/witnessed supply.
 
 This is an input record, not launch authority. Parsing cannot prove provenance,
 complete discovery-source control, immutable mounts or continued currency.
@@ -459,7 +477,7 @@ its digest, use the installed CLI to assemble the complete input record:
 ```sh
 louiselm-skills workspace launch-inputs prepare \
   --store /var/lib/louiselm/skills --registry /var/lib/louiselm/registry \
-  --agent codex --envelope first-run-worker \
+  --agent codex --skills enabled --envelope first-run-worker \
   --snapshot /private/selected-snapshot --snapshot-digest sha256:REVIEWED_SNAPSHOT \
   --cache /private/selected-cache --cache-digest sha256:REVIEWED_CACHE \
   --instructions /private/instruction-paths.json --output /private/new-proposal \
@@ -471,7 +489,9 @@ Replace the example paths and digest placeholders with reviewed values.
 paths inside that snapshot (for example `["AGENTS.md","docs/agent-testing.md"]`).
 An explicit `[]` means no project instructions; an omitted category is not empty.
 Preparation remeasures all selected source/cache bytes and resolves the existing
-Supply, registered runtime and shared launch configuration. It refuses missing
+selected skills mode, registered runtime and shared launch configuration. `--skills`
+is required (`off` or `enabled`); off needs an existing empty-capable store, not
+admitted packages, signer trust or a current Generation. It refuses missing
 stores, untrusted registries, unresolved configuration, missing instruction paths,
 changed identities and existing output. It never initializes or repairs a store.
 
@@ -756,8 +776,8 @@ installed composition, not activation of the maintainer's desktop.
 ### Prospective artifact preflight
 
 `preflight --request request.json --manifest inputs.json --robot-json` reads
-exact canonical `louiselm.launch.request/2` and
-`louiselm.session.input-manifest/2` bytes. These are proposed inputs, not an
+exact canonical `louiselm.launch.request/3` and
+`louiselm.session.input-manifest/3` bytes. These are proposed inputs, not an
 approval or proof that a Session ran. Do not log the input files: they can
 contain runtime arguments and environment. The safe output contains only
 opaque identities, digests, closed codes and fixed notices.

@@ -289,7 +289,7 @@ impl BrokerService {
                 .first()
                 .and_then(|receipt| match &receipt.payload.outcome {
                     ReceiptOutcome::Launch { evidence, .. } => {
-                        Some(evidence.skill_generation_id.clone())
+                        evidence.skills.generation_digest().map(str::to_owned)
                     }
                     _ => None,
                 })

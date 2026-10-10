@@ -204,6 +204,27 @@ pub fn empty(store: &Store) -> Result<InstructionView, ViewError> {
     publish(store, None, None, &[], &Policy::embedded())
 }
 
+/// Content address of the canonical empty mask; grants no filesystem authority.
+/// Uses the same description serializer as the actual empty-view producer.
+#[must_use]
+/// # Panics
+/// Only if the closed JSON-native view description acquires a fallible serializer.
+pub fn empty_digest() -> Digest {
+    let description = Description {
+        schema: "louiselm.skills.instruction-view/1",
+        generation: None,
+        agent: None,
+        packages: vec![],
+    };
+    // The closed description contains only JSON-native values.
+    #[expect(
+        clippy::expect_used,
+        reason = "Closed description has only JSON-native values."
+    )]
+    let bytes = serde_json::to_vec(&description).expect("empty view description is serializable");
+    Digest::of(&bytes)
+}
+
 fn validate_generation(
     store: &Store,
     policy: &Policy,

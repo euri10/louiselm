@@ -175,6 +175,9 @@ pub struct IsolationEvidence {
     /// The complete record is authenticated by the launcher receipt digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_sources: Option<crate::discovery_source::SourceEvidence>,
+    /// Actual skills-off root mounts; does not certify other native sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_masks: Option<crate::discovery_source::SkillMaskEvidence>,
 }
 
 /// Why isolation evidence cannot support a verified launch.

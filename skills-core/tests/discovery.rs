@@ -18,6 +18,68 @@ use louiselm_skills::{
 };
 
 #[test]
+fn authenticated_skills_off_requires_exact_empty_mask_and_measured_inventory() {
+    use louiselm_skills::{
+        discovery_source::SkillMaskEvidence, instruction_view, session_manifest::SkillInputs,
+    };
+    let off = || {
+        let mut fixture = DiscoveryFixture::new();
+        fixture.manifest.skills = SkillInputs::Off {
+            view_digest: instruction_view::empty_digest().to_string(),
+        };
+        let native = fixture.isolation.native_sources.take().unwrap();
+        fixture.isolation.skill_masks = Some(SkillMaskEvidence {
+            inventory_digest: native.inventory_digest,
+            view_digest: instruction_view::empty_digest().to_string(),
+            sources: native
+                .sources
+                .into_iter()
+                .map(|s| s.source)
+                .filter(|s| {
+                    matches!(
+                        s.kind,
+                        SourceKind::ManagedSkills
+                            | SourceKind::RepositorySkills
+                            | SourceKind::NativeSkills
+                            | SourceKind::SystemSkills
+                    )
+                })
+                .collect(),
+        });
+        fixture.sign();
+        fixture
+    };
+    let fixture = off();
+    assert!(fixture.authenticate().is_ok());
+    assert!(DiscoveryProof::verify(&fixture.authenticate().unwrap(), &fixture.runtime).is_err());
+    let mutations: [fn(&mut DiscoveryFixture); 6] = [
+        |f| f.isolation.skill_masks = None,
+        |f| {
+            f.isolation.skill_masks.as_mut().unwrap().view_digest =
+                louiselm_skills::Digest::of(b"substitution").to_string();
+        },
+        |f| {
+            f.isolation.skill_masks.as_mut().unwrap().inventory_digest =
+                louiselm_skills::Digest::of(b"other inventory").to_string();
+        },
+        |f| {
+            f.isolation.skill_masks.as_mut().unwrap().sources.pop();
+        },
+        |f| f.isolation.skill_masks.as_mut().unwrap().sources[0].path = "../escape".into(),
+        |f| {
+            let masks = f.isolation.skill_masks.as_mut().unwrap();
+            masks.sources.push(masks.sources[0].clone());
+        },
+    ];
+    for mutate in mutations {
+        let mut fixture = off();
+        mutate(&mut fixture);
+        fixture.sign();
+        assert!(fixture.authenticate().is_err());
+    }
+}
+
+#[test]
 fn complete_authenticated_sources_produce_a_bound_proof() {
     let fixture = DiscoveryFixture::new();
     let bound = fixture.authenticate().unwrap();

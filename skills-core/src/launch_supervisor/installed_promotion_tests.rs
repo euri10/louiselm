@@ -73,7 +73,13 @@ pub(super) fn broker_tainted_round(
     broker
         .mark_promotion_fixture_taint(
             producer.authorization(),
-            &record.producer.request.launch.skill_generation_id,
+            record
+                .producer
+                .request
+                .launch
+                .skills
+                .generation_digest()
+                .unwrap(),
         )
         .unwrap();
     let socket = root.join("promotion-channel/tainted-socket");

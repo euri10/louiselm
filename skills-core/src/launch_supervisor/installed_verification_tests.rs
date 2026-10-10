@@ -443,7 +443,12 @@ fn run_job(
         let mut refused = run.clone();
         match mutation {
             0 => refused.head.digest = Digest::of(b"stale").to_string(),
-            1 => refused.launch.skill_generation_id = Digest::of(b"stale-generation").to_string(),
+            1 => {
+                refused.launch.skills = crate::session_manifest::SkillInputs::Enabled {
+                    generation_digest: Digest::of(b"stale-generation").to_string(),
+                    view_digest: run.launch.skills.view_digest().to_owned(),
+                }
+            }
             2 => refused.expires_at_ms = 1,
             _ => {
                 let VerificationOperation::Run {

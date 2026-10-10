@@ -114,7 +114,10 @@ fn launch_request() -> LaunchRequest {
         agent_id: "agent-1".to_owned(),
         envelope_id: "envelope-1".to_owned(),
         envelope_revision: 7,
-        skill_generation_id: digest(b"generation"),
+        skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+            generation_digest: digest(b"generation"),
+            view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: digest(b"input"),
     }
 }
@@ -1637,7 +1640,10 @@ fn responses_enforce_request_correlation_and_the_encoded_size_limit() {
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest,
                 runtime_measurement_digest: digest(b"runtime"),
-                skill_generation_id: digest(b"generation"),
+                skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+                    generation_digest: digest(b"generation"),
+                    view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+                },
                 session_input_manifest_id: digest(b"input"),
                 isolation_contract: "louiselm.isolation/2".to_owned(),
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),

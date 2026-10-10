@@ -33,7 +33,7 @@ impl Fixture {
             schema: MARKER_SCHEMA.into(),
             inputs: InputReferences {
                 manifest: launch.session_input_manifest_id.clone(),
-                generation: launch.skill_generation_id.clone(),
+                skills: launch.skills.clone(),
                 snapshot: digest.clone(),
                 base: digest.clone(),
                 cache: digest.clone(),

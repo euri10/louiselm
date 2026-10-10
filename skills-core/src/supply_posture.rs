@@ -13,7 +13,7 @@ use crate::{
     launch::{LaunchError, LaunchRequest},
     posture::{DimensionInput, DimensionName, EvidenceKind, EvidenceRef, FailureCode},
     registry::{Registry, RegistryError},
-    session_manifest::SessionInputManifest,
+    session_manifest::{SessionInputManifest, SkillInputs},
 };
 
 /// Derives managed supply, native supply, runtime and Provider disclosure inputs.
@@ -100,25 +100,35 @@ fn managed(
     registry: &Registry,
     manifest: Option<&SessionInputManifest>,
 ) -> Result<EvidenceRef, FailureCode> {
-    let views =
-        instruction_view::materialize(store, policy, registry).map_err(|error| match error {
-            ViewError::Refused("no_current_generation") => FailureCode::EvidenceMissing,
-            ViewError::Refused("generation_not_witnessed") => FailureCode::WitnessMissing,
-            _ => FailureCode::RootTrustFailed,
-        })?;
-    let view = views
-        .get(&request.agent_id)
-        .ok_or(FailureCode::EvidenceMissing)?;
-    if view.generation() != Some(request.skill_generation_id.as_str()) {
+    let view = match &request.skills {
+        SkillInputs::Off { .. } => instruction_view::empty(store),
+        SkillInputs::Enabled { .. } => instruction_view::materialize(store, policy, registry)
+            .and_then(|mut views| {
+                views
+                    .remove(&request.agent_id)
+                    .ok_or(ViewError::Refused("unresolved_agent_view"))
+            }),
+    }
+    .map_err(|error| match error {
+        ViewError::Refused("no_current_generation") => FailureCode::EvidenceMissing,
+        ViewError::Refused("generation_not_witnessed") => FailureCode::WitnessMissing,
+        _ => FailureCode::RootTrustFailed,
+    })?;
+    if view.generation() != request.skills.generation_digest()
+        || view.digest().to_string() != request.skills.view_digest()
+    {
         return Err(FailureCode::RootTrustFailed);
     }
     if let Some(manifest) = manifest
-        && (manifest.skill_generation.view_digest != view.digest().to_string()
+        && (manifest.skills != request.skills
             || manifest.policy_digest != policy.digest().to_string())
     {
         return Err(FailureCode::RootTrustFailed);
     }
-    reference(EvidenceKind::SkillGeneration, &request.skill_generation_id)
+    match request.skills.generation_digest() {
+        Some(generation) => reference(EvidenceKind::SkillGeneration, generation),
+        None => reference(EvidenceKind::InstructionView, request.skills.view_digest()),
+    }
 }
 
 fn runtime(

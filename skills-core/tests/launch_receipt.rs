@@ -69,7 +69,10 @@ fn launch_evidence() -> LaunchEvidence {
         conformance: ConformanceEvidence::Unevaluated,
         launch_request_digest: digest("launch-request"),
         runtime_measurement_digest: digest("runtime"),
-        skill_generation_id: digest("generation"),
+        skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+            generation_digest: digest("generation"),
+            view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: digest("input"),
         isolation_contract: "louiselm.isolation/2".to_owned(),
         isolation_backend_id: "bubblewrap-0_12".to_owned(),
@@ -233,7 +236,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(payload_bytes.clone()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/7\",",
+                "{{\"schema\":\"louiselm.launch.receipt/8\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-0\",\"envelope_revision\":3,",
                 "\"sequence\":0,\"previous_receipt_digest\":null,",
@@ -245,7 +248,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
                 "\"conformance\":{{\"status\":\"unevaluated\"}},",
                 "\"launch_request_digest\":\"{}\",",
                 "\"runtime_measurement_digest\":\"{}\",",
-                "\"skill_generation_id\":\"{}\",",
+                "\"skills\":{{\"mode\":\"enabled\",\"generation_digest\":\"{}\",\"view_digest\":\"{}\"}},",
                 "\"session_input_manifest_id\":\"{}\",",
                 "\"isolation_contract\":\"louiselm.isolation/2\",",
                 "\"isolation_backend_id\":\"bubblewrap-0_12\",",
@@ -261,6 +264,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
             digest("launch-request"),
             digest("runtime"),
             digest("generation"),
+            Digest::of(b"fixture-view"),
             digest("input"),
             digest("isolation"),
         ),
@@ -268,7 +272,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
     assert_eq!(
         String::from_utf8(envelope_bytes.clone()).unwrap(),
         format!(
-            "{{\"schema\":\"louiselm.launch.signed-receipt/6\",\"payload\":{},\"signature\":\"{}\"}}",
+            "{{\"schema\":\"louiselm.launch.signed-receipt/7\",\"payload\":{},\"signature\":\"{}\"}}",
             String::from_utf8(payload_bytes.clone()).unwrap(),
             receipt.signature,
         ),
@@ -287,7 +291,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(start.payload.canonical_bytes()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/7\",",
+                "{{\"schema\":\"louiselm.launch.receipt/8\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-start\",\"envelope_revision\":3,",
                 "\"sequence\":1,\"previous_receipt_digest\":\"{}\",",
@@ -345,7 +349,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
 
 #[test]
 fn launch_evidence_binds_the_exact_broker_loss_grace() {
-    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/7");
+    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/8");
     assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
 
     let maximum = chain().remove(0).payload;

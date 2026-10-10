@@ -77,6 +77,7 @@ pub(in crate::launch_supervisor) fn fixture(root: &Path) -> MeasuredFixture {
         workspace: base.join("workspace"),
         cache: None,
         beads_replica: None,
+        skill_masks: None,
         system_roots: default_system_roots(),
         network: crate::registry::NetworkPolicy::Denied,
         identity: IdentityPlan::HostIdentity { uid, gid: uid },

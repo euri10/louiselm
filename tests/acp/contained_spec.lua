@@ -6,7 +6,7 @@ local T = MiniTest.new_set()
 
 local function request()
   return {
-    schema = "louiselm.launch.request/2",
+    schema = "louiselm.launch.request/3",
     protocol_version = 1,
     request_id = "launch-1",
     authorization_id = "authorization-1",
@@ -15,7 +15,11 @@ local function request()
     agent_id = "codex",
     envelope_id = "envelope-1",
     envelope_revision = 1,
-    skill_generation_id = "sha256:" .. string.rep("a", 64),
+    skills = {
+      mode = "enabled",
+      generation_digest = "sha256:" .. string.rep("a", 64),
+      view_digest = "sha256:" .. string.rep("c", 64),
+    },
     session_input_manifest_id = "sha256:" .. string.rep("b", 64),
   }
 end
@@ -25,9 +29,11 @@ T["launch document matches the Rust canonical field order"] = function()
   local bytes = assert(Launch.encode(request()))
   MiniTest.expect.equality(
     bytes,
-    '{"schema":"louiselm.launch.request/2","protocol_version":1,"request_id":"launch-1","authorization_id":"authorization-1","session_id":"worker-1","run_id":"run-1","agent_id":"codex","envelope_id":"envelope-1","envelope_revision":1,"skill_generation_id":"sha256:'
+    '{"schema":"louiselm.launch.request/3","protocol_version":1,"request_id":"launch-1","authorization_id":"authorization-1","session_id":"worker-1","run_id":"run-1","agent_id":"codex","envelope_id":"envelope-1","envelope_revision":1,"skills":{"mode":"enabled","generation_digest":"sha256:'
       .. string.rep("a", 64)
-      .. '","session_input_manifest_id":"sha256:'
+      .. '","view_digest":"sha256:'
+      .. string.rep("c", 64)
+      .. '"},"session_input_manifest_id":"sha256:'
       .. string.rep("b", 64)
       .. '"}'
   )
@@ -36,12 +42,32 @@ T["launch document matches the Rust canonical field order"] = function()
   local value, err = Launch.encode(malformed)
   MiniTest.expect.equality(value, nil)
   MiniTest.expect.equality(err, "unknown launch request field: command")
-  for _, field in ipairs({ "session_id", "run_id", "envelope_revision", "skill_generation_id" }) do
+  for _, field in ipairs({ "session_id", "run_id", "envelope_revision", "skills" }) do
     malformed = request()
     malformed[field] = "../invalid"
     value, err = Launch.encode(malformed)
     MiniTest.expect.equality(value, nil)
     MiniTest.expect.equality(err, "invalid launch request field: " .. field)
+  end
+end
+
+T["skills off is explicit and cannot carry Generation authority"] = function()
+  local Launch = require("louiselm.acp.launch")
+  local selected = request()
+  selected.skills = { mode = "off", view_digest = "sha256:" .. string.rep("c", 64) }
+  local bytes = assert(Launch.encode(selected))
+  MiniTest.expect.equality(nvim.json.decode(bytes).skills.mode, "off")
+  MiniTest.expect.equality(nvim.json.decode(bytes).skills.generation_digest, nil)
+  for _, skills in ipairs({
+    { view_digest = selected.skills.view_digest },
+    { mode = "off", view_digest = selected.skills.view_digest, generation_digest = "sha256:" .. string.rep("a", 64) },
+    { mode = "enabled", view_digest = selected.skills.view_digest },
+    { mode = "unknown", view_digest = selected.skills.view_digest },
+  }) do
+    selected.skills = skills
+    local value, err = Launch.encode(selected)
+    MiniTest.expect.equality(value, nil)
+    MiniTest.expect.equality(err, "invalid launch request field: skills")
   end
 end
 

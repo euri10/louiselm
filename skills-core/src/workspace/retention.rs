@@ -53,8 +53,8 @@ pub struct InputReferences {
     pub base: String,
     /// Immutable cache base digest.
     pub cache: String,
-    /// Exact Skill Generation digest.
-    pub generation: String,
+    /// Explicit skills mode and exact view; off has no Generation identity.
+    pub skills: crate::session_manifest::SkillInputs,
     /// Digest of the full runtime measurement, including adapters.
     pub runtime: String,
     /// Intended isolation digest, independent of actual launch evidence below.
@@ -68,7 +68,7 @@ impl InputReferences {
             snapshot: manifest.source_snapshot_digest.clone(),
             base: manifest.source_base_digest.clone(),
             cache: manifest.cache_base_digest.clone(),
-            generation: manifest.skill_generation.generation_digest.clone(),
+            skills: manifest.skills.clone(),
             runtime: Digest::of(&serde_json::to_vec(&manifest.runtime)?).to_string(),
             isolation_intent: Digest::of(&serde_json::to_vec(&manifest.isolation)?).to_string(),
         })
@@ -80,15 +80,13 @@ impl InputReferences {
             &self.snapshot,
             &self.base,
             &self.cache,
-            &self.generation,
             &self.runtime,
             &self.isolation_intent,
         ] {
             Digest::parse(value).map_err(|_| invalid())?;
         }
-        if self.manifest != launch.session_input_manifest_id
-            || self.generation != launch.skill_generation_id
-        {
+        self.skills.validate().map_err(|_| invalid())?;
+        if self.manifest != launch.session_input_manifest_id || self.skills != launch.skills {
             return Err(invalid());
         }
         Ok(())

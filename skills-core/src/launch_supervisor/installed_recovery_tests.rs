@@ -34,6 +34,7 @@ pub(super) fn controller_registers(
     broker: &InstalledBroker,
     session: &mut BrokerSession,
     uid: u32,
+    launch: &LaunchRequest,
 ) {
     assert!(broker.admit_recovery("session").is_err());
     // First controller prompt attempts a governed effect before recovery admission.
@@ -65,7 +66,7 @@ pub(super) fn controller_registers(
     let request = RecoveryRequest {
         schema: RECOVERY_REQUEST_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
-        launch: super::request(),
+        launch: launch.clone(),
         head: broker
             .inspect("session")
             .unwrap()

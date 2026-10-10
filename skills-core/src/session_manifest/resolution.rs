@@ -9,7 +9,7 @@ use crate::{
     registry::{Registry, RegistryError},
 };
 
-use super::SessionInputs;
+use super::{SessionInputs, SkillInputs, SkillsMode};
 
 /// Trusted component resolution failed; original causes are retained internally.
 #[derive(Debug, Error)]
@@ -45,9 +45,11 @@ impl InputResolutionError {
 
 impl SessionInputs {
     /// Resolves the registered Agent, remeasures its runtime, and materializes
-    /// its view from current witnessed supply. Blocking filesystem/crypto I/O.
+    /// the explicitly selected skills mode. Blocking filesystem/crypto I/O.
     ///
-    /// The Generation binding comes from the same locked operation as the view;
+    /// Enabled mode requires current signed/witnessed supply; off mode uses only
+    /// the canonical empty view, with no Generation or trust enrollment.
+    /// The enabled Generation binding comes from the same locked operation as the view;
     /// no second current-Generation read can race activation. Snapshot, envelope,
     /// MCP and isolation fields remain `None` until their owners supply them.
     /// Call immediately before binding; this is not a currency or launch lease.
@@ -60,22 +62,33 @@ impl SessionInputs {
         policy: &Policy,
         registry: &Registry,
         agent_id: &str,
+        mode: SkillsMode,
     ) -> Result<Self, InputResolutionError> {
         let agent = registry.agent(agent_id)?;
         let runtime = registry.runtime(&agent.runtime_id)?.measure()?;
-        let mut views = instruction_view::materialize(store, policy, registry)?;
-        let view = views
-            .remove(agent_id)
-            .ok_or(ViewError::Refused("unresolved_agent_view"))?;
-        let generation = view
-            .generation()
-            .ok_or(ViewError::Refused("unresolved_generation"))?;
+        let skills = match mode {
+            SkillsMode::Off => SkillInputs::Off {
+                view_digest: instruction_view::empty(store)?.digest().to_string(),
+            },
+            SkillsMode::Enabled => {
+                let mut views = instruction_view::materialize(store, policy, registry)?;
+                let view = views
+                    .remove(agent_id)
+                    .ok_or(ViewError::Refused("unresolved_agent_view"))?;
+                SkillInputs::Enabled {
+                    generation_digest: view
+                        .generation()
+                        .ok_or(ViewError::Refused("unresolved_generation"))?
+                        .to_owned(),
+                    view_digest: view.digest().to_string(),
+                }
+            }
+        };
         Ok(Self {
             agent: Some(agent),
             runtime: Some(runtime),
             runtime_configuration_digest: None,
-            skill_generation_id: Some(generation.to_owned()),
-            view_digest: Some(view.digest().to_string()),
+            skills: Some(skills),
             policy_digest: Some(policy.digest().to_string()),
             project_instructions: None,
             tool_schemas: None,

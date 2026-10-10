@@ -26,7 +26,10 @@ fn grant(broker_loss_grace_ms: u32) -> GrantRequest {
             agent_id: "demo".into(),
             envelope_id: "envelope-1".into(),
             envelope_revision: 7,
-            skill_generation_id: Digest::of(b"generation").to_string(),
+            skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+                generation_digest: Digest::of(b"generation").to_string(),
+                view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+            },
             session_input_manifest_id: Digest::of(b"input").to_string(),
         },
         controller_uid: 1501,

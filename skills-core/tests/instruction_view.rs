@@ -12,6 +12,7 @@ mod support;
 
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
+use louiselm_skills::session_manifest::SkillsMode;
 use louiselm_skills::{
     Digest, GenerationRecord, GenerationState, Policy,
     admission::{self, AdmissionMember, AdmissionRequest},
@@ -44,10 +45,11 @@ fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
         &Policy::embedded(),
         &registry,
         "demo",
+        SkillsMode::Enabled,
     )
     .unwrap();
     assert_eq!(
-        inputs.skill_generation_id.as_deref(),
+        inputs.skills.as_ref().unwrap().generation_digest(),
         Some(record.generation.as_str())
     );
     assert_eq!(
@@ -88,7 +90,7 @@ fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
         instruction_view::materialize(&supply.fixture.store(), &Policy::embedded(), &registry)
             .unwrap();
     assert_eq!(
-        manifest.skill_generation.view_digest,
+        manifest.skills.view_digest(),
         views["demo"].digest().to_string()
     );
     write_file(&runtime.join("bin/agent"), "self update");
@@ -97,6 +99,7 @@ fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
         &Policy::embedded(),
         &registry,
         "demo",
+        SkillsMode::Enabled,
     )
     .unwrap_err();
     assert_eq!(
@@ -105,8 +108,14 @@ fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
     );
     write_file(&runtime.join("bin/agent"), "measured executable");
     let fresh = Fixture::new();
-    let error =
-        SessionInputs::resolve(&fresh.store(), &Policy::embedded(), &registry, "demo").unwrap_err();
+    let error = SessionInputs::resolve(
+        &fresh.store(),
+        &Policy::embedded(),
+        &registry,
+        "demo",
+        SkillsMode::Enabled,
+    )
+    .unwrap_err();
     assert_eq!(
         error.dimension(),
         louiselm_skills::posture::DimensionName::ManagedSupply

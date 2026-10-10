@@ -297,6 +297,7 @@ impl Fixture {
             workspace: self.path(&format!("sessions/{name}/workspace")),
             cache: None,
             beads_replica: None,
+            skill_masks: None,
             system_roots: default_system_roots(),
             network: crate::registry::NetworkPolicy::Denied,
             identity: IdentityPlan::HostIdentity {

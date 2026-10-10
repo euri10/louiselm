@@ -119,7 +119,10 @@ fn signed_receipt() -> SignedReceipt {
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: launch_digest,
                 runtime_measurement_digest: digest("runtime"),
-                skill_generation_id: digest("generation"),
+                skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+                    generation_digest: digest("generation"),
+                    view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+                },
                 session_input_manifest_id: digest("input"),
                 isolation_contract: "louiselm.isolation/2".to_owned(),
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),

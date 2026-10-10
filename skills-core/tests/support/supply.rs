@@ -82,8 +82,10 @@ impl Supply {
         let views = instruction_view::materialize(&fixture.store(), &Policy::embedded(), &registry)
             .unwrap();
         let view = &views[&discovery.request.agent_id];
-        discovery.manifest.skill_generation.generation_digest = record.generation;
-        discovery.manifest.skill_generation.view_digest = view.digest().to_string();
+        discovery.manifest.skills = louiselm_skills::session_manifest::SkillInputs::Enabled {
+            generation_digest: record.generation,
+            view_digest: view.digest().to_string(),
+        };
         discovery.manifest.policy_digest = Policy::embedded().digest().to_string();
         discovery.manifest.provider_disclosure.providers =
             vec!["provider-brand-never-display".into()];

@@ -2196,6 +2196,7 @@ fn isolation_evidence(verified: bool) -> IsolationEvidence {
     }
     IsolationEvidence {
         contract_version: CONTRACT_VERSION.to_owned(),
+        skill_masks: None,
         native_sources: None,
         backend: "bubblewrap".to_owned(),
         backend_version: "0.12.0".to_owned(),
@@ -2281,7 +2282,10 @@ fn setup(
         agent_id: "demo".to_owned(),
         envelope_id: "denied".to_owned(),
         envelope_revision: 7,
-        skill_generation_id: Digest::of(b"generation").to_string(),
+        skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"generation").to_string(),
+            view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: Digest::of(b"input").to_string(),
     };
     let expected_identity = Identity {
@@ -3321,6 +3325,34 @@ fn conformance_report_is_bound_and_supplied_before_starting_the_agent() {
     assert!(lock(&setup.broker.state).reports[1].is_none());
     // Losing the final ACK cleans up through the existing bounded path.
     assert!(receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().is_err());
+    assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+    assert_eq!(event_count(&setup.events, "identity.release"), 1);
+}
+
+#[test]
+fn skills_off_without_measured_root_masks_refuses_before_any_receipt_or_start() {
+    let mut setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    setup.request.skills = louiselm_skills::session_manifest::SkillInputs::Off {
+        view_digest: louiselm_skills::instruction_view::empty_digest().to_string(),
+    };
+    lock(&setup.broker.state)
+        .authorization
+        .as_mut()
+        .unwrap()
+        .request_digest = setup.request.digest().to_string();
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+        Some(SupervisorError::IsolationRejected)
+    );
+    assert_eq!(lock(&setup.broker.state).receipts.len(), 0);
+    assert!(!lock(&setup.platform.agent).started);
     assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
     assert_eq!(event_count(&setup.events, "identity.release"), 1);
 }

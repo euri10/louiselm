@@ -142,7 +142,7 @@ fn verify_control(
         }
         SourceKind::ToolSchemas => Some(json_digest(&manifest.tool_schemas)?.to_string()),
         SourceKind::PluginSchemas => Some(json_digest(&manifest.plugin_schemas)?.to_string()),
-        SourceKind::ManagedSkills => Some(manifest.skill_generation.view_digest.clone()),
+        SourceKind::ManagedSkills => Some(manifest.skills.view_digest().to_owned()),
         _ => None,
     };
     match (snapshot, control) {

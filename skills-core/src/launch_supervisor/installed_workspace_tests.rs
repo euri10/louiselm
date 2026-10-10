@@ -71,8 +71,10 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
                 origin: "fixture".into(),
             }
         }),
-        skill_generation_id: Some(Digest::of(b"fixture-generation").to_string()),
-        view_digest: Some(Digest::of(b"fixture-view").to_string()),
+        skills: Some(crate::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"fixture-generation").to_string(),
+            view_digest: Digest::of(b"fixture-view").to_string(),
+        }),
         project_instructions: Some(vec![]),
         tool_schemas: Some(vec![]),
         plugin_schemas: Some(vec![]),
@@ -132,7 +134,7 @@ pub(in crate::launch_supervisor) fn stage_manifest_with_snapshot(
     own(&root, config.broker_uid, config.broker_gid);
 }
 
-fn own(path: &Path, uid: u32, gid: u32) {
+pub(super) fn own(path: &Path, uid: u32, gid: u32) {
     if path.is_dir() {
         for entry in fs::read_dir(path).unwrap() {
             own(&entry.unwrap().path(), uid, gid);

@@ -67,7 +67,7 @@ impl DimensionName {
 
     pub(crate) const fn requirement(self) -> Requirement {
         match self {
-            Self::ManagedSupply => Requirement::WitnessedGeneration,
+            Self::ManagedSupply => Requirement::ResolvedInstructionView,
             Self::NativeSupply => Requirement::NativeSourcesControlled,
             Self::Runtime => Requirement::MeasuredRuntime,
             Self::Isolation => Requirement::IsolationContract,
@@ -78,7 +78,10 @@ impl DimensionName {
 
     pub(crate) const fn accepts_evidence(self, kind: EvidenceKind) -> bool {
         match self {
-            Self::ManagedSupply => matches!(kind, EvidenceKind::SkillGeneration),
+            Self::ManagedSupply => matches!(
+                kind,
+                EvidenceKind::SkillGeneration | EvidenceKind::InstructionView
+            ),
             Self::NativeSupply => {
                 matches!(kind, EvidenceKind::SessionInputManifest)
             }
@@ -148,8 +151,8 @@ impl DimensionName {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Requirement {
-    /// Managed supply must come from a witnessed Skill Generation.
-    WitnessedGeneration,
+    /// Exact selected view: witnessed supply when enabled, canonical empty when off.
+    ResolvedInstructionView,
     /// Every Provider-native instruction source must be measured or masked.
     NativeSourcesControlled,
     /// Runtime bytes must match a registered measurement.
@@ -167,7 +170,7 @@ impl Requirement {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::WitnessedGeneration => "witnessed_generation",
+            Self::ResolvedInstructionView => "resolved_instruction_view",
             Self::NativeSourcesControlled => "native_sources_controlled",
             Self::MeasuredRuntime => "measured_runtime",
             Self::IsolationContract => "isolation_contract",
@@ -181,6 +184,8 @@ impl Requirement {
 #[derive(Clone, Copy, Debug, Ord, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
+    /// Exact canonical empty Instruction view, without a Generation claim.
+    InstructionView,
     /// Exact metadata profile approved in retained broker authorization.
     ProviderMetadataProfile,
     /// A hardware-authorized, witnessed Skill Generation.
@@ -210,6 +215,7 @@ impl EvidenceKind {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::InstructionView => "instruction_view",
             Self::ProviderMetadataProfile => "provider_metadata_profile",
             Self::SkillGeneration => "skill_generation",
             Self::SessionInputManifest => "session_input_manifest",

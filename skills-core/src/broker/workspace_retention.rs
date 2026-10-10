@@ -88,7 +88,9 @@ impl BrokerService {
         let quarantined = self.lifecycle.is_quarantined(&launch.session_id)?;
         let taint = self.lifecycle.skill_taint(&launch.session_id)?;
         if let Some(taint) = taint {
-            if taint.run_id() != launch.run_id || taint.generation() != launch.skill_generation_id {
+            if taint.run_id() != launch.run_id
+                || Some(taint.generation()) != launch.skills.generation_digest()
+            {
                 return Err(super::corrupt(
                     "Session output taint conflicts with workspace launch",
                 ));

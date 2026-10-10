@@ -253,7 +253,7 @@ fn binding(
     Ok(
         if manifest.digest().to_string() == request.session_input_manifest_id
             && manifest.agent.id == request.agent_id
-            && manifest.skill_generation.generation_digest == request.skill_generation_id
+            && manifest.skills == request.skills
             && manifest.envelope.id == request.envelope_id
             && manifest.envelope.revision == request.envelope_revision
         {
@@ -277,10 +277,13 @@ fn identities(
     use IdentityField as F;
     let entries = [
         (F::Agent, Some(request.agent_id.clone())),
-        (F::Generation, Some(request.skill_generation_id.clone())),
+        (
+            F::Generation,
+            request.skills.generation_digest().map(str::to_owned),
+        ),
         (
             F::InstructionView,
-            manifest.map(|m| m.skill_generation.view_digest.clone()),
+            manifest.map(|m| m.skills.view_digest().to_owned()),
         ),
         (
             F::Runtime,

@@ -52,7 +52,7 @@ impl DiscoveryFixture {
             agent_id: manifest.agent.id.clone(),
             envelope_id: manifest.envelope.id.clone(),
             envelope_revision: 1,
-            skill_generation_id: manifest.skill_generation.generation_digest.clone(),
+            skills: manifest.skills.clone(),
             session_input_manifest_id: manifest.digest().to_string(),
         };
         let anchor = ChainAnchor {
@@ -76,7 +76,7 @@ impl DiscoveryFixture {
 
     pub fn sign(&mut self) {
         self.request.session_input_manifest_id = self.manifest.digest().to_string();
-        self.request.skill_generation_id = self.manifest.skill_generation.generation_digest.clone();
+        self.request.skills = self.manifest.skills.clone();
         self.receipt = signed_record(
             &self.request,
             &self.manifest,
@@ -174,8 +174,10 @@ fn manifest_fixture(runtime: &RuntimePackage) -> SessionInputManifest {
             tool_integration: None,
         }),
         runtime: Some(runtime.measure().unwrap()),
-        skill_generation_id: Some(digest(b"generation")),
-        view_digest: Some(digest(b"view")),
+        skills: Some(louiselm_skills::session_manifest::SkillInputs::Enabled {
+            generation_digest: digest(b"generation"),
+            view_digest: digest(b"view"),
+        }),
         project_instructions: Some(vec![
             MeasuredInput::from_bytes("AGENTS.md", false, b"initial instructions").unwrap(),
         ]),
@@ -215,7 +217,7 @@ fn isolation_fixture(inventory: &Inventory, manifest: &SessionInputManifest) -> 
                     digest: digest(&serde_json::to_vec(&manifest.plugin_schemas).unwrap()),
                 },
                 SourceKind::ManagedSkills => SourceControl::FrozenSnapshot {
-                    digest: manifest.skill_generation.view_digest.clone(),
+                    digest: manifest.skills.view_digest().to_owned(),
                 },
                 _ => SourceControl::Masked {
                     evidence_id: "isolation-1".into(),
@@ -243,6 +245,7 @@ fn isolation_fixture(inventory: &Inventory, manifest: &SessionInputManifest) -> 
                 detail: "trusted fixture observation, not host conformance".into(),
             })
             .collect(),
+        skill_masks: None,
         native_sources: Some(SourceEvidence {
             schema: SOURCE_EVIDENCE_SCHEMA.into(),
             inventory_digest: digest(&inventory.canonical_bytes()),
@@ -287,7 +290,7 @@ fn signed_record(
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: request.digest().to_string(),
                 runtime_measurement_digest: digest(&serde_json::to_vec(&manifest.runtime).unwrap()),
-                skill_generation_id: request.skill_generation_id.clone(),
+                skills: request.skills.clone(),
                 session_input_manifest_id: request.session_input_manifest_id.clone(),
                 isolation_contract: CONTRACT_VERSION.into(),
                 isolation_backend_id: "fixture-backend".into(),

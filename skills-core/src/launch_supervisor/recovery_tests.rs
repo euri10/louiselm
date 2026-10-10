@@ -58,7 +58,10 @@ fn launch() -> LaunchRequest {
         agent_id: "test-agent".into(),
         envelope_id: "empty".into(),
         envelope_revision: 1,
-        skill_generation_id: Digest::of(b"generation").to_string(),
+        skills: crate::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"generation").to_string(),
+            view_digest: crate::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: Digest::of(b"input").to_string(),
     }
 }

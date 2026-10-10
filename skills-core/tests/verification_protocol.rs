@@ -32,7 +32,10 @@ fn request() -> VerificationRequest {
             agent_id: "agent".into(),
             envelope_id: "envelope".into(),
             envelope_revision: 1,
-            skill_generation_id: Digest::of(b"generation").to_string(),
+            skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+                generation_digest: Digest::of(b"generation").to_string(),
+                view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+            },
             session_input_manifest_id: Digest::of(b"input").to_string(),
         },
         head: ReceiptHead {

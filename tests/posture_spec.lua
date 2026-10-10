@@ -89,4 +89,13 @@ T["metadata disclosure matches shared Rust evidence and safe notice"] = function
   MiniTest.expect.equality(Posture.decode(nvim.json.encode(record)), nil)
 end
 
+T["skills off evidence presents an empty view without a Generation"] = function()
+  local record = nvim.json.decode(fixture())
+  record.dimensions.managed_supply.evidence = { { kind = "instruction_view", id = "sha256:" .. string.rep("a", 64) } }
+  local posture, err = Posture.decode(nvim.json.encode(record))
+  MiniTest.expect.equality(err, nil)
+  assert(posture)
+  MiniTest.expect.equality(posture.dimensions.managed_supply.requirement, "resolved_instruction_view")
+end
+
 return T

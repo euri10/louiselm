@@ -93,7 +93,7 @@ impl Inventory {
         Ok(inventory)
     }
 
-    pub(super) fn load(runtime: &RuntimePackage) -> Result<Self, DiscoveryError> {
+    pub(crate) fn load(runtime: &RuntimePackage) -> Result<Self, DiscoveryError> {
         let entry = runtime
             .adapters
             .iter()

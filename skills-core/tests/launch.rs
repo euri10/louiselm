@@ -33,7 +33,10 @@ fn valid_request() -> LaunchRequest {
         agent_id: "demo".to_owned(),
         envelope_id: "denied".to_owned(),
         envelope_revision: 7,
-        skill_generation_id: Digest::of(b"generation").to_string(),
+        skills: louiselm_skills::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"generation").to_string(),
+            view_digest: louiselm_skills::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: Digest::of(b"manifest").to_string(),
     }
 }
@@ -208,7 +211,10 @@ fn resolve_refuses_a_malformed_skill_generation_id() {
     let registry =
         Registry::open(&fixture.path("empty-registry")).expect("an absent registry opens empty");
     let mut request = valid_request();
-    request.skill_generation_id = "not-a-digest".to_owned();
+    request.skills = louiselm_skills::session_manifest::SkillInputs::Enabled {
+        generation_digest: "not-a-digest".into(),
+        view_digest: request.skills.view_digest().into(),
+    };
 
     let error = launch::resolve(
         &request,
@@ -221,7 +227,7 @@ fn resolve_refuses_a_malformed_skill_generation_id() {
         matches!(
             error,
             LaunchError::MalformedIdentifier {
-                field: "skill_generation_id",
+                field: "skills",
                 ..
             }
         ),
@@ -229,11 +235,14 @@ fn resolve_refuses_a_malformed_skill_generation_id() {
     );
 
     let mut alias = valid_request();
-    alias.skill_generation_id = alias.skill_generation_id[7..].to_owned();
+    alias.skills = louiselm_skills::session_manifest::SkillInputs::Enabled {
+        generation_digest: alias.skills.generation_digest().unwrap()[7..].into(),
+        view_digest: alias.skills.view_digest().into(),
+    };
     assert!(matches!(
         alias.validate(),
         Err(LaunchError::MalformedIdentifier {
-            field: "skill_generation_id",
+            field: "skills",
             ..
         })
     ));

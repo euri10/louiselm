@@ -71,7 +71,10 @@ fn genesis(signer: &LauncherSigner, auth: &LaunchAuthorization) -> ReceiptPayloa
                 conformance: crate::launch_receipt::ConformanceEvidence::Unevaluated,
                 launch_request_digest: auth.request_digest.clone(),
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
-                skill_generation_id: Digest::of(b"generation").to_string(),
+                skills: crate::session_manifest::SkillInputs::Enabled {
+                    generation_digest: Digest::of(b"generation").to_string(),
+                    view_digest: crate::Digest::of(b"fixture-view").to_string(),
+                },
                 session_input_manifest_id: Digest::of(b"input").to_string(),
                 isolation_contract: "louiselm.isolation/2".into(),
                 isolation_backend_id: "bubblewrap-0_12".into(),

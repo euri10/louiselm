@@ -36,6 +36,7 @@ fn satisfied(dimension: Dimension) -> DimensionEvidence {
 fn complete_evidence() -> IsolationEvidence {
     IsolationEvidence {
         contract_version: CONTRACT_VERSION.to_owned(),
+        skill_masks: None,
         native_sources: None,
         backend: "test".to_owned(),
         backend_version: "0".to_owned(),

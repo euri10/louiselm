@@ -19,6 +19,8 @@ const PROPOSAL_SCHEMA: &str = "louiselm.run.input-proposal/1";
 pub struct Preparation<'a> {
     /// Registered Agent whose runtime and fixed configuration are measured.
     pub agent_id: &'a str,
+    /// Explicit operator selection; never inferred from missing or invalid supply.
+    pub skills: crate::session_manifest::SkillsMode,
     /// Registered isolation profile; the prospective Run starts at revision one.
     pub envelope_id: &'a str,
     /// Already reviewed source snapshot, never an implicit working-tree selection.
@@ -95,7 +97,13 @@ pub fn prepare(
             )?)
         })
         .collect::<Result<Vec<_>, WorkspaceError>>()?;
-    let mut inputs = SessionInputs::resolve(store, policy, registry, selection.agent_id)?;
+    let mut inputs = SessionInputs::resolve(
+        store,
+        policy,
+        registry,
+        selection.agent_id,
+        selection.skills,
+    )?;
     inputs.runtime_configuration_digest = Some(configuration.to_string());
     inputs.project_instructions = Some(instructions);
     // resolve() above accepts only the two fixed, extension-free integrations.

@@ -49,12 +49,7 @@ impl SessionInputManifest {
         if let Some(integration) = &self.agent.tool_integration {
             nonempty("agent.tool_integration", integration)?;
         }
-        digest(
-            "skill_generation_id",
-            &self.skill_generation.generation_digest,
-            true,
-        )?;
-        digest("view_digest", &self.skill_generation.view_digest, true)?;
+        self.skills.validate()?;
         digest("policy_digest", &self.policy_digest, true)?;
         digest("source_snapshot_digest", &self.source_snapshot_digest, true)?;
         digest("source_base_digest", &self.source_base_digest, true)?;
@@ -140,7 +135,11 @@ fn identifier(field: &'static str, value: &str) -> Result<(), SessionManifestErr
     Ok(())
 }
 
-fn digest(field: &'static str, value: &str, prefixed: bool) -> Result<(), SessionManifestError> {
+pub(super) fn digest(
+    field: &'static str,
+    value: &str,
+    prefixed: bool,
+) -> Result<(), SessionManifestError> {
     nonempty(field, value)?;
     let parsed = Digest::parse(value).map_err(|_| malformed(field, "invalid SHA-256 digest"))?;
     let correct = if prefixed {

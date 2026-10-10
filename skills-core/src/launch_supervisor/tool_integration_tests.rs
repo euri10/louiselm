@@ -121,6 +121,7 @@ fn measured_integration_rejects_missing_evidence_and_runtime_overrides() {
         workspace: root.path().join("workspace"),
         cache: None,
         beads_replica: None,
+        skill_masks: None,
         system_roots: vec![],
         identity: IdentityPlan::NamespaceOnly,
         network: NetworkPolicy::Denied,
@@ -307,7 +308,10 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         agent_id: "agent".to_owned(),
         envelope_id: "empty".to_owned(),
         envelope_revision: 1,
-        skill_generation_id: Digest::of(b"generation").to_string(),
+        skills: crate::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"generation").to_string(),
+            view_digest: crate::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: Digest::of(b"input").to_string(),
     };
     let plan = crate::launch::resolve(
@@ -337,10 +341,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         .unwrap()
         .measure()
         .unwrap();
-    inputs
-        .skill_generation
-        .generation_digest
-        .clone_from(&request.skill_generation_id);
+    inputs.skills.clone_from(&request.skills);
     inputs.envelope.id.clone_from(&request.envelope_id);
     request.session_input_manifest_id = inputs.digest().to_string();
     super::installed_tests::workspace::stage_manifest(&platform.config, &inputs);

@@ -66,6 +66,9 @@ mod codex_chain;
 #[path = "installed_provider_credentials_tests.rs"]
 mod provider_credentials;
 
+#[path = "installed_skill_masks_tests.rs"]
+mod skill_masks;
+
 #[path = "installed_guard_tests.rs"]
 mod guard;
 
@@ -182,7 +185,10 @@ fn request_for(codex: Option<&Path>, network: crate::registry::NetworkPolicy) ->
         agent_id: "agent".into(),
         envelope_id: "envelope".into(),
         envelope_revision: 1,
-        skill_generation_id: Digest::of(b"fixture-generation").to_string(),
+        skills: crate::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"fixture-generation").to_string(),
+            view_digest: crate::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: workspace::fixture_manifest_for(codex, network)
             .digest()
             .to_string(),
@@ -438,19 +444,23 @@ fn installed_broker_worker() {
             approval
         }),
         require_cold_recovery: true,
-        request: request_for(
-            codex_chain::runtime_directory(&root).as_deref(),
-            Registry::open(&root.join("registry"))
-                .unwrap()
-                .envelope("envelope")
-                .unwrap()
-                .network,
-        ),
+        request: if root.join("skills-off").exists() {
+            skill_masks::request(&root)
+        } else {
+            request_for(
+                codex_chain::runtime_directory(&root).as_deref(),
+                Registry::open(&root.join("registry"))
+                    .unwrap()
+                    .envelope("envelope")
+                    .unwrap()
+                    .network,
+            )
+        },
         controller_uid: config.operator_uid,
         expires_at_ms: fixture_expiry(&root, now),
         broker_loss_grace_ms: 500,
         commands: Some(ApprovedCommands {
-            command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
+            command_digest: Digest::of(skill_masks::command(&root).as_bytes()).to_string(),
             timeout_ms: 5000,
             uses: if root.join("uncapped-commands").exists() {
                 None
@@ -493,6 +503,12 @@ fn installed_broker_worker() {
     let inspection = broker.inspect_active(&session).unwrap();
     assert_eq!(inspection.broker_head.unwrap().sequence, 1);
     assert!(inspection.launch_evidence.is_some());
+    if root.join("skills-off").exists() {
+        let evidence = inspection.launch_evidence.as_ref().unwrap();
+        assert_eq!(evidence.skills, skill_masks::request(&root).skills);
+        assert!(evidence.skills.generation_digest().is_none());
+        println!("SKILLS_OFF_SIGNED");
+    }
     assert_eq!(
         inspection.launch,
         crate::broker::LaunchObservation::Acknowledged { channel_open: true }
@@ -564,7 +580,7 @@ fn installed_broker_worker() {
         return;
     }
     if !root.join("brokered").exists() {
-        recovery::controller_registers(&broker, &mut session, config.operator_uid);
+        recovery::controller_registers(&broker, &mut session, config.operator_uid, &grant.request);
     }
     while !broker.step(&mut session).unwrap() {}
     assert_eq!(
@@ -668,15 +684,25 @@ fn privileged_installed_cold_resume_unavailable_balance() {
     );
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "One end-to-end fixture owns the separate broker, signed launch, real request and terminal cleanup."
-)]
 fn installed_broker_effects(
     controller_loss: bool,
     count_test: Option<bool>,
     cold: Option<cold_resume::ColdCase>,
     credential_custody: bool,
+) {
+    installed_effects(controller_loss, count_test, cold, credential_custody, false);
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "Installed composition checks the complete launch, effects and terminal cleanup."
+)]
+fn installed_effects(
+    controller_loss: bool,
+    count_test: Option<bool>,
+    cold: Option<cold_resume::ColdCase>,
+    credential_custody: bool,
+    skills_off: bool,
 ) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_LAUNCH").is_none() {
         eprintln!("skipping: installed broker composition requires the disposable launcher VM");
@@ -696,6 +722,9 @@ fn installed_broker_effects(
         .unwrap();
     let (paths, config, registry_root) =
         install_fixture_with_slots(root.path(), if cold.is_some() { 2 } else { 1 });
+    if skills_off {
+        skill_masks::prepare(root.path(), &config, &registry_root);
+    }
     if cold.is_some() {
         fs::write(root.path().join("cold-resume"), b"").unwrap();
     }
@@ -744,7 +773,11 @@ fn installed_broker_effects(
     .unwrap();
     supervisor
         .launch(
-            request(),
+            if skills_off {
+                skill_masks::request(root.path())
+            } else {
+                request()
+            },
             config.operator_uid,
             now,
             Box::new(move |result| {
@@ -783,6 +816,12 @@ fn installed_broker_effects(
     let mut echo = String::new();
     output.read_line(&mut echo).unwrap();
     assert_eq!(echo, "positive-control\n");
+    if skills_off {
+        input.write_all(&[0x1a]).unwrap();
+        let mut probe = String::new();
+        output.read_line(&mut probe).unwrap();
+        assert_eq!(probe, "\x1aSKILL_MASKS_OK\n");
+    }
     if credential_custody {
         provider_credentials::assert_session_surfaces(
             root.path(),
@@ -800,7 +839,7 @@ fn installed_broker_effects(
         run_id: "run".into(),
         envelope_revision: 1,
         sequence: 1,
-        command: COMMAND.into(),
+        command: skill_masks::command(root.path()).into(),
         timeout_ms: 5000,
     };
     recovery::initialize_checkpoint(
@@ -870,6 +909,13 @@ fn installed_broker_effects(
         );
     }
     assert!(broker_process.0.wait().unwrap().success());
+    if skills_off {
+        assert!(!sessions.join("session/instruction-mask/current").exists());
+        assert_eq!(
+            crate::instruction_view::empty_digest().to_string(),
+            skill_masks::request(root.path()).skills.view_digest()
+        );
+    }
     if credential_custody {
         provider_credentials::assert_records(root.path(), "acme");
     }
@@ -947,7 +993,7 @@ fn assert_denial_and_helper(
         operation: CommandOperation::Delegate {
             grant: crate::launch_protocol::GrantRequest {
                 sequence: 1,
-                command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
+                command_digest: Digest::of(command.command.as_bytes()).to_string(),
                 timeout_ms: 5000,
                 uses: Some(1),
                 valid_for_ms: 5000,

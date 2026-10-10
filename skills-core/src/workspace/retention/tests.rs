@@ -18,7 +18,10 @@ pub(super) fn launch() -> LaunchRequest {
         agent_id: "agent".into(),
         envelope_id: "envelope".into(),
         envelope_revision: 1,
-        skill_generation_id: crate::Digest::of(b"generation").to_string(),
+        skills: crate::session_manifest::SkillInputs::Enabled {
+            generation_digest: crate::Digest::of(b"generation").to_string(),
+            view_digest: crate::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: crate::Digest::of(b"inputs").to_string(),
     }
 }

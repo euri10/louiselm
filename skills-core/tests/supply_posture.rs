@@ -25,6 +25,86 @@ use supply_support::Supply;
 use support::Fixture;
 
 #[test]
+fn skills_off_posture_names_the_empty_view_without_generation_or_native_authority() {
+    use louiselm_skills::{
+        Digest, instruction_view, posture::EvidenceKind, session_manifest::SkillInputs,
+    };
+    let mut discovery = discovery_support::DiscoveryFixture::new();
+    let store = discovery.fixture.store();
+    discovery.manifest.skills = SkillInputs::Off {
+        view_digest: instruction_view::empty(&store)
+            .unwrap()
+            .digest()
+            .to_string(),
+    };
+    discovery.manifest.policy_digest = Policy::embedded().digest().to_string();
+    discovery.sign();
+    let root = discovery.fixture.path("off-registry");
+    for (name, entries) in [
+        ("agents", serde_json::json!([discovery.manifest.agent])),
+        ("runtimes", serde_json::json!([discovery.runtime])),
+    ] {
+        support::write_file(
+            &root.join(format!("{name}.json")),
+            &serde_json::json!({"schema":"louiselm.launch.registry/1", "entries":entries})
+                .to_string(),
+        );
+    }
+    let registry = Registry::open(&root).unwrap();
+    let inspect = |request| {
+        preflight::inspect(
+            request,
+            Some(&discovery.manifest),
+            Some(&store),
+            &Policy::embedded(),
+            Some(&registry),
+            None,
+        )
+        .unwrap()
+    };
+    let preview = inspect(&discovery.request);
+    let managed = &preview.posture.dimensions.managed_supply;
+    assert_eq!(managed.state, DimensionState::Verified);
+    assert_eq!(managed.evidence[0].kind, EvidenceKind::InstructionView);
+    assert_eq!(
+        managed.evidence[0].id,
+        discovery.request.skills.view_digest()
+    );
+    assert_eq!(
+        preview.posture.dimensions.runtime.state,
+        DimensionState::Verified
+    );
+    assert_eq!(
+        preview.posture.dimensions.native_supply.state,
+        DimensionState::Failed
+    );
+    assert!(!preview.posture.is_fully_verified());
+    assert!(!store.root().join("current").exists());
+    let mut request = discovery.request.clone();
+    request.skills = SkillInputs::Enabled {
+        generation_digest: Digest::of(b"missing generation").to_string(),
+        view_digest: request.skills.view_digest().into(),
+    };
+    let mut inputs =
+        supply_posture::derive(&request, &store, &Policy::embedded(), &registry, None, None)
+            .unwrap()
+            .to_vec();
+    for dimension in [DimensionName::Isolation, DimensionName::Network] {
+        inputs.push(DimensionInput::failed(
+            dimension,
+            FailureCode::EvidenceMissing,
+            vec![],
+        ));
+    }
+    let posture = Posture::evaluate(&request.session_id, &request.run_id, inputs).unwrap();
+    assert_eq!(
+        posture.dimensions.managed_supply.state,
+        DimensionState::Failed
+    );
+    assert_eq!(posture.dimensions.runtime.state, DimensionState::Verified);
+}
+
+#[test]
 fn prospective_preflight_checks_artifacts_without_promoting_proposed_controls() {
     let supply = Supply::new();
     let discovery = &supply.discovery;
@@ -361,17 +441,20 @@ fn evidence_from_another_request_cannot_verify_native_supply_or_disclosure() {
 #[test]
 fn bound_manifest_does_not_hide_changed_view_or_agent_configuration() {
     let mut supply = Supply::new();
-    supply.discovery.manifest.skill_generation.view_digest =
-        louiselm_skills::Digest::of(b"wrong view").to_string();
+    supply.discovery.manifest.skills = louiselm_skills::session_manifest::SkillInputs::Enabled {
+        generation_digest: supply
+            .discovery
+            .manifest
+            .skills
+            .generation_digest()
+            .unwrap()
+            .into(),
+        view_digest: louiselm_skills::Digest::of(b"wrong view").to_string(),
+    };
     supply.discovery.control(
         SourceKind::ManagedSkills,
         SourceControl::FrozenSnapshot {
-            digest: supply
-                .discovery
-                .manifest
-                .skill_generation
-                .view_digest
-                .clone(),
+            digest: supply.discovery.manifest.skills.view_digest().to_owned(),
         },
     );
     supply.discovery.sign();

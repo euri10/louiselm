@@ -310,7 +310,7 @@ T["MCP"]["suppresses MCP for selected-content, explicit replay and contained Ses
     {
       broker_session_id = "worker",
       launch_request = {
-        schema = "louiselm.launch.request/2",
+        schema = "louiselm.launch.request/3",
         protocol_version = 1,
         request_id = "launch",
         authorization_id = "authorization",
@@ -319,7 +319,11 @@ T["MCP"]["suppresses MCP for selected-content, explicit replay and contained Ses
         agent_id = "agent",
         envelope_id = "envelope",
         envelope_revision = 1,
-        skill_generation_id = "sha256:" .. string.rep("a", 64),
+        skills = {
+          mode = "enabled",
+          generation_digest = "sha256:" .. string.rep("a", 64),
+          view_digest = "sha256:" .. string.rep("c", 64),
+        },
         session_input_manifest_id = "sha256:" .. string.rep("b", 64),
       },
     },
@@ -3455,7 +3459,7 @@ T["new"]["contained automatic approval cancels an unapprovable request without h
     cwd = "/tmp/project",
     broker_session_id = "worker",
     launch_request = {
-      schema = "louiselm.launch.request/2",
+      schema = "louiselm.launch.request/3",
       protocol_version = 1,
       request_id = "launch",
       authorization_id = "authorization",
@@ -3464,7 +3468,11 @@ T["new"]["contained automatic approval cancels an unapprovable request without h
       agent_id = "agent",
       envelope_id = "envelope",
       envelope_revision = 1,
-      skill_generation_id = "sha256:" .. string.rep("a", 64),
+      skills = {
+        mode = "enabled",
+        generation_digest = "sha256:" .. string.rep("a", 64),
+        view_digest = "sha256:" .. string.rep("c", 64),
+      },
       session_input_manifest_id = "sha256:" .. string.rep("b", 64),
     },
     permission_policy = {

@@ -45,6 +45,7 @@ fn fixture() -> (tempfile::TempDir, ToolExecutor) {
         workspace: root.path().join("workspace"),
         cache: None,
         beads_replica: None,
+        skill_masks: None,
         system_roots: default_system_roots(),
         network: NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,
@@ -74,6 +75,74 @@ fn tool_environment_selects_the_trusted_lua_toolchain() {
     assert_eq!(
         verifier.environment["LUA_CPATH"],
         "/usr/lib/x86_64-linux-gnu/lua/5.1/?.so;;"
+    );
+}
+
+#[test]
+fn tools_keep_shared_workspace_masks_without_mounting_agent_skill_authority() {
+    use crate::{
+        discovery::{INVENTORY_PATH, INVENTORY_SCHEMA, Inventory},
+        discovery_source::{Source, SourceKind, SourceRoot},
+        registry::{MeasuredFile, RuntimePackage},
+        sandbox::SkillMasks,
+    };
+    let (root, executor) = fixture();
+    let mut agent = executor.plan.clone();
+    agent.home = root.path().join("home");
+    agent.runtime_root = root.path().join("runtime");
+    agent.executable = agent.runtime_root.join("agent");
+    fs::create_dir(agent.runtime_root.join("system-skills")).unwrap();
+    let inventory = Inventory {
+        schema: INVENTORY_SCHEMA.into(),
+        adapter_id: "fixture".into(),
+        version: "1".into(),
+        runtime_id: "runtime".into(),
+        executable_sha256: crate::Digest::of(b"measured runtime").hex().into(),
+        sources: SourceKind::ALL
+            .into_iter()
+            .map(|kind| {
+                let (namespace, path) = match kind {
+                    SourceKind::SystemSkills => (SourceRoot::Runtime, "system-skills".into()),
+                    SourceKind::RepositorySkills => {
+                        (SourceRoot::Workspace, ".agents/skills".into())
+                    }
+                    SourceKind::ProjectInstructions => (SourceRoot::Workspace, "AGENTS.md".into()),
+                    _ => (SourceRoot::Home, format!("sources/{}", kind.name())),
+                };
+                Source {
+                    id: kind.name().into(),
+                    kind,
+                    root: namespace,
+                    path,
+                }
+            })
+            .collect(),
+    };
+    let bytes = inventory.canonical_bytes();
+    fs::write(agent.runtime_root.join(INVENTORY_PATH), &bytes).unwrap();
+    let runtime = RuntimePackage {
+        id: "runtime".into(),
+        root: agent.runtime_root.clone(),
+        executable: "agent".into(),
+        executable_sha256: inventory.executable_sha256,
+        adapters: vec![MeasuredFile {
+            path: INVENTORY_PATH.into(),
+            sha256: crate::Digest::of(&bytes).hex().into(),
+        }],
+        version: "1".into(),
+        origin: "fixture".into(),
+    };
+    let store = crate::Store::open(&root.path().join("empty-store")).unwrap();
+    agent.skill_masks = Some(SkillMasks::prepare(&store, &runtime, &agent).unwrap());
+    let tools = ToolExecutor::new(executor.backend.clone(), &agent).unwrap();
+    assert!(
+        tools.plan.skill_masks.is_some(),
+        "a helper must not rename/recreate the shared workspace mask mountpoint"
+    );
+    let (_, verifier) = tools.verification_context();
+    assert!(
+        verifier.skill_masks.is_none(),
+        "the verifier uses an independent source copy, not the Agent's mutable workspace"
     );
 }
 

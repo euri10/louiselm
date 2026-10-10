@@ -8,7 +8,7 @@
   "dimensions": {
     "managed_supply": {
       "state": "verified",
-      "requirement": "witnessed_generation",
+      "requirement": "resolved_instruction_view",
       "evidence": [
         {
           "kind": "skill_generation",

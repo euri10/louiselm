@@ -23,7 +23,10 @@ fn parked() -> (Harness, RecoveryRequest) {
         agent_id: "fixture".into(),
         envelope_id: "empty".into(),
         envelope_revision: 1,
-        skill_generation_id: Digest::of(b"generation").to_string(),
+        skills: crate::session_manifest::SkillInputs::Enabled {
+            generation_digest: Digest::of(b"generation").to_string(),
+            view_digest: crate::Digest::of(b"fixture-view").to_string(),
+        },
         session_input_manifest_id: Digest::of(b"input").to_string(),
     };
     let mut genesis = harness.owner.receipts[0].clone();
@@ -43,7 +46,7 @@ fn parked() -> (Harness, RecoveryRequest) {
             },
             launch_request_digest: launch.digest().to_string(),
             runtime_measurement_digest: Digest::of(b"runtime").to_string(),
-            skill_generation_id: launch.skill_generation_id.clone(),
+            skills: launch.skills.clone(),
             session_input_manifest_id: launch.session_input_manifest_id.clone(),
             isolation_contract: "louiselm.isolation/2".into(),
             isolation_backend_id: "fixture".into(),

@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The launch request schema this build reads.
-pub const REQUEST_SCHEMA: &str = "louiselm.launch.request/2";
+pub const REQUEST_SCHEMA: &str = "louiselm.launch.request/3";
 
 /// Protocol version carried by every launch request and control message.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -71,12 +71,9 @@ pub struct LaunchRequest {
     pub envelope_id: String,
     /// Exact capability-envelope revision authorized for this Session.
     pub envelope_revision: u64,
-    /// Digest of the Skill Generation this Session is bound to.
-    ///
-    /// Whether that Generation is actually admitted and current is a Skill
-    /// Admission concern, out of scope for this crate's launcher: resolving
-    /// a request only checks that the identifier is a well-formed digest.
-    pub skill_generation_id: String,
+    /// Explicit skills mode and exact view; enabled additionally binds witnessed supply.
+    /// Structural validation does not establish supply or mount provenance.
+    pub skills: crate::session_manifest::SkillInputs,
     /// Digest of the Session-input manifest this Session is bound to.
     ///
     /// Request validation checks the shape. The installed supervisor remeasures
@@ -190,7 +187,12 @@ impl LaunchRequest {
         validate_identifier("run_id", &self.run_id)?;
         validate_identifier("agent_id", &self.agent_id)?;
         validate_identifier("envelope_id", &self.envelope_id)?;
-        validate_digest("skill_generation_id", &self.skill_generation_id)?;
+        self.skills
+            .validate()
+            .map_err(|_| LaunchError::MalformedIdentifier {
+                field: "skills",
+                reason: "invalid skills mode or view binding".to_owned(),
+            })?;
         validate_digest("session_input_manifest_id", &self.session_input_manifest_id)?;
         Ok(())
     }
@@ -249,6 +251,7 @@ pub fn resolve(
         workspace: session_directory.join("workspace"),
         cache: None,
         beads_replica: None,
+        skill_masks: None,
         system_roots: default_system_roots(),
         network: envelope.network,
         identity,

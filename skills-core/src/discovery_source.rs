@@ -137,3 +137,62 @@ pub struct SourceEvidence {
     /// Complete observed set, exactly one entry per declared source.
     pub sources: Vec<SourceObservation>,
 }
+
+/// Exact skills-off roots hidden by read-only mounts of the canonical empty view.
+/// Covered by the signed isolation-evidence digest; no complete native-supply claim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillMaskEvidence {
+    /// Measured runtime inventory identity.
+    pub inventory_digest: String,
+    /// Canonical empty Instruction view identity.
+    pub view_digest: String,
+    /// Complete managed, repository, native and system Skill root set.
+    pub sources: Vec<Source>,
+}
+
+pub(crate) fn skill_masks_match(
+    skills: &crate::session_manifest::SkillInputs,
+    runtime: &crate::registry::RuntimeMeasurement,
+    masks: Option<&SkillMaskEvidence>,
+) -> bool {
+    use crate::session_manifest::SkillInputs;
+    match (skills, masks) {
+        (SkillInputs::Enabled { .. }, None) => true,
+        (SkillInputs::Off { view_digest }, Some(masks)) => {
+            let expected_inventory = runtime
+                .adapters
+                .iter()
+                .find(|file| file.path == crate::discovery::INVENTORY_PATH);
+            let mut kinds = std::collections::BTreeSet::new();
+            let mut ids = std::collections::BTreeSet::new();
+            let mut paths = std::collections::BTreeSet::new();
+            masks.view_digest == *view_digest
+                && masks.view_digest == crate::instruction_view::empty_digest().to_string()
+                && expected_inventory
+                    .is_some_and(|file| format!("sha256:{}", file.sha256) == masks.inventory_digest)
+                && masks.sources.iter().all(|source| {
+                    kinds.insert(source.kind);
+                    crate::CanonicalPath::parse(&source.path, false).is_ok()
+                        && !source.id.is_empty()
+                        && source.id.len() <= 128
+                        && source
+                            .id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                        && ids.insert(&source.id)
+                        && paths.insert((source.root, &source.path))
+                })
+                && kinds
+                    == [
+                        SourceKind::ManagedSkills,
+                        SourceKind::RepositorySkills,
+                        SourceKind::NativeSkills,
+                        SourceKind::SystemSkills,
+                    ]
+                    .into_iter()
+                    .collect()
+        }
+        _ => false,
+    }
+}

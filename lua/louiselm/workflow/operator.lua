@@ -67,8 +67,7 @@ local function validate(selection, options)
     or type(manifest.agent) ~= "table"
     or type(manifest.agent.id) ~= "string"
     or type(manifest.envelope) ~= "table"
-    or type(manifest.skill_generation) ~= "table"
-    or not digest(manifest.skill_generation.generation_digest)
+    or require("louiselm.acp.launch").encode_skills(manifest.skills) == nil
     or not digest(manifest.cache_base_digest)
     or manifest.envelope.id ~= envelope.envelope_id
     or manifest.envelope.revision ~= envelope.envelope_revision
@@ -143,7 +142,7 @@ local function grants(selection, id, index, binding)
     return {
       role = role == "verifier" and "fixed_verifier" or "agent",
       request = {
-        schema = "louiselm.launch.request/2",
+        schema = "louiselm.launch.request/3",
         protocol_version = 1,
         request_id = session_id .. "-request",
         authorization_id = session_id .. "-authorization",
@@ -152,7 +151,7 @@ local function grants(selection, id, index, binding)
         agent_id = selection.manifest.agent.id,
         envelope_id = envelope.envelope_id,
         envelope_revision = envelope.envelope_revision,
-        skill_generation_id = selection.manifest.skill_generation.generation_digest,
+        skills = selection.manifest.skills,
         session_input_manifest_id = binding.manifest_digest,
       },
       controller_uid = envelope.controller_uid,

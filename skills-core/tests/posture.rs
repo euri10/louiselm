@@ -96,6 +96,19 @@ fn dimension(posture: &Posture, name: DimensionName) -> &DimensionPosture {
 }
 
 #[test]
+#[ignore = "maintainer-invoked shared fixture producer"]
+fn regenerate_posture_fixture() {
+    std::fs::write(
+        "../tests/fixtures/verified_posture_v1.json",
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&fixture_posture()).unwrap()
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
 fn fully_verified_requires_all_six_trusted_dimensions() {
     let posture = Posture::evaluate(SESSION_ID, RUN_ID, verified_inputs())
         .expect("six trusted dimensions evaluate");
@@ -105,7 +118,7 @@ fn fully_verified_requires_all_six_trusted_dimensions() {
     assert!(posture.is_fully_verified());
     assert_eq!(
         posture.dimensions.managed_supply.requirement,
-        Requirement::WitnessedGeneration
+        Requirement::ResolvedInstructionView
     );
     assert_eq!(
         posture.dimensions.provider_disclosure.requirement,

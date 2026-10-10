@@ -501,7 +501,7 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "Direct vendor commands, including wrappers, have no LouiseLM Verified posture. With skills.management.enabled = true and louiselm-skills on PATH, :LouiselmPreflight {request-file} [{manifest-file} [{prior-request-file} {prior-manifest-file}]] asynchronously inspects canonical launch request/2 and Session input-manifest/2 artifacts and opens health. Prior files are explicitly selected, never inferred from history.",
+        "Direct vendor commands, including wrappers, have no LouiseLM Verified posture. With skills.management.enabled = true and louiselm-skills on PATH, :LouiselmPreflight {request-file} [{manifest-file} [{prior-request-file} {prior-manifest-file}]] asynchronously inspects canonical launch request/3 and Session input-manifest/3 artifacts and opens health. Prior files are explicitly selected, never inferred from history.",
         context
       )
       append_prose(

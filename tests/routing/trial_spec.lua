@@ -67,7 +67,7 @@ local function fixture()
     input_manifest = {
       agent = { id = "codex" },
       envelope = { id = "env", revision = 1 },
-      skill_generation = { generation_digest = DIGEST },
+      skills = { mode = "enabled", generation_digest = DIGEST, view_digest = DIGEST },
       source_snapshot_digest = DIGEST,
       source_base_digest = DIGEST,
       cache_base_digest = DIGEST,

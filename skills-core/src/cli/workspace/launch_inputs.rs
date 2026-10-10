@@ -16,6 +16,7 @@ pub(super) fn command() -> clap::Command {
                         "--store",
                         "--registry",
                         "--agent",
+                        "--skills",
                         "--envelope",
                         "--snapshot",
                         "--snapshot-digest",
@@ -158,6 +159,11 @@ fn prepare(values: &BTreeMap<&str, &str>, robot: bool) -> Result<i32, CliError> 
         &registry,
         &workspace::launch_inputs::Preparation {
             agent_id: required("--agent")?,
+            skills: match required("--skills")? {
+                "off" => crate::session_manifest::SkillsMode::Off,
+                "enabled" => crate::session_manifest::SkillsMode::Enabled,
+                _ => return Err(invalid("--skills must be off or enabled")),
+            },
             envelope_id: required("--envelope")?,
             snapshot: Path::new(required("--snapshot")?),
             snapshot_digest: &snapshot_digest,

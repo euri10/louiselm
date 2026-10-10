@@ -15,6 +15,8 @@ mod channel;
 mod provider;
 #[path = "tool_fixture/recovery.rs"]
 mod recovery;
+#[path = "tool_fixture/skill_masks.rs"]
+mod skill_masks;
 
 use louiselm_skills::launch_protocol::{
     CommandOperation, MAX_PROTOCOL_MESSAGE_BYTES, ProtocolMessage, decode_message,
@@ -53,6 +55,10 @@ fn run() -> io::Result<()> {
         }
         if byte[0] == 0x1b {
             provider::exchange(&mut input, &mut output, &mut retained_provider)?;
+            continue;
+        }
+        if byte[0] == 0x1a {
+            skill_masks::inspect(&mut output)?;
             continue;
         }
         if byte[0] != 0x1e {

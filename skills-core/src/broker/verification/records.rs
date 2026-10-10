@@ -69,7 +69,7 @@ impl BrokerService {
             || verifier.role != crate::launch_protocol::LaunchRole::FixedVerifier
             || source.controller_uid != verifier.controller_uid
             || producer.request.launch.run_id != request.launch.run_id
-            || producer.request.launch.skill_generation_id != request.launch.skill_generation_id
+            || producer.request.launch.skills != request.launch.skills
             || verifier.commands.is_some()
             || verifier.require_cold_recovery
         {

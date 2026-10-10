@@ -111,6 +111,7 @@ fn plan(fixture: &Fixture, id: &str, script: &str) -> ConfinementPlan {
         workspace: sessions_root.join(id).join("workspace"),
         cache: None,
         beads_replica: None,
+        skill_masks: None,
         system_roots: default_system_roots(),
         network: NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,

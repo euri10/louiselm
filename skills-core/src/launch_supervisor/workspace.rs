@@ -27,6 +27,7 @@ pub(super) struct SessionWorkspace {
     cache: CacheOverlay,
     directory: std::path::PathBuf,
     marker: crate::workspace::retention::cleanup::SealedStorage,
+    pub(super) skill_masks: Option<crate::sandbox::SkillMasks>,
 }
 
 pub(super) fn load(
@@ -66,7 +67,7 @@ pub(super) fn load(
         .map_err(|_| SupervisorError::ResolutionFailed)?;
     if manifest.agent != agent
         || manifest.runtime != runtime
-        || manifest.skill_generation.generation_digest != request.skill_generation_id
+        || manifest.skills != request.skills
         || manifest.envelope.id != request.envelope_id
         || manifest.envelope.revision != request.envelope_revision
         || manifest.isolation.network != envelope.network
@@ -84,6 +85,7 @@ impl SessionWorkspace {
         inputs: &LoadedInputs,
         plan: &ConfinementPlan,
         request: &LaunchRequest,
+        runtime: &crate::registry::RuntimePackage,
     ) -> Result<Self, SupervisorError> {
         let IdentityPlan::HostIdentity { uid, gid } = plan.identity else {
             return Err(SupervisorError::IsolationRejected);
@@ -111,35 +113,54 @@ impl SessionWorkspace {
         let marker =
             crate::workspace::retention::cleanup::SealedStorage::new(request, &inputs.manifest)
                 .map_err(|_| SupervisorError::DurabilityUnavailable)?;
-        let result = (|| -> Result<CacheOverlay, WorkspaceError> {
-            marker.persist(directory)?;
-            inputs.retain_source(&directory.join("inputs"))?;
-            inputs.materialize_source(&plan.workspace)?;
-            assign_tree(&plan.workspace, uid, gid)?;
-            fs::DirBuilder::new().mode(0o700).create(&plan.home)?;
-            chown(&plan.home, Some(uid), Some(gid))?;
-            // Later tools bind this path while the Agent is running. Its
-            // parent must become immutable before publishing the Session root.
-            let cache_home = directory.join("cache-home");
-            fs::DirBuilder::new().mode(0o700).create(&cache_home)?;
-            chown(&cache_home, Some(uid), Some(gid))?;
-            let cache = inputs
-                .cache
-                .materialize(&cache_home, &plan.session_id, plan.identity)?;
-            chown(&cache_home, Some(0), Some(0))?;
-            fs::set_permissions(&cache_home, fs::Permissions::from_mode(0o711))?;
-            File::open(&cache_home)?.sync_all()?;
-            root.set_permissions(fs::Permissions::from_mode(0o711))?;
-            root.sync_all()?;
-            File::open(parent)?.sync_all()?;
-            Ok(cache)
-        })();
-        if let Ok(cache) = result {
+        let result =
+            (|| -> Result<(CacheOverlay, Option<crate::sandbox::SkillMasks>), WorkspaceError> {
+                marker.persist(directory)?;
+                inputs.retain_source(&directory.join("inputs"))?;
+                inputs.materialize_source(&plan.workspace)?;
+                assign_tree(&plan.workspace, uid, gid)?;
+                fs::DirBuilder::new().mode(0o700).create(&plan.home)?;
+                chown(&plan.home, Some(uid), Some(gid))?;
+                let skill_masks = if matches!(
+                    request.skills,
+                    crate::session_manifest::SkillInputs::Off { .. }
+                ) {
+                    let store =
+                        crate::Store::open(&directory.join("instruction-mask")).map_err(|_| {
+                            WorkspaceError::Invalid("empty Instruction view unavailable")
+                        })?;
+                    Some(
+                        crate::sandbox::SkillMasks::prepare(&store, runtime, plan).map_err(
+                            |_| WorkspaceError::Invalid("skills-off native-root masks unavailable"),
+                        )?,
+                    )
+                } else {
+                    None
+                };
+                // Later tools bind this path while the Agent is running. Its
+                // parent must become immutable before publishing the Session root.
+                let cache_home = directory.join("cache-home");
+                fs::DirBuilder::new().mode(0o700).create(&cache_home)?;
+                chown(&cache_home, Some(uid), Some(gid))?;
+                let cache =
+                    inputs
+                        .cache
+                        .materialize(&cache_home, &plan.session_id, plan.identity)?;
+                chown(&cache_home, Some(0), Some(0))?;
+                fs::set_permissions(&cache_home, fs::Permissions::from_mode(0o711))?;
+                File::open(&cache_home)?.sync_all()?;
+                root.set_permissions(fs::Permissions::from_mode(0o711))?;
+                root.sync_all()?;
+                File::open(parent)?.sync_all()?;
+                Ok((cache, skill_masks))
+            })();
+        if let Ok((cache, skill_masks)) = result {
             Ok(Self {
                 root,
                 cache,
                 directory: directory.into(),
                 marker,
+                skill_masks,
             })
         } else {
             seal(&root)?;

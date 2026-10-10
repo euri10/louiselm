@@ -88,9 +88,7 @@ fn launch_supply_profile(
         let ReceiptOutcome::Launch { evidence, .. } = &mut launch.payload.outcome else {
             panic!("launch fixture");
         };
-        evidence
-            .skill_generation_id
-            .clone_from(&request.skill_generation_id);
+        evidence.skills.clone_from(&request.skills);
         evidence
             .session_input_manifest_id
             .clone_from(&request.session_input_manifest_id);
@@ -339,7 +337,17 @@ fn wrong_view_or_policy_fails_managed_supply_without_hiding_other_evidence() {
         let mut supply = Supply::new();
         if field == "view" {
             let digest = Digest::of(b"wrong view").to_string();
-            supply.discovery.manifest.skill_generation.view_digest = digest.clone();
+            supply.discovery.manifest.skills =
+                louiselm_skills::session_manifest::SkillInputs::Enabled {
+                    generation_digest: supply
+                        .discovery
+                        .manifest
+                        .skills
+                        .generation_digest()
+                        .unwrap()
+                        .into(),
+                    view_digest: digest.clone(),
+                };
             supply.discovery.control(
                 louiselm_skills::discovery_source::SourceKind::ManagedSkills,
                 louiselm_skills::discovery_source::SourceControl::FrozenSnapshot { digest },
@@ -347,8 +355,11 @@ fn wrong_view_or_policy_fails_managed_supply_without_hiding_other_evidence() {
         } else if field == "policy" {
             supply.discovery.manifest.policy_digest = Digest::of(b"wrong policy").to_string();
         } else {
-            supply.discovery.manifest.skill_generation.generation_digest =
-                Digest::of(b"wrong generation").to_string();
+            supply.discovery.manifest.skills =
+                louiselm_skills::session_manifest::SkillInputs::Enabled {
+                    generation_digest: Digest::of(b"wrong generation").to_string(),
+                    view_digest: supply.discovery.manifest.skills.view_digest().into(),
+                };
         }
         supply.discovery.sign();
         let (_root, service, mut session, bound, peer) = launch_supply(&supply, 1);
@@ -523,7 +534,12 @@ fn foreign_requests_receipts_and_stale_results_cannot_replace_retained_facts() {
         match change {
             "session" => request.session_id = "different".into(),
             "run" => request.run_id = "different".into(),
-            "generation" => request.skill_generation_id = Digest::of(b"different").to_string(),
+            "generation" => {
+                request.skills = louiselm_skills::session_manifest::SkillInputs::Enabled {
+                    generation_digest: Digest::of(b"different").to_string(),
+                    view_digest: request.skills.view_digest().into(),
+                }
+            }
             "manifest" => request.session_input_manifest_id = Digest::of(b"different").to_string(),
             "revision" => request.envelope_revision += 1,
             _ => unreachable!(),

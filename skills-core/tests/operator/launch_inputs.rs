@@ -26,8 +26,10 @@ fn request() -> LaunchInputsRequest {
                     version: "1".into(),
                     origin: "fixture".into(),
                 }),
-                skill_generation_id: digest(b"generation"),
-                view_digest: digest(b"view"),
+                skills: Some(louiselm_skills::session_manifest::SkillInputs::Enabled {
+                    generation_digest: digest(b"generation").unwrap(),
+                    view_digest: digest(b"view").unwrap(),
+                }),
                 project_instructions: Some(vec![]),
                 tool_schemas: Some(vec![]),
                 plugin_schemas: Some(vec![]),

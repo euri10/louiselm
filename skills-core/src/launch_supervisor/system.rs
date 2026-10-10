@@ -1418,7 +1418,10 @@ impl SystemLaunchPlatform {
         {
             return Err(SupervisorError::ResolutionFailed);
         }
-        super::workspace::SessionWorkspace::prepare(&inputs, plan, request)
+        let runtime = registry
+            .runtime(&inputs.manifest.agent.runtime_id)
+            .map_err(|_| SupervisorError::ResolutionFailed)?;
+        super::workspace::SessionWorkspace::prepare(&inputs, plan, request, &runtime)
     }
 
     /// Creates the production platform after materializing only fixed roots.
@@ -1595,6 +1598,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
             return Err(SupervisorError::ResolutionFailed);
         }
         let workspace = self.prepare_workspace(request, &plan)?;
+        plan.skill_masks.clone_from(&workspace.skill_masks);
         let result = (|| {
             require_measured_bwrap(&self.config).map_err(|_| SupervisorError::SpawnFailed)?;
             let release_root = self

@@ -127,7 +127,7 @@ pub(crate) fn validate_reconstruction(
         || source.agent_id != target.agent_id
         || source.envelope_id != target.envelope_id
         || source.envelope_revision != target.envelope_revision
-        || source.skill_generation_id != target.skill_generation_id
+        || source.skills != target.skills
         || source.session_input_manifest_id != target.session_input_manifest_id
     {
         return Err(invalid());

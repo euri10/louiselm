@@ -129,7 +129,10 @@ fn launched(root: &Path, generation: &str) -> Live {
 fn launched_with_beads(root: &Path, generation: &str, beads: bool) -> Live {
     let socket = root.join("broker.sock");
     let mut request = request("quarantined");
-    request.skill_generation_id = generation.into();
+    request.skills = louiselm_skills::session_manifest::SkillInputs::Enabled {
+        generation_digest: generation.into(),
+        view_digest: request.skills.view_digest().into(),
+    };
     let authorizations = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
     let mut approval = grant(&request);
     if beads {

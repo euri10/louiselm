@@ -1593,6 +1593,13 @@ fn launch_evidence(
     authorization: &LaunchAuthorization,
     conformance: ConformanceEvidence,
 ) -> Result<LaunchEvidence, SupervisorError> {
+    if !crate::discovery_source::skill_masks_match(
+        &request.skills,
+        runtime,
+        isolation.skill_masks.as_ref(),
+    ) {
+        return Err(SupervisorError::IsolationRejected);
+    }
     let runtime_bytes = serde_json::to_vec(runtime).map_err(|_| SupervisorError::ReceiptInvalid)?;
     let isolation_bytes =
         serde_json::to_vec(isolation).map_err(|_| SupervisorError::ReceiptInvalid)?;
@@ -1611,7 +1618,7 @@ fn launch_evidence(
         conformance,
         launch_request_digest: request.digest().to_string(),
         runtime_measurement_digest: Digest::of(&runtime_bytes).to_string(),
-        skill_generation_id: request.skill_generation_id.clone(),
+        skills: request.skills.clone(),
         session_input_manifest_id: request.session_input_manifest_id.clone(),
         isolation_contract: CONTRACT_VERSION.to_owned(),
         isolation_backend_id: backend_id.to_owned(),

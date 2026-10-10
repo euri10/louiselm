@@ -2,7 +2,7 @@
 use super::*;
 use louiselm_skills::{
     cache::CacheBase,
-    session_manifest::SessionInputManifest,
+    session_manifest::{SessionInputManifest, SkillsMode},
     workspace::{
         self, WorkspaceError,
         launch_inputs::{self, Preparation, RunProposal},
@@ -83,6 +83,7 @@ impl PreparedFixture {
     fn selection<'a>(&'a self, instructions: &'a [String]) -> Preparation<'a> {
         Preparation {
             agent_id: "demo",
+            skills: SkillsMode::Enabled,
             envelope_id: "denied",
             snapshot: &self.snapshot,
             snapshot_digest: &self.source_digest,
@@ -119,15 +120,16 @@ fn prepares_complete_measured_inputs_and_an_inactive_fresh_run() {
         SessionInputManifest::parse(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest.digest().to_string(), proposal.manifest_digest);
     assert_eq!(
-        manifest.skill_generation.generation_digest,
+        manifest.skills,
         louiselm_skills::session_manifest::SessionInputs::resolve(
             &fixture.supply.fixture.store(),
             &Policy::embedded(),
             &fixture.registry,
-            "demo"
+            "demo",
+            SkillsMode::Enabled,
         )
         .unwrap()
-        .skill_generation_id
+        .skills
         .unwrap()
     );
     assert_eq!(
@@ -173,6 +175,52 @@ fn prepares_complete_measured_inputs_and_an_inactive_fresh_run() {
             .unwrap()
             .contains("approved rules")
     );
+}
+
+#[test]
+fn explicit_off_preparation_needs_no_generation_and_never_hides_enabled_failure() {
+    let fixture = PreparedFixture::new();
+    let fresh = support::Fixture::new();
+    let instructions = vec!["AGENTS.md".into()];
+    let mut selection = fixture.selection(&instructions);
+    selection.skills = SkillsMode::Off;
+    let output = fixture.root.join("skills-off");
+    let proposal = launch_inputs::prepare(
+        &fresh.store(),
+        &Policy::embedded(),
+        &fixture.registry,
+        &selection,
+        &output,
+    )
+    .unwrap();
+    let manifest =
+        SessionInputManifest::parse(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest.skills.generation_digest(), None);
+    assert_eq!(
+        manifest.skills.view_digest(),
+        instruction_view::empty(&fresh.store())
+            .unwrap()
+            .digest()
+            .to_string()
+    );
+    assert_eq!(
+        manifest.project_instructions[0].sha256,
+        Digest::of(b"approved rules\n").hex()
+    );
+    assert_eq!(proposal.manifest_digest, manifest.digest().to_string());
+    assert!(!fresh.store_root().join("current").exists());
+    selection.skills = SkillsMode::Enabled;
+    assert!(matches!(
+        launch_inputs::prepare(
+            &fresh.store(),
+            &Policy::embedded(),
+            &fixture.registry,
+            &selection,
+            &fixture.root.join("enabled-refused")
+        ),
+        Err(WorkspaceError::Resolution(_))
+    ));
+    assert!(!fixture.root.join("enabled-refused").exists());
 }
 
 #[test]
@@ -276,7 +324,15 @@ fn privileged_preparation_cli_measures_trusted_owners_without_launch() {
             .arg(fixture.supply.fixture.store_root())
             .arg("--registry")
             .arg(fixture.registry.root())
-            .args(["--agent", "demo", "--envelope", "denied", "--snapshot"])
+            .args([
+                "--agent",
+                "demo",
+                "--skills",
+                "enabled",
+                "--envelope",
+                "denied",
+                "--snapshot",
+            ])
             .arg(&fixture.snapshot)
             .args(["--snapshot-digest", &fixture.source_digest.to_string()])
             .arg("--cache")
