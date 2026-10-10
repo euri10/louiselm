@@ -25,6 +25,8 @@ mod state;
 #[path = "installed_bead_executor_tests.rs"]
 mod bead_executor;
 
+#[path = "installed_qa_entrypoint_tests.rs"]
+mod qa_entrypoint;
 #[path = "installed_qualification_tests.rs"]
 mod qualification;
 

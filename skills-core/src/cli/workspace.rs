@@ -6,6 +6,7 @@ use super::CliError;
 use crate::{Digest, robot, workspace};
 
 mod launch_inputs;
+mod qa_runtime;
 mod verification;
 
 pub(super) fn command() -> clap::Command {
@@ -44,6 +45,7 @@ pub(super) fn command() -> clap::Command {
     }
     root.subcommand(launch_inputs::command())
         .subcommand(verification::command())
+        .subcommand(qa_runtime::command())
 }
 
 pub(super) fn value(name: &'static str) -> clap::Arg {
@@ -66,6 +68,7 @@ pub(super) fn run(args: &clap::ArgMatches) -> Result<i32, CliError> {
     match operation {
         "launch-inputs" => return launch_inputs::run(args),
         "verification" => return verification::run(args),
+        "qa-runtime" => return qa_runtime::run(args),
         _ => (),
     }
     let robot = args.get_flag("robot");

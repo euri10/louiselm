@@ -10,6 +10,34 @@ use louiselm_skills::{
 };
 use std::{path::PathBuf, process::Command};
 
+#[test]
+fn qa_cache_measurement_uses_the_real_owner_and_refuses_links() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    fs::create_dir(&cache).unwrap();
+    let measure = || {
+        Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
+            .args(["workspace", "qa-runtime", "measure-cache", "--cache"])
+            .arg(&cache)
+            .arg("--robot-json")
+            .output()
+            .unwrap()
+    };
+    let output = measure();
+    assert!(output.status.success());
+    let measured: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        measured["cache_digest"],
+        CacheBase::capture(&cache).unwrap().digest().to_string()
+    );
+    fs::write(cache.join("entry"), b"actual measured bytes").unwrap();
+    let changed: serde_json::Value = serde_json::from_slice(&measure().stdout).unwrap();
+    assert_ne!(changed["cache_digest"], measured["cache_digest"]);
+    std::os::unix::fs::symlink("entry", cache.join("linked")).unwrap();
+    let refused = measure();
+    assert!(!refused.status.success() && refused.stdout.is_empty());
+}
+
 struct PreparedFixture {
     supply: Supply,
     registry: Registry,

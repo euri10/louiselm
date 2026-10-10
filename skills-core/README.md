@@ -109,6 +109,9 @@ preflight --request FILE [--manifest FILE]
 preflight --direct [--robot-json]
 
 workspace prepare --repository DIR --output NEW_DIR [--include FILE ...] [--robot-json]
+workspace qa-runtime prepare --bundle DIR --output NEW_DIR [--robot-json]
+workspace qa-runtime inspect-installation [--robot-json]
+workspace qa-runtime measure-cache --cache DIR [--robot-json]
 workspace materialize --snapshot DIR --digest SHA256 --output NEW_DIR [--robot-json]
 workspace export --snapshot DIR --digest SHA256 --workspace DIR --output NEW_DIR [--robot-json]
 workspace apply --snapshot DIR --digest SHA256 --bundle DIR --bundle-digest SHA256 --output NEW_DIR [--robot-json]
@@ -470,6 +473,11 @@ the adapter/confinement proofs before reporting Verified posture. Do not log
 manifest bytes: registered arguments and environment can contain secrets.
 
 ### Inactive Run preparation
+
+The separate [no-Provider conformance QA recipe](https://github.com/euri10/louiselm/blob/main/docs/conformance-qa.md)
+uses measured deterministic runtime proposals, genuine skills-off inputs and
+explicitly denied Run capabilities. Its foreground coordinator does not change
+desktop policy, sign/install releases or establish unobserved acceptance.
 
 After selecting an existing source snapshot, its digest, an immutable cache and
 its digest, use the installed CLI to assemble the complete input record:

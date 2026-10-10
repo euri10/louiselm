@@ -130,6 +130,8 @@ jobs:
       - uses: actions/checkout@v7
       - run: python3 scripts/test-qualification-preview.py
       - run: python3 scripts/test-qualification-run.py
+      - run: python3 scripts/test-conformance-qa.py
+      - run: python3 scripts/test-install-qa-runtime.py
 
   usage-cli:
     name: cargo (usage-cli)
@@ -268,7 +270,7 @@ jobs:
           version: stable
       - name: Run the installed Lua controller gate
         run: |
-          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/install-broker-beads.py scripts/install-broker-attention.py |
+          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/install-broker-beads.py scripts/install-broker-attention.py scripts/conformance-qa.py scripts/install-qa-runtime.py |
             ./scripts/launcher-vm exec tar -x -C /home/vm
           rustup toolchain install
           cargo build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
@@ -302,6 +304,8 @@ jobs:
             sudo -n env LOUISELM_REQUIRE_QUALIFICATION=1 LOUISELM_TEST_LUA_ROOT=/home/vm \
               LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 180 \
               unshare --mount --net --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::qualification::privileged_installed_lua_qualification --exact --nocapture'\'' bash "$library_test"
+            sudo -n env LOUISELM_REQUIRE_QA_ENTRYPOINT=1 LOUISELM_TEST_LUA_ROOT=/home/vm timeout 180 \
+              unshare --mount --net --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::qa_entrypoint::privileged_installed_no_provider_qa_entrypoint --exact --nocapture'\'' bash "$library_test"
           '
       - name: Run the Lua gates inside the offline confined verifier
         run: |

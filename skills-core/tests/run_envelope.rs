@@ -151,7 +151,8 @@ fn denied_families_keep_exact_command_authority_independent_and_bounded() {
     assert!(store.check_child(&child, 1_000).is_ok());
     let mutations: [fn(&mut GrantRequest); 5] = [
         |g| {
-            g.commands.as_mut().unwrap().command_digest = Digest::of(b"another command").to_string();
+            g.commands.as_mut().unwrap().command_digest =
+                Digest::of(b"another command").to_string();
         },
         |g| g.commands.as_mut().unwrap().timeout_ms = 5001,
         |g| g.commands.as_mut().unwrap().uses = Some(3),
