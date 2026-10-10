@@ -41,6 +41,7 @@ mod foreground_tests;
 mod history;
 mod identity;
 mod key_cleanup;
+pub(crate) mod qa_policy;
 mod revocation;
 pub use broker::{LauncherVerifier, public_runtime_config};
 pub use key_cleanup::{KeyCleanup, SessionKeyState, cleanup_key};

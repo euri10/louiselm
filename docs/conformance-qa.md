@@ -90,10 +90,29 @@ commands and current installation/policy identities before either release is
 installed or policy is changed. Preserve ordinary Agent YOLO/approval choices.
 The existing install refresh preserves `pre_cutover`; it is **not** an enforcement
 switch. The coordinator never changes policy, installs/signs a release or
-restores policy. Until a safe exact reviewed policy transition is available,
-desktop enforcement cases remain unavailable; do not hand-edit authority to
-make the coordinator pass. An enforced policy needs a new current-boot fixed
-certification, not the old pre-cutover certificate.
+restores policy. Inspect the installed public owner and review its exact
+`release_id`, `operator_uid`, `conformance` and canonical `policy_digest`:
+
+```sh
+louiselm-skills workspace qa-runtime inspect-installation --robot-json
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher qa-policy \
+  --reviewed-policy sha256:EXACT_CURRENT_POLICY --to enforced \
+  --exclusive-no-contained-sessions --robot-json
+```
+
+Only the installed operator's explicit private sudo command can change policy.
+It holds the installation lock and **every** idle identity lock through the
+conformance-only private/public publication; occupied or poisoned identities,
+stale/foreign/no-op reviews and mismatched authority refuse. A preconstructed
+launcher rechecks governing policy after acquiring its lease, closing the
+empty-check/new-launch race. It changes no approval choices, keys, pool identity
+or certificate/history. A partial write is an error: retain both files and inspect
+the mismatch; never infer success or automatically repeat/restore. Serialize
+this window operation with other administrator maintenance.
+
+An enforced policy needs a new current-boot fixed certification, not the old
+pre-cutover certificate. Run the already-reviewed fixed `louiselm-launch certify`
+operation in the private foreground terminal while observing responsiveness.
 
 Once that separately reviewed window is established:
 
@@ -146,8 +165,18 @@ releases, system controls, keys, kernel settings or unrelated records. If an exa
 safe fault/restore operation has not been provided and reviewed, leave that case
 unaccepted. This coordinator provides no hidden fault-injection operation.
 
-After **every** QA Session is terminal, explicitly restore `pre_cutover` through
-the separately reviewed policy operation and verify the installation. Interrupted
+After **every** QA Session is terminal, inspect/review the current policy again
+and explicitly restore it:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher qa-policy \
+  --reviewed-policy sha256:EXACT_ENFORCED_POLICY --to pre_cutover \
+  --exclusive-no-contained-sessions --robot-json
+louiselm-skills workspace qa-runtime inspect-installation --robot-json
+```
+
+Compare the restored governing configuration with the recorded baseline for the
+installed fresh default, allowing no change except conformance. Interrupted
 foreground control promises no unattended restoration. Keep the round open until
 the maintainer confirms the exact reproductions and restoration. Completed code
 gates do not close desktop acceptance.
@@ -159,8 +188,10 @@ expiry/count retention and exact lifecycle settlement; publisher tests check
 measured-source refusals, linked-file rejection and preservation/conflicts.
 The mandatory VM/CI gate is
 `launch_supervisor::system::installed_tests::daemon::qa_entrypoint::privileged_installed_no_provider_qa_entrypoint`:
-actual runtime/input owners, root QA metadata publication, authenticated approval,
-installed launcher, command, Park/Resume, two Sessions and terminal disposal.
+actual runtime/input owners, root QA metadata publication, reviewed exclusive
+policy transition/restoration (occupied/stale/cached-launch refusals and old
+certificate invalidation), authenticated approval, installed launcher, command,
+Park/Resume, two Sessions and terminal disposal.
 It runs with `LOUISELM_REQUIRE_QA_ENTRYPOINT=1`, `LOUISELM_TEST_LUA_ROOT=/home/vm`,
 private mount/network namespaces and root **only inside the disposable guest**.
 Its second release ID is an explicitly unexercised control-fixture value, not

@@ -16,6 +16,9 @@ fn leaf(name: &'static str) -> Command {
 }
 
 fn operation(name: &str, verb: &'static str) -> Command {
+    if name == "launcher" && verb == "qa-policy" {
+        return super::qa_policy::command();
+    }
     let mut command = Options::augment_args(leaf(verb));
     let required: &[&str] = match (name, verb) {
         ("trust", "bootstrap") => &["primary", "release_key"],
@@ -75,6 +78,7 @@ pub(super) fn command() -> Command {
                 "revoke-key",
                 "cleanup-key",
                 "status",
+                "qa-policy",
             ],
         ),
     ] {

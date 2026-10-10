@@ -10,6 +10,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub(super) mod idle_pool;
+
 use super::{
     CommandInvocation, CommandRunner, LauncherConfig, LauncherError, LauncherFailure,
     LauncherPaths, SystemCommandRunner, TEMP_COUNTER, failure, hash_file, io_error,

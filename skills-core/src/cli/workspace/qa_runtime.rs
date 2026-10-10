@@ -32,6 +32,8 @@ pub(super) fn run(args: &clap::ArgMatches) -> Result<i32, CliError> {
         let value = serde_json::json!({
             "release_id": config.release_id,
             "conformance": config.conformance,
+            "operator_uid": config.operator_uid,
+            "policy_digest": crate::launcher_install::qa_policy::policy_digest(&config)?.to_string(),
         });
         println!("{}", robot::payload(&value)?);
         return Ok(0);

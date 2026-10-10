@@ -29,6 +29,28 @@ fn share(path: &Path, uid: u32) {
     .unwrap();
 }
 
+fn policy_command(config: &LauncherConfig, target: &str) -> std::process::Output {
+    let expected = crate::launcher_install::qa_policy::policy_digest(config)
+        .unwrap()
+        .to_string();
+    Command::new("/usr/local/lib/louiselm/current/bin/louiselm-skills")
+        .args([
+            "launcher",
+            "qa-policy",
+            "--reviewed-policy",
+            &expected,
+            "--to",
+            target,
+            "--exclusive-no-contained-sessions",
+            "--robot-json",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("SUDO_UID", config.operator_uid.to_string())
+        .output()
+        .unwrap()
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -47,7 +69,8 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         .unwrap();
     mounts(root.path());
     let _account = BrokerAccount::create();
-    let (paths, config, manager) = install_unseeded_daemon(root.path(), Enforcement::Enforced, 12);
+    let (paths, config, manager) =
+        install_unseeded_daemon(root.path(), Enforcement::PreCutover, 12);
     let registry = root.path().join("registry");
     fs::create_dir(SYSTEM_REGISTRY_ROOT).unwrap();
     for name in ["agents.json", "runtimes.json", "envelopes.json"] {
@@ -152,7 +175,58 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         .as_raw_nonzero()
         .get()
         .cast_unsigned();
-    measure(&paths, &config, Instant::now() + Duration::from_mins(3)).unwrap();
+    let previous = certify(&paths, Instant::now() + Duration::from_mins(3), parent).unwrap();
+    assert_eq!(
+        previous.observations.result().unwrap(),
+        ReportResult::Passed
+    );
+    let cached =
+        SystemLaunchPlatform::new(paths.clone(), config.clone(), Duration::from_secs(5)).unwrap();
+    let occupied = crate::launcher_install::acquire_identity(&paths, 0).unwrap();
+    let refused = policy_command(&config, "enforced");
+    assert!(
+        !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("occupied")
+    );
+    assert_eq!(
+        crate::launcher_install::public_runtime_config(&paths).unwrap(),
+        config
+    );
+    occupied.release().unwrap();
+    let switched = policy_command(&config, "enforced");
+    assert!(
+        switched.status.success(),
+        "{}",
+        String::from_utf8_lossy(&switched.stderr)
+    );
+    let before = config.clone();
+    let config = crate::launcher_install::public_runtime_config(&paths).unwrap();
+    let mut unchanged = config.clone();
+    unchanged.conformance = before.conformance;
+    assert_eq!(unchanged, before);
+    assert_eq!(config.conformance, Enforcement::Enforced);
+    let stale = policy_command(&before, "pre_cutover");
+    assert!(
+        !stale.status.success()
+            && String::from_utf8_lossy(&stale.stderr).contains("review mismatch")
+    );
+    let stale_start = cached.acquire_identity(config.pool.identity(0).unwrap());
+    let refusal = match stale_start {
+        Ok(identity) => {
+            identity.release().unwrap();
+            None
+        }
+        Err(error) => Some(error),
+    };
+    assert_eq!(
+        refusal,
+        Some(SupervisorError::ConformanceUnavailable),
+        "a constructor captured before the policy change must not acquire launch authority afterward"
+    );
+    let changed_host = measure(&paths, &config, Instant::now() + Duration::from_mins(3)).unwrap();
+    assert!(
+        !previous.is_current(&changed_host),
+        "old policy certification must not certify the QA window"
+    );
     let certificate = certify(&paths, Instant::now() + Duration::from_mins(3), parent).unwrap();
     assert_eq!(
         certificate.observations.result().unwrap(),
@@ -232,6 +306,16 @@ fn privileged_installed_no_provider_qa_entrypoint() {
     assert!(journal["active"].is_null() && journal["pending"].is_null());
     let first: GrantRequest = serde_json::from_value(selection["grants"][0].clone()).unwrap();
     assert!(first.provider_requests.is_none() && first.beads_mutations.is_none());
+    let restored = policy_command(&config, "pre_cutover");
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert_eq!(
+        crate::launcher_install::public_runtime_config(&paths).unwrap(),
+        before
+    );
     println!(
         "INSTALLED_NO_PROVIDER_QA_ENTRYPOINT_PASSED (two Sessions; terminal cleanup; no desktop/hardware acceptance)"
     );

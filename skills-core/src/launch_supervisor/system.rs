@@ -1574,6 +1574,15 @@ impl LaunchPlatform for SystemLaunchPlatform {
             let _ = lease.poison();
             return Err(SupervisorError::IdentityAssignmentInvalid);
         }
+        // Maintenance holds every idle slot while changing governing policy.
+        // A constructor captured before that window must not launch afterward
+        // under its cached policy. No Agent process exists at this boundary.
+        if crate::launcher_install::require_session_policy(&self.paths, &self.config).is_err() {
+            lease
+                .release()
+                .map_err(|_| SupervisorError::IdentityUnavailable)?;
+            return Err(SupervisorError::ConformanceUnavailable);
+        }
         Ok(Box::new(SystemIdentityGuard { lease }))
     }
 
