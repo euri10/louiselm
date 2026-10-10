@@ -16,6 +16,9 @@ fn leaf(name: &'static str) -> Command {
 }
 
 fn operation(name: &str, verb: &'static str) -> Command {
+    if name == "launcher" && verb == "qa-fault" {
+        return super::qa_fault::command();
+    }
     if name == "launcher" && verb == "qa-policy" {
         return super::qa_policy::command();
     }
@@ -79,6 +82,7 @@ pub(super) fn command() -> Command {
                 "cleanup-key",
                 "status",
                 "qa-policy",
+                "qa-fault",
             ],
         ),
     ] {

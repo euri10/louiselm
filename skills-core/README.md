@@ -114,6 +114,9 @@ workspace qa-runtime inspect-installation [--robot-json]
 workspace qa-runtime measure-cache --cache DIR [--robot-json]
 launcher qa-policy --reviewed-policy SHA256 --to enforced|pre_cutover
                    --exclusive-no-contained-sessions [--robot-json]
+launcher qa-fault plan|apply --baseline SHA256 --retired SHA256 --run ID --session ID
+                             [--reviewed SHA256] --exclusive-qa-window [--robot-json]
+launcher qa-fault restore --reviewed SHA256 --exclusive-qa-window [--robot-json]
 workspace materialize --snapshot DIR --digest SHA256 --output NEW_DIR [--robot-json]
 workspace export --snapshot DIR --digest SHA256 --workspace DIR --output NEW_DIR [--robot-json]
 workspace apply --snapshot DIR --digest SHA256 --bundle DIR --bundle-digest SHA256 --output NEW_DIR [--robot-json]

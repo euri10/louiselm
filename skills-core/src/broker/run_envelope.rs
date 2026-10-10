@@ -202,6 +202,18 @@ pub struct RunEnvelopeStore {
 }
 
 impl RunEnvelopeStore {
+    // Read-only owner access without creating directories or approving anything.
+    pub(crate) fn read_current(
+        root: &Path,
+        run_id: &str,
+    ) -> Result<Option<RunEnvelope>, BrokerError> {
+        Self {
+            root: root.to_owned(),
+            serial: Mutex::new(()),
+        }
+        .current(run_id)
+    }
+
     /// Opens the broker-private approval directory.
     /// # Errors
     /// Refuses unavailable storage.

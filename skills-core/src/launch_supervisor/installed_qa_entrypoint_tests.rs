@@ -1,5 +1,7 @@
 //! Real maintained no-Provider entrypoint, only inside the disposable guest.
 use super::*;
+#[path = "installed_qa_fault_tests.rs"]
+mod retired;
 use crate::{
     conformance::{
         ReportResult,
@@ -69,8 +71,10 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         .unwrap();
     mounts(root.path());
     let _account = BrokerAccount::create();
-    let (paths, config, manager) =
+    let (paths, _baseline_config, manager) =
         install_unseeded_daemon(root.path(), Enforcement::PreCutover, 12);
+    let releases = retired::Releases::prepare(&paths, root.path());
+    let config = releases.install(&paths, false);
     let registry = root.path().join("registry");
     fs::create_dir(SYSTEM_REGISTRY_ROOT).unwrap();
     for name in ["agents.json", "runtimes.json", "envelopes.json"] {
@@ -233,12 +237,10 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         ReportResult::Passed
     );
     let artifact = operator.join("round");
-    // The second ID represents another reviewed release only for this control-composition fixture;
-    // no default switch, hardware ceremony or retained-pin acceptance is inferred.
     let current = crate::release::read_manifest(&paths.release_prefix.join("current"))
         .unwrap()
         .release_id;
-    let other = Digest::of(b"second release not exercised by this fixture").to_string();
+    let other = releases.second_id.clone();
     let run_as_operator = |script: &str| {
         let mut command = Command::new("/usr/bin/setpriv");
         command
@@ -292,7 +294,11 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    coordinator.stdin.take().unwrap().write_all(b"start\nstatus\ncommand\npark\nstatus\nresume\ncommand\ndispose\nstart\nstatus\ncommand\ndispose\nquit\n").unwrap();
+    let mut foreground = coordinator.stdin.take().unwrap();
+    foreground.write_all(b"start\nstatus\ncommand\n").unwrap();
+    let config = retired::exercise(&paths, &releases, &artifact, &selection);
+    foreground.write_all(b"status\nresume\ncommand\npark\nstatus\nresume\ndispose\nstart\nstatus\ncommand\ndispose\nquit\n").unwrap();
+    drop(foreground);
     let completed = coordinator.wait_with_output().unwrap();
     assert!(
         completed.status.success(),
@@ -312,9 +318,11 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         "{}",
         String::from_utf8_lossy(&restored.stderr)
     );
+    let mut expected = config;
+    expected.conformance = before.conformance;
     assert_eq!(
         crate::launcher_install::public_runtime_config(&paths).unwrap(),
-        before
+        expected
     );
     println!(
         "INSTALLED_NO_PROVIDER_QA_ENTRYPOINT_PASSED (two Sessions; terminal cleanup; no desktop/hardware acceptance)"

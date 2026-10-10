@@ -592,9 +592,15 @@ impl AuthorizationStore {
         &self,
         session_id: &str,
     ) -> Result<Option<PendingAuthorization>, BrokerError> {
-        for entry in
-            fs::read_dir(self.root.join(CONSUMED_DIRECTORY)).map_err(BrokerError::Storage)?
-        {
+        Self::read_consumed_for_session(&self.root, session_id)
+    }
+
+    // Read-only owner access: QA inspection must not initialize approval stores.
+    pub(crate) fn read_consumed_for_session(
+        root: &Path,
+        session_id: &str,
+    ) -> Result<Option<PendingAuthorization>, BrokerError> {
+        for entry in fs::read_dir(root.join(CONSUMED_DIRECTORY)).map_err(BrokerError::Storage)? {
             let entry = entry.map_err(BrokerError::Storage)?;
             let consumed: Option<ConsumedAuthorization> = read_record(&entry.path())?;
             if let Some(consumed) = consumed

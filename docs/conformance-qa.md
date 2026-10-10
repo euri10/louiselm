@@ -152,6 +152,60 @@ Keep the original selection/journal; deleting them is not recovery.
 
 ## Human cases and truthful limits
 
+### Explicit retired-QA-release fault and restoration
+
+This operation is separate from the coordinator. After admitting a Session on
+the first **new QA release**, install/refresh the reviewed second release through
+the existing owners, keeping it default. Do not use the old desktop release as
+the fault target. In the private foreground terminal, review a read-only plan:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher qa-fault plan \
+  --baseline sha256:ORIGINAL_DESKTOP_RELEASE --retired sha256:FIRST_NEW_QA_RELEASE \
+  --run EXACT_RUN_ID --session EXACT_ACTIVE_SESSION_ID --exclusive-qa-window --robot-json
+```
+
+The plan names the root-registered Session/Run pin, current default, baseline,
+exact retained launcher hash, size, inode/device and original mode. It requires
+two distinct newer clean-source releases containing the test Agent, the actual
+consumed offline QA grant and unexpired fixed deny-family Run approval, and the
+registered deterministic Agent/network-denied envelope. It refuses default,
+baseline, unknown, unbound, renewed, symlinked, hardlinked or changed targets.
+It does not approve a Run, sign, install, suspend or resume anything.
+
+Review the complete plan and its printed `reviewed` digest. Apply is a second,
+explicit command with the **same** baseline/retired/Run/Session arguments:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher qa-fault apply \
+  --baseline sha256:ORIGINAL_DESKTOP_RELEASE --retired sha256:FIRST_NEW_QA_RELEASE \
+  --run EXACT_RUN_ID --session EXACT_ACTIVE_SESSION_ID \
+  --reviewed sha256:EXACT_FAULT_PLAN --exclusive-qa-window --robot-json
+```
+
+It rechecks the real owners under the installation lock, creates/fsyncs a
+root-private recovery record **before** changing only that launcher's mode from
+0555 to 0444, and never alters bytes, pin/history, keys, kernel controls or the
+default. Serialize all administrator release/registry maintenance during this
+operation. Duplicate/uncertain apply refuses; retain the record and exact bytes.
+Observe the actual validity suspension and disabled effects at the keyboard.
+
+Restoration is also explicit and requires the original plan digest:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher qa-fault restore \
+  --reviewed sha256:EXACT_FAULT_PLAN --exclusive-qa-window --robot-json
+```
+
+It consumes only its protected recovery record, requires the same retained bytes,
+inode and unchanged default/binding, restores exactly 0555, remeasures the pin and
+retains the record/history. It may restore after expiry or disposal, but cannot
+renew Session authority. An uncertain already-restored 0555 target is checked
+idempotently; a substituted target refuses. Restore and subsequent fixed
+recertification do **not** thaw a Session: use explicit authenticated Resume or
+truthful refusal plus terminal Disposal. Never erase the journal or bypass a
+failed restoration. No automatic fault or restore is performed.
+
 Follow the active `QA_REVIEW.md` round at the keyboard. Capture actual process
 suspension, disabled effects, original last-success time and current cause,
 recertification without implicit thaw, explicit Resume/Dispose and responsiveness.
@@ -194,6 +248,11 @@ certificate invalidation), authenticated approval, installed launcher, command,
 Park/Resume, two Sessions and terminal disposal.
 It runs with `LOUISELM_REQUIRE_QA_ENTRYPOINT=1`, `LOUISELM_TEST_LUA_ROOT=/home/vm`,
 private mount/network namespaces and root **only inside the disposable guest**.
-Its second release ID is an explicitly unexercised control-fixture value, not
-proof of two-release installation, hardware signing, pin invalidation or desktop
-acceptance.
+It installs two real software-key fixture releases through the release and
+launcher owners, replaces the default while retaining the first Session's pin,
+then consumes the reviewed fault/restore commands. It checks suspension,
+immutable admission/history/bytes, root-private recovery retention, targeting and
+symlink/stale/duplicate refusals, no implicit thaw after restore/recertification,
+explicit Resume with unchanged spending, and terminal cleanup. The toy source
+identity and disposable software keys are explicit fixtures, not fresh clean
+builds, hardware signing or desktop acceptance.

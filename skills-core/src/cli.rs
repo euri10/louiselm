@@ -25,6 +25,7 @@ use thiserror::Error;
 
 mod linked_admission;
 mod preflight;
+mod qa_fault;
 mod qa_policy;
 mod recovery;
 mod workspace;
@@ -171,6 +172,14 @@ pub fn run() -> Result<i32, CliError> {
         return Ok(0);
     };
     match command {
+        "launcher" if matches.subcommand_name() == Some("qa-fault") => {
+            return qa_fault::run(
+                matches
+                    .subcommand()
+                    .ok_or_else(|| CliError::Invalid("missing QA fault operation".into()))?
+                    .1,
+            );
+        }
         "launcher" if matches.subcommand_name() == Some("qa-policy") => {
             return qa_policy::run(
                 matches
