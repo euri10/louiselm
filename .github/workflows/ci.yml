@@ -401,7 +401,7 @@ jobs:
           export PATH="$JAVA_HOME/bin:$PATH"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;android-37.0" "build-tools;36.0.0"
-          ./gradlew --no-daemon test lint lintQa assembleDebug assembleQa
+          ./gradlew --no-daemon -PlouiselmFirebase=false test lint lintQa assembleDebug assembleQa
           test "$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest application-id \
             app/build/outputs/apk/qa/app-qa.apk)" = "dev.louiselm.capture.qa"
 

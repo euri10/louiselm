@@ -115,13 +115,18 @@ failures retain the last safely parsed screen and offer refresh, while revoked
 pairing or pin failures require pairing/operator repair. The seen generation is
 stored only in app-private preferences.
 
-## Attention notifications (explicit opt-in)
+## Attention notifications
 
-Ordinary builds do not contain Firebase configuration and cannot register for
-push. The private inbox and recording work without it. To build a push-enabled
-APK, provision the Firebase Android client through `infra/firebase` and place
-its generated `android_firebase_config_json` output in the ignored
-`app/src/debug/google-services.json` for the normal app. For QA, supply
+The default Android build includes Firebase notification support. Provision the
+Firebase Android client through `infra/firebase` and place its generated
+`android_firebase_config_json` output in the ignored
+`app/src/debug/google-services.json` for the normal app. The build fails with
+an actionable missing-configuration error if that file is absent. The private
+inbox and recording remain usable without push.
+
+For a config-free offline build, explicitly opt out with
+`-PlouiselmFirebase=false`. CI uses this opt-out because Firebase configuration
+is private. For QA, supply
 `android_qa_sha1_fingerprint` in OpenTofu and use the separate sensitive
 `android_qa_firebase_config_json` output at `app/src/qa/google-services.json`.
 Follow the [reviewed QA provisioning procedure](https://github.com/euri10/louiselm/blob/main/infra/firebase/README.md#side-by-side-android-notification-qa);

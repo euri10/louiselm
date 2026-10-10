@@ -3,7 +3,7 @@ plugins {
 }
 
 // A configured build still requires the user's in-app notification opt-in.
-val firebaseChoice = providers.gradleProperty("louiselmFirebase").orElse("false").get()
+val firebaseChoice = providers.gradleProperty("louiselmFirebase").orElse("true").get()
 require(firebaseChoice in setOf("true", "false")) { "louiselmFirebase must be true or false" }
 val firebaseEnabled = firebaseChoice == "true"
 if (firebaseEnabled) apply(plugin = "com.google.gms.google-services")
