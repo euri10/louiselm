@@ -129,6 +129,13 @@ installed owner (`workspace qa-runtime inspect-installation --robot-json`),
 authorizes the exact parent once, stages the immutable inputs once, authorizes
 one child and starts the installed launcher. It consumes one of twelve planned
 authorizations **before** effects. At most one active/Parked identity is retained.
+`start` is `authorize` followed by `launch`. Use them separately for the
+[initial-waiver flow](broker-lifecycle.md#interactive-live-conformance-waivers):
+`authorize` leaves the interactive authorization pending and writes the exact
+newline-terminated request to `evidence/launch-SESSION.json` for
+`louiselm-launch prepare`; `launch` records `pending: launch` before starting the
+launcher and keeps its payload-free stderr in `evidence/launcher-SESSION.log`.
+A refused launch is never a certain no-op: the journal stays pending.
 `status` uses authenticated operator reads, checks report bytes against immutable
 admission and saves bounded private typed evidence. It does not renew anything.
 `resume` explicitly reconnects the deterministic peer only after authenticated

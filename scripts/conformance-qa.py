@@ -348,10 +348,71 @@ def run(args):
         interactive(selection, manifest, journal, directory)
 
 
+def authorize(selection, manifest, journal, directory):
+    identity = cli("louiselm-skills", ["release", "identity", "--robot-json"])
+    installation = cli("louiselm-skills", ["workspace", "qa-runtime", "inspect-installation", "--robot-json"])
+    require(identity.get("verified") is True and identity.get("release_id") in selection["release_ids"]
+            and installation.get("release_id") == identity.get("release_id")
+            and installation.get("conformance") == "enforced",
+            "QA needs one of its reviewed installed releases and enforced admission")
+    index = journal.reserve(int(time.time() * 1000), selection["envelope"]["expires_at_ms"])
+    grant = selection["grants"][index]
+    request = grant["request"]
+    if journal.value["envelope_digest"] is None:
+        approval = cli("louiselm-control", ["run", "authorize", "--json"],
+                       {"kind": "run", "envelope": selection["envelope"]})
+        require(approval.get("kind") == "run" and approval["receipt"]["run_id"] == request["run_id"],
+                "Run approval reply mismatch")
+        journal.value["envelope_digest"] = approval["receipt"]["envelope_digest"]
+        require(journal.value["envelope_digest"] == digest(encoded(selection["envelope"])), "Exact Run approval mismatch")
+        journal.save()
+        evidence(directory, "run-approval", approval)
+    source = Path(selection["input"])
+    inputs = inspect_inputs(source, selection["manifest_digest"])[0]
+    if index == 0:
+        staged = cli("louiselm-control", ["launch-inputs", "stage", "--json"],
+                     {"manifest": manifest, "snapshot": str(source / "snapshot"), "cache": str(source / "cache"),
+                      "expected_base_commit": inputs["base_commit"]})
+        require(staged.get("manifest_digest") == selection["manifest_digest"], "Staged manifest mismatch")
+    child = cli("louiselm-control", ["run", "authorize", "--json"],
+                {"kind": "session", "grant": grant, "expected_envelope_digest": journal.value["envelope_digest"]})
+    require(child.get("kind") == "session" and binding(child["receipt"], request)
+            and child["receipt"]["authorization_id"] == request["authorization_id"]
+            and child["receipt"]["envelope_digest"] == journal.value["envelope_digest"]
+            and child["receipt"]["request_digest"] == digest(encoded(request)), "Child authorization mismatch")
+    evidence(directory, "child-approval", child)
+    # The exact canonical newline-terminated request `louiselm-launch prepare` reads for a waiver.
+    with open(os.open(directory / f"launch-{request['session_id']}.json",
+                      os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as stream:
+        stream.write(encoded(request) + b"\n")
+    return request
+
+
+def launch(journal, directory, request):
+    # Recorded before the effect: a refused or lost launch is never a certain no-op.
+    journal.value["pending"] = "launch"
+    journal.save()
+    log = directory / f"launcher-{request['session_id']}.log"
+    with open(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as stderr:
+        process = subprocess.Popen(["/usr/bin/sudo", "-n", str(PREFIX / "louiselm-launch"), "run"],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, bufsize=0)
+    process.stdin.write(encoded(request) + b"\n" + b"READY\n")
+    process.stdin.flush()
+    try:
+        require(read_line(process.stdout, time.monotonic() + 20) == b"READY", "QA launch was not acknowledged")
+    except ValueError as error:
+        # The launcher's stderr is payload-free (typed SupervisorError); show its category.
+        reason = log.read_bytes()[-512:].decode(errors="replace").strip().splitlines()
+        raise ValueError(f"{error}: {reason[-1] if reason else 'no launcher diagnostic'}") from error
+    journal.value["pending"] = None
+    journal.save()
+    return process
+
+
 def interactive(selection, manifest, journal, directory):
     process, request = None, None
     try:
-        print("No Provider. No policy/signing/release operation. Verbs: start, status, command, park, resume, dispose, quit.")
+        print("No Provider. No policy/signing/release operation. Verbs: start (= authorize + launch), authorize, launch, status, command, park, resume, dispose, quit.")
         for line in sys.stdin:
             verb = line.strip()
             before = copy.deepcopy(journal.value)
@@ -359,48 +420,16 @@ def interactive(selection, manifest, journal, directory):
                 if verb == "quit":
                     require(request is None, "Dispose the active Session before quitting")
                     return
-                if verb == "start":
-                    identity = cli("louiselm-skills", ["release", "identity", "--robot-json"])
-                    installation = cli("louiselm-skills", ["workspace", "qa-runtime", "inspect-installation", "--robot-json"])
-                    require(identity.get("verified") is True and identity.get("release_id") in selection["release_ids"]
-                            and installation.get("release_id") == identity.get("release_id")
-                            and installation.get("conformance") == "enforced",
-                            "QA needs one of its reviewed installed releases and enforced admission")
-                    index = journal.reserve(int(time.time() * 1000), selection["envelope"]["expires_at_ms"])
-                    grant = selection["grants"][index]
-                    request = grant["request"]
-                    if journal.value["envelope_digest"] is None:
-                        approval = cli("louiselm-control", ["run", "authorize", "--json"],
-                                       {"kind": "run", "envelope": selection["envelope"]})
-                        require(approval.get("kind") == "run" and approval["receipt"]["run_id"] == request["run_id"],
-                                "Run approval reply mismatch")
-                        journal.value["envelope_digest"] = approval["receipt"]["envelope_digest"]
-                        require(journal.value["envelope_digest"] == digest(encoded(selection["envelope"])), "Exact Run approval mismatch")
-                        journal.save()
-                        evidence(directory, "run-approval", approval)
-                    source = Path(selection["input"])
-                    inputs = inspect_inputs(source, selection["manifest_digest"])[0]
-                    if index == 0:
-                        staged = cli("louiselm-control", ["launch-inputs", "stage", "--json"],
-                                     {"manifest": manifest, "snapshot": str(source / "snapshot"), "cache": str(source / "cache"),
-                                      "expected_base_commit": inputs["base_commit"]})
-                        require(staged.get("manifest_digest") == selection["manifest_digest"], "Staged manifest mismatch")
-                    child = cli("louiselm-control", ["run", "authorize", "--json"],
-                                {"kind": "session", "grant": grant, "expected_envelope_digest": journal.value["envelope_digest"]})
-                    require(child.get("kind") == "session" and binding(child["receipt"], request)
-                            and child["receipt"]["authorization_id"] == request["authorization_id"]
-                            and child["receipt"]["envelope_digest"] == journal.value["envelope_digest"]
-                            and child["receipt"]["request_digest"] == digest(encoded(request)), "Child authorization mismatch")
-                    evidence(directory, "child-approval", child)
-                    process = subprocess.Popen(["/usr/bin/sudo", "-n", str(PREFIX / "louiselm-launch"), "run"],
-                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-                    process.stdin.write(encoded(request) + b"\n" + b"READY\n")
-                    process.stdin.flush()
-                    require(read_line(process.stdout, time.monotonic() + 20) == b"READY", "QA launch was not acknowledged")
-                    journal.value["pending"] = None
-                    journal.save()
+                if verb in ("start", "authorize"):
+                    require(request is None, "Dispose the active Session before authorizing another")
+                    request = authorize(selection, manifest, journal, directory)
+                    if verb == "authorize":
+                        print("Authorized", request["session_id"], "launch request", directory / f"launch-{request['session_id']}.json")
+                if verb in ("start", "launch"):
+                    require(request is not None and process is None, "Authorize a Session before launching it")
+                    process = launch(journal, directory, request)
                     print("Running", request["session_id"])
-                elif verb == "status":
+                if verb == "status":
                     require(request is not None, "No active QA Session")
                     status = status_for(request)
                     report = cli("louiselm-control", ["session", "conformance", request["session_id"], "--json"])
@@ -428,7 +457,7 @@ def interactive(selection, manifest, journal, directory):
                         process.stdin.flush()
                         require(read_line(process.stdout, time.monotonic() + 5) == b"\x1f", "Explicit reconnect failed")
                     print(verb, "confirmed")
-                else:
+                elif verb not in ("start", "authorize", "launch"):
                     raise ValueError("Unknown QA verb; no arbitrary shell or Agent prompt is accepted")
             except ValueError as error:
                 # A refusal that recorded nothing (typo, pre-effect check) cannot be uncertain;

@@ -146,6 +146,53 @@ class Bounds(unittest.TestCase):
             retained = qa.Journal.open(directory / "journal.json").value
             self.assertEqual((retained["next"], retained["active"], retained["pending"]), (1, 0, "authorization"))
 
+    def test_authorize_records_exact_request_and_refused_launch_stays_uncertain(self):
+        proposal, manifest = inputs()
+        release = "sha256:" + "1" * 64
+        now = int(qa.time.time() * 1000)
+        selection = {**qa.records(proposal, manifest, 1000, now), "input": "/nonexistent",
+                     "manifest_digest": proposal["manifest_digest"], "release_ids": [release, "sha256:" + "2" * 64]}
+        request = selection["grants"][0]["request"]
+        envelope_digest = qa.digest(qa.encoded(selection["envelope"]))
+
+        def cli(binary, arguments, value=None):
+            if arguments[:2] == ["release", "identity"]:
+                return {"verified": True, "release_id": release}
+            if arguments[:2] == ["workspace", "qa-runtime"]:
+                return {"release_id": release, "conformance": "enforced"}
+            if arguments[:2] == ["launch-inputs", "stage"]:
+                return {"manifest_digest": proposal["manifest_digest"]}
+            if value is None:
+                raise ValueError("Installed louiselm-control session refused or became unavailable; no automatic retry")
+            if value["kind"] == "run":
+                return {"kind": "run", "receipt": {"run_id": request["run_id"], "envelope_digest": envelope_digest}}
+            return {"kind": "session", "receipt": {**request, "envelope_digest": envelope_digest,
+                                                   "request_digest": qa.digest(qa.encoded(request))}}
+
+        class Refused:
+            def __init__(self, _argv, stdin, stdout, stderr, bufsize):
+                stderr.write(b"louiselm-launch: host conformance admission refused: GuardUnavailable; inspect installed certification\n")
+                self.stdin, self.stdout = io.BytesIO(), io.BytesIO()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            journal = qa.Journal.create(directory / "journal.json")
+            output = io.StringIO()
+            with patch.object(qa, "cli", side_effect=cli), \
+                 patch.object(qa, "inspect_inputs", return_value=({"base_commit": "a" * 40}, manifest)), \
+                 patch.object(qa.subprocess, "Popen", side_effect=Refused), \
+                 patch.object(qa, "read_line", side_effect=ValueError("QA launch was not acknowledged")), \
+                 patch.object(sys, "stdin", io.StringIO("authorize\nstatus\nlaunch\n")), patch.object(sys, "stdout", output):
+                with self.assertRaises(ValueError) as refused:
+                    qa.interactive(selection, manifest, journal, directory)
+            self.assertIn("Authorized " + request["session_id"], output.getvalue())
+            launch_file = directory / f"launch-{request['session_id']}.json"
+            self.assertEqual(launch_file.read_bytes(), qa.encoded(request) + b"\n")
+            self.assertEqual(launch_file.stat().st_mode & 0o777, 0o600)
+            self.assertIn("admission refused: GuardUnavailable", str(refused.exception))
+            retained = qa.Journal.open(directory / "journal.json").value
+            self.assertEqual((retained["active"], retained["pending"]), (0, "launch"))
+
     def test_lifecycle_receipt_binds_exact_subject_action_and_result(self):
         request = {"session_id": "s", "run_id": "r", "envelope_revision": 1, "request_id": "park-1", "action": "park"}
         receipt = {"signature": "fixture-not-cryptographic-proof", "payload": {
