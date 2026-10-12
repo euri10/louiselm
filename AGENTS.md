@@ -35,10 +35,9 @@ missing/truncated sections, and re-read when the file changes.
 | Executable changes, test/reliability design or review, gates, or CI monitoring | [Testing and acceptance](docs/agent-testing.md) |
 | Android work | [Android contract](android/AGENTS.md) |
 
-The root file is limited to 12,000 bytes by `./scripts/check-agent-instructions`,
-enforced in CI. Put detailed procedures in the relevant required reference;
-preserve the rule and its routing trigger. This leaves room below Codex's
-32-KiB project-instruction cap (louiselm-ch5b).
+`./scripts/check-agent-instructions` caps this file at 12,000 bytes in CI,
+below Codex's 32-KiB limit (louiselm-ch5b). Put detailed procedures in the
+relevant required reference; preserve the rule and its routing trigger.
 
 ## Work tracking and triage
 
@@ -90,10 +89,12 @@ br ready --limit 5 --json | jq '[.[] | {id,title,priority,labels}]'
 # Add --label-any needs-capability:<name> for a capability-specific request.
 ```
 
-Fetch full `br show <id> --json` only for candidates needing detail. Widen the
-limit only when the shortlist cannot answer the request; state that a bounded
-list is a shortlist, not an exhaustive inventory. Graph-specific questions may
-use `bvr --robot-next` or a projected `bvr --robot-triage` result. Inspect the
+Fetch `br show <id> --json` only for candidates needing detail. A ranked parent
+may hold only blocked children; recommend an open leaf (louiselm-q715b):
+`jq '.[0].dependents[]?|select(.dependency_type=="parent-child" and .status!="closed")'`.
+Widen the limit only when the shortlist cannot answer the request; state that a
+bounded list is a shortlist, not an exhaustive inventory. Graph questions may
+use `bvr --robot-next` or a projected `bvr --robot-triage`. Inspect the
 installed schema/help when a shape is unknown; do not discover it with a raw
 backlog dump. These recipes were checked with br 0.5.12.
 
@@ -112,9 +113,8 @@ br show <applicable-term-id> --json |
   jq '[.[] | {id,title,description,notes,design}]'
 ```
 
-The all-status query intentionally returns an empty result if there is no
-vocabulary yet. Pure housekeeping may skip it. Do not scan for missing terms
-or treat absence as debt. Do not duplicate definitions into instructions.
+An empty result means no vocabulary yet. Pure housekeeping may skip it. Do
+not scan for missing terms or treat absence as debt. Do not duplicate definitions into instructions.
 Use canonical names for harmless drift. Material conflicts involving vocabulary,
 code, issues or user intent require a `needs-design` question and shared
 understanding with the user; no source wins automatically. Re-read affected
@@ -164,8 +164,8 @@ Configuration uses a closed schema:
   message: a declared field is emitted into `lua/louiselm/types.lua` and
   `doc/louiselm.txt`, so the migration note becomes a completion entry
   advertising a key `setup()` always rejects
-  (`louiselm-types-advertise-full-content-naz6`). Delete the field and let the
-  closed schema reject it as an unknown key, as the project scope above requires.
+  (`louiselm-types-advertise-full-content-naz6`). Delete the field; the closed
+  schema rejects it as unknown.
 
 For ACP/JSON-RPC, validate consumed fields and reject malformed/contradictory
 messages, but ignore unknown optional fields from newer peers.
