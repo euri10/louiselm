@@ -138,6 +138,9 @@ Dispose before starting another Session. A signed exact terminal Disposal receip
 and process exit must be confirmed before the coordinator releases the slot.
 EOF, timeout, transport loss, checker refusal or a lost reply retains the journal
 and spending; there is no automatic replay, renewal, refund or cleanup claim.
+A refusal that recorded nothing (an unknown verb, `command` while suspended, a
+lifecycle check before sending) prints `Refused:` and keeps the Session under
+foreground control (louiselm-c327f).
 After inspection, explicit foreground recovery is:
 
 ```sh

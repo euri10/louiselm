@@ -7,6 +7,7 @@ import stat
 import tempfile
 from pathlib import Path
 import argparse
+import copy
 import fcntl
 import select
 import subprocess
@@ -353,80 +354,89 @@ def interactive(selection, manifest, journal, directory):
         print("No Provider. No policy/signing/release operation. Verbs: start, status, command, park, resume, dispose, quit.")
         for line in sys.stdin:
             verb = line.strip()
-            if verb == "quit":
-                require(request is None, "Dispose the active Session before quitting")
-                return
-            if verb == "start":
-                identity = cli("louiselm-skills", ["release", "identity", "--robot-json"])
-                installation = cli("louiselm-skills", ["workspace", "qa-runtime", "inspect-installation", "--robot-json"])
-                require(identity.get("verified") is True and identity.get("release_id") in selection["release_ids"]
-                        and installation.get("release_id") == identity.get("release_id")
-                        and installation.get("conformance") == "enforced",
-                        "QA needs one of its reviewed installed releases and enforced admission")
-                index = journal.reserve(int(time.time() * 1000), selection["envelope"]["expires_at_ms"])
-                grant = selection["grants"][index]
-                request = grant["request"]
-                if journal.value["envelope_digest"] is None:
-                    approval = cli("louiselm-control", ["run", "authorize", "--json"],
-                                   {"kind": "run", "envelope": selection["envelope"]})
-                    require(approval.get("kind") == "run" and approval["receipt"]["run_id"] == request["run_id"],
-                            "Run approval reply mismatch")
-                    journal.value["envelope_digest"] = approval["receipt"]["envelope_digest"]
-                    require(journal.value["envelope_digest"] == digest(encoded(selection["envelope"])), "Exact Run approval mismatch")
-                    journal.save()
-                    evidence(directory, "run-approval", approval)
-                source = Path(selection["input"])
-                inputs = inspect_inputs(source, selection["manifest_digest"])[0]
-                if index == 0:
-                    staged = cli("louiselm-control", ["launch-inputs", "stage", "--json"],
-                                 {"manifest": manifest, "snapshot": str(source / "snapshot"), "cache": str(source / "cache"),
-                                  "expected_base_commit": inputs["base_commit"]})
-                    require(staged.get("manifest_digest") == selection["manifest_digest"], "Staged manifest mismatch")
-                child = cli("louiselm-control", ["run", "authorize", "--json"],
-                            {"kind": "session", "grant": grant, "expected_envelope_digest": journal.value["envelope_digest"]})
-                require(child.get("kind") == "session" and binding(child["receipt"], request)
-                        and child["receipt"]["authorization_id"] == request["authorization_id"]
-                        and child["receipt"]["envelope_digest"] == journal.value["envelope_digest"]
-                        and child["receipt"]["request_digest"] == digest(encoded(request)), "Child authorization mismatch")
-                evidence(directory, "child-approval", child)
-                process = subprocess.Popen(["/usr/bin/sudo", "-n", str(PREFIX / "louiselm-launch"), "run"],
-                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-                process.stdin.write(encoded(request) + b"\n" + b"READY\n")
-                process.stdin.flush()
-                require(read_line(process.stdout, time.monotonic() + 20) == b"READY", "QA launch was not acknowledged")
-                journal.value["pending"] = None
-                journal.save()
-                print("Running", request["session_id"])
-            elif verb == "status":
-                require(request is not None, "No active QA Session")
-                status = status_for(request)
-                report = cli("louiselm-control", ["session", "conformance", request["session_id"], "--json"])
-                require(report.get("session_id") == request["session_id"] and report.get("run_id") == request["run_id"],
-                        "Conformance report mismatch")
-                if report.get("report") is not None:
-                    require(digest(report["report"].encode()) == report["admission"].get("report_digest"),
-                            "Conformance report bytes do not match immutable admission")
-                evidence(directory, "status", status)
-                evidence(directory, "conformance", report)
-                print("State", status["state"], "last_check", report.get("last_check"))
-            elif verb == "command":
-                require(process is not None and request is not None, "No active QA Session")
-                command(journal, process, request, selection["envelope"]["expires_at_ms"])
-            elif verb in ("park", "resume", "dispose"):
-                require(request is not None, "No active QA Session")
-                action = "disposal" if verb == "dispose" else verb
-                receipt = lifecycle(journal, directory, request, action)
-                if verb == "dispose":
-                    process.wait(timeout=5)
-                    journal.terminal(receipt)
-                    request, process = None, None
-                elif verb == "resume":
-                    process.stdin.write(b"\x1f")
+            before = copy.deepcopy(journal.value)
+            try:
+                if verb == "quit":
+                    require(request is None, "Dispose the active Session before quitting")
+                    return
+                if verb == "start":
+                    identity = cli("louiselm-skills", ["release", "identity", "--robot-json"])
+                    installation = cli("louiselm-skills", ["workspace", "qa-runtime", "inspect-installation", "--robot-json"])
+                    require(identity.get("verified") is True and identity.get("release_id") in selection["release_ids"]
+                            and installation.get("release_id") == identity.get("release_id")
+                            and installation.get("conformance") == "enforced",
+                            "QA needs one of its reviewed installed releases and enforced admission")
+                    index = journal.reserve(int(time.time() * 1000), selection["envelope"]["expires_at_ms"])
+                    grant = selection["grants"][index]
+                    request = grant["request"]
+                    if journal.value["envelope_digest"] is None:
+                        approval = cli("louiselm-control", ["run", "authorize", "--json"],
+                                       {"kind": "run", "envelope": selection["envelope"]})
+                        require(approval.get("kind") == "run" and approval["receipt"]["run_id"] == request["run_id"],
+                                "Run approval reply mismatch")
+                        journal.value["envelope_digest"] = approval["receipt"]["envelope_digest"]
+                        require(journal.value["envelope_digest"] == digest(encoded(selection["envelope"])), "Exact Run approval mismatch")
+                        journal.save()
+                        evidence(directory, "run-approval", approval)
+                    source = Path(selection["input"])
+                    inputs = inspect_inputs(source, selection["manifest_digest"])[0]
+                    if index == 0:
+                        staged = cli("louiselm-control", ["launch-inputs", "stage", "--json"],
+                                     {"manifest": manifest, "snapshot": str(source / "snapshot"), "cache": str(source / "cache"),
+                                      "expected_base_commit": inputs["base_commit"]})
+                        require(staged.get("manifest_digest") == selection["manifest_digest"], "Staged manifest mismatch")
+                    child = cli("louiselm-control", ["run", "authorize", "--json"],
+                                {"kind": "session", "grant": grant, "expected_envelope_digest": journal.value["envelope_digest"]})
+                    require(child.get("kind") == "session" and binding(child["receipt"], request)
+                            and child["receipt"]["authorization_id"] == request["authorization_id"]
+                            and child["receipt"]["envelope_digest"] == journal.value["envelope_digest"]
+                            and child["receipt"]["request_digest"] == digest(encoded(request)), "Child authorization mismatch")
+                    evidence(directory, "child-approval", child)
+                    process = subprocess.Popen(["/usr/bin/sudo", "-n", str(PREFIX / "louiselm-launch"), "run"],
+                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+                    process.stdin.write(encoded(request) + b"\n" + b"READY\n")
                     process.stdin.flush()
-                    require(read_line(process.stdout, time.monotonic() + 5) == b"\x1f", "Explicit reconnect failed")
-                print(verb, "confirmed")
-            else:
-                raise ValueError("Unknown QA verb; no arbitrary shell or Agent prompt is accepted")
+                    require(read_line(process.stdout, time.monotonic() + 20) == b"READY", "QA launch was not acknowledged")
+                    journal.value["pending"] = None
+                    journal.save()
+                    print("Running", request["session_id"])
+                elif verb == "status":
+                    require(request is not None, "No active QA Session")
+                    status = status_for(request)
+                    report = cli("louiselm-control", ["session", "conformance", request["session_id"], "--json"])
+                    require(report.get("session_id") == request["session_id"] and report.get("run_id") == request["run_id"],
+                            "Conformance report mismatch")
+                    if report.get("report") is not None:
+                        require(digest(report["report"].encode()) == report["admission"].get("report_digest"),
+                                "Conformance report bytes do not match immutable admission")
+                    evidence(directory, "status", status)
+                    evidence(directory, "conformance", report)
+                    print("State", status["state"], "last_check", report.get("last_check"))
+                elif verb == "command":
+                    require(process is not None and request is not None, "No active QA Session")
+                    command(journal, process, request, selection["envelope"]["expires_at_ms"])
+                elif verb in ("park", "resume", "dispose"):
+                    require(request is not None, "No active QA Session")
+                    action = "disposal" if verb == "dispose" else verb
+                    receipt = lifecycle(journal, directory, request, action)
+                    if verb == "dispose":
+                        process.wait(timeout=5)
+                        journal.terminal(receipt)
+                        request, process = None, None
+                    elif verb == "resume":
+                        process.stdin.write(b"\x1f")
+                        process.stdin.flush()
+                        require(read_line(process.stdout, time.monotonic() + 5) == b"\x1f", "Explicit reconnect failed")
+                    print(verb, "confirmed")
+                else:
+                    raise ValueError("Unknown QA verb; no arbitrary shell or Agent prompt is accepted")
+            except ValueError as error:
+                # A refusal that recorded nothing (typo, pre-effect check) cannot be uncertain;
+                # keep the Session controllable. Any recorded effect still stops here (louiselm-c327f).
+                if journal.value != before:
+                    raise
+                print("Refused:", error)
+
         require(request is None, "Foreground input ended with an active Session; retained journal blocks another")
     finally:
         # Closing transport is not proof of cleanup and does not free the journal.

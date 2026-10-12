@@ -117,6 +117,35 @@ class Bounds(unittest.TestCase):
             with self.assertRaises(ValueError):
                 qa.command(uncertain, process, request, 10**15)
 
+    def test_certain_refusals_keep_the_loop_but_uncertainty_still_stops(self):
+        proposal, manifest = inputs()
+        release = "sha256:" + "1" * 64
+        now = int(qa.time.time() * 1000)
+        selection = {**qa.records(proposal, manifest, 1000, now), "release_ids": [release, "sha256:" + "2" * 64]}
+
+        def cli(binary, arguments, value=None):
+            if arguments[:2] == ["release", "identity"]:
+                return {"verified": True, "release_id": release}
+            if arguments[:2] == ["workspace", "qa-runtime"]:
+                return {"release_id": release, "conformance": "enforced"}
+            raise ValueError("Installed louiselm-control run refused or became unavailable; no automatic retry")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            journal = qa.Journal.create(directory / "journal.json")
+            output = io.StringIO()
+            with patch.object(sys, "stdin", io.StringIO("stauts\nstatus\ncommand\nquit\n")), patch.object(sys, "stdout", output):
+                qa.interactive(selection, manifest, journal, directory)
+            self.assertIn("Unknown QA verb", output.getvalue())
+            self.assertIn("No active QA Session", output.getvalue())
+            self.assertEqual(qa.Journal.open(directory / "journal.json").value["next"], 0)
+
+            with patch.object(sys, "stdin", io.StringIO("start\nquit\n")), patch.object(qa, "cli", side_effect=cli), patch.object(sys, "stdout", io.StringIO()):
+                with self.assertRaises(ValueError):
+                    qa.interactive(selection, manifest, journal, directory)
+            retained = qa.Journal.open(directory / "journal.json").value
+            self.assertEqual((retained["next"], retained["active"], retained["pending"]), (1, 0, "authorization"))
+
     def test_lifecycle_receipt_binds_exact_subject_action_and_result(self):
         request = {"session_id": "s", "run_id": "r", "envelope_revision": 1, "request_id": "park-1", "action": "park"}
         receipt = {"signature": "fixture-not-cryptographic-proof", "payload": {
