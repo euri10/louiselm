@@ -1297,6 +1297,11 @@ jq -e --arg operator "$operator" \
 ! grep -q 'OPENSSH PRIVATE KEY' /tmp/launcher-install.json
 ```
 
+`launcher install` also writes the release's embedded broker units to
+`/etc/systemd/system` when they changed (it does not reload systemd); `launcher
+status` reports `broker_units_stale` on drift. See
+[broker lifecycle](../docs/broker-lifecycle.md#system-service-installation).
+
 Check the installed ownership and modes. Every displayed owner must be `0:0`:
 
 ```sh

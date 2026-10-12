@@ -101,6 +101,7 @@ impl Fixture {
             visudo: root_path.join("usr/sbin/visudo"),
             bwrap: root_path.join("usr/bin/bwrap"),
             broker_socket: root_path.join("run/louiselm/control.sock"),
+            systemd_units: root_path.join("etc/systemd/system"),
         };
         for path in [
             &paths.subuid,
@@ -1051,6 +1052,65 @@ fn writable_identity_lock_blocks_status_and_leasing() {
             .iter()
             .any(|failure| failure.code == "identity_lock_unreadable")
     );
+}
+
+fn unit_failures(paths: &LauncherPaths) -> Vec<String> {
+    status(paths)
+        .failures
+        .into_iter()
+        .map(|failure| failure.code)
+        .filter(|code| code.starts_with("broker_units"))
+        .collect()
+}
+
+#[test]
+fn install_owns_the_release_broker_units_and_status_reports_drift() {
+    let fixture = Fixture::new();
+    let runner = FakeRunner::default();
+    let contrib = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/systemd");
+    let units = ["louiselm-broker.socket", "louiselm-broker.service"];
+
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
+    for unit in units {
+        let installed = fixture.paths.systemd_units.join(unit);
+        assert_eq!(
+            fs::read(&installed).unwrap(),
+            fs::read(contrib.join(unit)).unwrap()
+        );
+        assert_eq!(mode(&installed), 0o644);
+    }
+    assert_eq!(unit_failures(&fixture.paths), Vec::<String>::new());
+
+    let socket = fixture.paths.systemd_units.join("louiselm-broker.socket");
+    let inode = fs::metadata(&socket).unwrap().ino();
+    install(&fixture.paths, &runner, &Fixture::request(), 20).unwrap();
+    assert_eq!(
+        fs::metadata(&socket).unwrap().ino(),
+        inode,
+        "unchanged units are not rewritten"
+    );
+
+    // An upgrade that crosses a handover change leaves the older unit behind (louiselm-v3gl4).
+    let service = fixture.paths.systemd_units.join("louiselm-broker.service");
+    let stale = fs::read_to_string(&service)
+        .unwrap()
+        .replace("StandardInput=socket\n", "");
+    fs::write(&service, stale).unwrap();
+    let drifted = status(&fixture.paths);
+    let failure = drifted
+        .failures
+        .iter()
+        .find(|failure| failure.code == "broker_units_stale")
+        .expect("stale broker unit is reported");
+    assert!(failure.next_action.contains("daemon-reload"));
+    assert!(failure.next_action.contains("restart"));
+
+    install(&fixture.paths, &runner, &Fixture::request(), 30).unwrap();
+    assert_eq!(
+        fs::read(&service).unwrap(),
+        fs::read(contrib.join("louiselm-broker.service")).unwrap()
+    );
+    assert_eq!(unit_failures(&fixture.paths), Vec::<String>::new());
 }
 
 #[test]

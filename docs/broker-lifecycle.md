@@ -165,20 +165,30 @@ configuration. It must not be the operator, capture-service, or a Session
 identity, and must have no additional groups. Do not use a dynamic account:
 broker state binds the machine-lifetime UID/GID. For an installation using a
 different account name, override `User=`/`Group=` in both units and
-`SocketUser=`/`SocketGroup=` in the socket unit to that same installed identity.
+`SocketUser=`/`SocketGroup=` in the socket unit with drop-ins
+(`/etc/systemd/system/louiselm-broker.{socket,service}.d/*.conf`), never by
+editing the unit files.
 
-From the repository root, after installing that release and identity:
+The units are part of the release: `louiselm-skills` embeds the copies from its
+own source, and `launcher install` writes them to `/etc/systemd/system` whenever
+their bytes differ. It never reloads or restarts services itself. The binary and its
+descriptor-handover contract therefore always come from one release; a
+hand-installed older unit cannot start a newer broker (louiselm-v3gl4).
+`launcher status` reports `broker_units_stale` when the installed units differ.
+After the release and launcher are installed, enable the broker once:
 
 ```sh
-sudo install -m 0644 skills-core/contrib/systemd/louiselm-broker.socket \
-  /etc/systemd/system/louiselm-broker.socket
-sudo install -m 0644 skills-core/contrib/systemd/louiselm-broker.service \
-  /etc/systemd/system/louiselm-broker.service
 sudo systemd-analyze verify /etc/systemd/system/louiselm-broker.socket \
   /etc/systemd/system/louiselm-broker.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now louiselm-broker.socket louiselm-broker.service
 ```
+
+An upgrade is `release install`, then `launcher install` from the new `current`
+release, then `sudo systemctl daemon-reload` and
+`sudo systemctl restart louiselm-broker.service`. The running broker keeps its
+old process until that restart; confirm afterwards that its restart count stays
+unchanged, since a start failure only shows in the restart loop.
 
 The socket owns `RuntimeDirectory=louiselm` at mode 0700 and creates
 `/run/louiselm/control.sock` at mode 0600, both broker-owned. Its

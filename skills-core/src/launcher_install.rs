@@ -44,6 +44,7 @@ mod key_cleanup;
 pub(crate) mod qa_fault;
 pub(crate) mod qa_policy;
 mod revocation;
+mod units;
 pub use broker::{LauncherVerifier, public_runtime_config};
 pub use key_cleanup::{KeyCleanup, SessionKeyState, cleanup_key};
 pub use revocation::{
@@ -112,6 +113,8 @@ pub struct LauncherPaths {
     pub bwrap: PathBuf,
     /// Fixed Control broker rendezvous.
     pub broker_socket: PathBuf,
+    /// System unit directory receiving the release's broker units.
+    pub systemd_units: PathBuf,
 }
 
 impl LauncherPaths {
@@ -133,6 +136,7 @@ impl LauncherPaths {
             visudo: PathBuf::from("/usr/sbin/visudo"),
             bwrap: PathBuf::from("/usr/bin/bwrap"),
             broker_socket: PathBuf::from("/run/louiselm/control.sock"),
+            systemd_units: PathBuf::from("/etc/systemd/system"),
         }
     }
 
@@ -987,6 +991,7 @@ pub fn install(
     }
 
     identity::ensure_slot_files(paths, request.pool.slots)?;
+    units::install(paths)?;
     write_json_atomic(&paths.public_config(), &config, 0o444)?;
     let sudoers = render_sudoers(&config)?;
     write_atomic(&paths.sudoers, sudoers.as_bytes(), 0o440)?;
@@ -1475,6 +1480,7 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
     } else {
         Vec::new()
     };
+    units::check(paths, &mut failures);
     LauncherStatus {
         schema: STATUS_SCHEMA.to_owned(),
         trusted: failures.is_empty(),
@@ -1762,6 +1768,7 @@ fn validate_paths(paths: &LauncherPaths) -> Result<(), LauncherError> {
         ("visudo", &paths.visudo),
         ("bubblewrap", &paths.bwrap),
         ("Control broker socket", &paths.broker_socket),
+        ("systemd units", &paths.systemd_units),
     ] {
         if !path.is_absolute() {
             return Err(LauncherError::Invalid(format!(
@@ -3574,6 +3581,7 @@ mod tests {
             visudo: PathBuf::from("/usr/sbin/visudo"),
             bwrap: PathBuf::from("/usr/bin/bwrap"),
             broker_socket: root.join("control.sock"),
+            systemd_units: root.join("systemd"),
         }
     }
 

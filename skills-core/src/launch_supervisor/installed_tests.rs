@@ -167,6 +167,7 @@ fn paths(root: &Path) -> LauncherPaths {
         visudo: PathBuf::from("/usr/sbin/visudo"),
         bwrap: PathBuf::from("/usr/bin/bwrap"),
         broker_socket: root.join("rendezvous/control.sock"),
+        systemd_units: root.join("systemd"),
     }
 }
 

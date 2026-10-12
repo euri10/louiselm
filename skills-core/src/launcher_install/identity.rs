@@ -1032,6 +1032,7 @@ mod tests {
                 visudo: root_path.join("visudo"),
                 bwrap: PathBuf::from("/usr/bin/true"),
                 broker_socket: root_path.join("control.sock"),
+                systemd_units: root_path.join("systemd"),
             };
             fs::create_dir_all(paths.state_root.join("locks")).expect("launcher locks directory");
             fs::write(&paths.subuid, "0:200000:1\n").expect("subuid fixture");
