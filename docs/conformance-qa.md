@@ -39,7 +39,9 @@ Replace all placeholders with reviewed absolute paths and hashes. The installed
 operator must invoke this command; it accepts no registry/runtime path overrides.
 All source ancestors must be root/operator-owned and non-writable by other users.
 It remeasures the proposal, executable and inventory, preserves existing entries,
-and appends only its fixed QA runtime, network-denied envelope and Agent. The Agent
+and appends only its fixed QA runtime, network-denied envelope and Agent. A host
+with no registry gets a root-owned one; missing files start empty, as the
+launcher reads them, and are created exclusively (louiselm-61irn). The Agent
 is published last. Existing conflicting entries or changed files refuse. Retain
 partial QA-only registration after failure; do not delete/repair it automatically.
 Serialize this operation with all other registry maintenance. Publication is

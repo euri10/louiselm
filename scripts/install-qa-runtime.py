@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit administrator publication of one reviewed fixed QA-runtime proposal."""
 import argparse
+import copy
 import fcntl
 import hashlib
 import json
@@ -15,6 +16,7 @@ REGISTRY = Path("/var/lib/louiselm/registry")
 RUNTIMES = Path("/var/lib/louiselm/qa-runtimes")
 EXECUTABLE = "louiselm-tool-test-agent"
 INVENTORY = "louiselm-discovery.json"
+EMPTY_REGISTRY = {"schema": "louiselm.launch.registry/1", "entries": []}
 
 
 def require(condition):
@@ -96,8 +98,16 @@ def write_new(path, data, mode):
         os.fsync(stream.fileno())
 
 
+def read_registry(path):
+    # The launcher reads a missing registry file as empty (skills-core/src/registry.rs read_list).
+    try:
+        return read_file(path, 4 * 1024 * 1024)
+    except FileNotFoundError:
+        return None
+
+
 def registry_document(original, entry):
-    document = json.loads(original)
+    document = copy.deepcopy(EMPTY_REGISTRY) if original is None else json.loads(original)
     require(set(document) == {"schema", "entries"} and document["schema"] == "louiselm.launch.registry/1"
             and isinstance(document["entries"], list) and len(document["entries"]) < 4096
             and all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in document["entries"]))
@@ -118,14 +128,20 @@ def append(path, entry, original):
             stream.flush()
             os.fsync(stream.fileno())
             os.chmod(temporary, 0o644)
-            require(read_file(path, 4 * 1024 * 1024) == original)
-            os.replace(temporary, path)
+            if original is None:
+                os.link(temporary, path)  # exclusive: a concurrently created file refuses
+            else:
+                require(read_file(path, 4 * 1024 * 1024) == original)
+                os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
 
 
 def publish(source, reviewed, operator):
     value, root, executable, inventory = measured_proposal(source, reviewed, operator)
+    if not REGISTRY.exists():
+        check_directory(REGISTRY.parent, (0,))
+        REGISTRY.mkdir(mode=0o755)
     check_directory(REGISTRY, (0,))
     # Separate privileged review is mandatory; there is no automatic caller from the QA coordinator.
     descriptor = os.open(REGISTRY / ".qa-runtime.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -134,12 +150,13 @@ def publish(source, reviewed, operator):
         require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0 and metadata.st_nlink == 1
                 and stat.S_IMODE(metadata.st_mode) == 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        originals = {name: read_file(REGISTRY / name, 4 * 1024 * 1024)
+        originals = {name: read_registry(REGISTRY / name)
                      for name in ("runtimes.json", "envelopes.json", "agents.json")}
         # Validate duplicates before any runtime publication, preserving every old entry.
         for name, key in (("runtimes.json", "runtime"), ("envelopes.json", "envelope"), ("agents.json", "agent")):
-            metadata = (REGISTRY / name).lstat()
-            require(metadata.st_uid == 0 and not metadata.st_mode & 0o022)
+            if originals[name] is not None:
+                metadata = (REGISTRY / name).lstat()
+                require(metadata.st_uid == 0 and not metadata.st_mode & 0o022)
             registry_document(originals[name], value[key])
         if not RUNTIMES.exists():
             check_directory(RUNTIMES.parent, (0,))

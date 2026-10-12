@@ -79,6 +79,22 @@ class Publisher(unittest.TestCase):
                 publisher.append(path, {"id": "next"}, original)
             self.assertEqual(path.read_bytes(), current)
 
+    def test_missing_registry_file_is_created_exclusively_as_empty_document(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "agents.json"
+            original = publisher.read_registry(path)
+            self.assertIsNone(original)
+            entry = {"id": "qa", "fixed": True}
+            publisher.append(path, entry, original)
+            self.assertEqual(json.loads(path.read_bytes()), {"schema": "louiselm.launch.registry/1", "entries": [entry]})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["agents.json"])
+            created = path.read_bytes()
+            with self.assertRaises(OSError):
+                publisher.append(path, {"id": "racer"}, None)
+            self.assertEqual(path.read_bytes(), created)
+            self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["agents.json"])
+
     def test_descriptor_reads_refuse_linked_files_and_symlink_ancestors(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
