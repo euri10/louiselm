@@ -95,6 +95,20 @@ class Publisher(unittest.TestCase):
             self.assertEqual(path.read_bytes(), created)
             self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["agents.json"])
 
+    def test_created_modes_are_exact_under_a_restrictive_umask(self):
+        previous = os.umask(0o077)
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary) / "runtime"
+                publisher.make_directory(directory)
+                publisher.write_new(directory / "agent", b"x", 0o555)
+                publisher.write_new(directory / "inventory", b"{}", 0o444)
+                self.assertEqual(directory.stat().st_mode & 0o7777, 0o755)
+                self.assertEqual((directory / "agent").stat().st_mode & 0o7777, 0o555)
+                self.assertEqual((directory / "inventory").stat().st_mode & 0o7777, 0o444)
+        finally:
+            os.umask(previous)
+
     def test_descriptor_reads_refuse_linked_files_and_symlink_ancestors(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

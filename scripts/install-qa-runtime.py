@@ -90,11 +90,18 @@ def measured_proposal(source, reviewed, operator):
     return value, root, executable, inventory
 
 
+def make_directory(path):
+    # Explicit modes: sudo passes the caller's umask through (louiselm-by3oy).
+    path.mkdir(mode=0o700)
+    os.chmod(path, 0o755)
+
+
 def write_new(path, data, mode):
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(data)
         stream.flush()
+        os.fchmod(stream.fileno(), mode)
         os.fsync(stream.fileno())
 
 
@@ -141,7 +148,7 @@ def publish(source, reviewed, operator):
     value, root, executable, inventory = measured_proposal(source, reviewed, operator)
     if not REGISTRY.exists():
         check_directory(REGISTRY.parent, (0,))
-        REGISTRY.mkdir(mode=0o755)
+        make_directory(REGISTRY)
     check_directory(REGISTRY, (0,))
     # Separate privileged review is mandatory; there is no automatic caller from the QA coordinator.
     descriptor = os.open(REGISTRY / ".qa-runtime.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -160,16 +167,16 @@ def publish(source, reviewed, operator):
             registry_document(originals[name], value[key])
         if not RUNTIMES.exists():
             check_directory(RUNTIMES.parent, (0,))
-            RUNTIMES.mkdir(mode=0o755)
+            make_directory(RUNTIMES)
         check_directory(RUNTIMES, (0,))
         if root.exists():
             check_directory(root, (0,))
             require(read_file(root / EXECUTABLE, 128 * 1024 * 1024) == executable
                     and read_file(root / INVENTORY, 65536) == inventory)
         else:
-            root.mkdir(mode=0o755)
-            (root / "builtin").mkdir(mode=0o755)
-            (root / "builtin/skills").mkdir(mode=0o755)
+            make_directory(root)
+            make_directory(root / "builtin")
+            make_directory(root / "builtin/skills")
             write_new(root / EXECUTABLE, executable, 0o555)
             write_new(root / INVENTORY, inventory, 0o444)
         # Publish Agent last: intermediate files cannot make the new Agent runnable.
