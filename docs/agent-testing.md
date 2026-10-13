@@ -166,6 +166,15 @@ markers and one 90s stack dump identify stalls without recording payloads;
 `python3 scripts/test-broker-attention-diagnostics.py` tests these diagnostics
 without privileges. A skipped installed gate is not privileged acceptance.
 
+Running a local candidate in the launcher VM: installed gates execute the real
+`louiselm-launch`, `louiselm-control` and test-Agent binaries from the target
+directory, so rebuild them (`cargo build --bins`, `CARGO_BUILD_JOBS=1` in the
+4 GiB guest) as well as the library test. `cargo test --lib --no-run` alone
+leaves the base image's binaries, and gates pass against old daemon/launcher
+code. `CARGO_INCREMENTAL=0` avoids the guest compiler panic (louiselm-tjfq8).
+Count the passed tests per gate: `--exact` with a wrong name runs nothing and
+exits 0 (louiselm-d6fv.12.5.5.2). CI is unaffected; it prepares from the tested commit.
+
 Configured capture/broker deployment also requires `scripts/test-capture-systemd.py`
 with `LOUISELM_REQUIRE_CAPTURE_SYSTEMD=1` and `LOUISELM_TEST_CAPTURE` in a disposable
 VM with systemd PID 1. Run as root outside a private mount namespace: the real

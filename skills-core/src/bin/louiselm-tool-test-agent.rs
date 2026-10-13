@@ -83,15 +83,28 @@ fn run() -> io::Result<()> {
             return Err(io::Error::other("unsupported fixture request"));
         }
         if channel.is_none() {
-            channel = Some(channel::Channel::connect(std::path::Path::new(
-                "/tmp/louiselm-capability.sock",
-            ))?);
+            channel =
+                channel::Channel::connect(std::path::Path::new("/tmp/louiselm-capability.sock"))
+                    .ok();
         }
-        let connected = channel
+        // A revoked capability (for example after a broker restart) refuses
+        // delivery; report it and stay alive instead of ending the Session.
+        let Some(connected) = channel
             .as_ref()
-            .ok_or_else(|| io::Error::other("missing fixture channel"))?;
-        connected.send(&bytes)?;
-        let reply = connected.receive()?;
+            .filter(|connected| connected.send(&bytes).is_ok())
+        else {
+            channel = None;
+            output.write_all(b"\x15delivery-refused\n")?;
+            output.flush()?;
+            continue;
+        };
+        let Ok(reply) = connected.receive() else {
+            // Sent but unanswered: the outcome is unknown and is never retried.
+            channel = None;
+            output.write_all(b"\x15delivery-uncertain\n")?;
+            output.flush()?;
+            continue;
+        };
         output.write_all(&[0x1e])?;
         output.write_all(&reply.canonical_bytes())?;
         output.write_all(b"\n")?;

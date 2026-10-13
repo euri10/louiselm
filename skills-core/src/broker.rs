@@ -23,6 +23,8 @@ mod beads_mutation;
 mod beads_mutation_service;
 mod beads_replica;
 pub mod cold_resume;
+mod command_replay;
+mod command_restore;
 pub mod commands;
 pub mod conformance_inspection;
 mod current_conformance;

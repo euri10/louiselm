@@ -7014,7 +7014,7 @@ fn lost_resume_ack_reparks_and_its_late_exact_ack_is_inert() {
 }
 
 #[test]
-fn equal_head_reconnect_within_one_signed_grace_restores_running_once() {
+fn equal_head_reconnect_within_one_signed_grace_restores_running_without_capability() {
     let setup = setup(
         true,
         |_| {},
@@ -7080,7 +7080,17 @@ fn equal_head_reconnect_within_one_signed_grace_restores_running_once() {
     );
     assert_eq!(reconnected.state, SessionState::Running);
     assert_eq!(reconnected.broker_connection, BrokerConnection::Connected);
-    assert_eq!(reconnected.channel_state, ChannelState::Enabled);
+    // A restarted broker holds no command authority; only an explicit Resume
+    // restores the capability (louiselm-d6fv.12.5.5.2).
+    assert_eq!(reconnected.channel_state, ChannelState::Revoked);
+    assert_eq!(
+        reconnected
+            .last_failure
+            .as_ref()
+            .map(|failure| failure.code),
+        Some(ErrorCode::CapabilityDenied)
+    );
+    assert!(!lock(&setup.platform.gate_state()).enabled);
     assert_eq!(event_count(&setup.events, "agent.park"), 0);
 
     timer.fire(0);
@@ -7091,14 +7101,14 @@ fn equal_head_reconnect_within_one_signed_grace_restores_running_once() {
         after_stale_deadline.broker_connection,
         BrokerConnection::Connected
     );
-    assert_eq!(after_stale_deadline.channel_state, ChannelState::Enabled);
+    assert_eq!(after_stale_deadline.channel_state, ChannelState::Revoked);
     assert_eq!(event_count(&setup.events, "agent.park"), 0);
 
     finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
 }
 
 #[test]
-fn exact_pending_resume_head_reconnect_within_grace_enables_once() {
+fn exact_pending_resume_head_reconnect_completes_the_resume_without_capability() {
     let setup = setup(
         true,
         |_| {},
@@ -7150,22 +7160,28 @@ fn exact_pending_resume_head_reconnect_within_grace_enables_once() {
     let restored = request_supervisor_status(&setup, "status-after-pending-resume-reconnect");
     assert_eq!(restored.state, SessionState::Running);
     assert_eq!(restored.broker_connection, BrokerConnection::Connected);
-    assert_eq!(restored.channel_state, ChannelState::Enabled);
+    // The Resume authorized by the old broker completes, but its rebuilt
+    // command authority died with that process (louiselm-d6fv.12.5.5.2).
+    assert_eq!(restored.channel_state, ChannelState::Revoked);
+    assert_eq!(
+        restored.last_failure.as_ref().map(|failure| failure.code),
+        Some(ErrorCode::CapabilityDenied)
+    );
     assert_eq!(restored.launcher_head.as_ref(), Some(&resume_head));
     assert_eq!(restored.broker_head.as_ref(), Some(&resume_head));
     assert_eq!(restored.pending_receipt_count, 0);
     assert_eq!(event_count(&setup.events, "agent.resume"), 1);
     assert_eq!(
         event_count(&setup.events, "capability.enable"),
-        2,
-        "the initial launch and durable Resume each enable exactly once"
+        1,
+        "only the durable Resume enabled; reconnect does not"
     );
 
     timer.fire(grace_timer_index);
     let after_stale_grace =
         request_supervisor_status(&setup, "status-after-pending-resume-stale-grace");
     assert_eq!(after_stale_grace, restored);
-    assert_eq!(event_count(&setup.events, "capability.enable"), 2);
+    assert_eq!(event_count(&setup.events, "capability.enable"), 1);
 
     finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
 }
@@ -7211,7 +7227,7 @@ fn old_receive_error_after_successful_reconnect_is_inert() {
     let status = request_supervisor_status(&setup, "status-after-stale-old-channel-error");
     assert_eq!(status.state, SessionState::Running);
     assert_eq!(status.broker_connection, BrokerConnection::Connected);
-    assert_eq!(status.channel_state, ChannelState::Enabled);
+    assert_eq!(status.channel_state, ChannelState::Revoked);
     assert_eq!(event_count(&setup.events, "broker.reconnect_session"), 1);
     assert_eq!(timer.scheduled_count(), 2);
     assert_eq!(event_count(&setup.events, "agent.park"), 0);
@@ -7277,7 +7293,7 @@ fn transient_reconnect_failure_retries_within_the_original_grace_epoch() {
     let restored = request_supervisor_status(&setup, "status-after-reconnect-retry");
     assert_eq!(restored.state, SessionState::Running);
     assert_eq!(restored.broker_connection, BrokerConnection::Connected);
-    assert_eq!(restored.channel_state, ChannelState::Enabled);
+    assert_eq!(restored.channel_state, ChannelState::Revoked);
     assert_eq!(event_count(&setup.events, "broker.reconnect_session"), 2);
     assert_eq!(event_count(&setup.events, "agent.park"), 0);
     assert_eq!(

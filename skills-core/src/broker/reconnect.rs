@@ -1,4 +1,5 @@
 //! Broker restart reconciles exact signed prefixes, never command authority.
+//! Only a later authorized Resume rebuilds the audited remainder (`command_restore.rs`).
 use super::{BrokerError, BrokerService, BrokerSession, receive, response, send};
 use crate::{
     broker::{

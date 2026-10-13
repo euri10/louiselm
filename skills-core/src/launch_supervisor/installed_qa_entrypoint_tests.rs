@@ -297,9 +297,110 @@ fn privileged_installed_no_provider_qa_entrypoint() {
     let mut foreground = coordinator.stdin.take().unwrap();
     foreground.write_all(b"start\nstatus\ncommand\n").unwrap();
     let config = retired::exercise(&paths, &releases, &artifact, &selection);
-    foreground.write_all(b"status\nresume\ncommand\npark\nstatus\nresume\ndispose\nstart\nstatus\ncommand\ndispose\nquit\n").unwrap();
+    foreground
+        .write_all(
+            b"status\nresume\ncommand\npark\nstatus\nresume\ndispose\nstart\nstatus\ncommand\n",
+        )
+        .unwrap();
+    // Session 2 survives a broker restart without command authority until an
+    // explicit Park and Resume rebuilds its audited remainder (louiselm-d6fv.12.5.5.2).
+    let journal = || -> serde_json::Value {
+        serde_json::from_slice(&fs::read(artifact.join("journal.json")).unwrap()).unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while !(journal()["active"] == 1 && journal()["spent"] == 1 && journal()["pending"].is_null()) {
+        assert!(
+            Instant::now() < deadline,
+            "second Session's first command did not settle"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let second = selection["grants"][1]["request"]["session_id"]
+        .as_str()
+        .unwrap();
+    terminate(&mut daemon);
+    daemon = process(&manager, BROKER_UID, false);
+    ready(&config);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let reattached = loop {
+        // Operator inspect only; the shared inspection helper asserts another gate's posture.
+        let output = Command::new("/usr/bin/setpriv")
+            .args([
+                "--reuid",
+                &config.operator_uid.to_string(),
+                "--regid",
+                &config.operator_uid.to_string(),
+                "--clear-groups",
+                "/usr/local/lib/louiselm/current/bin/louiselm-control",
+                "session",
+                "inspect",
+                second,
+                "--json",
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        if output.status.success() {
+            let current =
+                crate::launch_protocol::SessionStatus::parse_canonical(&output.stdout).unwrap();
+            if current.broker_connection == crate::launch_protocol::BrokerConnection::Connected {
+                break current;
+            }
+        }
+        assert!(Instant::now() < deadline, "second Session did not reattach");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(
+        reattached.state,
+        crate::launch_receipt::SessionState::Running
+    );
+    assert_eq!(
+        reattached.channel_state,
+        crate::launch_protocol::ChannelState::Revoked
+    );
+    assert_eq!(
+        reattached.last_failure.as_ref().map(|failure| failure.code),
+        Some(crate::launch_protocol::ErrorCode::CapabilityDenied)
+    );
+    foreground
+        .write_all(b"status\ncommand\npark\nresume\ncommand\ndispose\nquit\n")
+        .unwrap();
     drop(foreground);
     let completed = coordinator.wait_with_output().unwrap();
+    // On failure, the Session's own mechanics are the evidence, not coordinator text.
+    let inspect = Command::new("/usr/bin/setpriv")
+        .args([
+            "--reuid",
+            &config.operator_uid.to_string(),
+            "--regid",
+            &config.operator_uid.to_string(),
+            "--clear-groups",
+            "/usr/local/lib/louiselm/current/bin/louiselm-control",
+            "session",
+            "inspect",
+            second,
+            "--json",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    let stdout = format!(
+        "{}\nstderr={}\nsecond-status={}",
+        String::from_utf8_lossy(&completed.stdout),
+        String::from_utf8_lossy(&completed.stderr),
+        String::from_utf8_lossy(&inspect.stdout)
+    );
+    assert!(
+        stdout.contains("Refused: Commands are unavailable"),
+        "command after restart must be refused before spending: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("QA_OK; spent 2 of 2").count(),
+        2,
+        "both Sessions finish their two uses; the refusal spent nothing: {stdout}"
+    );
     assert!(
         completed.status.success(),
         "stdout={} stderr={}",

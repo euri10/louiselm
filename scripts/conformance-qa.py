@@ -287,8 +287,14 @@ def read_line(stream, deadline):
 
 def command(journal, process, request, expires):
     require(int(time.time() * 1000) < expires and journal.value["spent"] < 2
-            and journal.value["pending"] is None and status_for(request)["state"] == "running",
+            and journal.value["pending"] is None,
             "QA command expired, spent, suspended or uncertain")
+    status = status_for(request)
+    require(status["state"] == "running", "QA command expired, spent, suspended or uncertain")
+    # After a broker restart the capability stays revoked until an explicit
+    # Resume rebuilds command authority (louiselm-d6fv.12.5.5.2).
+    require(status.get("channel_state") == "enabled",
+            "Commands are unavailable (capability revoked, e.g. after a broker restart); park and resume first")
     journal.value["spent"] += 1
     sequence = journal.value["spent"]
     operation = {"schema": "louiselm.launch.tool-execution/1", "protocol_version": 1,

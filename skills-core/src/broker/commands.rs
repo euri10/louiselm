@@ -67,24 +67,9 @@ impl CommandAuthority {
         policy: DelegationPolicy,
         audit: Arc<AuditLog>,
     ) -> Result<Self, DelegationError> {
-        if [
-            &binding.session_id,
-            &binding.run_id,
-            &binding.channel_id,
-            &policy.authorization_id,
-        ]
-        .into_iter()
-        .any(|id| !is_record_identifier(id))
-            || binding.agent_pid == 0
-            || !policy.scope.valid()
-        {
-            return Err(DelegationError::InvalidRequest);
-        }
-        if Instant::now() >= policy.expires_at {
-            return Err(DelegationError::Expired);
-        }
-        // A restart cannot restore spent budget from an old launch. Recovery is
-        // a later lifecycle contract; require a fresh authorized lifetime here.
+        validate(&binding, &policy)?;
+        // A fresh lifetime starts from an empty history. Rebuilding a Session
+        // that already spent uses is `restore`, never this constructor.
         if audit
             .find(|entry| {
                 entry.session_id == binding.session_id
@@ -113,6 +98,43 @@ impl CommandAuthority {
             revocation: None,
             grants: BTreeMap::new(),
             grant_sequence: 0,
+        })
+    }
+
+    /// Rebuilds the same Session's authority from its durable audit replay, for
+    /// an authorized Resume after a broker restart (louiselm-d6fv.12.5.5.2).
+    /// Only the replayed remaining uses are available and sequences continue,
+    /// so nothing is refunded. Earlier delegated grants are not revived.
+    ///
+    /// # Errors
+    /// Refuses invalid context, expired policy, any recorded revocation, or a
+    /// policy whose budget differs from the replayed remainder.
+    pub(crate) fn restore(
+        binding: CapabilityBinding,
+        policy: DelegationPolicy,
+        audit: Arc<AuditLog>,
+        replay: &super::command_replay::CommandReplay,
+    ) -> Result<Self, DelegationError> {
+        validate(&binding, &policy)?;
+        if replay.revoked {
+            return Err(DelegationError::Revoked);
+        }
+        if policy.scope.uses != replay.commands.uses {
+            return Err(DelegationError::InvalidRequest);
+        }
+        let remaining = policy.scope.uses;
+        Ok(Self {
+            binding,
+            policy,
+            audit,
+            remaining,
+            principal_sequence: replay.principal_sequence,
+            dispatch_sequence: replay.dispatch_sequence,
+            spent: BTreeMap::new(),
+            active: true,
+            revocation: None,
+            grants: BTreeMap::new(),
+            grant_sequence: replay.grant_sequence,
         })
     }
 
@@ -392,3 +414,27 @@ impl CommandAuthority {
         Err(error)
     }
 }
+
+fn validate(binding: &CapabilityBinding, policy: &DelegationPolicy) -> Result<(), DelegationError> {
+    if [
+        &binding.session_id,
+        &binding.run_id,
+        &binding.channel_id,
+        &policy.authorization_id,
+    ]
+    .into_iter()
+    .any(|id| !is_record_identifier(id))
+        || binding.agent_pid == 0
+        || !policy.scope.valid()
+    {
+        return Err(DelegationError::InvalidRequest);
+    }
+    if Instant::now() >= policy.expires_at {
+        return Err(DelegationError::Expired);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "commands_restore_tests.rs"]
+mod restore_tests;

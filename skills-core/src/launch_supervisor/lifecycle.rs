@@ -3535,22 +3535,16 @@ impl SessionOwner {
             && receipt_head(self.receipt()) == self.broker_head;
         self.restore_after_reconnect = false;
         if restore {
-            let enabled = self
-                .resources
-                .capability
-                .as_mut()
-                .is_some_and(|capability| capability.enable().is_ok());
-            if enabled {
-                self.channel_state = ChannelState::Enabled;
-                self.last_failure = None;
-            } else {
-                self.channel_state = ChannelState::Revoked;
-                self.last_failure = Some(ProtocolError::new(
-                    ErrorCode::LifecycleMechanicUnavailable,
-                    Some(self.state),
-                    Some(self.broker_head.sequence),
-                ));
-            }
+            // The restarted broker rebuilt no command authority (reconnect.rs),
+            // so the capability stays revoked until an explicit operator Resume
+            // restores both sides; reporting Enabled here would promise effects
+            // the broker refuses (louiselm-d6fv.12.5.5.2).
+            self.channel_state = ChannelState::Revoked;
+            self.last_failure = Some(ProtocolError::new(
+                ErrorCode::CapabilityDenied,
+                Some(self.state),
+                Some(self.broker_head.sequence),
+            ));
         } else {
             self.last_failure = None;
         }

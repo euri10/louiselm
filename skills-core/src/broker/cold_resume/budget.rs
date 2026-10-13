@@ -1,82 +1,23 @@
 //! Pure conservation of optional command counts across a cold reconstruction.
-use crate::broker::{ApprovedCommands, AuditDecision, AuditEntry, PendingAuthorization};
+use crate::broker::{ApprovedCommands, AuditEntry, PendingAuthorization};
 
 pub(super) fn remaining_commands(
     source: &PendingAuthorization,
     audit: Option<&[AuditEntry]>,
     now_ms: u64,
 ) -> Option<ApprovedCommands> {
-    let mut commands = source.commands.clone()?;
+    let commands = source.commands.as_ref()?;
     if commands.expires_at_ms <= now_ms {
         return None;
     }
-    let Some(limit) = commands.uses else {
-        return Some(commands);
-    };
-    let entries = audit?
-        .iter()
-        .filter(|entry| entry.session_id == source.session_id);
-    let mut consumed = false;
-    let mut direct_sequence = 0_u64;
-    let mut grants = std::collections::BTreeMap::new();
-    let mut spent = 0_u32;
-    for entry in entries {
-        if entry.authorization_id != source.authorization_id
-            || entry.run_id != source.run_id
-            || entry.identity_slot != source.identity.slot
-        {
-            return None;
-        }
-        match entry.decision {
-            AuditDecision::AuthorizationConsumed if !consumed => consumed = true,
-            AuditDecision::AuthorizationConsumed => return None,
-            AuditDecision::EffectCommitIntent {
-                grant: None,
-                sequence,
-            } => {
-                if !consumed || direct_sequence.checked_add(1) != Some(sequence) {
-                    return None;
-                }
-                direct_sequence = sequence;
-                spent = spent.checked_add(1)?;
-            }
-            AuditDecision::ToolGranted {
-                grant,
-                revision,
-                uses,
-                ..
-            } => {
-                let uses = uses?;
-                if !consumed
-                    || revision != source.envelope_revision
-                    || uses == 0
-                    || uses > limit
-                    || grant != u64::try_from(grants.len()).ok()?.checked_add(1)?
-                    || grants.insert(grant, (uses, 0_u64)).is_some()
-                {
-                    return None;
-                }
-                spent = spent.checked_add(uses)?;
-            }
-            AuditDecision::EffectCommitIntent {
-                grant: Some(grant),
-                sequence,
-            } => {
-                let (reserved, previous) = grants.get_mut(&grant)?;
-                if previous.checked_add(1) != Some(sequence) || sequence > u64::from(*reserved) {
-                    return None;
-                }
-                *previous = sequence;
-            }
-            _ => {}
-        }
+    if commands.uses.is_none() {
+        return Some(commands.clone());
     }
-    let remaining = limit.checked_sub(spent)?;
-    if !consumed {
-        return None;
-    }
-    commands.uses = Some(remaining);
-    Some(commands)
+    // Cold Resume sizes a new Session; it keeps its historical tolerance of
+    // revocation entries, which only a warm restore must refuse.
+    crate::broker::command_replay::replay(source, audit?, now_ms)
+        .ok()
+        .map(|replay| replay.commands)
 }
 
 #[cfg(test)]

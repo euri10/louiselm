@@ -113,6 +113,10 @@ impl BrokerService {
     /// # Errors
     /// Returns typed authorization/CAS failures or transport/signature/storage failure.
     /// Uncertain failures close the channel and leave the durable intent unresolved.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One durable lifecycle transaction: validation, hold, CAS preparation and guard wrapping are ordered steps of the same intent; sending and command restoration live in send_lifecycle."
+    )]
     pub fn request_lifecycle<F>(
         &self,
         session: &mut BrokerSession,
@@ -220,8 +224,15 @@ impl BrokerService {
             } else {
                 request.canonical_bytes()
             };
-            send(&session.channel, bytes)?;
-            self.await_lifecycle_result(session, request, &status, current_time(), &mut verify)
+            self.send_lifecycle(
+                session,
+                request,
+                &status,
+                bytes,
+                replaying_resume,
+                &current_time,
+                &mut verify,
+            )
         })();
         if result.is_ok() {
             // Stored bytes and an earlier verification do not authorize a late
@@ -232,6 +243,50 @@ impl BrokerService {
             session.close();
         }
         result
+    }
+
+    /// Sends one prepared lifecycle request and awaits its signed outcome. A new
+    /// Resume of a reattached Session first rebuilds its audited command
+    /// remainder, dropped again unless the Resume completes (louiselm-d6fv.12.5.5.2).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The exact prepared request, observed status and caller clock are one transaction's inputs."
+    )]
+    fn send_lifecycle<F>(
+        &self,
+        session: &mut BrokerSession,
+        request: &LifecycleRequest,
+        status: &SupervisorStatus,
+        bytes: Vec<u8>,
+        replaying_resume: bool,
+        now: &dyn Fn() -> u64,
+        verify: &mut F,
+    ) -> Result<SignedReceipt, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let restore_commands = request.action == crate::launch_protocol::LifecycleAction::Resume
+            && !replaying_resume
+            && session.commands.is_none()
+            && self
+                .cold_target(&session.authorization.session_id)?
+                .is_none();
+        if restore_commands {
+            match self.restore_commands_for_resume(session, status, now()) {
+                Ok(commands) => session.commands = commands,
+                Err(BrokerError::Policy(error)) => {
+                    self.lifecycle.record_failure(request, &error)?;
+                    return Err(error.into());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let sent = send(&session.channel, bytes)
+            .and_then(|()| self.await_lifecycle_result(session, request, status, now(), verify));
+        if restore_commands && sent.is_err() {
+            session.commands = None;
+        }
+        sent
     }
 
     fn await_lifecycle_result<F>(

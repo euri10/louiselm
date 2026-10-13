@@ -426,7 +426,14 @@ later success cannot revive them. The controller retains the authenticated
 channel to request Disposal or acknowledge the exited process's terminal receipt
 through `step`, then drops the owner. Connection closure alone is not cleanup proof.
 Successful replay does not construct another command owner. Broker restart
-continues to reattach without restoring live grants or command authority.
+continues to reattach without restoring live grants or command authority. The
+reattached supervisor keeps the Agent capability revoked and reports
+`channel_state: revoked` with `last_failure` code `capability_denied`, so status
+never promises effects the broker would refuse. An explicit operator Park and
+authorized Resume then rebuilds command authority for the same Session from its
+durable audit: only the remaining uses (uncertain outcomes stay spent), the
+original expiry and continuing sequences, no revived delegated grants, and a
+refusal if revocation was ever recorded (louiselm-d6fv.12.5.5.2).
 After a pre-finalization restart, the controller must revalidate restore and
 retention at the original Parked target head before loading and finalizing it;
 a changed head refuses that retry instead of recreating admission.
@@ -746,7 +753,8 @@ already measured runtime. Broker-loss grace remains the supervisor's signed
 interval: status consumes its connection state and ordered receipts without
 starting a timer. Reattachment before grace expiry may restore the same
 launch-backed runtime proof; after signed Park it preserves Park until an
-authorized Resume. Neither path restores command grants or recovery admission.
+authorized Resume. Neither path restores command grants or recovery admission;
+only that later authorized Resume rebuilds the audited command remainder.
 Restart revalidates the exact signed chain and original audit timestamp;
 unreadable or corrupt proof refuses reattachment. Conformance deadlines,
 waivers and quarantine continue to belong to their source-specific producers;

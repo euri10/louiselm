@@ -102,11 +102,11 @@ class Bounds(unittest.TestCase):
                 self.assertEqual(stored["spent"], 1)
                 self.assertEqual(stored["pending"]["request_id"], "qa-command-1")
                 return b"\x1e" + qa.encoded(reply)
-            with patch.object(qa, "status_for", return_value={"state": "running"}), patch.object(qa, "read_line", side_effect=delivered):
+            with patch.object(qa, "status_for", return_value={"state": "running", "channel_state": "enabled"}), patch.object(qa, "read_line", side_effect=delivered):
                 qa.command(journal, process, request, 10**15)
             reopened = qa.Journal.open(path)
             self.assertEqual(reopened.value["spent"], 1)
-            with patch.object(qa, "status_for", return_value={"state": "running"}), patch.object(qa, "read_line", side_effect=ValueError("dropped reply")):
+            with patch.object(qa, "status_for", return_value={"state": "running", "channel_state": "enabled"}), patch.object(qa, "read_line", side_effect=ValueError("dropped reply")):
                 with self.assertRaises(ValueError):
                     qa.command(reopened, process, request, 10**15)
             uncertain = qa.Journal.open(path)
@@ -194,6 +194,24 @@ class Bounds(unittest.TestCase):
             self.assertIn("admission refused: GuardUnavailable", str(refused.exception))
             retained = qa.Journal.open(directory / "journal.json").value
             self.assertEqual((retained["active"], retained["pending"]), (0, "launch"))
+
+    def test_command_after_a_broker_restart_is_refused_before_spending(self):
+        proposal, manifest = inputs()
+        request = qa.records(proposal, manifest, 1000, 1000)["grants"][0]["request"]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "journal.json"
+            journal = qa.Journal.create(path)
+            journal.reserve(1000, 10**15)
+            journal.value["pending"] = None
+            journal.save()
+            before = qa.Journal.open(path).value
+            process = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO())
+            revoked = {"state": "running", "channel_state": "revoked"}
+            with patch.object(qa, "status_for", return_value=revoked):
+                with self.assertRaisesRegex(ValueError, "park and resume"):
+                    qa.command(journal, process, request, 10**15)
+            self.assertEqual(qa.Journal.open(path).value, before)
+            self.assertEqual(process.stdin.getvalue(), b"")
 
     def test_lifecycle_receipt_binds_exact_subject_action_and_result(self):
         request = {"session_id": "s", "run_id": "r", "envelope_revision": 1, "request_id": "park-1", "action": "park"}
