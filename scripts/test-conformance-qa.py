@@ -171,7 +171,9 @@ class Bounds(unittest.TestCase):
 
         class Refused:
             def __init__(self, _argv, stdin, stdout, stderr, bufsize):
-                stderr.write(b"louiselm-launch: host conformance admission refused: GuardUnavailable; inspect installed certification\n")
+                # Exact desktop output 2026-10-13: the cause precedes the generic final line.
+                stderr.write(b"louiselm-launch: host conformance admission refused: GuardUnavailable; inspect installed certification\n"
+                             b"louiselm-launch: authorized launch failed\n")
                 self.stdin, self.stdout = io.BytesIO(), io.BytesIO()
 
         with tempfile.TemporaryDirectory() as temporary:

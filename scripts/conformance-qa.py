@@ -402,8 +402,8 @@ def launch(journal, directory, request):
         require(read_line(process.stdout, time.monotonic() + 20) == b"READY", "QA launch was not acknowledged")
     except ValueError as error:
         # The launcher's stderr is payload-free (typed SupervisorError); show its category.
-        reason = log.read_bytes()[-512:].decode(errors="replace").strip().splitlines()
-        raise ValueError(f"{error}: {reason[-1] if reason else 'no launcher diagnostic'}") from error
+        reason = log.read_bytes()[-1024:].decode(errors="replace").strip().splitlines()
+        raise ValueError(f"{error}: {' | '.join(reason) if reason else 'no launcher diagnostic'}") from error
     journal.value["pending"] = None
     journal.save()
     return process
