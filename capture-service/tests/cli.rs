@@ -118,6 +118,23 @@ fn transcription_uses_only_the_capture_key() {
             .contains("LOUISELM_CAPTURE_OPENAI_API_KEY is required")
     );
 
+    // An empty disposable store exercises client construction and drop without
+    // sending any transcription request.
+    let once = command(&data, &state)
+        .arg("transcribe-once")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("LOUISELM_TRANSCRIPTION_MODEL")
+        .env("LOUISELM_CAPTURE_OPENAI_API_KEY", "unused-test-credential")
+        .output()
+        .unwrap();
+    assert!(
+        once.status.success(),
+        "{}",
+        String::from_utf8_lossy(&once.stderr)
+    );
+    assert_eq!(once.stdout, b"0\n");
+    assert_eq!(once.stderr, [] as [u8; 0]);
+
     let capture = command(&data, &state)
         .arg("serve")
         .env_remove("OPENAI_API_KEY")

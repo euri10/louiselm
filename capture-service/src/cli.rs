@@ -159,7 +159,13 @@ pub async fn run() -> Result<(), CliError> {
         ),
         Command::Attention { command } => attention_command(&attention_store(&paths)?, command),
         Command::Retry { id } => retry(&Store::new(paths.captures())?, &id),
-        Command::TranscribeOnce => transcribe_once(&Store::new(paths.captures())?),
+        Command::TranscribeOnce => tokio::task::spawn_blocking(move || {
+            // Keep the blocking HTTP client's construction, work, and drop off
+            // the async executor, including early error returns.
+            transcribe_once(&Store::new(paths.captures())?)
+        })
+        .await
+        .map_err(std::io::Error::other)?,
         Command::Run { command } => run_command(&paths, command),
         Command::ConfigureNetwork { profile, bind, url } => {
             configure_network(&paths, &profile, bind, &url)
