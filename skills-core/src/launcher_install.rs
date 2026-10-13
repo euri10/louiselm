@@ -410,6 +410,9 @@ impl CommandOutput {
 pub trait CommandRunner {
     /// Runs one fixed-structure invocation.
     ///
+    /// A failed exit retains its status and output if closing stdin causes a
+    /// broken pipe. A successful exit still requires complete input delivery.
+    ///
     /// # Errors
     /// Returns process-start, pipe I/O, deadline, or cleanup errors when the invocation cannot complete.
     fn run(&self, invocation: &CommandInvocation) -> io::Result<CommandOutput>;
@@ -611,19 +614,18 @@ fn run_system_command_with_terminal(
             None => terminate_child(&mut child, process_group, cleanup_deadline)?,
         };
         if process_group.is_some() {
-            if let Some(worker) = stdin_worker {
-                join_worker_until(worker, cleanup_deadline)??;
-            }
+            let stdin_result = stdin_worker
+                .map(|worker| join_worker_until(worker, cleanup_deadline))
+                .transpose()?
+                .unwrap_or(Ok(()));
             let stdout = join_worker_until(stdout_worker, cleanup_deadline)??;
             let stderr = join_worker_until(stderr_worker, cleanup_deadline)??;
-            return Ok(command_output(status, stdout, stderr));
+            return command_output(status, stdin_result, stdout, stderr);
         }
-        if let Some(worker) = stdin_worker {
-            join_worker(worker)??;
-        }
+        let stdin_result = stdin_worker.map(join_worker).transpose()?.unwrap_or(Ok(()));
         let stdout = join_worker(stdout_worker)??;
         let stderr = join_worker(stderr_worker)??;
-        Ok(command_output(status, stdout, stderr))
+        command_output(status, stdin_result, stdout, stderr)
     })();
     if let Some(foreground) = &mut foreground {
         foreground.restore()?;
@@ -814,13 +816,25 @@ fn join_worker<T>(worker: JoinHandle<T>) -> io::Result<T> {
         .map_err(|_| io::Error::other("command I/O worker panicked"))
 }
 
-fn command_output(status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>) -> CommandOutput {
-    CommandOutput {
+fn command_output(
+    status: ExitStatus,
+    stdin_result: io::Result<()>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+) -> io::Result<CommandOutput> {
+    if let Err(error) = stdin_result {
+        // A verifier may refuse before reading input. Preserve that refusal
+        // only for EPIPE; other I/O failures and incomplete successes are errors.
+        if error.kind() != io::ErrorKind::BrokenPipe || status.success() {
+            return Err(error);
+        }
+    }
+    Ok(CommandOutput {
         success: status.success(),
         exit_code: status.code(),
         stdout,
         stderr,
-    }
+    })
 }
 
 /// A launcher installation or lease operation that was refused.
@@ -3533,6 +3547,141 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
+    #[test]
+    fn verifier_rejects_malformed_signature_before_reading_canonical_stdin() {
+        let scratch = TempDir::new().unwrap();
+        let signature = scratch.path().join("signature");
+        let allowed_signers = scratch.path().join("allowed-signers");
+        fs::write(&signature, b"not an SSH signature\n").unwrap();
+        fs::write(&allowed_signers, b"").unwrap();
+        let payload = receipt_bytes(
+            &Digest::of(b"release").to_string(),
+            &Digest::of(b"key").to_string(),
+        );
+        let mut child = Command::new("/usr/bin/ssh-keygen")
+            .args(["-Y", "verify", "-f"])
+            .arg(allowed_signers)
+            .args(["-I", "louiselm-launch", "-n", RECEIPT_SCHEMA, "-s"])
+            .arg(signature)
+            .env_clear()
+            .current_dir(scratch.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        // Hold the canonical input until the real verifier exits: this forces
+        // the ordering implicated by louiselm-ijzt8 without a scheduling sleep.
+        let exited = wait_until_exit(
+            rustix::process::Pid::from_child(&child),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        if !exited {
+            child.kill().unwrap();
+        }
+        let status = child.wait().unwrap();
+        assert!(
+            exited,
+            "malformed signature refusal must not wait for stdin"
+        );
+        assert!(!status.success());
+        let error = stdin
+            .write_all(&payload)
+            .expect_err("the verifier has already closed its input pipe");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert!(
+            stderr.contains("signature"),
+            "refusal identifies the signature"
+        );
+    }
+
+    #[test]
+    fn system_runner_preserves_early_refusal_when_stdin_breaks() {
+        let invocation = CommandInvocation {
+            program: PathBuf::from("/bin/sh"),
+            arguments: vec![
+                "-c".into(),
+                "printf 'captured output\\n'; printf 'early refusal\\n' >&2; exit 23".into(),
+            ],
+            // Exceeds pipe capacity, so an unread input necessarily breaks.
+            stdin: vec![b'x'; 1024 * 1024],
+            current_dir: None,
+        };
+        for bounded in [false, true] {
+            let result = if bounded {
+                BoundedSystemCommandRunner {
+                    deadline: Instant::now() + Duration::from_secs(2),
+                }
+                .run(&invocation)
+            } else {
+                SystemCommandRunner.run(&invocation)
+            };
+            let output = result.expect("early refusal retains its exit status and drained output");
+            assert!(!output.success);
+            assert_eq!(output.exit_code, Some(23));
+            assert_eq!(output.stdout, b"captured output\n");
+            assert_eq!(output.stderr, b"early refusal\n");
+        }
+    }
+
+    #[test]
+    fn system_runner_refuses_success_when_stdin_breaks() {
+        let invocation = CommandInvocation {
+            program: PathBuf::from("/usr/bin/true"),
+            arguments: Vec::new(),
+            stdin: vec![b'x'; 1024 * 1024],
+            current_dir: None,
+        };
+        for bounded in [false, true] {
+            let result = if bounded {
+                BoundedSystemCommandRunner {
+                    deadline: Instant::now() + Duration::from_secs(2),
+                }
+                .run(&invocation)
+            } else {
+                SystemCommandRunner.run(&invocation)
+            };
+            let error = result.expect_err("success cannot excuse incomplete input delivery");
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        }
+        let mut missing = invocation;
+        let scratch = TempDir::new().unwrap();
+        missing.program = scratch.path().join("missing-command");
+        assert_eq!(
+            SystemCommandRunner.run(&missing).unwrap_err().kind(),
+            io::ErrorKind::NotFound,
+            "unrelated process-start I/O errors remain explicit",
+        );
+    }
+
+    #[test]
+    fn command_refusal_preserves_unrelated_stdin_io_errors() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let error = command_output(
+            ExitStatus::from_raw(23 << 8),
+            Err(io::Error::from_raw_os_error(
+                rustix::io::Errno::IO.raw_os_error(),
+            )),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect_err("an unsuccessful exit cannot hide unrelated stdin I/O errors");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::IO.raw_os_error())
+        );
+    }
+
     struct RecordingRunner {
         calls: RefCell<Vec<CommandInvocation>>,
     }
@@ -3559,6 +3708,11 @@ mod tests {
                     .position(|argument| argument == "-s")
                     .and_then(|index| invocation.arguments.get(index + 1))
                     .expect("verification names its signature");
+                assert_eq!(
+                    fs::metadata(invocation.current_dir.as_ref().unwrap())?.mode() & 0o777,
+                    0o700,
+                    "verification scratch remains private",
+                );
                 fs::write(signature, b"not an SSH signature\n")?;
             }
             SystemCommandRunner.run(invocation)
@@ -3699,16 +3853,11 @@ mod tests {
                 .iter()
                 .all(|call| call.program == Path::new("/usr/bin/ssh-keygen"))
         );
-        let arguments = calls
-            .iter()
-            .flat_map(|call| &call.arguments)
-            .map(|argument| argument.to_string_lossy())
-            .collect::<Vec<_>>();
-        assert!(
-            arguments
+        assert!(calls.iter().all(|call| {
+            call.arguments
                 .windows(2)
-                .any(|pair| { pair[0] == "-n" && pair[1] == RECEIPT_SCHEMA })
-        );
+                .any(|pair| pair[0] == "-n" && pair[1] == RECEIPT_SCHEMA)
+        }));
         assert!(calls.iter().any(|call| {
             call.arguments
                 .windows(2)
@@ -3723,6 +3872,12 @@ mod tests {
             })
             .expect("the measured tool verifies its signature before release");
         assert_eq!(verify.stdin, payload);
+        assert!(
+            verify
+                .arguments
+                .windows(2)
+                .any(|pair| { pair[0] == "-I" && pair[1] == "louiselm-launch" })
+        );
         assert_eq!(
             fs::read_dir(paths.scratch()).unwrap().count(),
             0,
@@ -3754,7 +3909,11 @@ mod tests {
         let error = signer
             .sign_receipt_with(&TamperingRunner, &first.key_id, &payload)
             .expect_err("a signature changed after creation is never released");
-        assert!(error.to_string().contains("did not verify"), "{error}");
+        assert!(
+            matches!(&error, LauncherError::Invalid(reason)
+                if reason == "ssh-keygen did not verify its launcher receipt signature"),
+            "{error}",
+        );
         assert_eq!(
             fs::read_dir(paths.scratch()).unwrap().count(),
             0,
