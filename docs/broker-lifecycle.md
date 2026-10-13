@@ -282,6 +282,20 @@ audit filename is never overwritten. Matching retries leave the marker and audit
 untouched. Receipt bytes and authorization records are neither rewritten nor
 repaired; ordinary receipt-chain verification still applies after restart.
 
+### Identity reuse after disposal
+
+Child authorization and cold Resume reconcile consumed identities against their
+authenticated receipt chains. Only a verified terminal receipt releases an
+identity for another Session. Running, Parked, missing or quarantined histories
+retain their slots, including after authorization expiry. A quarantined history
+does not prevent allocating another free identity; shared trust or storage
+failures still refuse allocation. The assignment lock also covers new pending
+reservations, so concurrent authorizations cannot reuse one identity twice.
+
+Consumed authorizations and receipt bytes are never deleted or rewritten to free
+capacity. They continue to enforce single-use authorization, Session uniqueness
+and the Run's cumulative Session ceiling after disposal and broker restart.
+
 ## Broker restart
 
 `InstalledBroker::serve_reconnect` accepts an authenticated supervisor on the

@@ -457,6 +457,29 @@ impl BrokerService {
         &self.authorizations
     }
 
+    /// Persists a trusted caller's launch grant, reconciling disposed identities.
+    /// This Rust boundary does not approve a Run or authenticate its controller;
+    /// installed callers must first enforce the operator's exact Run envelope.
+    /// Consumed history remains immutable for replay checks and Run ceilings.
+    /// Unverified history keeps its identity reserved, not the entire pool.
+    /// # Errors
+    /// Refuses invalid grants, exhausted identities, unavailable installation
+    /// authority or durable-storage failure.
+    pub fn authorize<F>(
+        &self,
+        grant: &super::GrantRequest,
+        now_ms: u64,
+        mut verify: F,
+    ) -> Result<super::PendingAuthorization, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        self.receipts.check_authority()?;
+        self.authorizations.authorize_inner(grant, now_ms, |held| {
+            self.identity_disposed(held, &mut verify)
+        })
+    }
+
     /// The durable receipt chains this service appends to.
     #[must_use]
     pub const fn receipts(&self) -> &ReceiptStore {

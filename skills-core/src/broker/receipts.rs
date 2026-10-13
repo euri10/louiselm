@@ -10,6 +10,8 @@
 //! treats as durability must never outrun the filesystem.
 
 mod conformance;
+#[cfg(test)]
+mod tests;
 pub(super) use conformance::validate_report;
 
 use std::{
@@ -298,6 +300,9 @@ impl ReceiptStore {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        // A concurrent append publishes its filename before completing its
+        // bytes. Readers must not quarantine a normally in-progress write.
+        let _appending = lock(&self.appending);
         authorization.validate()?;
         let chain = self.chain(&authorization.session_id)?;
         for receipt in &chain {

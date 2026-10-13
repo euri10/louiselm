@@ -153,7 +153,9 @@ impl BrokerService {
         // Replayed authorization never replenishes a consumed target. A crash
         // between pending removal and consumed publication remains a refusal.
         self.authorizations()
-            .authorize_cold_target(&allocation.grant(), now_ms)?;
+            .authorize_cold_target(&allocation.grant(), now_ms, |held| {
+                self.identity_disposed(held, &mut verify)
+            })?;
         Ok(allocation)
     }
 

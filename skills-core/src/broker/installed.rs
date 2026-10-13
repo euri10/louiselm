@@ -788,7 +788,11 @@ impl InstalledBroker {
             {
                 return Err(BrokerError::InvalidGrant);
             }
-            let pending = self.service.authorizations().authorize(grant, now)?;
+            let pending = self
+                .service
+                .authorize(grant, now, |key, payload, signature| {
+                    self.verifier.verify(key, payload, signature).is_ok()
+                })?;
             let receipt = super::run_envelope::ChildAuthorization {
                 schema: "louiselm.broker.child-authorization/1".into(),
                 run_id: pending.run_id.clone(),

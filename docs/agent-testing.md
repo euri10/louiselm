@@ -211,10 +211,11 @@ The no-Provider conformance QA coordinator additionally runs
 `python3 scripts/test-conformance-qa.py`, `python3 scripts/test-install-qa-runtime.py`
 and the mandatory installed VM gate named in [conformance QA](https://github.com/euri10/louiselm/blob/main/docs/conformance-qa.md#gates).
 Use its private mount/network namespace and explicit required flag; an unprivileged
-skip is not installed acceptance. Its two-Session composition also exercises the
-reviewed retired-pin fault/restore operation across two software-signed fixture
-installations, without implicit thaw. Toy source metadata and software keys prove
-no desktop reproduction, fresh clean-build provenance or hardware ceremony.
+skip is not installed acceptance. Its five-Session, four-slot composition also
+exercises the reviewed retired-pin fault/restore operation across two
+software-signed fixture installations, without implicit thaw, and identity reuse
+only after disposal. Toy source metadata and software keys prove no desktop
+reproduction, fresh clean-build provenance or hardware ceremony.
 
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore

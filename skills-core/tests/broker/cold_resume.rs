@@ -186,10 +186,15 @@ fn cold_resume_requires_disposal_and_operator_then_survives_retry_without_new_au
                     .unwrap(),
                 first
             );
-            restarted
+            let replacement = restarted
                 .authorizations()
                 .consume_for_launcher(&target, 5000)
                 .unwrap();
+            assert_eq!(
+                replacement.identity_slot,
+                session.authorization().identity_slot,
+                "cold Resume reuses the disposed source identity without erasing its history"
+            );
             assert_eq!(
                 restarted
                     .authorize_cold_resume(

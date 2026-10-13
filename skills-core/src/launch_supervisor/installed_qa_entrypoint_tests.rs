@@ -72,7 +72,8 @@ fn privileged_installed_no_provider_qa_entrypoint() {
     mounts(root.path());
     let _account = BrokerAccount::create();
     let (paths, _baseline_config, manager) =
-        install_unseeded_daemon(root.path(), Enforcement::PreCutover, 12);
+        // Recertification needs three free identities while Session 1 is live.
+        install_unseeded_daemon(root.path(), Enforcement::PreCutover, 4);
     let releases = retired::Releases::prepare(&paths, root.path());
     let config = releases.install(&paths, false);
     let registry = root.path().join("registry");
@@ -364,7 +365,9 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         Some(crate::launch_protocol::ErrorCode::CapabilityDenied)
     );
     foreground
-        .write_all(b"status\ncommand\npark\nresume\ncommand\ndispose\nquit\n")
+        // Five sequential Sessions exceed the four-slot pool. Terminal receipts
+        // must release occupancy without deleting consumed authorization history.
+        .write_all(b"status\ncommand\npark\nresume\ncommand\ndispose\nstart\ncommand\ndispose\nstart\ncommand\ndispose\nstart\ncommand\ndispose\nquit\n")
         .unwrap();
     drop(foreground);
     let completed = coordinator.wait_with_output().unwrap();
@@ -409,8 +412,20 @@ fn privileged_installed_no_provider_qa_entrypoint() {
     );
     let journal: serde_json::Value =
         serde_json::from_slice(&fs::read(artifact.join("journal.json")).unwrap()).unwrap();
-    assert_eq!(journal["next"], 2);
+    assert_eq!(journal["next"], 5);
     assert!(journal["active"].is_null() && journal["pending"].is_null());
+    assert_eq!(stdout.matches("dispose confirmed").count(), 5);
+    let authorizations = crate::broker::AuthorizationStore::open(
+        &Path::new(STATE).join("authorizations"),
+        config.pool.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        authorizations
+            .session_count_for_run(selection["envelope"]["run_id"].as_str().unwrap())
+            .unwrap(),
+        5
+    );
     let first: GrantRequest = serde_json::from_value(selection["grants"][0].clone()).unwrap();
     assert!(first.provider_requests.is_none() && first.beads_mutations.is_none());
     let restored = policy_command(&config, "pre_cutover");
@@ -426,7 +441,7 @@ fn privileged_installed_no_provider_qa_entrypoint() {
         expected
     );
     println!(
-        "INSTALLED_NO_PROVIDER_QA_ENTRYPOINT_PASSED (two Sessions; terminal cleanup; no desktop/hardware acceptance)"
+        "INSTALLED_NO_PROVIDER_QA_ENTRYPOINT_PASSED (five Sessions over four slots; terminal cleanup; no desktop/hardware acceptance)"
     );
     terminate(&mut daemon);
 }

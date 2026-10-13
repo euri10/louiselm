@@ -252,7 +252,7 @@ impl AuthorizationStore {
     }
     pub(super) fn has_session(&self, session_id: &str) -> Result<bool, BrokerError> {
         Ok(self
-            .occupants(0)?
+            .occupants(0, &mut |_| Ok(false))?
             .iter()
             .any(|held| held.session_id == session_id))
     }
@@ -260,6 +260,7 @@ impl AuthorizationStore {
         &self,
         grant: &GrantRequest,
         now_ms: u64,
+        terminal: impl FnMut(&PendingAuthorization) -> Result<bool, BrokerError>,
     ) -> Result<PendingAuthorization, BrokerError> {
         if grant.role == LaunchRole::FixedVerifier {
             return Err(BrokerError::InvalidGrant);
@@ -304,7 +305,7 @@ impl AuthorizationStore {
                 .join(format!("authorized-{name}")),
             &grant.request,
         )?;
-        self.authorize(grant, now_ms)
+        self.authorize_inner(grant, now_ms, terminal)
     }
     /// Opens or creates the durable store under `root`.
     ///
@@ -340,6 +341,16 @@ impl AuthorizationStore {
         &self,
         grant: &GrantRequest,
         now_ms: u64,
+    ) -> Result<PendingAuthorization, BrokerError> {
+        // Without receipt authority the store cannot prove any consumed slot free.
+        self.authorize_inner(grant, now_ms, |_| Ok(false))
+    }
+
+    pub(super) fn authorize_inner(
+        &self,
+        grant: &GrantRequest,
+        now_ms: u64,
+        mut terminal: impl FnMut(&PendingAuthorization) -> Result<bool, BrokerError>,
     ) -> Result<PendingAuthorization, BrokerError> {
         grant
             .request
@@ -399,12 +410,14 @@ impl AuthorizationStore {
         }
         let record_name = record_name(&grant.request.authorization_id)?;
 
+        // Lock order: assignment, then receipt verification's append lock.
+        // Receipt appenders never allocate identities or take assignment.
         let assignment = lock(&self.assignment);
         self.dependencies_before_run_start(grant)?;
         if self.pending_path(&record_name).exists() || self.consumed_path(&record_name).exists() {
             return Err(BrokerError::DuplicateAuthorization);
         }
-        let identity = self.assign_identity(now_ms)?;
+        let identity = self.assign_identity(now_ms, &mut terminal)?;
         let pending = PendingAuthorization {
             role: grant.role,
             dependencies: grant.dependencies.clone(),
@@ -615,10 +628,15 @@ impl AuthorizationStore {
     /// Assigns the lowest installed slot no live Session holds.
     ///
     /// Expired pending authorizations release their slot because no Session was
-    /// ever created under them. A consumed authorization keeps its slot: its
-    /// Session owns that identity until lifecycle reconciliation releases it.
-    fn assign_identity(&self, now_ms: u64) -> Result<Identity, BrokerError> {
-        let occupants = self.occupants(now_ms)?;
+    /// ever created under them. A consumed authorization keeps its slot unless
+    /// its exact verified receipt chain proves terminal disposal. Records stay
+    /// intact for replay protection, history, Run ceilings and cold recovery.
+    fn assign_identity(
+        &self,
+        now_ms: u64,
+        terminal: &mut impl FnMut(&PendingAuthorization) -> Result<bool, BrokerError>,
+    ) -> Result<Identity, BrokerError> {
+        let occupants = self.occupants(now_ms, terminal)?;
         let free = (0..self.pool.slots)
             .find(|slot| !occupants.iter().any(|occupant| occupant.slot == *slot));
         if let Some(slot) = free {
@@ -633,7 +651,11 @@ impl AuthorizationStore {
     }
 
     /// Collects the live occupancy of the installed pool from durable state.
-    fn occupants(&self, now_ms: u64) -> Result<Vec<OccupiedSessionIdentity>, BrokerError> {
+    fn occupants(
+        &self,
+        now_ms: u64,
+        terminal: &mut impl FnMut(&PendingAuthorization) -> Result<bool, BrokerError>,
+    ) -> Result<Vec<OccupiedSessionIdentity>, BrokerError> {
         let mut occupants = Vec::new();
         for (directory, live_only) in [(PENDING_DIRECTORY, true), (CONSUMED_DIRECTORY, false)] {
             for entry in fs::read_dir(self.root.join(directory)).map_err(BrokerError::Storage)? {
@@ -646,6 +668,9 @@ impl AuthorizationStore {
                 };
                 let Some(held) = held else { continue };
                 if live_only && now_ms >= held.expires_at_ms {
+                    continue;
+                }
+                if !live_only && terminal(&held)? {
                     continue;
                 }
                 occupants.push(OccupiedSessionIdentity {

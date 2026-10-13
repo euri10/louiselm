@@ -109,6 +109,9 @@ mod reconnect;
 #[path = "broker/receipt_history.rs"]
 mod receipt_history;
 
+#[path = "broker/identity_reuse.rs"]
+mod identity_reuse;
+
 #[path = "broker/serving.rs"]
 mod serving;
 

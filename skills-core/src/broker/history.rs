@@ -6,7 +6,7 @@ use super::{
 use crate::{
     broker::attention::{AttentionCondition, AttentionReason, AttentionSubject, ProjectionChange},
     launch_protocol::{ErrorCode, LaunchAuthorization, ProtocolError},
-    launch_receipt::SignedReceipt,
+    launch_receipt::{SessionState, SignedReceipt},
 };
 
 fn refusal() -> BrokerError {
@@ -14,6 +14,38 @@ fn refusal() -> BrokerError {
 }
 
 impl BrokerService {
+    pub(super) fn identity_disposed<F>(
+        &self,
+        held: &super::PendingAuthorization,
+        verify: &mut F,
+    ) -> Result<bool, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let result = self.check_history(&held.session_id).and_then(|()| {
+            let chain = self
+                .receipts()
+                .verified_chain(&held.launch_authorization(), verify);
+            self.history_result(&held.session_id, chain)
+        });
+        match result {
+            Ok(chain) => Ok(chain
+                .last()
+                .is_some_and(|receipt| receipt.payload.resulting_state == SessionState::Terminal)),
+            // A quarantined Session cannot release its identity, even after its
+            // original bytes return. Unrelated identities remain available.
+            Err(BrokerError::Policy(error))
+                if matches!(
+                    error.code,
+                    ErrorCode::ReceiptChainInvalid | ErrorCode::SigningKeyRevoked
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(super) fn require_trusted_history<F>(
         &self,
         session: &mut super::BrokerSession,

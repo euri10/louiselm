@@ -258,7 +258,10 @@ The mandatory VM/CI gate is
 actual runtime/input owners, root QA metadata publication, reviewed exclusive
 policy transition/restoration (occupied/stale/cached-launch refusals and old
 certificate invalidation), authenticated approval, installed launcher, command,
-Park/Resume, two Sessions and terminal disposal.
+Park/Resume, five sequential Sessions in a four-slot pool and terminal disposal.
+The later Sessions reuse only identities with verified disposal receipts; all
+five authorizations still count toward the Run ceiling. Broker restart keeps
+commands revoked until explicit Park/Resume, without refilling their uses.
 It runs with `LOUISELM_REQUIRE_QA_ENTRYPOINT=1`, `LOUISELM_TEST_LUA_ROOT=/home/vm`,
 private mount/network namespaces and root **only inside the disposable guest**.
 It installs two real software-key fixture releases through the release and
