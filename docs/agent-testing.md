@@ -202,7 +202,7 @@ four real contained Lua Sessions. Both fixed verifiers initialize under denied
 network before guarded workers. The narrower gate advertises no Model options and
 sends no prompts; the paired gate explicitly selects synthetic ACP options, checks
 six turn identities, frozen-job execution, selected-source/ambient isolation,
-distinct identities and authenticated terminal cleanup. Human judgment and
+distinct live identities and authenticated terminal cleanup. Human judgment and
 unavailable usage remain pending. These gates certify neither vendor offline
 initialization nor a paid comparison or desktop deployment. The installed exact-
 job and Run-budget gates separately prove one-use verification and shared counting.

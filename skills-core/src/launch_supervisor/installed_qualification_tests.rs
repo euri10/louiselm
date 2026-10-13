@@ -234,8 +234,8 @@ fn run_installed(start_only: bool) {
         "candidate-worker",
         "candidate-verifier",
     ];
-    let mut identities = std::collections::BTreeSet::new();
-    for suffix in sessions {
+    let mut identities = [0; 4];
+    for (index, suffix) in sessions.iter().enumerate() {
         let id = format!("qualification-{suffix}");
         let directory = Path::new(STATE).join("receipts/sessions").join(&id);
         loop {
@@ -279,6 +279,20 @@ fn run_installed(start_only: bool) {
                         crate::launch_protocol::LaunchRole::FixedVerifier
                     }
                 );
+                if !start_only && suffix.ends_with("verifier") {
+                    let terminal = chain.last().unwrap();
+                    assert!(matches!(
+                        terminal.payload.outcome,
+                        crate::launch_receipt::ReceiptOutcome::Disposal { .. }
+                    ));
+                    assert_eq!(
+                        terminal.payload.request_id,
+                        format!(
+                            "verification-cleanup-{}",
+                            Digest::of(format!("qualification-{suffix}-verify").as_bytes()).hex()
+                        )
+                    );
+                }
                 break;
             }
             assert!(
@@ -302,11 +316,9 @@ fn run_installed(start_only: bool) {
             panic!("sequence one must retain Start evidence");
         };
         assert_eq!(evidence.sender_guard_required, suffix.ends_with("worker"));
-        assert!(
-            identities.insert(evidence.assigned_uid),
-            "Session identity was reused within the Run"
-        );
+        identities[index] = evidence.assigned_uid;
     }
+    assert_qualification_identities(start_only, identities);
     assert_eq!(
         fs::read(&outside).unwrap(),
         b"must remain outside every Session\n"
@@ -321,4 +333,79 @@ fn run_installed(start_only: bool) {
             "QUALIFICATION_PASSED"
         }
     );
+}
+
+fn assert_qualification_identities(
+    start_only: bool,
+    [
+        baseline_worker,
+        baseline_verifier,
+        candidate_worker,
+        candidate_verifier,
+    ]: [u32; 4],
+) {
+    // Both verifiers initialize before the baseline worker. Completed baseline
+    // verification disposes its verifier before candidate worker authorization;
+    // the parked baseline worker and candidate verifier still hold their UIDs.
+    for phase in [
+        [baseline_verifier, candidate_verifier, baseline_worker],
+        [candidate_verifier, baseline_worker, candidate_worker],
+    ] {
+        assert_eq!(
+            std::collections::BTreeSet::from(phase).len(),
+            phase.len(),
+            "live qualification Sessions share a host identity"
+        );
+    }
+    // Startup-only executes no verifier job, so all four identities remain live.
+    if start_only {
+        assert_ne!(
+            baseline_verifier, candidate_worker,
+            "live qualification Sessions share a host identity"
+        );
+    }
+}
+
+#[test]
+fn qualification_accepts_distinct_live_identities() {
+    for start_only in [false, true] {
+        assert_qualification_identities(start_only, [4_020_002, 4_020_000, 4_020_003, 4_020_001]);
+    }
+}
+
+#[test]
+fn paired_qualification_accepts_disposed_verifier_uid_reuse() {
+    // Observed order/UIDs: owned guest /var/tmp/ogjcv-evidence/65ezh-diagnostic.log,
+    // codex/01a1350d-f4a7-7192-9820-6e8b0dbc2f5b. Baseline verifier Disposal
+    // preceded candidate worker Launch. Completed verification publishes only
+    // after that authenticated cleanup, before trial.lua advances the arm.
+    assert_qualification_identities(false, [4_020_002, 4_020_000, 4_020_000, 4_020_001]);
+}
+
+#[test]
+#[should_panic(expected = "live qualification Sessions share a host identity")]
+fn startup_only_qualification_rejects_the_same_uid_reuse() {
+    assert_qualification_identities(true, [4_020_002, 4_020_000, 4_020_000, 4_020_001]);
+}
+
+#[test]
+fn qualification_rejects_every_overlapping_identity_pair() {
+    for (left, right) in [(0, 1), (0, 2), (0, 3), (1, 3), (2, 3)] {
+        let mut identities = [4_020_002, 4_020_000, 4_020_003, 4_020_001];
+        identities[right] = identities[left];
+        let failure = std::panic::catch_unwind(|| {
+            assert_qualification_identities(false, identities);
+        })
+        .expect_err("an overlapping identity pair must be refused");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied());
+        assert!(
+            message.is_some_and(|message| {
+                message.contains("live qualification Sessions share a host identity")
+            }),
+            "unexpected refusal for pair {left}/{right}"
+        );
+    }
 }
