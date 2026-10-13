@@ -298,15 +298,43 @@ local function candidate_token_at_cursor(buffer, prefix)
   return token
 end
 
+---Only known structured errors select fixed diagnostics. Never surface CLI
+---messages, hints or context: even valid JSON can contain sensitive payloads.
+---@param result {code: integer, signal: integer, stderr?: string}
+---@return "not_found"|"failed" reason
+---@return string? error_message
+local function cli_failure(result)
+  if result.signal ~= 0 then
+    return "failed", "br was terminated (signal " .. result.signal .. "); retry the lookup."
+  end
+  if type(result.stderr) == "string" and #result.stderr <= 4096 then
+    local decoded, value_or_error = pcall(nvim.json.decode, result.stderr)
+    local detail = decoded and type(value_or_error) == "table" and value_or_error.error or nil
+    if type(detail) == "table" and type(detail.code) == "string" and type(detail.message) == "string" then
+      if detail.code == "ISSUE_NOT_FOUND" then
+        return "not_found"
+      end
+      if detail.code == "DATABASE_ERROR" then
+        if detail.message == "Database error: database is busy (recovery in progress)" then
+          return "failed",
+            "Beads database is busy (recovery in progress); retry after recovery finishes. If it persists, run br doctor in this workspace."
+        end
+        return "failed", "Beads database error; run br doctor in this workspace for details."
+      end
+    end
+  end
+  return "failed", "br failed (exit code " .. result.code .. "); run br doctor in this workspace for details."
+end
+
 ---Run `br` and decode a single-issue `show` response.
 ---@param cmd string[] Full `br` invocation, e.g. `{"br", "show", id, "--json"}`.
 ---@param prefix? string Omit when the workspace targeted by `cmd` (e.g. via `--db`) has an unknown prefix; the caller must verify the returned `issue.id` itself.
 ---@param options louiselm.ui.BeadsInspectorOptions
----@param callback fun(issue: louiselm.ui.BeadsIssue?, miss_reason: "not_found"|"malformed"|nil)
+---@param callback fun(issue: louiselm.ui.BeadsIssue?, miss_reason: "not_found"|"malformed"|"failed"|nil, error_message?: string)
 ---@return boolean started
 ---@return string? error_message
 local function run_show(cmd, prefix, options, callback)
-  local started = pcall(nvim.system, cmd, {
+  local started, process_or_error = pcall(nvim.system, cmd, {
     text = true,
     cwd = options.cwd or nvim.fn.getcwd(),
   }, function(result)
@@ -314,8 +342,9 @@ local function run_show(cmd, prefix, options, callback)
       if options.is_active ~= nil and not options.is_active() then
         return
       end
-      if result.code ~= 0 then
-        callback(nil, "not_found")
+      if result.code ~= 0 or result.signal ~= 0 then
+        local reason, error_message = cli_failure(result)
+        callback(nil, reason, error_message)
         return
       end
       local decoded, value_or_error = pcall(nvim.json.decode, result.stdout)
@@ -327,7 +356,7 @@ local function run_show(cmd, prefix, options, callback)
       callback(issue, nil)
     end)
   end)
-  if not started then
+  if not started or process_or_error == nil then
     return false, "could not start br"
   end
   return true
@@ -339,9 +368,13 @@ end
 ---@return boolean started
 ---@return string? error_message
 local function show_issue(issue_id, prefix, options)
-  return run_show({ "br", "show", issue_id, "--json" }, prefix, options, function(issue, miss_reason)
+  return run_show({ "br", "show", issue_id, "--json" }, prefix, options, function(issue, miss_reason, error_message)
+    if error_message ~= nil then
+      report_error(options, error_message)
+      return
+    end
     if miss_reason == "not_found" then
-      report_error(options, "could not read Beads issue " .. issue_id)
+      report_error(options, "Beads issue not found: " .. issue_id)
       return
     end
     if issue == nil or not matches_issue_id(issue.id, issue_id, prefix) then
@@ -372,31 +405,42 @@ end
 
 ---Try a full `<prefix>-<suffix>`-shaped token against each configured
 ---sibling workspace's own database, in order, stopping at the first hit.
----Cheap and speculative like the bare-suffix path: any miss (including all
----siblings exhausted) calls `on_miss` instead of reporting an error.
+---Missing or malformed results continue the search. Retain the first CLI
+---failure to report only if no later sibling resolves the selected issue.
 ---@param token string
 ---@param options louiselm.ui.BeadsInspectorOptions
 ---@param on_miss fun()
 local function try_sibling_ids(token, options, on_miss)
   local db_paths = sibling_db_paths(options.sibling_roots or {})
   local index = 0
+  local first_failure
   local function try_next()
     index = index + 1
     local db_path = db_paths[index]
     if db_path == nil then
-      on_miss()
+      if first_failure ~= nil then
+        report_error(options, first_failure)
+      else
+        on_miss()
+      end
       return
     end
-    local _, lookup_error = run_show({ "br", "--db", db_path, "show", token, "--json" }, nil, options, function(issue)
-      if issue == nil or issue.id ~= token then
-        try_next()
-        return
+    local _, lookup_error = run_show(
+      { "br", "--db", db_path, "show", token, "--json" },
+      nil,
+      options,
+      function(issue, _, error_message)
+        first_failure = first_failure or error_message
+        if issue == nil or issue.id ~= token then
+          try_next()
+          return
+        end
+        local opened, open_error = open_issue(issue)
+        if not opened then
+          report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
+        end
       end
-      local opened, open_error = open_issue(issue)
-      if not opened then
-        report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
-      end
-    end)
+    )
     if lookup_error ~= nil then
       report_error(options, lookup_error)
     end
@@ -412,7 +456,7 @@ local function discover_prefix(options, callback)
   if nvim.fn.executable("br") ~= 1 then
     return false, "br is not available"
   end
-  local started = pcall(nvim.system, { "br", "where", "--json" }, {
+  local started, process_or_error = pcall(nvim.system, { "br", "where", "--json" }, {
     text = true,
     cwd = options.cwd or nvim.fn.getcwd(),
   }, function(result)
@@ -420,8 +464,9 @@ local function discover_prefix(options, callback)
       if options.is_active ~= nil and not options.is_active() then
         return
       end
-      if result.code ~= 0 then
-        report_error(options, "could not locate Beads workspace")
+      if result.code ~= 0 or result.signal ~= 0 then
+        local _, error_message = cli_failure(result)
+        report_error(options, error_message or "could not locate Beads workspace")
         return
       end
       local decoded, value_or_error = pcall(nvim.json.decode, result.stdout)
@@ -436,7 +481,7 @@ local function discover_prefix(options, callback)
       callback(prefix)
     end)
   end)
-  if not started then
+  if not started or process_or_error == nil then
     return false, "could not start br"
   end
   return true
@@ -492,19 +537,27 @@ local function inspect_with_prefix(buffer, prefix, options)
     prompt_for_issue_id(prefix, options)
     return
   end
-  -- Speculative: any bare word under the cursor is tried, so a miss (not
-  -- found or malformed) falls through to the manual prompt instead of
-  -- reporting an error -- unlike show_issue's confident exact-prefix callers.
-  local _, lookup_error = run_show({ "br", "show", bare_id, "--json" }, prefix, options, function(issue)
-    if issue == nil or not matches_issue_id(issue.id, bare_id, prefix) then
-      prompt_for_issue_id(prefix, options)
-      return
+  -- Bare words are speculative: missing or malformed issues prompt for an ID,
+  -- while CLI failures retain the actionable diagnostic.
+  local _, lookup_error = run_show(
+    { "br", "show", bare_id, "--json" },
+    prefix,
+    options,
+    function(issue, _, error_message)
+      if error_message ~= nil then
+        report_error(options, error_message)
+        return
+      end
+      if issue == nil or not matches_issue_id(issue.id, bare_id, prefix) then
+        prompt_for_issue_id(prefix, options)
+        return
+      end
+      local opened, open_error = open_issue(issue)
+      if not opened then
+        report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
+      end
     end
-    local opened, open_error = open_issue(issue)
-    if not opened then
-      report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
-    end
-  end)
+  )
   if lookup_error ~= nil then
     report_error(options, lookup_error)
   end

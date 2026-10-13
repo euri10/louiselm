@@ -84,6 +84,13 @@ local function fake_glob(db_paths)
   end
 end
 
+---@param code string
+---@param message string
+---@return string stderr
+local function cli_error(code, message)
+  return nvim.json.encode({ error = { code = code, message = message } })
+end
+
 T["beads"] = MiniTest.new_set({
   hooks = {
     post_case = function()
@@ -581,7 +588,12 @@ T["beads"]["falls back to the manual prompt when a bare-suffix guess does not re
   complete_where(calls, scheduled, "louiselm")
 
   MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-nope", "--json" })
-  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  calls[2].on_exit({
+    code = 3,
+    signal = 0,
+    stdout = "",
+    stderr = cli_error("ISSUE_NOT_FOUND", "Issue not found: louiselm-nope"),
+  })
   scheduled[2]()
 
   MiniTest.expect.equality(prompted, "louiselm Beads issue id: ")
@@ -751,7 +763,12 @@ T["beads"]["sweeps configured sibling workspaces for a foreign-prefixed cursor I
     calls[2].command,
     { "br", "--db", "/home/lotso/code/codex-acp/.beads/beads.db", "show", "codex-acp-a1b2", "--json" }
   )
-  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  calls[2].on_exit({
+    code = 3,
+    signal = 0,
+    stdout = "",
+    stderr = cli_error("ISSUE_NOT_FOUND", "Issue not found: codex-acp-a1b2"),
+  })
   scheduled[2]()
 
   MiniTest.expect.equality(
@@ -790,7 +807,12 @@ T["beads"]["falls back to the manual prompt when no sibling resolves the foreign
     calls[2].command,
     { "br", "--db", "/home/lotso/code/codex-acp/.beads/beads.db", "show", "codex-acp-a1b2", "--json" }
   )
-  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  calls[2].on_exit({
+    code = 3,
+    signal = 0,
+    stdout = "",
+    stderr = cli_error("ISSUE_NOT_FOUND", "Issue not found: codex-acp-a1b2"),
+  })
   scheduled[2]()
 
   MiniTest.expect.equality(prompted, "louiselm Beads issue id: ")
@@ -880,7 +902,7 @@ T["beads"]["reports malformed br JSON without opening a popup"] = function()
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
 end
 
-T["beads"]["reports a failed br lookup without opening a popup"] = function()
+T["beads"]["reports a structured missing issue without opening a popup"] = function()
   local buffer = source_buffer({ "Fix louiselm-kpod today" }, 8)
   local calls = fake_system()
   local scheduled = {}
@@ -895,11 +917,204 @@ T["beads"]["reports a failed br lookup without opening a popup"] = function()
     end,
   }))
   complete_where(calls, scheduled, "louiselm")
-  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  -- Envelope observed from installed br 0.7.4 on 2026-10-13; synthetic ID.
+  calls[2].on_exit({
+    code = 3,
+    signal = 0,
+    stdout = "",
+    stderr = cli_error("ISSUE_NOT_FOUND", "Issue not found: louiselm-kpod"),
+  })
   scheduled[2]()
 
-  MiniTest.expect.equality(error_message, "could not read Beads issue louiselm-kpod")
+  MiniTest.expect.equality(error_message, "Beads issue not found: louiselm-kpod")
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+end
+
+-- DATABASE_ERROR and message observed in louiselm-j5meh on 2026-09-15,
+-- codex/01a0a4c3-d513-7363-acd2-ce29762dfa73, br 0.6.0, source ee86142.
+-- No captured callback ordering was recorded; the timer models vim.system's
+-- fast-event completion contract. Error envelope matches installed br 0.7.4.
+local recovery_error = cli_error("DATABASE_ERROR", "Database error: database is busy (recovery in progress)")
+local recovery_message =
+  "Beads database is busy (recovery in progress); retry after recovery finishes. If it persists, run br doctor in this workspace."
+
+for _, entry in ipairs({ "prefixed cursor", "bare cursor", "manual prompt", "sibling", "workspace" }) do
+  for _, disposed in ipairs({ false, true }) do
+    T["beads"]["preserves scheduled database recovery failures: " .. entry .. (disposed and " disposed" or " active")] = function()
+      local line = "louiselm-dtwil"
+      if entry == "bare cursor" then
+        line = "dtwil"
+      elseif entry == "manual prompt" then
+        line = ""
+      elseif entry == "sibling" then
+        line = "foreign-dtwil"
+      end
+      local buffer = source_buffer({ line }, 0)
+      local calls = fake_system()
+      fake_glob({ "/tmp/sibling/.beads/beads.db" })
+      local scheduled, errors = {}, {}
+      local active, prompts = true, 0
+      rawset(nvim, "schedule", function(callback)
+        scheduled[#scheduled + 1] = callback
+      end)
+      nvim.ui.input = function(_, callback)
+        prompts = prompts + 1
+        callback("louiselm-dtwil")
+      end
+      assert(Beads.inspect(buffer, {
+        sibling_roots = entry == "sibling" and { "/tmp" } or nil,
+        is_active = function()
+          return active
+        end,
+        on_error = function(message)
+          assert(not nvim.in_fast_event())
+          errors[#errors + 1] = message
+        end,
+      }))
+      if entry ~= "workspace" then
+        complete_where(calls, scheduled, "louiselm")
+      end
+      local lookup_index = #calls
+      local callback_was_fast
+      local timer = assert(nvim.uv.new_timer())
+      timer:start(0, 0, function()
+        timer:stop()
+        timer:close()
+        callback_was_fast = nvim.in_fast_event()
+        calls[lookup_index].on_exit({ code = 1, signal = 0, stdout = "", stderr = recovery_error })
+      end)
+      assert(nvim.wait(1000, function()
+        return #scheduled == lookup_index
+      end))
+      MiniTest.expect.equality(callback_was_fast, true)
+      MiniTest.expect.equality(errors, {})
+      MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+      active = not disposed
+      scheduled[lookup_index]()
+
+      MiniTest.expect.equality(errors, disposed and {} or { recovery_message })
+      MiniTest.expect.equality(prompts, entry == "manual prompt" and 1 or 0)
+      MiniTest.expect.equality(#calls, lookup_index)
+      MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+    end
+  end
+end
+
+local process_message = "br failed (exit code 1); run br doctor in this workspace for details."
+for _, failure in ipairs({
+  { name = "raw stderr", stderr = "SENSITIVE\nnot found\27[31m", message = process_message },
+  { name = "absent stderr", message = process_message },
+  { name = "nonstring stderr", stderr = false, message = process_message },
+  { name = "invalid JSON", stderr = "{SENSITIVE", message = process_message },
+  {
+    name = "array envelope",
+    stderr = '[{"error":{"code":"DATABASE_ERROR","message":"SENSITIVE"}}]',
+    message = process_message,
+  },
+  { name = "invalid error record", stderr = '{"error":"SENSITIVE"}', message = process_message },
+  { name = "missing message", stderr = '{"error":{"code":"ISSUE_NOT_FOUND"}}', message = process_message },
+  {
+    name = "invalid message",
+    stderr = '{"error":{"code":"DATABASE_ERROR","message":false}}',
+    message = process_message,
+  },
+  { name = "invalid code", stderr = '{"error":{"code":{},"message":"SENSITIVE"}}', message = process_message },
+  { name = "unknown code", stderr = cli_error("SENSITIVE", "SENSITIVE"), message = process_message },
+  { name = "trailing raw stderr", stderr = recovery_error .. "\nSENSITIVE", message = process_message },
+  {
+    name = "oversized structured stderr",
+    stderr = cli_error("DATABASE_ERROR", string.rep("SENSITIVE", 1024)),
+    message = process_message,
+  },
+  {
+    name = "database details and hints",
+    stderr = nvim.json.encode({
+      error = { code = "DATABASE_ERROR", message = "SENSITIVE", hint = "SENSITIVE", context = { path = "SENSITIVE" } },
+    }),
+    message = "Beads database error; run br doctor in this workspace for details.",
+  },
+  { name = "error-shaped stdout", stdout = recovery_error, stderr = "SENSITIVE", message = process_message },
+  {
+    name = "terminated process",
+    signal = 15,
+    stderr = recovery_error,
+    message = "br was terminated (signal 15); retry the lookup.",
+  },
+  {
+    name = "terminated process with issue output",
+    code = 0,
+    signal = 15,
+    stdout = '[{"id":"louiselm-dtwil","title":"Issue","status":"open","priority":2}]',
+    message = "br was terminated (signal 15); retry the lookup.",
+  },
+}) do
+  T["beads"]["reports a bounded safe CLI failure: " .. failure.name] = function()
+    local buffer = source_buffer({ "louiselm-dtwil" }, 0)
+    local calls = fake_system()
+    local scheduled, errors = {}, {}
+    rawset(nvim, "schedule", function(callback)
+      scheduled[#scheduled + 1] = callback
+    end)
+    assert(Beads.inspect(buffer, {
+      on_error = function(message)
+        errors[#errors + 1] = message
+      end,
+    }))
+    complete_where(calls, scheduled, "louiselm")
+    calls[2].on_exit({
+      code = failure.code or 1,
+      signal = failure.signal or 0,
+      stdout = failure.stdout or "",
+      stderr = failure.stderr,
+    })
+    MiniTest.expect.equality(errors, {})
+    scheduled[2]()
+
+    MiniTest.expect.equality(errors, { failure.message })
+    assert(#errors[1] < 200)
+    MiniTest.expect.equality(find_buffer("louiselm://beads/louiselm-dtwil"), nil)
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  end
+end
+
+T["beads"]["continues sibling lookup after database failure and opens only the exact selected issue"] = function()
+  local buffer = source_buffer({ "foreign-dtwil" }, 0)
+  local calls = fake_system()
+  local db_paths = { "/tmp/first/.beads/beads.db", "/tmp/second/.beads/beads.db", "/tmp/third/.beads/beads.db" }
+  fake_glob(db_paths)
+  local scheduled, errors = {}, {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  nvim.ui.input = function()
+    error("must not prompt when a later sibling resolves the exact issue")
+  end
+  assert(Beads.inspect(buffer, {
+    sibling_roots = { "/tmp" },
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  }))
+  complete_where(calls, scheduled, "louiselm")
+  for index, id in ipairs({ "", "foreign-unrelated-dtwil", "foreign-dtwil" }) do
+    local call_index = index + 1
+    MiniTest.expect.equality(
+      calls[call_index].command,
+      { "br", "--db", db_paths[index], "show", "foreign-dtwil", "--json" }
+    )
+    calls[call_index].on_exit({
+      code = index == 1 and 1 or 0,
+      signal = 0,
+      stdout = index == 1 and ""
+        or nvim.json.encode({ { id = id, title = "Selected", status = "open", priority = 2 } }),
+      stderr = index == 1 and recovery_error or "",
+    })
+    scheduled[call_index]()
+  end
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(#calls, 4)
+  MiniTest.expect.equality(find_buffer("louiselm://beads/foreign-unrelated-dtwil"), nil)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), assert(find_buffer("louiselm://beads/foreign-dtwil")))
 end
 
 return T
