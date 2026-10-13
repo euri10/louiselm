@@ -308,4 +308,19 @@ T["api_appendix"]["verify_export rejects a stale expect_no_entries declaration"]
   MiniTest.expect.equality(message:find("expect_no_entries", 1, true) ~= nil, true)
 end
 
+T["api_appendix"]["configured controls expose the facade without its UI implementation"] = function()
+  local output = ApiAppendix.generate({
+    class_entry("louiselm.Module", "lua/louiselm/init.lua"),
+    class_entry("louiselm.SessionControlRequest", "lua/louiselm/init.lua"),
+    class_entry("louiselm.SessionControlSnapshot", "lua/louiselm/init.lua"),
+    class_entry("louiselm.ui.SessionControl", "lua/louiselm/ui/session_control.lua"),
+    class_entry("louiselm.ui.Chat", "lua/louiselm/ui/chat/init.lua"),
+  })
+  MiniTest.expect.equality(output:find("## Configured Session controls", 1, true) ~= nil, true)
+  MiniTest.expect.equality(output:find("### louiselm.Module", 1, true) ~= nil, true)
+  MiniTest.expect.equality(output:find("### louiselm.SessionControlRequest", 1, true) ~= nil, true)
+  MiniTest.expect.equality(output:find("### louiselm.SessionControlSnapshot", 1, true) ~= nil, true)
+  MiniTest.expect.equality(output:find("louiselm.ui.", 1, true), nil)
+end
+
 return T

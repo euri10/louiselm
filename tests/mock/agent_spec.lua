@@ -293,6 +293,7 @@ T["mock agent"]["completes a prompt after a permission response"] = function()
   MiniTest.expect.equality(meaningful, {
     "admission_decided",
     "admission_settled",
+    "prompt_dispatched",
     "permission_requested",
     "chunk",
     "turn_done",

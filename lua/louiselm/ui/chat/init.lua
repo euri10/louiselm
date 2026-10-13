@@ -24,6 +24,7 @@ local Usage = require("louiselm.routing.usage")
 ---@field phase? louiselm.routing.PhaseMetadata Explicit phase for this submission.
 ---@field acp_session_id? string
 ---@field settlement? louiselm.session.AdmissionSettlementEvent Settlement observed before prompt returns.
+---@field source_session_id? string Handoff source for the reviewed submission.
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -43,6 +44,9 @@ local nvim = vim
 ---@field markdown_highlighting? boolean Whether chat buffers start Markdown tree-sitter highlighting; defaults to true.
 ---@field start_insert_on_switch? boolean Whether switching to a chat starts Insert mode; defaults to true.
 ---@field decisions? louiselm.ui.Decisions Shared permission owner; the caller retains its lifecycle.
+
+---@class louiselm.ui.AttachOptions
+---@field background? boolean Keep the current buffer and skip the initial options picker; explicit focus and options remain available.
 
 ---@class louiselm.ui.ChatView
 ---@field renderer louiselm.ui.ChatBuffer Buffer lifecycle and presentation coordinates.
@@ -103,7 +107,7 @@ local nvim = vim
 ---@field handoffs louiselm.ui.Handoffs Review buffers and takeover validation.
 ---@field recovery louiselm.workflow.Recovery Park admission and pending resume resources.
 ---@field disposed boolean Whether the chat UI has been disposed.
----@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
+---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session, options?: louiselm.ui.AttachOptions): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
 ---@field is_attached fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Check an attached Session identity.
 ---@field inspect_tool fun(self: louiselm.ui.Chat): boolean, string? Open the raw payload under the cursor.
@@ -785,7 +789,11 @@ local function accept_prompt(self, view, pending)
   if self.attention ~= nil and pending.acp_session_id ~= nil then
     self.attention:prompt_started(pending.acp_session_id)
   end
-  view.transcript:record_user(pending.text)
+  if pending.source_session_id ~= nil then
+    view.transcript:record_handoff(pending.text, pending.source_session_id)
+  else
+    view.transcript:record_user(pending.text)
+  end
   clear_queued_prompt(view)
   if pending.text:sub(1, 1) ~= "/" then
     view.draft:consume(pending.draft)
@@ -815,16 +823,17 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
+---@param content string|table[]
+---@param contexts louiselm.ui.ContextItem[]
+---@param metadata? louiselm.routing.SubmissionMetadata
+---@param source_session_id? string
 ---@return string|number? request_id
 ---@return string? error_message
-local function submit_prompt(self, view, text)
-  local content, resolve_error, contexts = build_content(view, text)
-  if content == nil then
-    notify_prompt_error(resolve_error or "prompt could not be resolved")
-    return nil, resolve_error
+local function dispatch_prompt(self, view, text, content, contexts, metadata, source_session_id)
+  if view.pending_admission ~= nil then
+    return nil, "Prompt admission is still settling"
   end
   local state = view.session:inspect()
-  local metadata = text:sub(1, 1) ~= "/" and view.draft:submission_metadata() or nil
   local pending = {
     text = text,
     contexts = contexts,
@@ -832,6 +841,7 @@ local function submit_prompt(self, view, text)
     revision = view.input_revision,
     phase = metadata and metadata.phase,
     acp_session_id = state.acp_session_id,
+    source_session_id = source_session_id,
   }
   view.pending_admission = pending
   local request_id, prompt_error = view.session:prompt(content, nil, metadata)
@@ -849,14 +859,19 @@ local function submit_prompt(self, view, text)
   return request_id
 end
 
+---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
----@param source_session_id string
----@param contexts louiselm.ui.ContextItem[]
-local function record_handoff_prompt(view, text, source_session_id, contexts)
-  view.transcript:record_handoff(text, source_session_id)
-  clear_queued_prompt(view)
-  view.renderer:accept_prompt(text, contexts, "", false)
+---@return string|number? request_id
+---@return string? error_message
+local function submit_prompt(self, view, text)
+  local content, resolve_error, contexts = build_content(view, text)
+  if content == nil then
+    notify_prompt_error(resolve_error or "prompt could not be resolved")
+    return nil, resolve_error
+  end
+  local metadata = text:sub(1, 1) ~= "/" and view.draft:submission_metadata() or nil
+  return dispatch_prompt(self, view, text, content, contexts, metadata)
 end
 
 ---@param view louiselm.ui.ChatView
@@ -1365,6 +1380,33 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param event louiselm.session.Event
 local function observe_view_event(self, view, event)
+  if event.type == "prompt_dispatched" then
+    local pending = view.pending_admission
+    if pending ~= nil and (pending.turn_id == nil or pending.turn_id == event.data.turn_id) then
+      -- This view owns the authored text and submitted contexts; settlement
+      -- consumes only its captured draft. Other callers never consume it.
+      return
+    end
+    local parts = {}
+    for _, block in ipairs(event.data.prompt) do
+      if type(block) == "table" then
+        if block.type == "text" and type(block.text) == "string" then
+          parts[#parts + 1] = block.text
+        elseif
+          block.type == "resource"
+          and type(block.resource) == "table"
+          and type(block.resource.text) == "string"
+        then
+          parts[#parts + 1] = block.resource.text
+        elseif block.type == "resource_link" and type(block.uri) == "string" then
+          parts[#parts + 1] = "[resource: " .. block.uri .. "]"
+        elseif type(block.type) == "string" then
+          parts[#parts + 1] = "[" .. block.type .. "]"
+        end
+      end
+    end
+    event = { type = "user_chunk", session_id = event.session_id, data = { text = table.concat(parts, "\n") } }
+  end
   if event.type == "admission_settled" and view.pending_admission ~= nil and view.pending_admission.turn_id == nil then
     -- A synchronous completion still needs the returned ID before it may touch input.
     view.pending_admission.settlement = event
@@ -1593,15 +1635,15 @@ function M.new(api, options)
         end
         content, contexts = target_view.draft:with_context(content, target_view.session:inspect().embedded_context)
       end
-      local request_id, prompt_error = handoff.target_session:prompt(content)
+      local request_id, prompt_error
+      if target_view ~= nil then
+        request_id, prompt_error =
+          dispatch_prompt(chat, target_view, text, content, contexts, nil, handoff.source_session_id)
+      else
+        request_id, prompt_error = handoff.target_session:prompt(content)
+      end
       if request_id == nil then
         return false, prompt_error or "handoff prompt could not be sent"
-      end
-      if target_view ~= nil then
-        if handoff.source_session_id ~= nil then
-          record_handoff_prompt(target_view, text, handoff.source_session_id, contexts)
-        end
-        target_view.draft:clear_context()
       end
       return true
     end,
@@ -1724,9 +1766,10 @@ end
 ---@param self louiselm.ui.Chat
 ---@param session louiselm.session.Session Session to display.
 ---@param event_relay? louiselm.workflow.EventRelay Events captured before Run finalization.
+---@param background? boolean Preserve focus and suppress the initial options picker.
 ---@return boolean attached
 ---@return string? error_message Validation or buffer creation error.
-local function attach_session(self, session, event_relay)
+local function attach_session(self, session, event_relay, background)
   if self.disposed then
     return false, "chat UI is disposed"
   end
@@ -1739,6 +1782,9 @@ local function attach_session(self, session, event_relay)
   end
   local existing = self.views[state.id]
   if existing ~= nil then
+    if background then
+      return true
+    end
     return self:switch(state.id)
   end
 
@@ -1760,7 +1806,7 @@ local function attach_session(self, session, event_relay)
     source_buffer = source_buffer,
     draft = Draft.new(),
     input_revision = 0,
-    setup_shown = false,
+    setup_shown = background == true,
     unread_turn = false,
     replay_active = replay_active,
     replay_user_open = false,
@@ -1812,7 +1858,9 @@ local function attach_session(self, session, event_relay)
     end
   end
   view.renderer:header(view.session:inspect())
-  self:switch(state.id)
+  if not background then
+    self:switch(state.id)
+  end
   if state.status == "ready" and not replay_active then
     refresh_limits(self, state.agent)
   end
@@ -1855,13 +1903,24 @@ local function attach_session(self, session, event_relay)
   return true
 end
 
----Attach a session to a scratch markdown buffer and focus it.
+---Attach a session to a scratch markdown buffer, optionally preserving focus.
 ---@param self louiselm.ui.Chat
 ---@param session louiselm.session.Session Session to display.
+---@param options? louiselm.ui.AttachOptions Attachment presentation.
 ---@return boolean attached
 ---@return string? error_message Validation or buffer creation error.
-function Chat:attach(session)
-  return attach_session(self, session)
+function Chat:attach(session, options)
+  if options ~= nil then
+    if type(options) ~= "table" then
+      return false, "attachment options must be a table"
+    end
+    for key, value in pairs(options) do
+      if key ~= "background" or type(value) ~= "boolean" then
+        return false, "attachment options accept only a boolean background"
+      end
+    end
+  end
+  return attach_session(self, session, nil, options ~= nil and options.background)
 end
 
 ---Return the buffer for a session, or the current chat buffer.

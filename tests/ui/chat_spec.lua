@@ -362,6 +362,87 @@ T["chat"]["can attach without starting Markdown tree-sitter"] = function()
   chat:dispose()
 end
 
+T["chat"]["background attachment preserves focus and skips only the initial options picker"] = function()
+  local foreground = fake_session("foreground", "agent")
+  local background = fake_session("background", "agent")
+  background.state.config_options = {
+    { id = "model", name = "Model", type = "select", current_value = "a", options = { { value = "a", name = "A" } } },
+  }
+  background.state.status = "starting"
+  local chat = assert(Chat.new(fake_api(), { start_insert_on_switch = false }))
+  local original_select = nvim.ui.select
+  local selections = 0
+  nvim.ui.select = function(_, _, callback)
+    selections = selections + 1
+    callback(nil)
+  end
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+    chat:dispose()
+  end)
+  assert(chat:attach(foreground))
+  local buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality({ chat:attach(background, nvim.json.decode('"background"')) }, {
+    false,
+    "attachment options must be a table",
+  })
+  MiniTest.expect.equality({ chat:attach(background, nvim.json.decode('{"background":"yes"}')) }, {
+    false,
+    "attachment options accept only a boolean background",
+  })
+  assert(chat:attach(background, { background = true }))
+  background.state.status = "ready"
+  background:emit({ type = "state_changed", session_id = "background", data = { status = "ready" } })
+  nvim.wait(20)
+  MiniTest.expect.equality(chat.current_id, "foreground")
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  MiniTest.expect.equality(selections, 0)
+  assert(chat:buffer("background") ~= nil)
+  assert(chat:attach(background, { background = true }))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  assert(chat:switch("background"))
+  assert(chat:session_options())
+  assert(nvim.wait(1000, function()
+    return selections == 1
+  end, 10))
+end
+
+T["chat"]["renders externally dispatched content on the editor loop without consuming staged context"] = function()
+  local session = fake_session("external-content", "agent")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:queue_context({ label = "later", text = "not submitted" }))
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    timer:close()
+    assert(nvim.in_fast_event())
+    session:emit({
+      type = "prompt_dispatched",
+      session_id = "external-content",
+      data = {
+        turn_id = "external-turn",
+        prompt = {
+          { type = "resource_link", uri = "file:///tmp/context.md" },
+          { type = "resource", resource = { uri = "context://inline", text = "embedded context" } },
+          { type = "image", data = "image payload", mimeType = "image/png" },
+          { type = "text", text = "external task" },
+        },
+      },
+    })
+  end)
+  assert(nvim.wait(1000, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "> external task")
+  end, 10))
+  local view = chat.views["external-content"]
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: later] ")
+  MiniTest.expect.equality(view.transcript:snapshot(), {
+    { kind = "user", text = "[resource: file:///tmp/context.md]\nembedded context\n[image]\nexternal task" },
+  })
+end
+
 T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   local session = fake_session("park-session", "codex")
   session.state.acp_session_id = "acp-session"
@@ -1146,6 +1227,46 @@ T["chat"]["does not record a failed handoff in the target transcript"] = functio
   chat:dispose()
 end
 
+T["chat"]["handoff cannot replace an ordinary prompt awaiting admission"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  function target:prompt(prompt)
+    if self.state.status ~= "ready" then
+      return nil, "session is not ready"
+    end
+    self.prompts[#self.prompts + 1] = prompt
+    self.state.status = "admitting"
+    return "ordinary-turn"
+  end
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(source))
+  assert(chat:attach(target))
+  local review = assert(chat:open_handoff(target, "source"))
+  fill_takeover_task(review, "review the original task")
+  assert(chat:submit("ordinary task"))
+
+  local sent, err = chat:submit_handoff(review)
+  MiniTest.expect.equality(sent, false)
+  local pending = chat.views.target.pending_admission
+  assert(pending ~= nil, "Handoff erased the ordinary prompt's pending admission")
+  MiniTest.expect.equality(pending.turn_id, "ordinary-turn")
+  MiniTest.expect.equality(err, "Prompt admission is still settling")
+  MiniTest.expect.equality(#target.prompts, 1)
+  target:emit({
+    type = "admission_settled",
+    session_id = "target",
+    data = { turn_id = "ordinary-turn", result = "dispatched" },
+  })
+  assert(nvim.wait(1000, function()
+    return chat.views.target.pending_admission == nil
+  end, 10))
+  MiniTest.expect.equality(chat.views.target.transcript:snapshot(), { { kind = "user", text = "ordinary task" } })
+  assert(nvim.api.nvim_buf_is_valid(review))
+end
+
 T["chat"]["does not record local provenance before the source has an ACP session id"] = function()
   local source = fake_session("source", "claude")
   local target = fake_session("target", "codex")
@@ -1159,7 +1280,12 @@ T["chat"]["does not record local provenance before the source has an ACP session
   assert(chat:submit_handoff(buffer))
   MiniTest.expect.equality(#target.prompts, 1)
   MiniTest.expect.equality(target.prompts[1]:find("- takeover task: commit and sync", 1, true) ~= nil, true)
-  MiniTest.expect.equality(chat.views.target.transcript:snapshot(), {})
+  -- Missing ACP identity forbids a provenance link, not the submitted text.
+  -- Local dispatch now captures every accepted prompt through the same path.
+  local entries = chat.views.target.transcript:snapshot()
+  MiniTest.expect.equality(#entries, 1)
+  MiniTest.expect.equality(entries[1].handoff_source_session_id, nil)
+  assert(entries[1].text:find("takeover task: commit and sync", 1, true))
   chat:dispose()
 end
 

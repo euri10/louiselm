@@ -2604,6 +2604,7 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
     {
       "admission_decided",
       "admission_settled",
+      "prompt_dispatched",
       "chunk",
       "tool_call_started",
       "tool_call_finished",
@@ -2612,7 +2613,9 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
   )
   MiniTest.expect.equality(streamed[2].data.turn_id, request_id)
   MiniTest.expect.equality(streamed[2].data.result, "dispatched")
-  MiniTest.expect.equality(streamed[3].data.content.text, "hello")
+  MiniTest.expect.equality(streamed[3].data.turn_id, request_id)
+  MiniTest.expect.equality(streamed[3].data.prompt, { { type = "text", text = "hello" } })
+  MiniTest.expect.equality(streamed[4].data.content.text, "hello")
   MiniTest.expect.equality(completed, { result = { stopReason = "end_turn" }, error = nil })
   MiniTest.expect.equality(session:inspect().status, "ready")
 
@@ -3015,6 +3018,96 @@ T["new"]["does not emit live user message echoes as replay events"] = function()
 
   api:dispose()
   restore_processes(original_system)
+end
+
+T["new"]["headless prompts reach attached Chat once without consuming its draft"] = function()
+  -- louiselm-jzw3h: the parent used Session:prompt after creating a visible
+  -- child Chat. Model output arrived above the untouched AGENTS.md composer.
+  -- The ACP echo/reply frames below are synthetic contract fixtures.
+  local Chat = require("louiselm.ui.chat")
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local chat = assert(Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false }))
+  local path = nvim.fn.tempname() .. ".md"
+  MiniTest.finally(function()
+    chat:dispose()
+    nvim.fn.delete(path)
+  end)
+  assert(chat:attach(session))
+  assert(chat:queue_context({ label = "AGENTS.md", text = "staged instructions" }))
+  local view = chat.views[session:inspect().id]
+  view.renderer:replace_prompt("[context: AGENTS.md] human draft\nsecond line")
+  local dispatched = {}
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched[#dispatched + 1] = event
+    end
+  end)
+
+  assert(session:prompt("cancelled before dispatch"))
+  assert(session:cancel())
+  wait_ready(session)
+  MiniTest.expect.equality(dispatched, {})
+  MiniTest.expect.equality(view.transcript:snapshot(), {})
+
+  local turn_id = assert(submit(session, "delegated task\nwith details"))
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "user_message_chunk",
+      content = { type = "text", text = "delegated task\nwith details" },
+    },
+  })
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "agent_message_chunk", content = { type = "text", text = "child answer" } },
+  })
+  respond(process, turn_id, { stopReason = "end_turn" })
+  assert(nvim.wait(1000, function()
+    return nvim.tbl_contains(nvim.api.nvim_buf_get_lines(chat:buffer(), 0, -1, false), "child answer")
+  end, 10))
+
+  local prompts, prompt_line, answer_line = 0, nil, nil
+  for index, line in ipairs(nvim.api.nvim_buf_get_lines(chat:buffer(), 0, -1, false)) do
+    if line == "> delegated task" then
+      prompts, prompt_line = prompts + 1, index
+    elseif line == "child answer" then
+      answer_line = index
+    end
+  end
+  MiniTest.expect.equality(prompts, 1)
+  assert(prompt_line < answer_line)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: AGENTS.md] human draft\nsecond line")
+  MiniTest.expect.equality(view.draft.contexts, { { label = "AGENTS.md", text = "staged instructions" } })
+  MiniTest.expect.equality(view.transcript:snapshot(), {
+    { kind = "user", text = "delegated task\nwith details" },
+    { kind = "assistant", text = "child answer" },
+  })
+  MiniTest.expect.equality(#dispatched, 1)
+  MiniTest.expect.equality(dispatched[1].data.turn_id, turn_id)
+  MiniTest.expect.equality(dispatched[1].data.prompt, { { type = "text", text = "delegated task\nwith details" } })
+
+  local exported
+  assert(chat:to_markdown(nil, path, function(written, err)
+    assert(err == nil, err)
+    exported = written
+  end))
+  assert(nvim.wait(1000, function()
+    return exported ~= nil
+  end, 10))
+  local markdown = table.concat(nvim.fn.readfile(path), "\n")
+  assert(markdown:find("## User\n\ndelegated task\nwith details", 1, true))
+
+  -- Ordinary Chat submission still renders and records exactly once.
+  assert(chat:submit())
+  assert(nvim.wait(6000, function()
+    return view.pending_admission == nil
+  end, 10))
+  local transcript = view.transcript:snapshot()
+  MiniTest.expect.equality(#transcript, 3)
+  MiniTest.expect.equality(transcript[3], { kind = "user", text = "human draft\nsecond line" })
+  MiniTest.expect.equality(view.draft.contexts, {})
 end
 
 T["new"]["does not reopen a completed turn for late permission responses"] = function()

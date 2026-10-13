@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+session_control_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec nvim --headless --noplugin -i NONE -u NONE -l "$session_control_directory/session_control.lua" -- "$@"

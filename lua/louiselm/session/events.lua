@@ -12,6 +12,7 @@
 ---| "compaction_updated"
 ---| "recording_changed"
 ---| "prompt_rejected"
+---| "prompt_dispatched"
 ---| "admission_decided"
 ---| "admission_settled"
 ---| "state_changed"
@@ -65,6 +66,10 @@
 ---@class louiselm.session.PromptRejectedEvent: louiselm.session.EventBase
 ---@field type "prompt_rejected"
 ---@field data { turn_id: string, message: string } Asynchronous admission failure; no ACP prompt was sent.
+
+---@class louiselm.session.PromptDispatchedEvent: louiselm.session.EventBase
+---@field type "prompt_dispatched"
+---@field data { turn_id: string, prompt: table[] } Local in-memory content accepted by the transport, not proof of peer receipt. Never persisted in admission or usage records.
 
 ---@class louiselm.session.AdmissionDecisionEvent: louiselm.session.EventBase
 ---@field type "admission_decided"
@@ -136,7 +141,7 @@
 ---`can_continue: boolean`: true permits separately authorized queued work to continue;
 ---false requires operator recovery of the Agent/Session. No failed prompt is replayed.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PromptDispatchedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

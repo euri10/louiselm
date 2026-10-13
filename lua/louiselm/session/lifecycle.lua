@@ -1722,6 +1722,7 @@ local function prepare_prompt(self, prompt, turn_id, provider)
       self.transcript_turn = self.transcript_turn + 1
       record_observation(self, "dispatch", { request_id = request_id, transcript_turn = self.transcript_turn })
       settle_admission(self, "dispatched")
+      emit(self, "prompt_dispatched", { turn_id = turn_id, prompt = nvim.deepcopy(prompt) })
     end)
   end)
 end

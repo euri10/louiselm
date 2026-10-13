@@ -13,11 +13,31 @@ local Paths = require("louiselm.paths")
 local Config = require("louiselm.config")
 local AttentionPaste = require("louiselm.ui.attention_paste")
 local Decisions = require("louiselm.ui.chat.decisions")
+local SessionControl = require("louiselm.ui.session_control")
 
 local M = {}
 local configured ---@type table?
 local dispose_registered ---@type fun()?
 local staleness_generation = 0
+local control_request ---@type (fun(request: unknown): louiselm.SessionControlSnapshot?, string?)?
+
+---Operate on the configured editor's explicitly identified child Sessions.
+---@param request unknown Data-only request, validated before constructing an owner.
+---@return louiselm.SessionControlSnapshot? snapshot Compact operation state.
+---@return string? error_message Unavailable registration, invalid request or operation failure.
+function M.session_control(request)
+  local err = SessionControl.validate(request)
+  if err then
+    return nil, err
+  end
+  if nvim.in_fast_event() then
+    return nil, "Session controls require the editor main loop"
+  end
+  if control_request == nil then
+    return nil, "Session controls are unavailable; call louiselm.setup first"
+  end
+  return control_request(request)
+end
 
 local function session_module()
   return require("louiselm.session")
@@ -359,6 +379,7 @@ function M.register()
     dispose_registered = nil
   end
   local chat ---@type louiselm.ui.Chat?
+  local control ---@type louiselm.ui.SessionControl?
   local attention_paste = AttentionPaste.new()
   local usage ---@type louiselm.ui.UsageView?
   local attention_view ---@type louiselm.ui.AttentionView?
@@ -523,6 +544,29 @@ function M.register()
       end,
     })
     return chat
+  end
+
+  control_request = function(request)
+    if control == nil then
+      if request.action ~= "start" then
+        return nil, "unknown operation id in this editor registration; do not automatically replay after restart"
+      end
+      if configured == nil or type(configured.agents) ~= "table" or next(configured.agents) == nil then
+        return nil, "no configured Agent; call louiselm.setup with agents first"
+      end
+      local current = ensure_chat()
+      if current == nil then
+        return nil, "could not initialize the configured Session owner"
+      end
+      control = SessionControl.new(current.api, function(session)
+        local attached, err = current:attach(session, { background = true })
+        if not attached then
+          return nil, err
+        end
+        return current:buffer(session:inspect().id)
+      end, current.skill_catalog)
+    end
+    return control:request(request)
   end
 
   local exit_group = nvim.api.nvim_create_augroup("louiselm.exit", { clear = true })
@@ -1090,6 +1134,10 @@ function M.register()
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
     disposed = true
+    control_request = nil
+    if control ~= nil then
+      control:dispose()
+    end
     if jsonl ~= nil then
       jsonl:dispose()
     end
