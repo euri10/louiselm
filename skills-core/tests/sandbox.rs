@@ -27,7 +27,7 @@ mod discovery_support;
 mod support;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::fs::PermissionsExt,
@@ -40,8 +40,8 @@ use louiselm_skills::{
     isolation::{CONTRACT_VERSION, Dimension},
     registry::NetworkPolicy,
     sandbox::{
-        Backend, BubblewrapBackend, Cgroup, Channel, ConfinementPlan, IdentityPlan, SandboxError,
-        SandboxedSession, default_system_roots,
+        Backend, BubblewrapBackend, Cgroup, Channel, ConfinementPlan, IdentityPlan, ProcessTree,
+        SandboxError, SandboxedSession, default_system_roots,
     },
 };
 use support::{Fixture, write_file};
@@ -372,6 +372,10 @@ fn prepare_blocks_the_workload_until_start() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One process-tree lifecycle scenario keeps prepare, clone ownership, gated fork/reap and guaranteed disposal together."
+)]
 fn prepared_and_running_sessions_expose_their_dynamic_process_tree() {
     if !cgroup_available() {
         return;
@@ -380,46 +384,109 @@ fn prepared_and_running_sessions_expose_their_dynamic_process_tree() {
     let confinement = plan(
         &fixture,
         "process-tree-handle",
-        "#!/bin/sh\nexec sleep 30\n",
+        r"#!/bin/sh
+exec 3<&0
+printf 'ready\n'
+IFS= read -r command
+(printf 'child-ready\n'; IFS= read -r command) <&3 &
+wait
+printf 'child-exited\n'
+IFS= read -r command
+",
     );
     let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let prepared = backend
         .prepare(&confinement)
         .expect("bwrap prepares the session");
-    let member_pid = *prepared
-        .processes()
-        .expect("prepared membership is readable")
-        .first()
-        .expect("the prepared Session has a cgroup member");
+    let member_pid = prepared.monitor_pid();
     let process_tree = prepared
         .process_tree()
         .expect("a lifecycle-backed Session exposes its process tree");
     let cloned_tree = process_tree.clone();
-    assert!(
-        process_tree
-            .contains(member_pid)
-            .expect("process-tree membership is readable"),
-        "the prepared process belongs to the Session tree",
-    );
-    assert_eq!(
-        process_tree
-            .processes()
-            .expect("process-tree membership is readable"),
-        cloned_tree
-            .processes()
-            .expect("a cloned handle reads the same live tree"),
-    );
+    // prepare() can return before Bubblewrap forks its namespace leader
+    // (louiselm-06tfu). Only the admitted monitor is stable before start.
+    for tree in [&process_tree, &cloned_tree] {
+        assert!(tree.contains(member_pid).expect("monitor is enclosed"));
+        assert!(
+            !tree
+                .contains(std::process::id())
+                .expect("the caller is outside the Session tree"),
+        );
+    }
+    drop(process_tree);
 
     let mut session = prepared.start().expect("the prepared session starts");
-    assert!(
-        session
-            .process_tree()
-            .expect("the running Session retains its process tree")
-            .contains(member_pid)
-            .expect("running membership is readable"),
-    );
-    session.dispose().expect("disposal succeeds");
+    let running_tree = session
+        .process_tree()
+        .expect("the running Session retains its process tree");
+    let mut stdin = session.take_stdin().expect("stdin is piped");
+    let mut stdout = BufReader::new(session.take_stdout().expect("stdout is piped")).lines();
+    let members = |tree: &ProcessTree| {
+        BTreeSet::from_iter(
+            tree.processes()
+                .expect("process-tree membership is readable"),
+        )
+    };
+    // Always dispose the running tree, even when a regression assertion fails.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let [before, with_child, after] = ["ready", "child-ready", "child-exited"].map(|stage| {
+            assert_eq!(
+                stdout
+                    .next()
+                    .transpose()
+                    .expect("workload reports its stage")
+                    .as_deref(),
+                Some(stage),
+            );
+            // The acknowledged shell waits for input (or its child); Park
+            // confirms every member is frozen before comparing complete sets.
+            session.park().expect("the acknowledged tree freezes");
+            let current = members(&cloned_tree);
+            assert!(
+                current.contains(&member_pid),
+                "the monitor remains enclosed"
+            );
+            assert_eq!(current, members(&running_tree));
+            for &pid in &current {
+                assert!(
+                    cloned_tree
+                        .contains(pid)
+                        .expect("cloned containment is readable")
+                );
+                assert!(is_alive(pid), "member {pid} is a real live process");
+            }
+            if stage != "child-exited" {
+                session.resume().expect("the acknowledged tree thaws");
+                stdin
+                    .write_all(b"advance\n")
+                    .expect("the next stage is released");
+            }
+            current
+        });
+        assert!(
+            before.is_subset(&with_child),
+            "fork retains every existing member"
+        );
+        assert_eq!(
+            with_child.difference(&before).count(),
+            1,
+            "one real child joins"
+        );
+        assert_eq!(after, before, "the reaped child leaves both live handles");
+    }));
+    assert_eq!(session.dispose().expect("disposal succeeds").survivors, 0);
+    assert!(!Path::new(&format!("/proc/{member_pid}")).exists());
+    for tree in [&cloned_tree, &running_tree] {
+        assert!(
+            matches!(
+                tree.processes(),
+                Err(SandboxError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+            ),
+            "a read-only handle must not retain a disposed cgroup or stale snapshot"
+        );
+    }
+    result.unwrap();
 }
 
 #[test]
