@@ -13,6 +13,7 @@ use std::{
     fs::File,
     net::TcpListener,
     os::{fd::AsFd, unix::fs::MetadataExt},
+    time::Instant,
 };
 
 struct Fixture {
@@ -166,6 +167,40 @@ impl Fixture {
         self.service
             .step(&mut self.session, now_ms, None, verify_fixture_signature)
     }
+
+    fn verified_activation(&mut self, now_ms: u64) -> SessionStatus {
+        // Keep the caller's clock after the already observed launch proof.
+        let now_ms = self
+            .status(now_ms)
+            .posture
+            .dimensions
+            .iter()
+            .filter_map(|dimension| dimension.freshness.last_verified_at_ms)
+            .fold(now_ms, u64::max);
+        let started = Instant::now();
+        self.activate(now_ms)
+            .expect("authenticated activation must reach the evidence producer");
+        // step() accounts for receive time; this outer interval bounds it.
+        let completed_at_ms = now_ms + u64::try_from(started.elapsed().as_millis()).unwrap();
+        let status = self.status(completed_at_ms);
+        let network = network(&status);
+        assert_eq!(network.state, DimensionState::Verified);
+        let checked_at_ms = network.freshness.last_verified_at_ms.unwrap();
+        assert!(
+            (now_ms..=completed_at_ms).contains(&checked_at_ms),
+            "activation {checked_at_ms} outside {now_ms}..={completed_at_ms}"
+        );
+        status
+    }
+}
+
+fn network(status: &SessionStatus) -> &louiselm_skills::launch_protocol::DimensionStatus {
+    status
+        .posture
+        .dimensions
+        .iter()
+        .find(|d| d.dimension == DimensionName::Network)
+        .unwrap()
 }
 
 #[test]
@@ -179,18 +214,8 @@ fn authenticated_activation_not_enrollment_verifies_network_without_disclosure()
         .find(|d| d.dimension == DimensionName::Network)
         .unwrap();
     assert_eq!(dimension.failure_code, Some(FailureCode::EvidenceMissing));
-    fixture
-        .activate(2700)
-        .expect("authenticated activation must reach the evidence producer");
-    let active = fixture.status(2800);
-    let dimension = active
-        .posture
-        .dimensions
-        .iter()
-        .find(|d| d.dimension == DimensionName::Network)
-        .unwrap();
-    assert_eq!(dimension.state, DimensionState::Verified);
-    assert_eq!(dimension.freshness.last_verified_at_ms, Some(2700));
+    let active = fixture.verified_activation(2700);
+    let activated_at_ms = network(&active).freshness.last_verified_at_ms.unwrap();
     assert_eq!(
         active
             .posture
@@ -203,8 +228,8 @@ fn authenticated_activation_not_enrollment_verifies_network_without_disclosure()
     );
     let before = fixture.service.audit().unwrap();
     let original = active.posture.clone();
-    fixture.activate(2900).unwrap();
-    let repeated = fixture.status(3000);
+    fixture.activate(activated_at_ms + 200).unwrap();
+    let repeated = fixture.status(activated_at_ms + 300);
     assert_eq!(
         repeated.posture, original,
         "duplicate activation and reads never renew proof"
@@ -227,49 +252,46 @@ fn authenticated_activation_not_enrollment_verifies_network_without_disclosure()
 #[test]
 fn pending_activation_and_revocation_preserve_last_success_without_claiming_network() {
     let mut fixture = fixture();
-    fixture.activate(2700).unwrap();
+    let active = fixture.verified_activation(2700);
+    let activated_at_ms = network(&active).freshness.last_verified_at_ms.unwrap();
     fixture.status.channel_state = ChannelState::Revoked;
     fixture.status.pending_operation = Some(PendingOperation {
         request_id: "resume-in-progress".into(),
         action: PendingAction::Resume,
         phase: PendingPhase::Activating,
     });
-    let status = fixture.status(2800);
-    let network = status
-        .posture
-        .dimensions
-        .iter()
-        .find(|d| d.dimension == DimensionName::Network)
-        .unwrap();
-    assert_eq!(network.failure_code, Some(FailureCode::EvidenceInvalidated));
-    assert_eq!(network.freshness.last_verified_at_ms, Some(2700));
-    fixture.status.pending_operation = None;
-    let status = fixture.status(2900);
+    let status = fixture.status(activated_at_ms + 100);
+    let invalidated = network(&status);
+    assert_eq!(invalidated.state, DimensionState::Failed);
     assert_eq!(
-        status
-            .posture
-            .dimensions
-            .iter()
-            .find(|d| d.dimension == DimensionName::Network)
-            .unwrap()
-            .state,
-        DimensionState::Failed
+        invalidated.failure_code,
+        Some(FailureCode::EvidenceInvalidated)
+    );
+    assert_eq!(
+        invalidated.freshness.last_verified_at_ms,
+        Some(activated_at_ms)
+    );
+    fixture.status.pending_operation = None;
+    let status = fixture.status(activated_at_ms + 200);
+    assert_eq!(network(&status).state, DimensionState::Failed);
+    assert_eq!(
+        network(&status).freshness.last_verified_at_ms,
+        Some(activated_at_ms)
     );
 }
 
 #[test]
 fn expired_authority_invalidates_network_without_renewal_or_provider_effects() {
     let mut fixture = fixture();
-    fixture.activate(2700).unwrap();
+    let active = fixture.verified_activation(2700);
+    let activated_at_ms = network(&active).freshness.last_verified_at_ms.unwrap();
+    let before = fixture.service.audit().unwrap();
     let status = fixture.status(30_000);
-    let network = status
-        .posture
-        .dimensions
-        .iter()
-        .find(|d| d.dimension == DimensionName::Network)
-        .unwrap();
+    let network = network(&status);
+    assert_eq!(network.state, DimensionState::Failed);
     assert_eq!(network.failure_code, Some(FailureCode::EvidenceInvalidated));
-    assert_eq!(network.freshness.last_verified_at_ms, Some(2700));
+    assert_eq!(network.freshness.last_verified_at_ms, Some(activated_at_ms));
+    assert_eq!(fixture.service.audit().unwrap(), before);
     assert!(matches!(
         fixture.activate(30_000),
         Err(BrokerError::InvalidGrant)
@@ -303,27 +325,29 @@ fn activation_cannot_substitute_subject_revision_or_runtime() {
 #[test]
 fn closed_listener_cannot_be_revived_by_an_old_activation() {
     let mut fixture = fixture();
-    fixture.activate(2700).unwrap();
+    let active = fixture.verified_activation(2700);
+    let activated_at_ms = network(&active).freshness.last_verified_at_ms.unwrap();
     let closing = response(ResponseResult::SenderGuardClosing {
         enrollment: fixture.enrollment.clone(),
     });
     settle(|done| fixture.peer.send(closing.canonical_bytes(), done));
     fixture
         .service
-        .step(&mut fixture.session, 2800, None, verify_fixture_signature)
+        .step(
+            &mut fixture.session,
+            activated_at_ms + 100,
+            None,
+            verify_fixture_signature,
+        )
         .unwrap();
     let _closed = settle(|done| fixture.peer.receive(done));
-    let status = fixture.status(2900);
-    let network = status
-        .posture
-        .dimensions
-        .iter()
-        .find(|d| d.dimension == DimensionName::Network)
-        .unwrap();
+    let status = fixture.status(activated_at_ms + 200);
+    let network = network(&status);
+    assert_eq!(network.state, DimensionState::Failed);
     assert_eq!(network.failure_code, Some(FailureCode::EvidenceInvalidated));
-    assert_eq!(network.freshness.last_verified_at_ms, Some(2700));
+    assert_eq!(network.freshness.last_verified_at_ms, Some(activated_at_ms));
     assert!(matches!(
-        fixture.activate(3000),
+        fixture.activate(activated_at_ms + 300),
         Err(BrokerError::InvalidGrant)
     ));
 }
@@ -374,7 +398,8 @@ fn broker_reattachment_cannot_reconstruct_process_owned_network_proof() {
 #[test]
 fn lifting_a_provider_hold_cannot_revive_the_old_activation() {
     let mut fixture = fixture();
-    fixture.activate(2700).unwrap();
+    let active = fixture.verified_activation(2700);
+    let activated_at_ms = network(&active).freshness.last_verified_at_ms.unwrap();
     let credentials = provider_requests::credentials(fixture.root.path(), Some("openai"));
     let upstream = provider_requests::FakeUpstream::default();
     for attempt in 0..6 {
@@ -387,7 +412,7 @@ fn lifting_a_provider_hold_cannot_revive_the_old_activation() {
                 &credentials,
                 &upstream,
                 &provider_requests::parsed(),
-                2800,
+                activated_at_ms + 100,
                 verify_fixture_signature,
             );
             worker.join().unwrap();
@@ -401,7 +426,7 @@ fn lifting_a_provider_hold_cannot_revive_the_old_activation() {
             }
         });
     }
-    let held = fixture.status(2900);
+    let held = fixture.status(activated_at_ms + 200);
     assert_eq!(
         held.posture
             .dimensions
@@ -421,11 +446,11 @@ fn lifting_a_provider_hold_cannot_revive_the_old_activation() {
                 additional_requests: 1,
                 expires_at_ms: None,
             },
-            3000,
+            activated_at_ms + 300,
         )
         .unwrap();
     assert!(fixture.service.provider_hold("run-1").unwrap().is_none());
-    let lifted = fixture.status(3100);
+    let lifted = fixture.status(activated_at_ms + 400);
     assert_eq!(
         lifted
             .posture
@@ -436,9 +461,9 @@ fn lifting_a_provider_hold_cannot_revive_the_old_activation() {
             .state,
         DimensionState::Failed
     );
-    fixture.activate(3200).unwrap();
+    fixture.activate(activated_at_ms + 500).unwrap();
     assert_eq!(
-        fixture.status(3300).posture,
+        fixture.status(activated_at_ms + 600).posture,
         lifted.posture,
         "duplicate activation cannot cross a hold generation"
     );
@@ -457,8 +482,6 @@ fn activation_consumed_during_status_uses_its_completed_observation_time() {
     };
     let mut fixture = fixture_at(true, wall_now() - 3000);
     let requested_at = wall_now();
-    // The caller's timestamp precedes the queued source observation.
-    thread::sleep(Duration::from_millis(10));
     let activated = response(ResponseResult::SenderGuardActivated {
         enrollment: fixture.enrollment.clone(),
     });
@@ -466,17 +489,28 @@ fn activation_consumed_during_status_uses_its_completed_observation_time() {
     let status = thread::scope(|threads| {
         let peer = &fixture.peer;
         let current = &fixture.status;
-        let answer = threads.spawn(move || {
-            thread::sleep(Duration::from_millis(30));
-            lifecycle::answer_one_status_query(peer, current);
-        });
+        let answer = threads.spawn(move || lifecycle::answer_one_status_query(peer, current));
         let status = fixture
             .service
             .session_status(
                 &mut fixture.session,
                 &LifecycleCaller::Agent,
                 requested_at,
-                verify_fixture_signature,
+                |key, bytes, signature| {
+                    let verified = verify_fixture_signature(key, bytes, signature);
+                    // History verification precedes activation and status completion.
+                    // Advance each real clock observation by one bounded tick.
+                    let before = wall_now();
+                    let started = Instant::now();
+                    while wall_now() <= before {
+                        assert!(
+                            started.elapsed() < Duration::from_secs(5),
+                            "fixture clock did not advance"
+                        );
+                        thread::yield_now();
+                    }
+                    verified
+                },
             )
             .unwrap();
         answer.join().unwrap();
@@ -490,4 +524,5 @@ fn activation_consumed_during_status_uses_its_completed_observation_time() {
         .unwrap();
     assert_eq!(network.state, DimensionState::Verified);
     assert!(network.freshness.last_verified_at_ms.unwrap() > requested_at);
+    assert!(network.freshness.last_verified_at_ms.unwrap() <= wall_now());
 }
