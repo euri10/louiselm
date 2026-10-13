@@ -12,6 +12,13 @@ that directory, as well as the existing untrusted ownership, links and extended
 ACL cases. The Agent and its confined tools cannot open the canonical database
 or JSONL, even when its parent is otherwise visible in their namespace.
 
+An operator-owned tracker shared with the broker needs a reviewed upstream `br`
+with trusted-group support and explicit `--shared-group` provisioning. The broker
+passes the database-bounded opt-in only to canonical mutations and exports;
+private imports and Session reads keep single-owner admission. See the
+[provisioning recipe](https://github.com/euri10/louiselm/blob/main/skills-core/README.md#broker-mediated-beads-mutations) for exact
+permissions and operator/capture environment settings.
+
 The broker exports with the pinned upstream `br`, builds a new local database
 with that same binary, and stages the complete closed database family. No
 SQLite schema or graph semantics are implemented in LouiseLM. Process locks are

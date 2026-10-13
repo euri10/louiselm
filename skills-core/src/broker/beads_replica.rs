@@ -200,6 +200,14 @@ fn export(tracker: &TrackerConfig, actor: &str) -> Result<Files, BrokerError> {
     let root = directory.as_path();
     // Mutation (30s) plus both replica processes fit the relay's 60s deadline.
     let runner = SystemTrackerRunner::new(Duration::from_secs(10));
+    let mut environment = tracker.canonical_environment();
+    environment.extend([
+        ("TMPDIR".into(), staging.path().as_os_str().to_owned()),
+        (
+            "BEADS_JSONL".into(),
+            root.join("issues.jsonl").into_os_string(),
+        ),
+    ]);
     let invocation = TrackerInvocation {
         program: tracker.program.clone(),
         program_digest: tracker.program_digest.clone(),
@@ -218,13 +226,7 @@ fn export(tracker: &TrackerConfig, actor: &str) -> Result<Files, BrokerError> {
             actor.into(),
             "--json".into(),
         ],
-        environment: vec![
-            ("TMPDIR".into(), staging.path().as_os_str().to_owned()),
-            (
-                "BEADS_JSONL".into(),
-                root.join("issues.jsonl").into_os_string(),
-            ),
-        ],
+        environment,
         current_dir: tracker.workspace_root.clone(),
     };
     if runner.run(&invocation)?.exit_code != Some(0) || !root.join("issues.jsonl").is_file() {
@@ -250,6 +252,7 @@ fn export(tracker: &TrackerConfig, actor: &str) -> Result<Files, BrokerError> {
             "--actor".into(),
             actor.into(),
         ],
+        // This new broker-private database must not inherit canonical sharing.
         environment: vec![
             ("TMPDIR".into(), staging.path().as_os_str().to_owned()),
             ("BEADS_DIR".into(), root.as_os_str().to_owned()),

@@ -656,8 +656,8 @@ are not a claim of an installed distinct-UID or live-registry acceptance run.
 The authenticated Agent command relay accepts typed comments, atomic claims,
 nonterminal status updates, individual label additions/removals, typed dependency
 edits and closure with one typed verdict. A trusted caller configures `BrokerService` with
-`configure_beads_tracker(workspace, program, expected_digest)` and supplies an
-`ApprovedBeadsMutations` launch permission with the canonical project digest,
+`configure_beads_tracker(workspace, program, expected_digest, trusted_group)` and
+supplies an `ApprovedBeadsMutations` launch permission with the canonical project digest,
 exact issue IDs, sorted exact `effects`, a trusted `role`, a non-refundable
 `max_mutations` budget and an expiry. Without configuration and a grant,
 mutations are refused. The broker derives the actor from its retained
@@ -735,8 +735,11 @@ write permission. `.beads` and all its contents may belong to root, the operator
 or the broker; only the broker's dedicated group may have group write access.
 The broker needs traversal, database read/write and directory write access.
 An operator-owned `.beads` directory with the broker GID and mode `2770`, and
-database files with that group and mode `0660`, supports shared administration;
-ensure subsequent operator writes preserve these permissions. Symlinks, hard
+database files with that group and mode `0660`, can support shared administration
+with a `br` build containing the upstream [trusted-group fix](https://github.com/Dicklesworthstone/beads_rust/issues/533)
+and the explicit opt-in below. POSIX permissions alone are insufficient.
+Initialize the database and its namespace sidecars as their common owner before
+provisioning; preserve these permissions on subsequent writes. Symlinks, hard
 links to files, special files and extended ACLs are refused. The pinned executable
 and every ancestor must be root-owned without group/other write permission.
 
@@ -745,7 +748,7 @@ After reviewing those paths and the binary's exact SHA-256, provision with:
 ```sh
 sudo python3 scripts/install-broker-beads.py \
   --workspace /srv/louiselm/project --br /usr/local/lib/louiselm-tools/br \
-  --sha256 REVIEWED_64_HEX_DIGEST
+  --sha256 REVIEWED_64_HEX_DIGEST --shared-group
 ```
 
 Run from the repository root. The command changes only the protected configuration;
@@ -756,6 +759,35 @@ filesystem bytes) for `GrantRequest.beads_mutations`, alongside sorted exact iss
 IDs, exact `effects`, `role`, `max_mutations` (1–64), and `expires_at_ms`. Provisioning grants no mutations
 by itself. Restart the updated installed broker to load it; the trusted controller
 must still pass the explicit grant through `InstalledBroker::authorize`.
+
+`--shared-group` records `shared_group: true` in the protected configuration.
+The GID comes only from the installed launcher's dedicated broker identity, not
+from an Agent or ambient environment. Both provisioning and broker startup
+require `.beads` mode `2770`, and `beads.db`, `beads.db-fsqlite-ns-gate` and
+`beads.db-fsqlite-ns-use` mode `0660`, all with that GID and the database's owner.
+They refuse missing or mismatched files rather than repairing ownership.
+Omit the flag for a broker-owned, single-owner tracker; an omitted
+`shared_group` configuration field defaults to false.
+
+For sharing, the broker supplies `FSQLITE_TRUSTED_UNIX_DATABASE` (the exact
+canonical database path) and `FSQLITE_TRUSTED_UNIX_GID` only to canonical mutations
+and exports. It still clears ambient variables. Private replica imports and
+Session reads receive neither sharing setting. The reviewed binary must support
+this opt-in; its exact digest, not version text alone, identifies the build.
+
+Operator commands and capture-service claim cleanup need the same two explicit
+settings. For example, when the installed broker GID is `989`:
+
+```sh
+FSQLITE_TRUSTED_UNIX_DATABASE=/srv/louiselm/project/.beads/beads.db \
+FSQLITE_TRUSTED_UNIX_GID=989 /usr/local/lib/louiselm-tools/br ready --json
+```
+
+Use the actual `broker_gid` from the installed launcher's `public-config.json`.
+Put those two values in the operator's `~/.config/louiselm/capture.env` alongside
+`LOUISELM_BEADS_WORKSPACE` and `LOUISELM_REAL_BR` when enabling shared claim cleanup.
+The operator/capture identity must be a member of the broker group. This does not
+grant that membership, enable Runs, or restart capture-service.
 
 Project-bound launches receive disposable [Session Beads replicas](../docs/beads-replicas.md).
 Native `br`/`bvr` reads use `BEADS_DIR`; completed canonical mutations refresh
@@ -779,11 +811,14 @@ Build the binaries and library test, then run that exact test in the
 [disposable VM](../docs/launcher-vm.md), under root and a private mount namespace,
 with `LOUISELM_REQUIRE_BROKER_BEADS=1` and `LOUISELM_TEST_BEADS_INSTALLER` naming the provisioning script
 (keep its sibling `install-broker-attention.py` beside it). It exercises unset
-startup, protected configuration and digest refusal, distinct-UID denial of direct
-writes, and durable at-most-once outcomes through the measured Agent relay.
+startup, protected configuration and digest refusal, operator-owned shared-tracker
+validation, distinct-UID denial of direct writes, and durable at-most-once outcomes
+through the measured Agent relay. Its stand-in asserts that canonical calls
+receive the exact sharing settings and private imports receive neither.
 CI runs this composition with `/usr/bin/true` as the process stand-in. Set
 `LOUISELM_TEST_BR` to an existing upstream binary to additionally prove the real
-claim, exact label and single correctly attributed comment despite Agent retries. This fixture proves
+claim, exact label, single correctly attributed comment despite Agent retries,
+replica refresh and subsequent operator reads of broker changes. This fixture proves
 installed composition, not activation of the maintainer's desktop.
 
 ### Prospective artifact preflight

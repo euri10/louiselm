@@ -39,7 +39,7 @@ def check(path, directory, owners, groups=()):
     return metadata
 
 
-def configuration(workspace, program, digest, installed):
+def configuration(workspace, program, digest, installed, shared_group=False):
     for path in (workspace, program):
         if not path.is_absolute() or path == Path("/") or path.resolve() != path:
             raise ValueError("paths must be canonical and absolute")
@@ -75,8 +75,18 @@ def configuration(workspace, program, digest, installed):
         check(entry, directory, (0, operator, broker), (broker_group,))
         if directory:
             pending.extend(entry.iterdir())
-    check(beads / "beads.db", False, (0, operator, broker), (broker_group,))
-    return {"workspace": str(workspace), "program": str(program), "program_digest": "sha256:" + digest}
+    database = check(beads / "beads.db", False, (0, operator, broker), (broker_group,))
+    if shared_group:
+        for name, mode in (("", 0o2770), ("beads.db", 0o660),
+                           ("beads.db-fsqlite-ns-gate", 0o660),
+                           ("beads.db-fsqlite-ns-use", 0o660)):
+            metadata = check(beads / name, not name, (database.st_uid,), (broker_group,))
+            if (metadata.st_uid != database.st_uid or metadata.st_gid != broker_group
+                    or stat.S_IMODE(metadata.st_mode) != mode):
+                raise ValueError("shared tracker requires one owner, broker GID, directory 2770 "
+                                 "and database/namespace files 0660")
+    return {"workspace": str(workspace), "program": str(program),
+            "program_digest": "sha256:" + digest, "shared_group": shared_group}
 
 
 def install():
@@ -84,11 +94,13 @@ def install():
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--br", type=Path, required=True)
     parser.add_argument("--sha256", required=True)
+    parser.add_argument("--shared-group", action="store_true",
+                        help="opt this database into sharing with the installed broker group")
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise ValueError("requires administrator")
     installed = json.loads(COMMON["read_file"](COMMON["AUTHORITY"]))
-    record = configuration(args.workspace, args.br, args.sha256, installed)
+    record = configuration(args.workspace, args.br, args.sha256, installed, args.shared_group)
     if len((json.dumps(record, sort_keys=True) + "\n").encode()) > 4096:
         raise ValueError("tracker configuration exceeds installed size bound")
     COMMON["record"](CONFIG, record)

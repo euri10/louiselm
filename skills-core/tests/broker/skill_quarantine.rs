@@ -165,6 +165,7 @@ fn launched_with_beads(root: &Path, generation: &str, beads: bool) -> Live {
                 &workspace,
                 program,
                 &Digest::of(&fs::read(program).unwrap()),
+                None,
             )
             .unwrap();
     }

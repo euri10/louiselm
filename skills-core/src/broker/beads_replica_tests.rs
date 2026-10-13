@@ -69,6 +69,7 @@ fn real_br_replica_preserves_native_reads_after_refresh() {
         program: program.clone(),
         workspace_root: source.clone(),
         scratch: fixture.path().into(),
+        trusted_group: None,
     };
     let replica = fixture.path().join("replica");
     fs::create_dir(&replica).unwrap();

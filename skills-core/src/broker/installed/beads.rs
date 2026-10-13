@@ -19,6 +19,8 @@ struct Tracker {
     workspace: PathBuf,
     program: PathBuf,
     program_digest: String,
+    #[serde(default)]
+    shared_group: bool,
 }
 
 pub(super) fn configure(
@@ -38,6 +40,7 @@ pub(super) fn configure(
             &tracker.program,
             &Digest::parse(&tracker.program_digest)
                 .map_err(|_| invalid("invalid executable digest"))?,
+            tracker.shared_group.then_some(installed.broker_gid),
         )
         .map_err(|error| match error {
             BrokerError::InvalidGrant => invalid("configured executable digest does not match"),
@@ -105,6 +108,9 @@ fn validate(tracker: &Tracker, installed: &LauncherConfig) -> Result<(), BrokerE
     let groups = [installed.broker_gid];
     let mut remaining = 65536;
     check_tree(&beads, &owners, &groups, &mut remaining)?;
+    if tracker.shared_group {
+        check_sharing(&beads, installed.broker_gid)?;
+    }
     fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -113,6 +119,31 @@ fn validate(tracker: &Tracker, installed: &LauncherConfig) -> Result<(), BrokerE
     let probe = tempfile::tempfile_in(&beads)
         .map_err(|_| invalid("broker cannot write tracker directory"))?;
     drop(probe);
+    Ok(())
+}
+
+fn check_sharing(beads: &Path, gid: u32) -> Result<(), BrokerError> {
+    let database = fs::symlink_metadata(beads.join("beads.db"))
+        .map_err(|_| invalid("shared database unavailable"))?;
+    for (name, mode) in [
+        ("", 0o2770),
+        ("beads.db", 0o660),
+        ("beads.db-fsqlite-ns-gate", 0o660),
+        ("beads.db-fsqlite-ns-use", 0o660),
+    ] {
+        let metadata = fs::symlink_metadata(beads.join(name))
+            .map_err(|_| invalid("shared tracker namespace unavailable"))?;
+        if metadata.is_dir() != name.is_empty()
+            || (!name.is_empty() && !metadata.is_file())
+            || metadata.uid() != database.uid()
+            || metadata.gid() != gid
+            || metadata.mode() & 0o7777 != mode
+        {
+            return Err(invalid(
+                "shared tracker requires one owner, broker GID, directory 2770 and database/namespace files 0660",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -174,7 +205,27 @@ mod tests {
     #[test]
     fn configuration_requires_exact_paths_fields_and_digest() {
         let record = serde_json::json!({"workspace":"/srv/project", "program":"/opt/br", "program_digest":Digest::of(b"br").to_string()});
-        assert!(parse(&serde_json::to_vec(&record).unwrap()).is_ok());
+        assert!(
+            !parse(&serde_json::to_vec(&record).unwrap())
+                .unwrap()
+                .shared_group
+        );
+        let mut shared = record.clone();
+        shared["shared_group"] = true.into();
+        assert!(
+            parse(&serde_json::to_vec(&shared).unwrap())
+                .unwrap()
+                .shared_group
+        );
+        for invalid in [serde_json::Value::Null, 989.into(), "true".into()] {
+            shared["shared_group"] = invalid;
+            assert!(matches!(
+                parse(&serde_json::to_vec(&shared).unwrap()),
+                Err(BrokerError::TrackerConfiguration(
+                    "invalid configuration schema"
+                ))
+            ));
+        }
         for field in ["workspace", "program", "program_digest"] {
             let mut missing = record.clone();
             missing.as_object_mut().unwrap().remove(field);
@@ -214,5 +265,55 @@ mod tests {
         let fifo = root.path().join("fifo");
         rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR).unwrap();
         assert!(check(&fifo, false, &[uid], &[]).is_err());
+    }
+
+    #[test]
+    fn shared_tracker_requires_exact_existing_namespace_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let gid = rustix::process::getegid().as_raw();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o2770)).unwrap();
+        let names = [
+            "beads.db",
+            "beads.db-fsqlite-ns-gate",
+            "beads.db-fsqlite-ns-use",
+        ];
+        for name in names {
+            let path = root.path().join(name);
+            fs::write(&path, []).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o660)).unwrap();
+        }
+        check_sharing(root.path(), gid).unwrap();
+        assert!(matches!(
+            check_sharing(root.path(), gid + 1),
+            Err(BrokerError::TrackerConfiguration(_))
+        ));
+        for (name, mode) in [
+            ("", 0o2770),
+            (names[0], 0o660),
+            (names[1], 0o660),
+            (names[2], 0o660),
+        ] {
+            let path = root.path().join(name);
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode | 0o004)).unwrap();
+            assert!(matches!(
+                check_sharing(root.path(), gid),
+                Err(BrokerError::TrackerConfiguration(_))
+            ));
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fs::remove_file(root.path().join(names[1])).unwrap();
+        assert!(matches!(
+            check_sharing(root.path(), gid),
+            Err(BrokerError::TrackerConfiguration(
+                "shared tracker namespace unavailable"
+            ))
+        ));
+        let directory = root.path().join(names[1]);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o660)).unwrap();
+        assert!(matches!(
+            check_sharing(root.path(), gid),
+            Err(BrokerError::TrackerConfiguration(_))
+        ));
     }
 }

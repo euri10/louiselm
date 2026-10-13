@@ -40,20 +40,39 @@ pub(super) fn permission(name: &str, now: u64) -> Option<ApprovedBeadsMutations>
 }
 
 fn upstream(program: &Path, workspace: &Path, arguments: &[&str]) -> Vec<u8> {
-    let output = Command::new("/usr/bin/setpriv")
+    upstream_as(program, workspace, BROKER_UID, true, arguments)
+}
+
+fn upstream_as(
+    program: &Path,
+    workspace: &Path,
+    uid: u32,
+    shared: bool,
+    arguments: &[&str],
+) -> Vec<u8> {
+    let mut command = Command::new("/usr/bin/setpriv");
+    command
         .args([
             "--reuid",
-            &BROKER_UID.to_string(),
+            &uid.to_string(),
             "--regid",
+            &uid.to_string(),
+            "--groups",
             &BROKER_UID.to_string(),
-            "--clear-groups",
         ])
         .arg(program)
         .args(arguments)
         .env_clear()
-        .current_dir(workspace)
-        .output()
-        .unwrap();
+        .current_dir(workspace);
+    if shared {
+        command
+            .env(
+                "FSQLITE_TRUSTED_UNIX_DATABASE",
+                workspace.join(".beads/beads.db"),
+            )
+            .env("FSQLITE_TRUSTED_UNIX_GID", BROKER_UID.to_string());
+    }
+    let output = command.output().unwrap();
     assert!(
         output.status.success(),
         "upstream br {arguments:?}: {output:?}"
@@ -74,11 +93,17 @@ fn provision_program(root: &Path) -> PathBuf {
             &program,
             br"#!/usr/bin/python3
 import os
+import sys
 from pathlib import Path
-if 'BEADS_JSONL' in os.environ:
-    Path(os.environ['BEADS_JSONL']).write_bytes(b'{}\n')
-elif 'BEADS_DIR' in os.environ:
+if 'BEADS_DIR' in os.environ:
+    assert 'FSQLITE_TRUSTED_UNIX_DATABASE' not in os.environ
+    assert 'FSQLITE_TRUSTED_UNIX_GID' not in os.environ
     Path(os.environ['BEADS_DIR'], 'beads.db').write_bytes(b'fixture')
+else:
+    assert os.environ.get('FSQLITE_TRUSTED_UNIX_DATABASE') == sys.argv[sys.argv.index('--db') + 1]
+    assert os.environ.get('FSQLITE_TRUSTED_UNIX_GID') == str(os.getegid())
+    if 'BEADS_JSONL' in os.environ:
+        Path(os.environ['BEADS_JSONL']).write_bytes(b'{}\n')
 ",
         )
         .unwrap();
@@ -89,49 +114,19 @@ elif 'BEADS_DIR' in os.environ:
 
 pub(super) fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
     let program = provision_program(root);
+    let operator = crate::launcher_install::public_runtime_config(&LauncherPaths::system())
+        .unwrap()
+        .operator_uid;
     // Private tmpfs supplied by mounts(): broker writes must not depend on the
     // disposable VM disk retaining non-root reserved space.
     let workspace = PathBuf::from("/var/lib/louiselm/beads-project");
     fs::create_dir(&workspace).unwrap();
-    chown(&workspace, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
-    let issue = if std::env::var_os("LOUISELM_TEST_BR").is_some() {
-        upstream(
-            &program,
-            &workspace,
-            &[
-                "init",
-                "--prefix",
-                "fixture",
-                "--actor",
-                "fixture/setup",
-                "--json",
-            ],
-        );
-        let created: serde_json::Value = serde_json::from_slice(&upstream(
-            &program,
-            &workspace,
-            &[
-                "create",
-                "Installed relay target",
-                "--actor",
-                "fixture/setup",
-                "--json",
-            ],
-        ))
-        .unwrap();
-        created["id"].as_str().unwrap().to_owned()
-    } else {
-        // CI exercises installed wiring without acquiring another executable.
-        // Real upstream behavior is separately accepted with LOUISELM_TEST_BR.
-        fs::create_dir(workspace.join(".beads")).unwrap();
-        fs::write(workspace.join(".beads/beads.db"), []).unwrap();
-        for path in [workspace.join(".beads"), workspace.join(".beads/beads.db")] {
-            chown(&path, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
-        }
-        "fixture-comment".into()
-    };
+    chown(&workspace, Some(operator), Some(operator)).unwrap();
+    let issue = seed_tracker(&program, &workspace, operator);
     fs::write(workspace.join("fixture-issue"), &issue).unwrap();
-    fs::set_permissions(workspace.join(".beads"), fs::Permissions::from_mode(0o700)).unwrap();
+    // GH#533: POSIX group access alone cannot admit another UID to this
+    // operator-owned database. The installed broker must opt in explicitly.
+    shared_permissions(&workspace.join(".beads"), operator);
     chown(&workspace, Some(0), Some(0)).unwrap();
     let installer = std::env::var_os("LOUISELM_TEST_BEADS_INSTALLER").expect("explicit installer");
     let digest = Digest::of(&fs::read(&program).unwrap()).to_string();
@@ -143,6 +138,7 @@ pub(super) fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
             .arg("--br")
             .arg(&program)
             .args(["--sha256", digest.strip_prefix("sha256:").unwrap()])
+            .arg("--shared-group")
             .output()
             .unwrap()
     };
@@ -151,6 +147,19 @@ pub(super) fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
     let original = fs::read(TRACKER_CONFIG).unwrap();
     assert!(install().status.success());
     assert_eq!(fs::read(TRACKER_CONFIG).unwrap(), original);
+    let sidecar = workspace.join(".beads/beads.db-fsqlite-ns-gate");
+    chown(&sidecar, Some(BROKER_UID), None).unwrap();
+    assert!(
+        !install().status.success(),
+        "mixed namespace owners must refuse"
+    );
+    chown(&sidecar, Some(operator), None).unwrap();
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o664)).unwrap();
+    assert!(
+        !install().status.success(),
+        "non-exact shared permissions must refuse"
+    );
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o660)).unwrap();
     for path in [
         &workspace,
         &workspace.join(".beads"),
@@ -178,6 +187,63 @@ pub(super) fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
         );
     }
     (program, workspace, issue)
+}
+
+fn seed_tracker(program: &Path, workspace: &Path, operator: u32) -> String {
+    if std::env::var_os("LOUISELM_TEST_BR").is_some() {
+        upstream_as(
+            program,
+            workspace,
+            operator,
+            false,
+            &[
+                "init",
+                "--prefix",
+                "fixture",
+                "--actor",
+                "fixture/setup",
+                "--json",
+            ],
+        );
+        let created: serde_json::Value = serde_json::from_slice(&upstream_as(
+            program,
+            workspace,
+            operator,
+            false,
+            &[
+                "create",
+                "Installed relay target",
+                "--actor",
+                "fixture/setup",
+                "--json",
+            ],
+        ))
+        .unwrap();
+        created["id"].as_str().unwrap().to_owned()
+    } else {
+        // CI exercises installed wiring without acquiring another executable.
+        // Real upstream behavior is separately accepted with LOUISELM_TEST_BR.
+        fs::create_dir(workspace.join(".beads")).unwrap();
+        for suffix in ["", "-fsqlite-ns-gate", "-fsqlite-ns-use"] {
+            fs::write(workspace.join(format!(".beads/beads.db{suffix}")), []).unwrap();
+        }
+        "fixture-comment".into()
+    }
+}
+
+fn shared_permissions(path: &Path, operator: u32) {
+    let directory = fs::symlink_metadata(path).unwrap().is_dir();
+    chown(path, Some(operator), Some(BROKER_UID)).unwrap();
+    fs::set_permissions(
+        path,
+        fs::Permissions::from_mode(if directory { 0o2770 } else { 0o660 }),
+    )
+    .unwrap();
+    if directory {
+        for entry in fs::read_dir(path).unwrap() {
+            shared_permissions(&entry.unwrap().path(), operator);
+        }
+    }
 }
 
 fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
@@ -342,6 +408,19 @@ fn refuse_bad_configuration(manager: &OwnedFd) {
             .success()
     );
     fs::write(TRACKER_CONFIG, &config_bytes).unwrap();
+    let workspace = PathBuf::from(record["workspace"].as_str().unwrap());
+    let sidecar = workspace.join(".beads/beads.db-fsqlite-ns-gate");
+    let owner = fs::metadata(&sidecar).unwrap().uid();
+    chown(&sidecar, Some(BROKER_UID), None).unwrap();
+    assert!(
+        !process(manager, BROKER_UID, false)
+            .0
+            .wait()
+            .unwrap()
+            .success(),
+        "startup must recheck shared namespace ownership"
+    );
+    chown(&sidecar, Some(owner), None).unwrap();
 }
 
 #[test]
@@ -488,5 +567,28 @@ fn verify_mutations(program: &Path, workspace: &Path, issue: &str) {
                 .unwrap()
                 .contains(&"verified-relay".into())
         );
+        let operator = crate::launcher_install::public_runtime_config(&LauncherPaths::system())
+            .unwrap()
+            .operator_uid;
+        let reopened: serde_json::Value = serde_json::from_slice(&upstream_as(
+            program,
+            workspace,
+            operator,
+            true,
+            &["show", issue, "--json"],
+        ))
+        .unwrap();
+        assert_eq!(
+            reopened, updated,
+            "operator must still read broker mutations"
+        );
+        for suffix in ["", "-fsqlite-ns-gate", "-fsqlite-ns-use"] {
+            let metadata =
+                fs::metadata(workspace.join(format!(".beads/beads.db{suffix}"))).unwrap();
+            assert_eq!(
+                (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777),
+                (operator, BROKER_UID, 0o660)
+            );
+        }
     }
 }

@@ -59,18 +59,25 @@ impl BrokerService {
     /// project and executable from Session writes. Installed startup validates
     /// protected provisioning before calling this; an unconfigured service denies mutations.
     /// This blocks while checking the executable digest and existing database.
+    /// `trusted_group` opts this canonical database into upstream Unix group sharing;
+    /// callers must provision its directory as `2770` and database/namespace files
+    /// as `0660`, with that GID and one common owner. `None` preserves single-owner
+    /// admission. Private replica imports never receive this opt-in.
     ///
     /// # Errors
-    /// Refuses relative paths, a missing database, changed executable bytes or I/O failure.
+    /// Refuses relative paths, a missing database, a reserved group ID,
+    /// changed executable bytes or I/O failure.
     pub fn configure_beads_tracker(
         &mut self,
         workspace: &std::path::Path,
         program: &std::path::Path,
         expected_digest: &crate::Digest,
+        trusted_group: Option<u32>,
     ) -> Result<(), BrokerError> {
         if !workspace.is_absolute()
             || !program.is_absolute()
             || !workspace.join(".beads/beads.db").is_file()
+            || trusted_group.is_some_and(|gid| gid == 0 || gid == u32::MAX)
         {
             return Err(BrokerError::InvalidGrant);
         }
@@ -85,6 +92,7 @@ impl BrokerService {
             program,
             program_digest: expected_digest.clone(),
             scratch: self.beads_mutations.scratch(),
+            trusted_group,
         });
         Ok(())
     }

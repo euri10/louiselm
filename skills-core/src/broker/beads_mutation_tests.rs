@@ -64,6 +64,7 @@ fn tracker(root: &std::path::Path) -> TrackerConfig {
         program_digest: Digest::of(b"test-runner"),
         workspace_root: root.to_path_buf(),
         scratch: root.to_path_buf(),
+        trusted_group: None,
     }
 }
 

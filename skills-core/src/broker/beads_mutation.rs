@@ -82,11 +82,26 @@ pub(super) struct TrackerConfig {
     pub(super) program_digest: Digest,
     pub(super) workspace_root: PathBuf,
     pub(super) scratch: PathBuf,
+    pub(super) trusted_group: Option<u32>,
 }
 
 impl TrackerConfig {
     pub(super) fn project_digest(&self) -> String {
         Digest::of(self.workspace_root.as_os_str().as_encoded_bytes()).to_string()
+    }
+
+    /// Explicit sharing for the canonical database only, never private imports.
+    pub(super) fn canonical_environment(&self) -> Vec<(OsString, OsString)> {
+        let Some(gid) = self.trusted_group else {
+            return Vec::new();
+        };
+        vec![
+            (
+                "FSQLITE_TRUSTED_UNIX_DATABASE".into(),
+                self.workspace_root.join(".beads/beads.db").into_os_string(),
+            ),
+            ("FSQLITE_TRUSTED_UNIX_GID".into(), gid.to_string().into()),
+        ]
     }
 }
 
@@ -325,11 +340,13 @@ fn build_invocation(
             .into_os_string(),
         "--json".into(),
     ]);
+    let mut environment = tracker.canonical_environment();
+    environment.push(("TMPDIR".into(), scratch.as_os_str().to_owned()));
     TrackerInvocation {
         program: tracker.program.clone(),
         program_digest: tracker.program_digest.clone(),
         arguments,
-        environment: vec![(OsString::from("TMPDIR"), scratch.as_os_str().to_owned())],
+        environment,
         current_dir: tracker.workspace_root.clone(),
     }
 }

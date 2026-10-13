@@ -57,6 +57,7 @@ fn fixture(
                 &workspace,
                 program,
                 &Digest::of(&fs::read(program).unwrap()),
+                None,
             )
             .unwrap();
     }
@@ -260,21 +261,42 @@ fn completed_comment_replays_and_changed_content_is_refused() {
 }
 
 #[test]
-fn tracker_configuration_rejects_wrong_digest_and_missing_database() {
+fn tracker_configuration_rejects_wrong_digest_missing_database_and_reserved_group() {
     let root = tempfile::tempdir().unwrap();
     let (mut service, _session, peer) = fixture(root.path(), None, None);
     assert!(
         service
-            .configure_beads_tracker(root.path(), Path::new("/bin/true"), &Digest::of(b"wrong"))
+            .configure_beads_tracker(
+                root.path(),
+                Path::new("/bin/true"),
+                &Digest::of(b"wrong"),
+                None
+            )
             .is_err()
     );
     fs::create_dir(root.path().join(".beads")).unwrap();
     fs::write(root.path().join(".beads/beads.db"), []).unwrap();
     assert!(
         service
-            .configure_beads_tracker(root.path(), Path::new("/bin/true"), &Digest::of(b"wrong"))
+            .configure_beads_tracker(
+                root.path(),
+                Path::new("/bin/true"),
+                &Digest::of(b"wrong"),
+                None
+            )
             .is_err()
     );
+    for gid in [0, u32::MAX] {
+        assert!(matches!(
+            service.configure_beads_tracker(
+                root.path(),
+                Path::new("/bin/true"),
+                &Digest::of(&fs::read("/bin/true").unwrap()),
+                Some(gid),
+            ),
+            Err(BrokerError::InvalidGrant)
+        ));
+    }
     peer.close();
 }
 
@@ -294,6 +316,7 @@ fn comment_grant_cannot_follow_a_change_of_canonical_project() {
             &other,
             Path::new("/bin/true"),
             &Digest::of(&fs::read("/bin/true").unwrap()),
+            None,
         )
         .unwrap();
     let query = query(session.authorization(), "test-1");
