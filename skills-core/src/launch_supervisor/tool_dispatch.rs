@@ -58,6 +58,18 @@ impl SessionOwner {
         if let Some(pending) = self.commands.pending.as_mut() {
             pending.abandoned = true;
         }
+        // A finished command whose acknowledgement died with a restarted broker,
+        // or one never authorized, belongs to the old generation; keeping it
+        // would block reception forever. Its broker-audited use stays spent
+        // (louiselm-d6fv.12.5.5.2). A still-running command keeps its record.
+        if self
+            .commands
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.outcome.is_some() || pending.dispatch.is_none())
+        {
+            self.commands.pending = None;
+        }
         self.commands.grants.active = false;
         self.commands.grants.pending = None;
         self.commands.receiving = false;

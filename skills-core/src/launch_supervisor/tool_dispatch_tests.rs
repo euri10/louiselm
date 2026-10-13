@@ -1096,3 +1096,42 @@ fn agent_cannot_supply_its_own_supervisor_attribution_record() {
         [] as [crate::broker::audit::AuditEntry; 0]
     );
 }
+
+#[test]
+fn resume_drops_a_settled_or_unauthorized_command_from_the_old_generation() {
+    // A broker restart can lose the OutcomeAcknowledged of a finished command.
+    // Resume opens a new receive generation; that settled leftover must not
+    // block reception forever (louiselm-d6fv.12.5.5.2). The broker audit keeps
+    // its use spent, so dropping the local record refunds nothing.
+    for (dispatch, outcome) in [(Some(1), Some(CommandOutcome::Unknown)), (None, None)] {
+        let mut harness = Harness::new("true", false);
+        let _ = harness.request("printf ok");
+        let pending = harness.owner.commands.pending.as_mut().unwrap();
+        pending.dispatch = dispatch;
+        pending.outcome = outcome;
+        harness.owner.commands.closed = true;
+        harness.owner.commands.receiving = false;
+        harness.owner.resume_command_reception();
+        assert!(harness.owner.commands.pending.is_none());
+        assert!(!harness.owner.commands.closed);
+        assert!(harness.owner.commands.receiving, "reception is re-armed");
+    }
+}
+
+#[test]
+fn resume_keeps_a_command_that_is_still_running() {
+    let mut harness = Harness::new("true", false);
+    let _ = harness.request("printf ok");
+    let pending = harness.owner.commands.pending.as_mut().unwrap();
+    pending.dispatch = Some(1);
+    pending.outcome = None;
+    harness.owner.commands.closed = true;
+    harness.owner.commands.receiving = false;
+    harness.owner.resume_command_reception();
+    let pending = harness.owner.commands.pending.as_ref().unwrap();
+    assert!(
+        pending.abandoned,
+        "a running command still awaits its actual result"
+    );
+    assert!(!harness.owner.commands.receiving);
+}
