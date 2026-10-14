@@ -1209,6 +1209,8 @@ local function handle_event(self, view, event, completed_state)
       -- Scheduled before teardown, delivered after it: no view is left to host the choice,
       -- and no other consumer will answer. The result has nowhere left to be reported.
       self.decisions:request(view.session, nil, event.respond)
+    elseif event.type == "interaction_requested" then
+      self.decisions:request_interaction(view.session, event.data, event.respond)
     end
     return
   end
@@ -1322,6 +1324,14 @@ local function handle_event(self, view, event, completed_state)
     if self.attention ~= nil then
       self.attention:session_failed(state, run and run.id or nil)
     end
+  elseif event.type == "interaction_requested" then
+    if event.data.kind == "plan_review" and event.data.plan_content ~= nil then
+      view.renderer:append({ "Proposed plan:" })
+      view.renderer:append(nvim.split(event.data.plan_content, "\n", { plain = true }))
+    end
+    self.decisions:request_interaction(view.session, event.data, event.respond)
+  elseif event.type == "interaction_cancelled" then
+    self.decisions:cancel(view.session, event.data.request_ids)
   elseif event.type == "permission_requested" then
     local data = event.data
     local state = view.session:inspect()
@@ -1380,6 +1390,13 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param event louiselm.session.Event
 local function observe_view_event(self, view, event)
+  if event.type == "interaction_requested" then
+    -- Claim before scheduling presentation, so headless fallback cannot race this
+    -- attached consumer. A second view/observer cannot steal the same request.
+    if self.disposed or self.views[event.session_id] ~= view or not event.claim() then
+      return
+    end
+  end
   if event.type == "prompt_dispatched" then
     local pending = view.pending_admission
     if pending ~= nil and (pending.turn_id == nil or pending.turn_id == event.data.turn_id) then

@@ -1,6 +1,7 @@
 local Diff = require("louiselm.ui.diff")
 local Gates = require("louiselm.permission.gates")
 local Inspector = require("louiselm.ui.chat.inspector")
+local Interactions = require("louiselm.ui.chat.interactions")
 local Picker = require("louiselm.ui.picker")
 
 ---@diagnostic disable-next-line: undefined-global -- Neovim injects its runtime API.
@@ -18,6 +19,7 @@ local nvim = vim
 ---@field package queue louiselm.ui.ChatDecision[] Pending decisions across attached Sessions.
 ---@field package disposed boolean Whether this owner has been disposed.
 ---@field request fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: unknown, respond?: fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?) Queue one request.
+---@field request_interaction fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: louiselm.session.InteractionData, respond: fun(result: louiselm.session.InteractionResponse): boolean, string?) Queue a validated vendor interaction in the same slot.
 ---@field cancel fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, request_ids: unknown) Retire Session-cancelled requests.
 ---@field retire fun(self: louiselm.ui.Decisions, session: louiselm.session.Session) Retire a closing Session before selecting the survivor.
 ---@field present_next fun(self: louiselm.ui.Decisions) Present pending work after host changes finish.
@@ -219,9 +221,15 @@ end
 ---@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? ACP responder.
 ---@field answered boolean Whether this decision was already answered or cancelled.
 ---@field details_window? integer Scrollable request inspector, if open.
+---@field interaction? louiselm.session.InteractionData Validated question or plan request; absent for permissions.
+---@field cancel_interaction? fun() Retire owned interaction UI without writing another response.
 
 ---@param decision louiselm.ui.ChatDecision
 local function close_permission_details(decision)
+  if decision.cancel_interaction ~= nil then
+    decision.cancel_interaction()
+    decision.cancel_interaction = nil
+  end
   local window = decision.details_window
   decision.details_window = nil
   if window ~= nil and nvim.api.nvim_win_is_valid(window) then
@@ -245,7 +253,7 @@ local function decision_responder(self, decision)
     end
     decision.answered = true
     local sent, send_error = decision.respond(result, rpc_error)
-    if sent then
+    if sent and decision.interaction == nil then
       self.resolved(decision.session, decision.data.request_id)
     end
     if self.active == decision then
@@ -264,10 +272,14 @@ local function open_decision(self, decision)
   local data = decision.data
   local respond = decision_responder(self, decision)
   if not hosts_view(self, session) then
-    cancel_permission(self, session, respond)
+    if decision.interaction ~= nil then
+      respond({ outcome = "cancelled" })
+    else
+      cancel_permission(self, session, respond)
+    end
     return
   end
-  if type(data.operation) == "table" and data.operation.kind == "file_edit" then
+  if decision.interaction == nil and type(data.operation) == "table" and data.operation.kind == "file_edit" then
     local opened, open_error = self.diff:open(data, respond)
     if not opened then
       self.report_error(session, (open_error or "could not open diff review"))
@@ -285,10 +297,24 @@ local function open_decision(self, decision)
     pump_decisions(self)
     return sent, send_error
   end
-  local call_ok, prompt_error = pcall(prompt_permission, self, session, data, picker_respond)
+  local call_ok, prompt_error
+  if decision.interaction ~= nil then
+    call_ok, prompt_error = pcall(function()
+      decision.cancel_interaction = Interactions.open(decision.interaction, picker_respond, function(message)
+        self.report_error(session, message)
+      end)
+    end)
+  else
+    call_ok, prompt_error = pcall(prompt_permission, self, session, data, picker_respond)
+  end
   if not call_ok then
-    self.report_error(session, "permission picker failed: " .. tostring(prompt_error))
-    cancel_permission(self, session, picker_respond)
+    if decision.interaction ~= nil then
+      self.report_error(session, "interaction picker failed")
+      picker_respond({ outcome = "cancelled" })
+    else
+      self.report_error(session, "permission picker failed: " .. tostring(prompt_error))
+      cancel_permission(self, session, picker_respond)
+    end
   end
 end
 
@@ -308,7 +334,11 @@ pump_decisions = function(self)
     elseif self.disposed then
       -- Disposal answers what it can no longer host: an unanswered request blocks its agent.
       decision.answered = true
-      cancel_permission(self, decision.session, decision.respond)
+      if decision.interaction ~= nil then
+        decision.respond({ outcome = "cancelled" })
+      else
+        cancel_permission(self, decision.session, decision.respond)
+      end
     else
       self.active = decision
       open_decision(self, decision)
@@ -342,7 +372,9 @@ function Decisions:cancel(session, request_ids)
   close_permission_details(active)
   -- A review is ours to close; an open picker is not, and answering it later reports
   -- that the decision was already answered.
-  self.diff:close()
+  if active.interaction == nil then
+    self.diff:close()
+  end
   pump_decisions(self)
 end
 
@@ -364,6 +396,17 @@ function Decisions:request(session, data, respond)
   pump_decisions(self)
 end
 
+---Queue a validated interaction; headless/retired hosts cancel without approving a plan.
+---@param self louiselm.ui.Decisions
+---@param session louiselm.session.Session
+---@param data louiselm.session.InteractionData Validated event data.
+---@param respond fun(result: louiselm.session.InteractionResponse): boolean, string? Consumer-owned answer.
+function Decisions:request_interaction(session, data, respond)
+  self.queue[#self.queue + 1] =
+    { session = session, data = data, interaction = data, respond = respond, answered = false }
+  pump_decisions(self)
+end
+
 ---Retire a detached Session before disposing it; call present_next after selecting the survivor.
 ---@param self louiselm.ui.Decisions
 ---@param session louiselm.session.Session
@@ -376,7 +419,11 @@ function Decisions:retire(session)
       table.remove(self.queue, index)
       if not decision.answered then
         decision.answered = true
-        cancel_permission(self, session, decision.respond)
+        if decision.interaction ~= nil then
+          decision.respond({ outcome = "cancelled" })
+        else
+          cancel_permission(self, session, decision.respond)
+        end
       end
     end
   end
@@ -385,8 +432,14 @@ function Decisions:retire(session)
     self.active = nil
     active.answered = true
     close_permission_details(active)
-    cancel_permission(self, session, active.respond)
-    self.diff:close()
+    if active.interaction ~= nil then
+      active.respond({ outcome = "cancelled" })
+    else
+      cancel_permission(self, session, active.respond)
+    end
+    if active.interaction == nil then
+      self.diff:close()
+    end
   end
 end
 
@@ -420,6 +473,10 @@ function Decisions:dispose()
   self.disposed = true
   self.diff:dispose()
   if self.active ~= nil then
+    if self.active.interaction ~= nil and not self.active.answered then
+      self.active.answered = true
+      self.active.respond({ outcome = "cancelled" })
+    end
     close_permission_details(self.active)
   end
   self.active = nil

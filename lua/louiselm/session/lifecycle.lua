@@ -1,4 +1,5 @@
 local Acp = require("louiselm.acp")
+local Interactions = require("louiselm.acp.interactions")
 local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
 local Validation = require("louiselm.session.validation")
@@ -79,6 +80,12 @@ local nvim = vim
 ---@field respond fun(result: unknown, rpc_error?: louiselm.acp.JsonRpcError): boolean, string? Raw ACP responder.
 ---@field answered boolean Whether a response was already written for this request.
 
+---@class louiselm.session.InteractionEntry
+---@field data louiselm.session.InteractionData Owned request retained for response validation.
+---@field respond fun(result: unknown): boolean, string? Raw ACP responder.
+---@field answered boolean Whether terminal ownership was settled, including a failed write.
+---@field claimed boolean Whether an asynchronous consumer owns the response.
+
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.
 ---@field emitter louiselm.session.EventEmitter Event subscribers.
@@ -111,6 +118,7 @@ local nvim = vim
 ---@field stderr_buffer string Recent stderr output from the agent process, most-recent-last.
 ---@field permission_active? louiselm.session.PermissionEntry Permission request published for a decision.
 ---@field permission_queue louiselm.session.PermissionEntry[] Permission requests waiting for the active one.
+---@field interactions louiselm.session.InteractionEntry[] Pending vendor interactions, in arrival order.
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
@@ -243,7 +251,7 @@ end
 ---@param data unknown
 ---@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
 local function emit(self, event_type, data, respond)
-  if self.state.status == "disposed" then
+  if self.state.status == "disposed" and event_type ~= "interaction_cancelled" then
     return
   end
   if respond ~= nil then
@@ -312,6 +320,32 @@ local function record_observation(self, kind, data)
   })
 end
 
+---Retire ownership before any write or event can reenter the Session. A dead transport
+---cannot receive the cancellation, but consumers must still retire their authority.
+---@param self louiselm.session.Session
+---@return string? error_message First cancellation write failure, without request content.
+local function cancel_interactions(self)
+  local outstanding = self.interactions
+  self.interactions = {}
+  local request_ids, failure = {}, nil
+  for _, entry in ipairs(outstanding) do
+    if not entry.answered then
+      entry.answered = true
+      request_ids[#request_ids + 1] = entry.data.request_id
+    end
+  end
+  for _, entry in ipairs(outstanding) do
+    local sent, err = entry.respond({ outcome = "cancelled" })
+    if not sent then
+      failure = failure or err or "could not cancel xAI interaction"
+    end
+  end
+  if #request_ids > 0 then
+    emit(self, "interaction_cancelled", { request_ids = request_ids })
+  end
+  return failure
+end
+
 ---@param self louiselm.session.Session
 ---@param message string
 ---@param peer_response? boolean Whether an ACP prompt response was actually observed.
@@ -346,6 +380,10 @@ local function fail(self, message, peer_response)
   record_observation(self, "outcome", { outcome = "failed", peer_response = peer_response == true })
   clear_session_failure(self)
   set_status(self, "error")
+  local interaction_error = cancel_interactions(self)
+  if interaction_error ~= nil then
+    message = message .. "; interaction cleanup failed: " .. interaction_error
+  end
   self.permission_active = nil
   self.permission_queue = {}
   local client = self.client
@@ -397,10 +435,19 @@ local function complete_turn(self, result, turn_error)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
+  local completing = self.turn_done_turn ~= self.state.current_turn
+  self.turn_done_turn = self.state.current_turn
+  local interaction_error = cancel_interactions(self)
+  if interaction_error ~= nil then
+    fail(self, interaction_error)
+    return
+  end
+  if self.state.status == "disposed" or self.state.status == "error" then
+    return
+  end
   local callback = self.prompt_callback
   self.prompt_callback = nil
-  if self.turn_done_turn ~= self.state.current_turn then
-    self.turn_done_turn = self.state.current_turn
+  if completing then
     if turn_error ~= nil then
       emit(self, "error", {
         message = turn_error,
@@ -889,7 +936,65 @@ end
 ---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
 local function handle_request(self, request, respond)
   if request.method ~= "session/request_permission" then
-    respond(nil, { code = -32601, message = "Method not found" })
+    local data, parse_error = Interactions.parse(request, self.acp_session_id)
+    if data == nil then
+      local sent, err = respond(nil, parse_error)
+      if not sent then
+        fail(self, err or "could not reject ACP request")
+      end
+      return
+    end
+    if
+      self.state.status == "disposed"
+      or self.state.status == "error"
+      or self.state.status == "cancelling"
+      or (self.state.current_turn > 0 and self.turn_done_turn == self.state.current_turn and not self.agent_running)
+    then
+      local sent, err = respond({ outcome = "cancelled" })
+      if not sent then
+        fail(self, err or "could not cancel late interaction")
+      end
+      return
+    end
+    local entry = { data = data, respond = respond, answered = false, claimed = false }
+    self.interactions[#self.interactions + 1] = entry
+    local function answer(result)
+      if entry.answered then
+        return false, "interaction request was already answered"
+      end
+      local response, validation_error = Interactions.response(entry.data, result)
+      if response == nil then
+        return false, validation_error
+      end
+      entry.answered = true
+      for index, pending in ipairs(self.interactions) do
+        if pending == entry then
+          table.remove(self.interactions, index)
+          break
+        end
+      end
+      local sent, err = entry.respond(response)
+      if not sent then
+        fail(self, err or "could not answer xAI interaction")
+      end
+      return sent, err
+    end
+    self.emitter:emit({
+      type = "interaction_requested",
+      session_id = self.state.id,
+      data = nvim.deepcopy(data),
+      respond = answer,
+      claim = function()
+        if entry.answered or entry.claimed then
+          return false
+        end
+        entry.claimed = true
+        return true
+      end,
+    })
+    if not entry.claimed and not entry.answered then
+      answer({ outcome = "cancelled" })
+    end
     return
   end
   if type(request.params) ~= "table" or request.params.sessionId ~= self.acp_session_id then
@@ -1394,6 +1499,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     permission_policy = options.permission_policy or Permission.policy(),
     permission_store = options.permission_store or Permission.store(),
     permission_queue = {},
+    interactions = {},
     ready_callback = ready_callback,
     ready_callback_called = false,
     turn_done_turn = nil,
@@ -1946,6 +2052,9 @@ end
 ---@return string? turn_id Stable local admission and eventual turn ID, never proof of peer receipt.
 ---@return string? error_message Immediate validation, state, Provider, or random identity error.
 function Session:prompt(prompt, callback, correlation)
+  if #self.interactions > 0 then
+    return nil, "session is waiting for an interaction"
+  end
   if self.state.status ~= "ready" then
     return nil, "session is not ready"
   end
@@ -2129,6 +2238,7 @@ function Session:cancel()
   if client == nil then
     return false, "session has no ACP client"
   end
+  set_status(self, "cancelling")
   local sent, send_error = client:cancel({ sessionId = self.acp_session_id })
   if not sent then
     local message = send_error or "ACP cancel request could not be sent"
@@ -2137,8 +2247,12 @@ function Session:cancel()
   end
   record_observation(self, "cancel_requested", {})
   cancel_permissions(self)
+  local interaction_error = cancel_interactions(self)
+  if interaction_error ~= nil then
+    fail(self, interaction_error)
+    return false, interaction_error
+  end
   clear_session_failure(self)
-  set_status(self, "cancelling")
   return true
 end
 
@@ -2318,6 +2432,7 @@ function Session:dispose()
   settle_admission(self, "cancelled", "disposed")
   clear_session_failure(self)
   set_status(self, "disposed")
+  local interaction_error = cancel_interactions(self)
   self.permission_store:clear_session(self.state.id)
   self.permission_active = nil
   self.permission_queue = {}
@@ -2333,7 +2448,7 @@ function Session:dispose()
   end
   self.emitter:clear()
   self.owner:remove_session(self.state.id)
-  return closed, close_error
+  return closed and interaction_error == nil, close_error or interaction_error
 end
 
 return M

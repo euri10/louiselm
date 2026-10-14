@@ -6,6 +6,8 @@
 ---| "tool_call_finished"
 ---| "permission_requested"
 ---| "permission_cancelled"
+---| "interaction_requested"
+---| "interaction_cancelled"
 ---| "config_options_changed"
 ---| "commands_changed"
 ---| "usage_updated"
@@ -124,6 +126,60 @@
 ---@field type "permission_cancelled"
 ---@field data louiselm.session.PermissionCancelledData
 
+---@class louiselm.session.QuestionOption
+---@field label string Offered answer, preserved verbatim.
+---@field description string Meaning of this option.
+---@field preview? string Read-only content; returned verbatim for a selected single option.
+
+---@class louiselm.session.Question
+---@field question string Question text and wire answer key.
+---@field options louiselm.session.QuestionOption[] Offered choices; empty permits freeform only.
+---@field multi_select boolean Whether several labels may be selected.
+
+---@class louiselm.session.InteractionData
+---@field kind "question"|"plan_review"
+---@field request_id louiselm.acp.JsonRpcId Agent request identifier.
+---@field session_id string Agent-side Session identifier, distinct from the event's local session_id.
+---@field tool_call_id string Tool awaiting the answer.
+---@field mode? "default"|"plan" Present for questions.
+---@field questions? louiselm.session.Question[] Present for questions, in Agent order.
+---@field plan_content? string Optional proposed plan, absent for null.
+
+---@class louiselm.session.QuestionAnnotation
+---@field preview? string Verbatim preview of the selected single option.
+---@field notes? string Freeform answer or notes.
+
+---@class louiselm.session.QuestionAccepted
+---@field outcome "accepted"
+---@field answers table<string, string[]> Question text to selected labels; omit unanswered questions. Freeform-only is {"Other"} plus annotation notes.
+---@field annotations? table<string, louiselm.session.QuestionAnnotation> Single-selection previews and freeform notes.
+
+---@class louiselm.session.QuestionPartial
+---@field outcome "chat_about_this"|"skip_interview" Plan mode only.
+---@field partial_answers table<string, string> Question text to label (several labels joined with ", "); freeform-only is "Other", without notes.
+
+---@class louiselm.session.InteractionCancelled
+---@field outcome "cancelled"
+
+---@class louiselm.session.PlanReviewResponse
+---@field outcome "approved"|"cancelled"|"abandoned"
+---@field feedback? string Only valid for cancelled plan reviews.
+
+---@alias louiselm.session.InteractionResponse louiselm.session.QuestionAccepted|louiselm.session.QuestionPartial|louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse
+
+---@class louiselm.session.InteractionRequestedEvent: louiselm.session.EventBase
+---@field type "interaction_requested"
+---@field data louiselm.session.InteractionData Validated, owned snapshot; never persisted by default.
+---@field claim fun(): boolean Claim asynchronous response ownership during event delivery; only the first claimant succeeds. Without a claim or synchronous answer, headless behavior cancels both kinds, never approves a plan.
+---@field respond fun(result: louiselm.session.InteractionResponse): boolean, string? Validate/send once; malformed answers leave it pending, terminal cleanup makes late responses inert.
+
+---@class louiselm.session.InteractionCancelledData
+---@field request_ids (louiselm.acp.JsonRpcId)[] Requests answered by terminal cleanup.
+
+---@class louiselm.session.InteractionCancelledEvent: louiselm.session.EventBase
+---@field type "interaction_cancelled"
+---@field data louiselm.session.InteractionCancelledData Retire consumer UI without responding again.
+
 ---@class louiselm.session.GenericEvent: louiselm.session.EventBase
 ---@field type "chunk"|"user_chunk"|"thought_chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"
 ---@field data unknown Event-specific payload. For "chunk"/"user_chunk"/"thought_chunk" this is
@@ -141,7 +197,7 @@
 ---`can_continue: boolean`: true permits separately authorized queued work to continue;
 ---false requires operator recovery of the Agent/Session. No failed prompt is replayed.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PromptDispatchedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PromptDispatchedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.InteractionRequestedEvent|louiselm.session.InteractionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

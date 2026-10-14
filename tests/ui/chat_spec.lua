@@ -8671,4 +8671,123 @@ T["chat"]["keeps a streaming turn intact while navigating"] = function()
   chat:dispose()
 end
 
+T["chat"]["claims Grok interactions before scheduled presentation and cancels queued work after UI disposal"] = function()
+  local fixtures = dofile("tests/fixtures/grok_interactions.lua")
+  local protocol = require("louiselm.acp.interactions")
+  local session = fake_session("grok-question", "grok")
+  session.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  local picks, responses, claimed = {}, {}, false
+  nvim.ui.select = function(items, options, callback)
+    assert(not nvim.in_fast_event())
+    picks[#picks + 1] = { items = items, options = options, callback = callback }
+  end
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  local event = {
+    type = "interaction_requested",
+    session_id = session.state.id,
+    data = assert(
+      protocol.parse(
+        { jsonrpc = "2.0", id = 4, method = "x.ai/exit_plan_mode", params = fixtures.plan_review },
+        "grok-acp"
+      )
+    ),
+    claim = function()
+      if claimed then
+        return false
+      end
+      claimed = true
+      return true
+    end,
+    respond = function(result)
+      responses[#responses + 1] = result
+      return true
+    end,
+  }
+  local timer = assert(nvim.uv.new_timer())
+  local emitted = false
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    session:emit(event)
+    emitted = true
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return emitted
+  end, 5))
+  MiniTest.expect.equality(claimed, true)
+  MiniTest.expect.equality(#picks, 0)
+  chat:dispose()
+  rawset(nvim, "schedule", original_schedule)
+  for _, callback in ipairs(scheduled) do
+    callback()
+  end
+  MiniTest.expect.equality(#picks, 0)
+  MiniTest.expect.equality(responses, { { outcome = "cancelled" } })
+end
+
+T["chat"]["presents the Grok plan and routes cancellation while feedback input is active"] = function()
+  local fixtures = dofile("tests/fixtures/grok_interactions.lua")
+  local protocol = require("louiselm.acp.interactions")
+  local session = fake_session("grok-plan", "grok")
+  session.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  ---@type {items: louiselm.ui.InteractionChoice[], options: table, callback: fun(choice: louiselm.ui.InteractionChoice?)}?
+  local pick
+  local input, response_count = nil, 0
+  nvim.ui.select = function(items, options, callback)
+    assert(not nvim.in_fast_event())
+    pick = { items = items, options = options, callback = callback }
+  end
+  nvim.ui.input = function(_, callback)
+    input = callback
+  end
+  session:emit({
+    type = "interaction_requested",
+    session_id = session.state.id,
+    data = assert(
+      protocol.parse(
+        { jsonrpc = "2.0", id = 5, method = "x.ai/exit_plan_mode", params = fixtures.plan_review },
+        "grok-acp"
+      )
+    ),
+    claim = function()
+      return true
+    end,
+    respond = function()
+      response_count = response_count + 1
+      return true
+    end,
+  })
+  assert(nvim.wait(1000, function()
+    return pick ~= nil
+  end, 5))
+  local buffer = assert(chat:buffer(session.state.id))
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(buffer), "Add storage."), true)
+  local selector = assert(pick)
+  for _, choice in ipairs(selector.items) do
+    if selector.options.format_item(choice) == "Request changes" then
+      selector.callback(choice)
+    end
+  end
+  assert(input ~= nil)
+  session:emit({ type = "interaction_cancelled", session_id = session.state.id, data = { request_ids = { 5 } } })
+  assert(nvim.wait(1000, function()
+    return not chat.decisions:is_active()
+  end, 5))
+  input("Late plan feedback")
+  MiniTest.expect.equality(response_count, 0)
+end
+
 return T

@@ -274,6 +274,16 @@ local function emit_api(lines, context)
     "Prompt completion, permission requests, and Agent output arrive as typed events on the Session. doc/api.md in the repository is the complete typed surface, generated from the same annotations.",
     context
   )
+  append_prose(
+    lines,
+    "Grok question and plan-review requests arrive as validated interaction_requested events. A synchronous consumer can respond during delivery; an asynchronous consumer must call event.claim() during delivery before retaining event.respond. Only the first claim succeeds. Without an owner, both requests return cancelled; a headless Session never approves a plan automatically. interaction_cancelled retires consumer authority on completion, failure, cancellation, disposal or process exit. Late responses cannot send twice. See docs/grok-interactions.md for wire outcomes and pending live acceptance.",
+    context
+  )
+  append_prose(
+    lines,
+    "The chat queues Grok interactions with permission decisions across attached Sessions. Questions support multiple selections, freeform notes and read-only previews; plan mode also offers Chat about this and Skip interview. Plan review offers Approve, Request changes and Abandon. :LouiselmCancel cancels the Session owning an active decision, including while plan feedback input is open. Provider-owned selectors may remain visible until dismissed, but their late callbacks have no authority.",
+    context
+  )
 end
 
 ---@class louiselm.docs.Section

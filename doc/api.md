@@ -203,7 +203,7 @@ string|table
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `launch_request: (louiselm.acp.LaunchRequest)?` -- Launch through the installed supervisor instead of the configured command.
 - `name: string?` -- User-facing session name.
-- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+9))?` -- Initial event listener.
+- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
 - `schedule: fun(delay_ms: integer, callback: fun())?` -- Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -215,6 +215,13 @@ string|table
 - `answered: boolean` -- Whether a response was already written for this request.
 - `data: table` -- ACP permission request parameters enriched with louiselm metadata.
 - `respond: fun(result: unknown, rpc_error?: louiselm.acp.JsonRpcError):boolean, string?` -- Raw ACP responder.
+
+### louiselm.session.InteractionEntry
+
+- `answered: boolean` -- Whether terminal ownership was settled, including a failed write.
+- `claimed: boolean` -- Whether an asynchronous consumer owns the response.
+- `data: louiselm.session.InteractionData` -- Owned request retained for response validation.
+- `respond: fun(result: unknown):boolean, string?` -- Raw ACP responder.
 
 ### louiselm.session.Session
 
@@ -229,9 +236,10 @@ string|table
 - `dispose: fun(self: louiselm.session.Session):boolean, string?`
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
+- `interactions: louiselm.session.InteractionEntry[]` -- Pending vendor interactions, in arrival order.
 - `load_session_id: string?` -- Agent-side session identifier to load.
 - `mcp_servers: louiselm.mcp.WireServer[]` -- Owned ACP configuration; never included in inspectable state or recordings.
-- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+9))):fun()`
+- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
 - `option_usage: fun(self: louiselm.session.Session, option_id: string, callback: fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError))`
@@ -633,6 +641,8 @@ louiselm.session.EventType:
     | "tool_call_finished"
     | "permission_requested"
     | "permission_cancelled"
+    | "interaction_requested"
+    | "interaction_cancelled"
     | "config_options_changed"
     | "commands_changed"
     | "usage_updated"
@@ -786,6 +796,77 @@ louiselm.session.EventType:
 - `session_id: string` -- Local session identifier.
 - `type: "permission_cancelled"`
 
+### louiselm.session.QuestionOption
+
+- `description: string` -- Meaning of this option.
+- `label: string` -- Offered answer, preserved verbatim.
+- `preview: string?` -- Read-only content; returned verbatim for a selected single option.
+
+### louiselm.session.Question
+
+- `multi_select: boolean` -- Whether several labels may be selected.
+- `options: louiselm.session.QuestionOption[]` -- Offered choices; empty permits freeform only.
+- `question: string` -- Question text and wire answer key.
+
+### louiselm.session.InteractionData
+
+- `kind: "plan_review"|"question"`
+- `mode: ("default"|"plan")?` -- Present for questions.
+- `plan_content: string?` -- Optional proposed plan, absent for null.
+- `questions: louiselm.session.Question[]?` -- Present for questions, in Agent order.
+- `request_id: string|number|userdata` -- Agent request identifier.
+- `session_id: string` -- Agent-side Session identifier, distinct from the event's local session_id.
+- `tool_call_id: string` -- Tool awaiting the answer.
+
+### louiselm.session.QuestionAnnotation
+
+- `notes: string?` -- Freeform answer or notes.
+- `preview: string?` -- Verbatim preview of the selected single option.
+
+### louiselm.session.QuestionAccepted
+
+- `annotations: table<string, louiselm.session.QuestionAnnotation>?` -- Single-selection previews and freeform notes.
+- `answers: table<string, string[]>` -- Question text to selected labels; omit unanswered questions. Freeform-only is {"Other"} plus annotation notes.
+- `outcome: "accepted"`
+
+### louiselm.session.QuestionPartial
+
+- `outcome: "chat_about_this"|"skip_interview"` -- Plan mode only.
+- `partial_answers: table<string, string>` -- Question text to label (several labels joined with ", "); freeform-only is "Other", without notes.
+
+### louiselm.session.InteractionCancelled
+
+- `outcome: "cancelled"`
+
+### louiselm.session.PlanReviewResponse
+
+- `feedback: string?` -- Only valid for cancelled plan reviews.
+- `outcome: "abandoned"|"approved"|"cancelled"`
+
+### louiselm.session.InteractionResponse
+
+```lua
+louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louiselm.session.QuestionAccepted|louiselm.session.QuestionPartial
+```
+
+### louiselm.session.InteractionRequestedEvent
+
+- `claim: fun():boolean` -- Claim asynchronous response ownership during event delivery; only the first claimant succeeds. Without a claim or synchronous answer, headless behavior cancels both kinds, never approves a plan.
+- `data: louiselm.session.InteractionData` -- Validated, owned snapshot; never persisted by default.
+- `respond: fun(result: louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louiselm.session.QuestionAccepted|louiselm.session.QuestionPartial):boolean, string?` -- Validate/send once; malformed answers leave it pending, terminal cleanup makes late responses inert.
+- `session_id: string` -- Local session identifier.
+- `type: "interaction_requested"`
+
+### louiselm.session.InteractionCancelledData
+
+- `request_ids: (string|number|userdata)[]` -- Requests answered by terminal cleanup.
+
+### louiselm.session.InteractionCancelledEvent
+
+- `data: louiselm.session.InteractionCancelledData` -- Retire consumer UI without responding again.
+- `session_id: string` -- Local session identifier.
+- `type: "interaction_cancelled"`
+
 ### louiselm.session.GenericEvent
 
 - `data: unknown` -- Event-specific payload. For "chunk"/"user_chunk"/"thought_chunk" this is
@@ -801,22 +882,22 @@ louiselm.session.EventType:
 ### louiselm.session.Event
 
 ```lua
-louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+9)
+louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11)
 ```
 
 ### louiselm.session.EventCallback
 
 ```lua
-fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+9))
+fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))
 ```
 
 ### louiselm.session.EventEmitter
 
 - `clear: fun(self: louiselm.session.EventEmitter)`
-- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+9))`
-- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+9))>`
+- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))`
+- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))>`
 - `next_id: integer` -- Next listener identifier.
-- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+9))):fun()` -- Remove the listener.
+- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))):fun()` -- Remove the listener.
 - `order: integer[]` -- Listener registration order.
 
 ## Permission Policies
