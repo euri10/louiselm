@@ -1,6 +1,8 @@
 //! Disposable-VM composition of the installed Brokered launch handoff.
 
 use super::*;
+#[path = "installed_guard_cleanup.rs"]
+mod guard_cleanup;
 #[path = "installed_guard_resume.rs"]
 mod warm;
 
@@ -678,6 +680,7 @@ fn installed_guard_case_for(
         InstalledLaunchSigner::open(&paths, Duration::from_secs(5)).unwrap(),
         warm_resume,
     ));
+    let previous_guard_maps = guard_cleanup::policy_maps();
     let supervisor = LaunchSupervisor::new(
         connect_control_broker(&config, Duration::from_secs(5)).unwrap(),
         signer.clone(),
@@ -720,6 +723,11 @@ fn installed_guard_case_for(
         return;
     }
     let session = launched.unwrap();
+    let guard_maps: Vec<_> = guard_cleanup::policy_maps()
+        .into_iter()
+        .filter(|id| !previous_guard_maps.contains(id))
+        .collect();
+    assert_eq!(guard_maps.len(), 1, "fixture guard policy was not observed");
     let read_markers = |lines: &mpsc::Receiver<String>| {
         marker(lines, "BROKER_GUARD_ACKED");
         let agent_pid: u32 = marker(lines, "BROKER_RUNNING ")
@@ -808,6 +816,9 @@ fn installed_guard_case_for(
                 .unwrap()
                 .release()
                 .unwrap();
+            drop(supervisor);
+            drop(signer);
+            guard_cleanup::assert_released(&guard_maps);
             return;
         }
         controller_peer_output
@@ -968,6 +979,9 @@ fn installed_guard_case_for(
             .release()
             .unwrap();
     }
+    drop(supervisor);
+    drop(signer);
+    guard_cleanup::assert_released(&guard_maps);
 }
 
 fn provider_exchange(
