@@ -158,4 +158,56 @@ T["alerts"]["deduplicates escalating thresholds per reset cycle and ignores stal
   MiniTest.expect.equality(#alerts, 1)
 end
 
+T["countdowns"] = MiniTest.new_set({
+  parametrize = {
+    { 1, "1m" },
+    { 60, "1m" },
+    { 61, "2m" },
+    { 3599, "60m" },
+    { 3600, "1h" },
+    { 3601, "2h" },
+    { 86399, "24h" },
+    { 86400, "1d 0h" },
+    { 86401, "1d 0h" },
+    { 90000, "1d 1h" },
+    { 6 * 86400 + 1800, "6d 0h" },
+    { 7 * 86400 - 1, "6d 23h" },
+    { 7 * 86400, "7d 0h" },
+  },
+})
+
+T["countdowns"]["agree across summary, alerts, details and credit expiry using the supplied clock"] = function(
+  seconds,
+  expected
+)
+  local resets_at = NOW + seconds
+  local value = state("fresh", {
+    { id = "codex", windows = { { used_percent = 81, duration_mins = 10080, resets_at = resets_at } } },
+  }, "codex")
+  value.snapshot.reset_credits = { available_count = 1, credits = { { title = "Reset", expires_at = resets_at } } }
+
+  MiniTest.expect.equality(Limits.summary(value, NOW), "limits 19%/7d ↻" .. expected)
+  local alerts = Limits.threshold_alerts(value, {}, NOW)
+  MiniTest.expect.equality(alerts[1].message, "codex codex 7d has 19% remaining; resets in " .. expected)
+  local lines = Limits.render(value, NOW)
+  local reset = "in " .. expected .. " (" .. os.date("%Y-%m-%d %H:%M %Z", resets_at) .. ")"
+  MiniTest.expect.equality(nvim.tbl_contains(lines, "Window: 7d · Resets: " .. reset), true)
+  MiniTest.expect.equality(nvim.tbl_contains(lines, "- Reset · Expires: " .. reset), true)
+end
+
+T["render"] = MiniTest.new_set({ parametrize = { { 0 }, { -1 } } })
+
+T["render"]["marks reset and credit expiry times as passed at the supplied clock"] = function(seconds)
+  local resets_at = NOW + seconds
+  local value = state("stale", {
+    { id = "codex", windows = { { used_percent = 81, duration_mins = 10080, resets_at = resets_at } } },
+  }, "codex")
+  value.snapshot.reset_credits = { available_count = 1, credits = { { title = "Reset", expires_at = resets_at } } }
+
+  local lines = Limits.render(value, NOW)
+  local reset = "reset time passed (" .. os.date("%Y-%m-%d %H:%M %Z", resets_at) .. ")"
+  MiniTest.expect.equality(nvim.tbl_contains(lines, "Window: 7d · Resets: " .. reset), true)
+  MiniTest.expect.equality(nvim.tbl_contains(lines, "- Reset · Expires: " .. reset), true)
+end
+
 return T

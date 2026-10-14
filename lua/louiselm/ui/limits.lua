@@ -35,7 +35,7 @@ local function relative_reset(timestamp, now)
   if seconds < 86400 then
     return string.format("%dh", math.ceil(seconds / 3600))
   end
-  return string.format("%dd", math.ceil(seconds / 86400))
+  return string.format("%dd %dh", math.floor(seconds / 86400), math.floor(seconds % 86400 / 3600))
 end
 
 ---@param timestamp integer
@@ -211,19 +211,10 @@ function M.threshold_alerts(state, seen, now)
 end
 
 ---@param timestamp integer
+---@param now integer
 ---@return string
-local function reset_time(timestamp)
-  local seconds = timestamp - os.time()
-  local relative
-  if seconds <= 0 then
-    relative = "reset time passed"
-  elseif seconds < 3600 then
-    relative = string.format("in %dm", math.max(1, math.ceil(seconds / 60)))
-  elseif seconds < 86400 then
-    relative = string.format("in %dh", math.ceil(seconds / 3600))
-  else
-    relative = string.format("in %dd", math.ceil(seconds / 86400))
-  end
+local function reset_time(timestamp, now)
+  local relative = timestamp <= now and "reset time passed" or "in " .. relative_reset(timestamp, now)
   return relative .. " (" .. os.date("%Y-%m-%d %H:%M %Z", timestamp) .. ")"
 end
 
@@ -231,6 +222,7 @@ end
 ---@param now? integer Current Unix time for deterministic rendering.
 ---@return string[] lines
 function M.render(state, now)
+  now = now or os.time()
   local lines = {
     "# Account limits",
     "",
@@ -241,7 +233,7 @@ function M.render(state, now)
     lines[#lines + 1] = "Updated: "
       .. os.date("%Y-%m-%d %H:%M:%S %Z", state.updated_at)
       .. " ("
-      .. relative_age(state.updated_at, now or os.time())
+      .. relative_age(state.updated_at, now)
       .. ")"
   end
   if state.error ~= nil then
@@ -279,7 +271,7 @@ function M.render(state, now)
         lines[#lines + 1] = "Window: "
           .. duration(window.duration_mins)
           .. " · Resets: "
-          .. reset_time(window.resets_at)
+          .. reset_time(window.resets_at, now)
       end
       if bucket.reached_type ~= nil then
         local reached = "Reached: " .. bucket.reached_type
@@ -306,7 +298,7 @@ function M.render(state, now)
     for _, credit in ipairs(snapshot.reset_credits.credits or {}) do
       local label = credit.title or credit.id or "reset credit"
       if credit.expires_at ~= nil then
-        label = label .. " · Expires: " .. reset_time(credit.expires_at)
+        label = label .. " · Expires: " .. reset_time(credit.expires_at, now)
       end
       lines[#lines + 1] = "- " .. label
       if credit.description ~= nil then

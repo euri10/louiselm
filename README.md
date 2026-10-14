@@ -270,8 +270,12 @@ from an adapter advertising the extension; Agents without support, including
 the stock Codex quickstart, show `limits n/a`:
 
 ```text
-Your turn · Review · codex · limits 98%/7d ↻7d · GPT-6 e=high +2 · ctx 53% · compact ×3
+Your turn · Review · codex · limits 98%/7d ↻6d 0h · GPT-6 e=high +2 · ctx 53% · compact ×3
 ```
+
+`/7d` is the full quota window; `↻6d 0h` is the time until reset, shown as
+whole days and remaining hours. The limits detail view also shows the absolute
+reset time.
 
 `+N` counts hidden options, including model or effort when they no longer fit.
 The options block folds to `opts` in narrow windows; Agents without supported
