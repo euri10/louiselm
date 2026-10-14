@@ -186,6 +186,18 @@ local function values(options)
   return result
 end
 
+---@param timeout_ms integer
+---@return string reason
+local function deadline_reason(timeout_ms)
+  for _, unit in ipairs({ { 3600000, "hour" }, { 60000, "minute" }, { 1000, "second" }, { 1, "ms" } }) do
+    if timeout_ms % unit[1] == 0 then
+      local count = timeout_ms / unit[1]
+      return string.format("Timed out after %d %s%s", count, unit[2], count ~= 1 and unit[2] ~= "ms" and "s" or "")
+    end
+  end
+  error("validated deadline has no unit")
+end
+
 ---@param op louiselm.ui.SessionControlOperation
 ---@param changes? table
 local function update(op, changes)
@@ -460,9 +472,11 @@ function Control:request(request)
         if self.disposed or created.terminal or created.completion_received then
           return
         end
-        finish(created, "timed_out", "Session operation deadline expired")
+        local reason = deadline_reason(request.timeout_ms or 300000)
+        finish(created, "timed_out", reason)
         if created.session then
-          local disposed, dispose_error = created.session:dispose()
+          local disposed, dispose_error = created.session:dispose(reason)
+          update(created, { status = created.session:inspect().status })
           if not disposed then
             update(created, { error = dispose_error or "deadline disposal failed" })
           end

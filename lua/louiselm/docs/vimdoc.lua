@@ -347,6 +347,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Delegated Sessions have a separate operation deadline. Expiry shows Timed out after the configured duration. In a stopped ordinary Session with a saved conversation, click Resume this Session in the winbar or run :LouiselmResume. Loading replaces the stopped view only after success and retains its latest draft and staged context; failed loads leave them available for retry. No prompt or queued follow-up is sent automatically. Managed Sessions require their Run recovery. From an active Session, :LouiselmResume opens the workspace history picker; :LouiselmResume! always opens history across all workspaces.",
+        context
+      )
+      append_prose(
+        lines,
         "Agents supporting the Session activity extension can run again after a prompt completes, for example when Claude wakes for a scheduled check. LouiseLM shows Model responding and queues input until the Agent reports idle. Each client prompt still completes once. Cancellation requests a stop; the Session remains active until the Agent acknowledges it. Agents without this extension retain their ordinary prompt lifecycle.",
         context
       )

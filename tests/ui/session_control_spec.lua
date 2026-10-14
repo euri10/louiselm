@@ -72,8 +72,9 @@ local function fixture(skills_policy, skill_catalog)
       self.state.status = "cancelling"
       return true
     end
-    function child:dispose()
+    function child:dispose(reason)
       self.state.status = "disposed"
+      self.state.disposal_reason = reason
       self.disposed = true
       self:emit("state_changed", { status = "disposed" })
       return true
@@ -411,6 +412,39 @@ T["startup deadline disposes its child and ignores late readiness"] = function()
   MiniTest.expect.equality(#children[1].prompts, 0)
   MiniTest.expect.equality(assert(control:request(req)).phase, "timed_out")
   MiniTest.expect.equality(#children, 1)
+end
+
+T["running deadline retains the reason and final child status without replay"] = function()
+  -- Observed: codex/01a13881-37a8-7c93-a011-777c7ab3edc4, operation
+  -- 01a1387a-b795-7113-b3a2-c6f6b5a54465:next-1, timeout_ms=3600000.
+  -- Proxy sessions/<ACP id>/log.jsonl:2565 exits at 04:42:34.210Z.
+  -- The controller said timed_out/status=prompting; its chat showed Unavailable.
+  local control, children, _, ready = fixture()
+  local req = request("running-deadline")
+  req.timeout_ms = 100
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1)
+  wait_for(function()
+    return #children[1].prompts == 1
+  end)
+  local child = children[1]
+  child.state.status = "prompting"
+  child:emit("admission_settled", { result = "dispatched" })
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "timed_out"
+  end)
+  local snapshot = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(snapshot.status, "disposed")
+  MiniTest.expect.equality(child:inspect().disposal_reason, "Timed out after 100 ms")
+  MiniTest.expect.equality(snapshot.error, "Timed out after 100 ms")
+  child.complete({ stopReason = "end_turn" })
+  assert(control:request(req))
+  MiniTest.expect.equality(#children, 1)
+  MiniTest.expect.equality(#child.prompts, 1)
+  MiniTest.expect.equality(assert(control:request({ action = "inspect", id = req.id })).phase, "timed_out")
 end
 
 T["controller disposal prevents an already queued option acknowledgment from sending"] = function()

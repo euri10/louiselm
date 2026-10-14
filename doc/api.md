@@ -166,6 +166,7 @@ string|table
 - `context: (louiselm.session.ContextUsage)?` -- Latest agent-reported context state.
 - `cost: (louiselm.session.Cost)?` -- Latest agent-reported cumulative cost.
 - `current_turn: integer` -- Accepted prompt attempts in this local Session, including failed admission; not durable identity.
+- `disposal_reason: string?` -- Operator-facing reason retained after explicit disposal.
 - `embedded_context: boolean` -- Whether the Agent accepts embedded resource prompt context.
 - `id: string` -- Local session identifier.
 - `manual_pair: { model: boolean|string, effort: boolean|string }?` -- Whole effective pair protected after an operator option change.
@@ -233,7 +234,7 @@ string|table
 - `client: (louiselm.acp.Client)?` -- ACP client.
 - `codex_turn_failed: boolean?` -- Active prompt received systemError before its terminal response.
 - `definition: louiselm.agent.Definition` -- Agent process definition.
-- `dispose: fun(self: louiselm.session.Session):boolean, string?`
+- `dispose: fun(self: louiselm.session.Session, reason?: string):boolean, string?`
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `interactions: louiselm.session.InteractionEntry[]` -- Pending vendor interactions, in arrival order.

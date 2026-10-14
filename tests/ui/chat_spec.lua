@@ -4833,6 +4833,285 @@ T["chat"]["reports history read errors and ignores late history after Disposal"]
   end
 end
 
+local function recovery_fixture()
+  local source = fake_session("source", "codex")
+  source.state.status = "disposed"
+  source.state.disposal_reason = "Timed out after 1 hour"
+  source.state.acp_session_id = "retained-acp"
+  source.state.working_dir = "/tmp/project"
+  source.state.name = "My work"
+  local api = fake_api()
+  local loads = {}
+  function api:load_session(agent, id, options, callback)
+    local session = fake_session("restored-" .. (#loads + 1), agent)
+    session.state.acp_session_id = id
+    session.state.source = "loaded"
+    session.state.status = "starting"
+    session.state.name = options.name
+    session.state.working_dir = options.cwd
+    loads[#loads + 1] = { session = session, callback = callback, options = options }
+    return session
+  end
+  function api:discover_sessions()
+    error("current Session recovery must not open discovery")
+  end
+  function api:list_sessions()
+    local ids = {}
+    for _, load in ipairs(loads) do
+      if not load.session.disposed then
+        ids[#ids + 1] = load.session.state.id
+      end
+    end
+    return ids
+  end
+  local chat = assert(Chat.new(api, { start_insert_on_switch = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+    source:dispose()
+    for _, load in ipairs(loads) do
+      load.session:dispose()
+    end
+  end)
+  assert(chat:attach(source))
+  chat.views.source.renderer:append({ "original history" })
+  return chat, source, loads, api
+end
+
+local function finish_recovery(load, failure)
+  local delivered = false
+  local event = assert(nvim.uv.new_async(function()
+    local session = load.session
+    assert(nvim.in_fast_event())
+    if failure == nil then
+      session:emit({
+        type = "chunk",
+        session_id = session.state.id,
+        data = { content = { type = "text", text = "replayed history" } },
+      })
+    end
+    session.state.status = failure and "error" or "ready"
+    session:emit({ type = "state_changed", session_id = session.state.id, data = { status = session.state.status } })
+    load.callback(failure == nil and session or nil, failure)
+    nvim.schedule(function()
+      delivered = true
+    end)
+  end))
+  MiniTest.finally(function()
+    event:close()
+  end)
+  event:send()
+  assert(nvim.wait(1000, function()
+    return delivered
+  end, 1))
+end
+
+T["chat"]["resumes a timed-out Session directly with its latest draft and no automatic prompt"] = function()
+  local chat, _, loads = recovery_fixture()
+  local original = chat:buffer()
+  local bar = nvim.api.nvim_eval_statusline(nvim.wo.winbar, { use_winbar = true, maxwidth = 300 }).str
+  assert(bar:find("Timed out after 1 hour", 1, true))
+  assert(bar:find("Resume this Session", 1, true))
+  assert(chat:winbar_click(97))
+  assert(chat:resume_session())
+  MiniTest.expect.equality(#loads, 1)
+  MiniTest.expect.equality(loads[1].options, { cwd = "/tmp/project", name = "My work" })
+  MiniTest.expect.equality(chat:buffer(), original)
+  assert(chat:queue_context({ label = "notes", text = "unsent context" }))
+  local draft = chat.views.source.draft
+  draft:select_skill(
+    { name = "review", path = "/tmp/review/SKILL.md", description = "Review", explicit_only = false },
+    true
+  )
+  chat.views.source.renderer:set_prefix(draft.context_prefix, "my latest draft")
+  draft:queue("must remain unsent")
+  finish_recovery(loads[1])
+  MiniTest.expect.equality(chat:session_id(), "codex/retained-acp")
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(original), false)
+  local restored = chat.views[loads[1].session.state.id]
+  MiniTest.expect.equality(restored.renderer:prompt_text(), "[context: notes] [context: skill: review] my latest draft")
+  MiniTest.expect.equality(restored.draft.contexts[1].text, "unsent context")
+  MiniTest.expect.equality(restored.draft.pending_skill.name, "review")
+  MiniTest.expect.equality(restored.draft.queued_prompt, nil)
+  MiniTest.expect.equality(loads[1].session.prompts, {})
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(chat:buffer()), "replayed history"), true)
+  MiniTest.expect.equality(chat.views.source, nil)
+end
+
+T["chat"]["failed recovery retains history and staged input for a retry"] = function()
+  local chat, _, loads = recovery_fixture()
+  local original = chat:buffer()
+  local previous_notify = nvim.notify
+  local messages = {}
+  rawset(nvim, "notify", function(message)
+    messages[#messages + 1] = message
+  end)
+  MiniTest.finally(function()
+    nvim.notify = previous_notify
+  end)
+  assert(chat:queue_context({ label = "notes", text = "keep this" }))
+  chat.views.source.renderer:set_prefix(chat.views.source.draft.context_prefix, "continue later")
+  assert(chat:resume_session())
+  finish_recovery(loads[1], "ACP session/load failed")
+  MiniTest.expect.equality(chat:buffer(), original)
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(original), "original history"), true)
+  MiniTest.expect.equality(chat.views.source.renderer:prompt_text(), "[context: notes] continue later")
+  MiniTest.expect.equality(loads[1].session.disposed, true)
+  MiniTest.expect.equality(chat.views[loads[1].session.state.id], nil)
+  MiniTest.expect.equality(messages, { "louiselm: ACP session/load failed" })
+  assert(chat:resume_session())
+  MiniTest.expect.equality(#loads, 2)
+  finish_recovery(loads[2])
+  MiniTest.expect.equality(chat:session_id(), "codex/retained-acp")
+end
+
+T["chat"]["closing the source or Chat during recovery disposes the load and ignores late readiness"] = function()
+  for _, close_chat in ipairs({ false, true }) do
+    local chat, _, loads = recovery_fixture()
+    assert(chat:resume_session())
+    if close_chat then
+      chat:dispose()
+    else
+      assert(chat:close_session())
+    end
+    MiniTest.expect.equality(loads[1].session.disposed, true)
+    finish_recovery(loads[1])
+    MiniTest.expect.equality(chat:buffer(), nil)
+    MiniTest.expect.equality(next(chat.views), nil)
+    MiniTest.expect.equality(loads[1].session.prompts, {})
+  end
+end
+
+T["chat"]["closing a pending recovery permits retry and ignores the abandoned load"] = function()
+  local chat, _, loads = recovery_fixture()
+  assert(chat:resume_session())
+  assert(chat:switch(loads[1].session.state.id))
+  assert(chat:close_session())
+  MiniTest.expect.equality(chat.current_id, "source")
+  assert(chat:resume_session())
+  MiniTest.expect.equality(#loads, 2)
+  finish_recovery(loads[1])
+  MiniTest.expect.equality(chat.current_id, "source")
+  MiniTest.expect.equality(loads[2].session.disposed, false)
+  finish_recovery(loads[2])
+  MiniTest.expect.equality(chat.current_id, "restored-2")
+end
+
+T["chat"]["disposal retires an open permission without allowing a late approval"] = function()
+  local chat, source, loads = recovery_fixture()
+  source.state.status = "ready"
+  local choose
+  local responses = {}
+  nvim.ui.select = function(_, _, callback)
+    choose = callback
+  end
+  source:emit({
+    type = "permission_requested",
+    session_id = "source",
+    data = { operation = { kind = "command", command = { "true" } }, options = { "allow", "deny" } },
+    respond = function(result)
+      responses[#responses + 1] = result
+      return true
+    end,
+  })
+  assert(nvim.wait(1000, function()
+    return choose ~= nil
+  end, 1))
+  assert(chat.decisions:is_active())
+  source.state.status = "disposed"
+  source:emit({ type = "state_changed", session_id = "source", data = { status = "disposed" } })
+  assert(nvim.wait(1000, function()
+    return not chat.decisions:is_active()
+  end, 1))
+  assert(chat:resume_session())
+  choose("allow")
+  MiniTest.expect.equality(responses, { { outcome = { outcome = "cancelled" } } })
+  finish_recovery(loads[1])
+  MiniTest.expect.equality(loads[1].session.prompts, {})
+end
+
+T["chat"]["a failed Session retires its open permission before direct recovery"] = function()
+  local chat, source, loads = recovery_fixture()
+  source.state.status = "ready"
+  local choose
+  nvim.ui.select = function(_, _, callback)
+    choose = callback
+  end
+  source:emit({
+    type = "permission_requested",
+    session_id = "source",
+    data = { operation = { kind = "unknown" }, options = { "allow", "deny" } },
+    respond = function()
+      return true
+    end,
+  })
+  assert(nvim.wait(1000, function()
+    return choose ~= nil
+  end, 1))
+  source.state.status = "error"
+  source:emit({ type = "state_changed", session_id = "source", data = { status = "error" } })
+  assert(nvim.wait(1000, function()
+    return not chat.decisions:is_active()
+  end, 1))
+  assert(chat:resume_session())
+  choose(nil)
+  finish_recovery(loads[1])
+end
+
+T["chat"]["recovery cannot bypass a managed Session's Run or broker"] = function()
+  for _, binding in ipairs({ "broker", "run" }) do
+    local chat, source, loads = recovery_fixture()
+    if binding == "broker" then
+      source.state.broker_session_id = "managed"
+    else
+      source.owner_run = { id = "managed" }
+    end
+    MiniTest.expect.equality({ chat:resume_current_session() }, { false, "managed Sessions require Run recovery" })
+    MiniTest.expect.equality(#loads, 0)
+    chat:dispose()
+  end
+end
+
+T["chat"]["recovery refuses a duplicate live conversation and permits retry after an immediate failure"] = function()
+  local chat, _, loads, api = recovery_fixture()
+  local original_load = api.load_session
+  local live = fake_session("existing", "codex")
+  live.state.acp_session_id = "retained-acp"
+  function api:list_sessions()
+    return { "existing" }
+  end
+  function api:get_session()
+    return live
+  end
+  MiniTest.expect.equality(
+    { chat:resume_current_session() },
+    { false, "this conversation already has an active Session; switch to it" }
+  )
+  MiniTest.expect.equality(#loads, 0)
+  live:dispose()
+  function api:load_session()
+    return nil, "Agent executable missing"
+  end
+  local original = chat:buffer()
+  MiniTest.expect.equality({ chat:resume_session() }, { false, "Agent executable missing" })
+  MiniTest.expect.equality(chat:buffer(), original)
+  api.load_session = original_load
+  assert(chat:resume_session())
+  MiniTest.expect.equality(#loads, 1)
+end
+
+T["chat"]["recovery finishing in the background preserves the newly focused Session"] = function()
+  local chat, _, loads = recovery_fixture()
+  assert(chat:resume_session())
+  local other = fake_session("other", "claude")
+  assert(chat:attach(other))
+  local focused = chat:buffer()
+  finish_recovery(loads[1])
+  MiniTest.expect.equality(chat:buffer(), focused)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), focused)
+  MiniTest.expect.equality(chat.views.source, nil)
+  MiniTest.expect.equality(loads[1].session.prompts, {})
+end
+
 T["chat"]["ordinary resume clears failure only after successful attached load"] = function()
   for _, outcome in ipairs({ "ready", "error", "disposed" }) do
     local restored = fake_session("loaded-local-id", "codex")

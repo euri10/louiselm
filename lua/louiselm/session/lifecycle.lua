@@ -30,6 +30,7 @@ local nvim = vim
 ---@field acp_session_id? string Agent-side persistent conversation identifier, once available.
 ---@field broker_session_id? string Trusted Control broker Session binding, distinct from the ACP Session ID.
 ---@field status louiselm.session.Status Lifecycle state.
+---@field disposal_reason? string Operator-facing reason retained after explicit disposal.
 ---@field working_dir string ACP working directory.
 ---@field current_turn integer Accepted prompt attempts in this local Session, including failed admission; not durable identity.
 ---@field turn_identity? louiselm.session.TurnIdentity Owned identity for the latest accepted attempt; later option changes never rewrite it.
@@ -129,7 +130,7 @@ local nvim = vim
 ---@field set_auto fun(self: louiselm.session.Session, enabled: boolean, callback?: fun(error?: string)): boolean, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
----@field dispose fun(self: louiselm.session.Session): boolean, string?
+---@field dispose fun(self: louiselm.session.Session, reason?: string): boolean, string?
 
 -- ACP `RequestError.resourceNotFound`: the agent-side session store no longer
 -- has this session id, distinct from any other session/load failure mode.
@@ -251,7 +252,11 @@ end
 ---@param data unknown
 ---@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
 local function emit(self, event_type, data, respond)
-  if self.state.status == "disposed" and event_type ~= "interaction_cancelled" then
+  if
+    self.state.status == "disposed"
+    and event_type ~= "interaction_cancelled"
+    and not (event_type == "state_changed" and type(data) == "table" and data.status == "disposed")
+  then
     return
   end
   if respond ~= nil then
@@ -2422,15 +2427,20 @@ end
 
 ---Dispose this session, terminate its ACP process, and remove it from its registry.
 ---@param self louiselm.session.Session
+---@param reason? string Non-empty, single-line explanation retained in the terminal snapshot.
 ---@return boolean disposed
----@return string? error_message Process close error, if any.
-function Session:dispose()
+---@return string? error_message Invalid reason or process close error.
+function Session:dispose(reason)
   if self.state.status == "disposed" then
     return true
+  end
+  if reason ~= nil and (type(reason) ~= "string" or reason == "" or reason:find("[%z\r\n]")) then
+    return false, "disposal reason must be a non-empty single-line string without NUL"
   end
   record_observation(self, "outcome", { outcome = "disposed", peer_response = false })
   settle_admission(self, "cancelled", "disposed")
   clear_session_failure(self)
+  self.state.disposal_reason = reason
   set_status(self, "disposed")
   local interaction_error = cancel_interactions(self)
   self.permission_store:clear_session(self.state.id)

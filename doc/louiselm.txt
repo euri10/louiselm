@@ -113,6 +113,16 @@ Sessions                                                   *louiselm-sessions*
   cannot respond. LouiseLM never resubmits an interrupted prompt
   automatically.
 
+  Delegated Sessions have a separate operation deadline. Expiry shows Timed
+  out after the configured duration. In a stopped ordinary Session with a
+  saved conversation, click Resume this Session in the winbar or run
+  |:LouiselmResume|. Loading replaces the stopped view only after success and
+  retains its latest draft and staged context; failed loads leave them
+  available for retry. No prompt or queued follow-up is sent automatically.
+  Managed Sessions require their Run recovery. From an active Session,
+  |:LouiselmResume| opens the workspace history picker; |:LouiselmResume|!
+  always opens history across all workspaces.
+
   Agents supporting the Session activity extension can run again after a
   prompt completes, for example when Claude wakes for a scheduled check.
   LouiseLM shows Model responding and queues input until the Agent reports
@@ -414,7 +424,7 @@ Commands                                                   *louiselm-commands*
     Arguments: one required
 
 :LouiselmResume[!]                                           *:LouiselmResume*
-    Resume a prior louiselm session; use ! for all workspaces
+    Recover the stopped Session or select a prior one; ! lists all workspaces
     Arguments: none
 
 :LouiselmResumePark                                      *:LouiselmResumePark*

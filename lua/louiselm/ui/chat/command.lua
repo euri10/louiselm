@@ -722,14 +722,18 @@ function M.register()
     report_error(session_error)
   end, { desc = "Create a separate louiselm session", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmResume", function(arguments)
-    local current = ensure_chat()
-    if current == nil then
-      return
-    end
-    local _, resume_error = current:resume_session(arguments.bang)
-    report_error(resume_error)
-  end, { bang = true, desc = "Resume a prior louiselm session; use ! for all workspaces", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmResume",
+    function(arguments)
+      local current = ensure_chat()
+      if current == nil then
+        return
+      end
+      local _, resume_error = current:resume_session(arguments.bang)
+      report_error(resume_error)
+    end,
+    { bang = true, desc = "Recover the stopped Session or select a prior one; ! lists all workspaces", force = true }
+  )
 
   nvim.api.nvim_create_user_command("LouiselmResumePark", function()
     if not Config.enabled(configured, "workflows") then

@@ -3247,6 +3247,47 @@ T["new"]["cancels and disposes without allowing late process results"] = functio
   restore_processes(original_system)
 end
 
+T["new"]["publishes disposal once with its reason before ignoring late events"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent" } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local changes = {}
+  local chat = assert(require("louiselm.ui.chat").new(api, { start_insert_on_switch = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  session:on(function(event)
+    if event.type == "state_changed" then
+      changes[#changes + 1] = { event.data.status, event.data.previous_status, session:inspect().disposal_reason }
+    end
+  end)
+  assert(session:dispose("Timed out after 1 hour"))
+  assert(session:dispose("must not replace the first reason"))
+  process.on_exit({ code = 137, signal = 0, stdout = "", stderr = "" })
+  MiniTest.expect.equality(changes, { { "disposed", "ready", "Timed out after 1 hour" } })
+  MiniTest.expect.equality(session:inspect().disposal_reason, "Timed out after 1 hour")
+  MiniTest.expect.equality(api:list_sessions(), {})
+  assert(nvim.wait(1000, function()
+    local header = nvim.api.nvim_buf_get_lines(chat:buffer(), 1, 2, false)[1]
+    return header:find("status=disposed · display=Timed out after 1 hour", 1, true) ~= nil
+  end, 1))
+  local bar = nvim.api.nvim_eval_statusline(nvim.wo.winbar, { use_winbar = true, maxwidth = 300 }).str
+  assert(bar:find("Resume this Session", 1, true))
+end
+
+T["new"]["rejects unsafe disposal reasons before changing state"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent" } }))
+  local session = start_ready_session(api, processes, "agent", "/tmp/project")
+  for _, reason in ipairs({ "", "two\nlines", "carriage\rreturn", "nul\0byte", false }) do
+    local disposed, err = session:dispose(reason)
+    MiniTest.expect.equality(disposed, false)
+    assert(err)
+    MiniTest.expect.equality(session:inspect().status, "ready")
+  end
+end
+
 T["new"]["rejects unsupported agent requests but ignores notifications"] = function()
   local processes, original_system = fake_processes()
   local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))

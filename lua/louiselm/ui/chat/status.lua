@@ -48,6 +48,7 @@ local STATUS_HIGHLIGHTS = {
 local WINBAR_CLICK_HANDLER = "v:lua.__louiselm_winbar_click"
 local LIMITS_CLICK_TARGET = 99
 local OPTIONS_CLICK_TARGET = 98
+local RESUME_CLICK_TARGET = 97
 
 ---@param value number
 ---@return string
@@ -182,6 +183,9 @@ end
 ---@param state louiselm.session.State
 ---@return string
 local function turn_label(state)
+  if state.status == "disposed" and state.disposal_reason ~= nil then
+    return single_line(state.disposal_reason)
+  end
   if state.recording_error ~= nil then
     return "Recording failed — retry to recover"
   end
@@ -464,16 +468,25 @@ end
 ---@class louiselm.ui.OptionsTarget
 ---@field session string Session whose options should be inspected.
 
+---@class louiselm.ui.ResumeTarget
+---@field resume string Stopped Session whose conversation should be resumed.
+
 ---Render the active Session segment from a snapshot and optional Limits summary.
 ---@param state louiselm.session.State
 ---@param limits? louiselm.ui.StatusLimits
 ---@param available? integer Display columns reserved for the active Session.
+---@param allow_resume? boolean False when the owning Run requires its own recovery.
 ---@return string winbar
 ---@return string? limits_agent Absent when no Limits summary is supplied.
 ---@return boolean options_visible
 ---@return {first: integer, last: integer}? agent_span One-based display columns of the visible Agent name.
-function M.session_winbar(state, limits, available)
+---@return boolean resume_visible
+function M.session_winbar(state, limits, available, allow_resume)
   local options = state.config_options or {}
+  local resume_visible = allow_resume ~= false
+    and (state.status == "disposed" or state.status == "error")
+    and state.acp_session_id ~= nil
+    and state.broker_session_id == nil
   local completed_compactions = 0
   for _, entity in ipairs(state.compactions or {}) do
     if entity.status == "completed" then
@@ -507,6 +520,9 @@ function M.session_winbar(state, limits, available)
       if text ~= nil then
         fields[#fields + 1] = target and clickable_winbar_segment(target, group, text) or winbar_segment(group, text)
       end
+    end
+    if resume_visible then
+      add("Resume this Session", "LouiselmStatusReady", RESUME_CLICK_TARGET)
     end
     if stage < 7 then
       add(name, "Normal")
@@ -562,7 +578,7 @@ function M.session_winbar(state, limits, available)
       or nvim.api.nvim_eval_statusline(bar, { maxwidth = 100000 }).width <= available
       or stage == 8
     then
-      return bar, limits_visible and state.agent or nil, options_visible, agent_span
+      return bar, limits_visible and state.agent or nil, options_visible, agent_span, resume_visible
     end
   end
   error("winbar layout exhausted")
@@ -585,9 +601,10 @@ end
 ---@param backgrounds louiselm.ui.BackgroundStatus[] Background Sessions in view order.
 ---@param available integer Display columns left after the base segment.
 ---@param options_session? string Active Session with a visible options block.
+---@param resume_session? string Stopped Session with a visible resume action.
 ---@return string winbar
----@return table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget> targets Session IDs, picker overflow, Limits or options targets.
-function M.layout_winbar(base, limits_agent, backgrounds, available, options_session)
+---@return table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget|louiselm.ui.ResumeTarget> targets Session IDs, picker overflow or explicit action targets.
+function M.layout_winbar(base, limits_agent, backgrounds, available, options_session, resume_session)
   local quiet = {} ---@type louiselm.ui.WinbarEntry[]
   local attention = {} ---@type louiselm.ui.WinbarEntry[]
   for _, background in ipairs(backgrounds) do
@@ -595,7 +612,10 @@ function M.layout_winbar(base, limits_agent, backgrounds, available, options_ses
     local entries = entry.attention and attention or quiet
     entries[#entries + 1] = entry
   end
-  local targets = {} ---@type table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget>
+  local targets = {} ---@type table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget|louiselm.ui.ResumeTarget>
+  if resume_session ~= nil then
+    targets[RESUME_CLICK_TARGET] = { resume = resume_session }
+  end
   if options_session ~= nil then
     targets[OPTIONS_CLICK_TARGET] = { session = options_session }
   end
@@ -631,7 +651,7 @@ function M.layout_winbar(base, limits_agent, backgrounds, available, options_ses
 
   local segments = {}
   for index, entry in ipairs(entries) do
-    local target = index >= OPTIONS_CLICK_TARGET and index + 2 or index
+    local target = index >= RESUME_CLICK_TARGET and index + 3 or index
     targets[target] = entry.id ~= "" and entry.id or false
     segments[index] = clickable_winbar_segment(target, entry.group, entry.text)
   end

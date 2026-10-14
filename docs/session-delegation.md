@@ -145,6 +145,15 @@ idle; `completed` means the initial turn ended. None certifies task acceptance.
 | Local watch | Default/maximum 60000 ms per call; expiration does not cancel the child |
 | CLI transport | JSON file/stdin at most 1 MiB; ordinary RPC calls have a 5-second client deadline |
 
+Deadline expiry retains the reason in the Session snapshot and chat, and the
+operation reports the child's final `disposed` status. In a stopped ordinary
+Session with an ACP identity, click **Resume this Session** or run
+`:LouiselmResume` to load that conversation directly. The old view, draft and
+staged context survive failed loads; successful loading replaces the view and
+keeps the latest unsent input. Recovery never submits the interrupted prompt or
+a queued follow-up automatically. Managed Sessions use their Run recovery.
+`:LouiselmResume!` always opens the history picker across all workspaces.
+
 The CLI sends a fixed Lua call with request data as RPC arguments. A separate
 disposable client enforces deadlines even when the hosting editor stops
 responding. A timeout reports the original ID and unknown outcome: inspect

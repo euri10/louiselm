@@ -113,8 +113,9 @@ T["options and limits targets never collide with background Sessions"] = functio
   local _, targets = Status.layout_winbar(base, agent, backgrounds, 10000, visible and state.id or nil)
   MiniTest.expect.equality(targets[98], { session = "current" })
   MiniTest.expect.equality(targets[99], { agent = "codex" })
-  MiniTest.expect.equality(targets[100], "background-98")
-  MiniTest.expect.equality(targets[102], "background-100")
+  MiniTest.expect.equality(targets[100], "background-97")
+  MiniTest.expect.equality(targets[101], "background-98")
+  MiniTest.expect.equality(targets[103], "background-100")
 end
 
 T["whole-line budget preserves urgent attention before optional details"] = function()
