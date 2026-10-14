@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
-#[command(name = "louiselm-capture", version, about)]
+#[command(name = "louiselm-capture", version, about, after_help = transcription_help())]
 pub(super) struct Cli {
     #[arg(long)]
     pub require_interface: Option<u32>,
@@ -41,6 +41,7 @@ pub(super) enum Command {
     /// Retry a capture's transcription.
     Retry { id: String },
     /// Process currently ready transcriptions once.
+    #[command(after_help = transcription_help())]
     TranscribeOnce,
     /// Manage durable Runs and generated-work reservations.
     Run {
@@ -66,7 +67,15 @@ pub(super) enum Command {
     /// Retry failed notification deliveries.
     RetryNotifications,
     /// Start the configured capture service.
+    #[command(after_help = transcription_help())]
     Serve,
+}
+
+fn transcription_help() -> String {
+    format!(
+        "Transcription configuration:\n  LOUISELM_CAPTURE_OPENAI_API_KEY supplies the capture credential.\n  LOUISELM_TRANSCRIPTION_MODEL (default: {}) overrides the file-transcription Model.\n  serve also requires LOUISELM_TRANSCRIPTION_ENABLED=true.",
+        super::DEFAULT_MODEL
+    )
 }
 
 #[derive(Clone, Copy, Subcommand)]

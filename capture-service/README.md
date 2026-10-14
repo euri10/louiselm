@@ -165,11 +165,23 @@ appends `louiselm/...`.
 Set `LOUISELM_TRANSCRIPTION_ENABLED=true` and supply
 `LOUISELM_CAPTURE_OPENAI_API_KEY` to enable
 the background worker, and optionally set
-`LOUISELM_TRANSCRIPTION_MODEL` (default `gpt-4o-transcribe`). Transient network,
+`LOUISELM_TRANSCRIPTION_MODEL` (default `gpt-transcribe`). Transient network,
 rate-limit, and server failures use durable exponential backoff. Authentication,
 configuration, and rejected-input failures stop until `retry CAPTURE_UUID`.
 Errors are sanitized before persistence and responses never include credentials,
 audio, prompts, or provider response bodies.
+
+The default follows OpenAI's
+[file-transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text),
+checked 2026-10-14: `gpt-transcribe` transcribes completed recordings through
+`/v1/audio/transcriptions`. OpenAI's
+[deprecations page](https://developers.openai.com/api/docs/deprecations) schedules
+the former default, `gpt-4o-transcribe`, for removal on 2027-02-26.
+An explicit Model override is passed through unchanged, including a pinned
+version; empty values are rejected. Updating the binary does not replace a Model
+set in an existing `capture.env`. Remove that setting to follow the default,
+or explicitly select a supported file-transcription Model. Top-level, `serve`,
+and `transcribe-once` help list the default and environment choices.
 
 Set up a separate OpenAI project for capture transcription before supplying the
 key. In that project's settings:
@@ -186,9 +198,9 @@ key. In that project's settings:
    cannot exceed its owner's project role.
 2. Under **Project settings → Limits → Spend**, set a monthly spend limit and
    enable **Enforce a hard limit**; an alert alone does not stop requests. For
-   the default model, estimate `$0.006 × expected audio minutes/month`, then
+   the default model, estimate `$0.0045 × expected audio minutes/month`, then
    round up about twice that amount for a working cap (for example, $5 for
-   roughly 400 minutes/month). Review the price and limit when changing models
+   roughly 500 minutes/month). Review the price and limit when changing models
    or usage. Enforcement can lag slightly, so this is not an exact ceiling.
 3. Set an expiry date and schedule replacement before it. Create the replacement
    with the same restrictions, install it as
@@ -210,15 +222,17 @@ remains failed until the key is corrected and
 spend limit instead returns HTTP 429 and follows the worker's transient retry
 path; fix the limit or wait for its monthly reset before retrying.
 
-Permission and billing basis, checked 2026-10-01: OpenAI's
+Permission and spend-limit basis, checked 2026-10-01: OpenAI's
 [permission guide](https://developers.openai.com/api/docs/guides/rbac) assigns
 `/v1/audio` to Model capabilities Request, and its
 [spend-limit guide](https://developers.openai.com/api/docs/guides/spend-limits)
-describes hard enforcement. The
-[pricing page](https://developers.openai.com/api/docs/pricing) estimates
-`gpt-4o-transcribe` at $0.006/minute. Model capabilities Request also covers
+describes hard enforcement. Model capabilities Request also covers
 other model endpoints; the separate project and enforced cap bound that broader
 permission. Recheck the dashboard labels and these sources when rotating.
+
+Transcription pricing, checked 2026-10-14: the
+[pricing page](https://developers.openai.com/api/docs/pricing) lists
+`gpt-transcribe` at $0.0045/minute.
 
 The installed systemd unit reads `capture.env` directly; it does not source
 `~/.zsh.secrets` or expand a value like `$LOUISELM_CAPTURE_OPENAI_API_KEY`.

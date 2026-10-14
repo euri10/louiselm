@@ -129,6 +129,18 @@ mod tests {
     use crate::TranscriptionErrorKind;
 
     #[test]
+    fn file_transcription_response_accepts_detected_languages() {
+        // Official file-transcription response, checked 2026-10-14:
+        // https://developers.openai.com/api/docs/guides/speech-to-text
+        // This is a documentation fixture, not an observed paid response.
+        let response: TranscriptResponse = serde_json::from_str(
+            r#"{"text":"Bonjour, pouvez-vous m'entendre ?","languages":[{"code":"fr"}]}"#,
+        )
+        .expect("documented file-transcription response");
+        assert_eq!(response.text, "Bonjour, pouvez-vous m'entendre ?");
+    }
+
+    #[test]
     fn retry_classification_matches_operator_action() {
         assert_eq!(
             status_error(StatusCode::TOO_MANY_REQUESTS).kind(),

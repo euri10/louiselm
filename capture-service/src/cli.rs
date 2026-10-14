@@ -33,7 +33,7 @@ use crate::{
     Transcript, TranscriptionWorker,
 };
 
-const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
+const DEFAULT_MODEL: &str = "gpt-transcribe";
 const PAIRING_TTL_MS: u64 = 10 * 60 * 1_000;
 
 /// CLI failure with actionable local context and no credentials.
@@ -566,13 +566,22 @@ fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
 }
 
 fn openai_provider() -> Result<OpenAiTranscriber, CliError> {
-    let api_key = env::var("LOUISELM_CAPTURE_OPENAI_API_KEY").map_err(|_| {
+    configure_openai_provider(
+        env::var("LOUISELM_CAPTURE_OPENAI_API_KEY"),
+        env::var("LOUISELM_TRANSCRIPTION_MODEL"),
+    )
+}
+
+fn configure_openai_provider(
+    api_key: Result<String, env::VarError>,
+    model: Result<String, env::VarError>,
+) -> Result<OpenAiTranscriber, CliError> {
+    let api_key = api_key.map_err(|_| {
         CliError::Invalid(
             "LOUISELM_CAPTURE_OPENAI_API_KEY is required for transcription".to_owned(),
         )
     })?;
-    let model =
-        env::var("LOUISELM_TRANSCRIPTION_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
+    let model = model.unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
     OpenAiTranscriber::new(api_key, model).map_err(CliError::Invalid)
 }
 
@@ -662,4 +671,47 @@ fn configured_root(
             CliError::Invalid(format!("{override_name}, {xdg_name}, or HOME is required"))
         })?;
     Ok(Path::new(&home).join(fallback))
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+mod tests {
+    use super::*;
+    use crate::Transcriber;
+
+    #[test]
+    fn transcription_defaults_to_the_file_model() {
+        let provider = configure_openai_provider(
+            Ok("unused-test-credential".to_owned()),
+            Err(env::VarError::NotPresent),
+        )
+        .expect("default transcription provider");
+        assert_eq!(provider.model(), "gpt-transcribe");
+    }
+
+    #[test]
+    fn transcription_preserves_explicit_model_overrides() {
+        for model in [
+            "gpt-4o-transcribe",
+            "operator-pinned-transcription-2026-01-01",
+        ] {
+            let provider = configure_openai_provider(
+                Ok("unused-test-credential".to_owned()),
+                Ok(model.to_owned()),
+            )
+            .expect("explicit transcription provider");
+            assert_eq!(provider.model(), model);
+        }
+    }
+
+    #[test]
+    fn transcription_rejects_empty_model_overrides() {
+        assert!(matches!(
+            configure_openai_provider(Ok("unused-test-credential".to_owned()), Ok(String::new())),
+            Err(CliError::Invalid(message)) if message == "OpenAI transcription model must not be empty"
+        ));
+    }
 }

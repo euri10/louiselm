@@ -64,6 +64,27 @@ fn nested_help_succeeds_without_creating_storage() {
 }
 
 #[test]
+fn transcription_help_documents_the_default_and_override() {
+    for args in [
+        vec!["--help"],
+        vec!["transcribe-once", "--help"],
+        vec!["serve", "--help"],
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let state = root.path().join("state");
+        let output = command(&data, &state).args(args).output().unwrap();
+        assert!(output.status.success());
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(help.contains("LOUISELM_TRANSCRIPTION_MODEL (default: gpt-transcribe)"));
+        assert!(help.contains("LOUISELM_CAPTURE_OPENAI_API_KEY"));
+        assert_eq!(output.stderr, [] as [u8; 0]);
+        assert!(!data.exists());
+        assert!(!state.exists());
+    }
+}
+
+#[test]
 fn serve_requires_explicit_capabilities_before_creating_storage() {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("data");
