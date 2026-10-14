@@ -88,12 +88,23 @@ cleanup() {
     rm -r -- "$interrupted_archive"
   fi
   rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/bin/udevadm" "$test_dir/ssh-args" \
+    "$test_dir/bin/prepare-provision" "$test_dir/bin/scp" "$test_dir/bin/qemu-img" \
+    "$test_dir/prepare-commands" "$test_dir/prepare-archive" "$test_dir/prepare-argv" \
     "$test_dir/hold" "$test_dir/other cache/louiselm-launcher-vm/control.lock" \
     "$test_dir/bin/prepare-refusal" "$test_dir/bin/"{curl,sha512sum,qemu-system-x86_64,xorriso,rustup,systemd-run} \
     "$test_dir/cache/louiselm-launcher-vm/"{build*.qcow2,build*.vars.fd,serial.log,debian*.qcow2} \
-    "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2 \
+    "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2{,.vars.fd} \
+    "$test_dir/cache/louiselm-launcher-vm/"{client-key,client-key.pub,host-key,host-key.pub,known_hosts,seed.iso} \
     "$test_dir/cache/louiselm-launcher-vm/run.qcow2" \
     "$test_dir/cache/louiselm-launcher-vm/control.lock"
+  if [[ -d $test_dir/firmware ]]; then
+    rm -- "$test_dir/firmware/"{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}
+    rmdir -- "$test_dir/firmware"
+  fi
+  if [[ -d $test_dir/cache/louiselm-launcher-vm/seed ]]; then
+    rm -- "$test_dir/cache/louiselm-launcher-vm/seed/"{meta-data,user-data}
+    rmdir -- "$test_dir/cache/louiselm-launcher-vm/seed"
+  fi
   if [[ -d $test_dir/fido ]]; then
     rm -f -- "$test_dir/fido/usb/1-1/"{idVendor,idProduct,bConfigurationValue} \
       "$test_dir/fido/hidraw/hidraw0/device" "$test_dir/fido/nodes/hidraw0"
@@ -121,6 +132,14 @@ esac
 MOCK
 cat >"$test_dir/bin/ssh" <<'MOCK'
 #!/usr/bin/env bash
+if [[ -n ${VM_TEST_PREPARE_LOG:-} ]]; then
+  guest_command=${@: -1}
+  printf '%s\n' "$guest_command" >>"$VM_TEST_PREPARE_LOG"
+  if [[ $guest_command == 'tar -x -C /home/vm ' ]]; then
+    tar -tf - >"$VM_TEST_PREPARE_ARCHIVE"
+  fi
+  exit 0
+fi
 printf '%s\n' "$@" >"$VM_TEST_SSH_ARGS"
 exit 42
 MOCK
@@ -166,7 +185,8 @@ git -C "$changed_checkout" -c user.name=Fixture -c user.email=fixture@example.in
 changed_base=$(bash "$changed_checkout/scripts/launcher-vm" plan | jq -r .base_image)
 [[ $changed_base != "$base" ]] || { echo 'changed HEAD lockfile reused the VM base' >&2; exit 1; }
 for change in 's/^image_sha=/image_sha=changed-/' \
-  's/^packages=(bubblewrap/packages=(changed-package bubblewrap/'; do
+  's/^packages=(bubblewrap/packages=(changed-package bubblewrap/' \
+  's/ libssl-dev//'; do
   sed "$change" "$vm" >"$test_dir/checkout-one/scripts/launcher-vm"
   changed_base=$(bash "$test_dir/checkout-one/scripts/launcher-vm" plan | jq -r .base_image)
   [[ -n $changed_base && $changed_base != "$base" ]] || { echo "changed provisioning input reused the VM base: $change" >&2; exit 1; }
@@ -230,6 +250,59 @@ interrupted_archive=${archives[0]}
 [[ $(<"$interrupted_archive/${build##*/}.vars.fd") == 'interrupted UEFI' ]] || { echo 'lost interrupted UEFI evidence' >&2; exit 1; }
 [[ $(<"$interrupted_archive/serial.log") == 'interrupted serial' ]] || { echo 'lost interrupted serial evidence' >&2; exit 1; }
 for tool in curl sha512sum qemu-system-x86_64 xorriso rustup systemd-run; do
+  rm -- "$test_dir/bin/$tool"
+done
+
+# louiselm-gg5r: exercise prepare's real package, archive and Cargo commands.
+# Only external endpoints are doubled; no package install, VM or download runs.
+# The no-VM CI runner need not have OVMF: use disposable fixture firmware and
+# export actual sources from the tested checkout, not the lockfile-only fixture.
+mkdir -- "$test_dir/firmware"
+touch "$test_dir/firmware/"{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}
+export VM_TEST_SOURCE_ROOT="$script_dir/.."
+prepare_vm="$test_dir/checkout-one/scripts/launcher-vm"
+sed -e "s@/usr/share/OVMF/@$test_dir/firmware/@g" \
+  -e 's/git -C "\$project_root" archive HEAD/git -C "$VM_TEST_SOURCE_ROOT" archive HEAD/' \
+  "$vm" >"$prepare_vm"
+cat >"$test_dir/bin/prepare-provision" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+case ${0##*/} in
+  sha512sum) read -r _ ;;
+  qemu-img) touch -- "${@: -2:1}" ;;
+  systemd-run) printf '%s\n' "$@" >"$VM_TEST_PREPARE_ARGV" ;;
+  scp|xorriso) ;;
+  *) exit 43 ;;
+esac
+MOCK
+chmod +x "$test_dir/bin/prepare-provision"
+for tool in curl sha512sum qemu-system-x86_64 qemu-img xorriso rustup systemd-run scp; do
+  ln -s prepare-provision "$test_dir/bin/$tool"
+done
+export VM_TEST_PREPARE_LOG="$test_dir/prepare-commands"
+export VM_TEST_PREPARE_ARCHIVE="$test_dir/prepare-archive"
+export VM_TEST_PREPARE_ARGV="$test_dir/prepare-argv"
+bash "$prepare_vm" prepare >/dev/null
+grep -Eq 'apt-get install .* libssl-dev( |$)' "$VM_TEST_PREPARE_LOG" || {
+  echo 'prepare omitted the declared OpenSSL development dependency' >&2; exit 1
+}
+for prerequisite in skills-core/Cargo.toml skills-core/Cargo.lock docs/recovery-ceremony.md \
+  tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
+  tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
+  tests/fixtures/broker_attention_projection.json tests/fixtures/provider_metadata_disclosure.json; do
+  grep -Fxq "$prerequisite" "$VM_TEST_PREPARE_ARCHIVE" || {
+    echo "prepare omitted compile prerequisite: $prerequisite" >&2; exit 1
+  }
+done
+grep -Fq 'cargo test --manifest-path /home/vm/skills-core/Cargo.toml --all-features --locked --offline --no-run ' \
+  "$VM_TEST_PREPARE_LOG" || { echo 'prepare did not compile locked tests offline' >&2; exit 1; }
+grep -Fxq 'user,id=net0,restrict=off,hostfwd=tcp:127.0.0.1:22554-:22' \
+  "$VM_TEST_PREPARE_ARGV"
+[[ -f $base && $(stat -c %a -- "$base") == 400 ]] || {
+  echo 'prepare did not publish an immutable baseline' >&2; exit 1
+}
+unset VM_TEST_PREPARE_LOG VM_TEST_PREPARE_ARCHIVE VM_TEST_PREPARE_ARGV VM_TEST_SOURCE_ROOT
+for tool in curl sha512sum qemu-system-x86_64 qemu-img xorriso rustup systemd-run scp; do
   rm -- "$test_dir/bin/$tool"
 done
 

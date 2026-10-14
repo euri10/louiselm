@@ -286,7 +286,8 @@ files to transfer; do not assume this archive contains them.
 git archive HEAD skills-core docs/recovery-ceremony.md \
   tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
   tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
-  tests/fixtures/broker_attention_projection.json |
+  tests/fixtures/broker_attention_projection.json \
+  tests/fixtures/provider_metadata_disclosure.json |
   ./scripts/launcher-vm exec tar -x -C /home/vm
 ./scripts/launcher-vm exec env \
   PATH=/home/vm/.cargo/bin:/usr/bin:/bin \
@@ -296,9 +297,17 @@ git archive HEAD skills-core docs/recovery-ceremony.md \
   cargo test --manifest-path /home/vm/skills-core/Cargo.toml --all-features --locked
 ```
 
-`prepare` copies committed `skills-core` sources, their shared JSON fixtures,
-and the recovery guide included by the onboarding test. It fetches locked
-dependencies and compiles tests without running them.
+`prepare` installs `libssl-dev` for the OpenSSL development dependency already
+declared by `skills-core`; its headers and `openssl.pc` are needed in addition
+to the runtime libraries. This happens during trusted preparation, before
+normal startup restricts guest egress. Refresh a stale baseline with `prepare`,
+rather than enabling network access in a test guest to install missing headers.
+
+`prepare` copies committed `skills-core` sources, all six shared JSON fixtures
+listed above, and the recovery guide included by the onboarding test. These
+files are compile prerequisites for the full test suite; exporting only the
+crate is incomplete. It fetches locked dependencies and compiles all tests
+offline without running them.
 Builds use the same line-table debug metadata as the skills-core CI gate.
 The clean baseline thus retains dependency and build caches across resets.
 Normal builds are offline; do not silently enable guest egress.
