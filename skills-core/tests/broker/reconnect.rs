@@ -121,6 +121,85 @@ fn equal_prefix_reattaches_after_authorization_expiry_without_reconsumption() {
 }
 
 #[test]
+fn cancelled_checkpoint_reply_keeps_exact_history_reattachable() {
+    // fvrmf: CPUQuota45% restart trace, first-refusal-45/broker-37725*,
+    // 1791951562.512842: the exact seq1 checkpoint reply failed with EPIPE,
+    // then an intact chain was durably quarantined. Block signature verification
+    // to reproduce cancellation after the offer was read, without clock races.
+    let root = TempDir::new().unwrap();
+    let (service, authorization, chain) = fixture(root.path());
+    let offer = checkpoint(&chain[1]);
+    let channel = peer(root.path(), &offer);
+    let original = service
+        .receipts()
+        .stored_bytes(&authorization.session_id)
+        .unwrap();
+    let (offered, observed) = mpsc::channel();
+    let (release, proceed) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mut first_signature = true;
+        let result = service.serve_reconnect(90_000, |key, bytes, signature| {
+            if first_signature {
+                first_signature = false;
+                offered.send(()).unwrap();
+                proceed.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            verify_fixture_signature(key, bytes, signature)
+        });
+        (service, result)
+    });
+    observed.recv_timeout(Duration::from_secs(5)).unwrap();
+    channel.close();
+    release.send(()).unwrap();
+    let (service, result) = worker.join().unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(BrokerError::Transport(
+                TransportError::Closed | TransportError::Disconnected | TransportError::SendFailed
+            ))
+        ),
+        "{:?}",
+        result.as_ref().err()
+    );
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes(&authorization.session_id)
+            .unwrap(),
+        original
+    );
+    assert!(
+        !root
+            .path()
+            .join("authorizations/lifecycle/reconnect-session/quarantined.json")
+            .exists()
+    );
+    assert!(
+        !root
+            .path()
+            .join("authorizations/reconnect-failures/reconnect-session.json")
+            .exists()
+    );
+
+    let channel = peer(root.path(), &offer);
+    let session = service
+        .serve_reconnect(90_000, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(session.authorization(), &authorization);
+    let reply = settle(|complete| channel.receive(complete));
+    assert!(matches!(reply.packet, LauncherPacket::Response(response)
+        if matches!(&response.result, ResponseResult::BrokerReconnect { reconnect } if reconnect == &offer)));
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes(&authorization.session_id)
+            .unwrap(),
+        original
+    );
+}
+
+#[test]
 fn supervisor_ahead_appends_only_the_exact_signed_suffix() {
     let root = TempDir::new().unwrap();
     let (service, authorization, chain) = fixture(root.path());
@@ -195,6 +274,15 @@ fn conflicting_or_broker_ahead_checkpoints_refuse_without_changing_receipts() {
             outbox.next().unwrap().is_some(),
             "refusal queues local Attention"
         );
+        let retry = peer(root.path(), &checkpoint(&chain[1]));
+        assert!(
+            matches!(
+                service.serve_reconnect(90_000, verify_fixture_signature),
+                Err(BrokerError::RequestMismatch)
+            ),
+            "{kind}: a genuine conflict remains quarantined"
+        );
+        expect_disconnect(&retry);
     }
 }
 
@@ -256,13 +344,15 @@ fn invalid_suffix_is_not_acknowledged_or_spliced() {
             settle(|complete| channel.send(park.canonical_bytes(), complete));
             expect_disconnect(&channel);
         });
-        assert!(
-            service
-                .serve_reconnect(90_000, verify_fixture_signature)
-                .is_err(),
-            "{kind}"
-        );
+        let result = service.serve_reconnect(90_000, verify_fixture_signature);
+        assert!(result.is_err(), "{kind}");
         worker.join().unwrap();
+        assert!(
+            root.path()
+                .join("authorizations/lifecycle/reconnect-session/quarantined.json")
+                .exists(),
+            "{kind}: invalid suffix still quarantines"
+        );
         assert_eq!(
             service
                 .receipts()
@@ -272,6 +362,72 @@ fn invalid_suffix_is_not_acknowledged_or_spliced() {
             2
         );
     }
+}
+
+#[test]
+fn malformed_wire_suffix_still_quarantines_the_known_session() {
+    // The ordinary sender rejects malformed packets itself. Use the same safe
+    // raw-socket pattern as tests/launch_transport.rs to exercise peer input.
+    use rustix::net::{
+        AddressFamily, SendFlags, SocketAddrUnix, SocketFlags, SocketType, connect, send,
+        socket_with,
+    };
+
+    let root = TempDir::new().unwrap();
+    let (service, authorization, chain) = fixture(root.path());
+    let park = signed(payload(
+        &authorization,
+        "broker-loss-park",
+        2,
+        Some(chain[1].digest().to_string()),
+        ReceiptOutcome::Park {
+            authority: ReceiptAuthority::Cause {
+                cause: ReceiptCause::BrokerLost,
+            },
+        },
+        SessionState::Parked,
+    ));
+    let channel = socket_with(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    connect(
+        &channel,
+        &SocketAddrUnix::new(root.path().join("broker.sock")).unwrap(),
+    )
+    .unwrap();
+    let offer = checkpoint(&park).canonical_bytes();
+    assert_eq!(
+        send(&channel, &offer, SendFlags::NOSIGNAL).unwrap(),
+        offer.len()
+    );
+    assert_eq!(send(&channel, b"{}", SendFlags::NOSIGNAL).unwrap(), 2);
+    let result = service.serve_reconnect(90_000, verify_fixture_signature);
+    assert!(matches!(result,
+        Err(BrokerError::Transport(TransportError::Protocol(error)))
+        if error.code == ErrorCode::MalformedMessage));
+    assert!(
+        root.path()
+            .join("authorizations/lifecycle/reconnect-session/quarantined.json")
+            .exists()
+    );
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes(&authorization.session_id)
+            .unwrap()
+            .len(),
+        2
+    );
+    let retry = peer(root.path(), &checkpoint(&chain[1]));
+    assert!(matches!(
+        service.serve_reconnect(90_000, verify_fixture_signature),
+        Err(BrokerError::RequestMismatch)
+    ));
+    expect_disconnect(&retry);
 }
 
 #[test]

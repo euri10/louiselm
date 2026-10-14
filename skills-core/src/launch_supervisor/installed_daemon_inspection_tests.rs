@@ -510,10 +510,15 @@ pub(super) fn refusal(uid: u32, id: &str, error: InspectError) {
 
 pub(super) fn status(config: &LauncherConfig, id: &str) -> SessionStatus {
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut first_refusal = true;
     let output = loop {
         let output = command(config.operator_uid, id);
         if output.status.success() {
             break output;
+        }
+        if first_refusal || Instant::now() >= deadline {
+            capture_unavailable_state(id);
+            first_refusal = false;
         }
         assert!(
             Instant::now() < deadline,
@@ -567,6 +572,47 @@ pub(super) fn status(config: &LauncherConfig, id: &str) -> SessionStatus {
         assert!(!text.contains(forbidden), "operator-only field {forbidden}");
     }
     status
+}
+
+// Explicit diagnostic stress runs retain only this synthetic installation's
+// receipt bytes and quarantine markers, before TempDir/mount cleanup removes
+// them. Normal gates have no evidence destination and do no additional I/O.
+fn capture_unavailable_state(id: &str) {
+    let Some(destination) = std::env::var_os("LOUISELM_DAEMON_EVIDENCE") else {
+        return;
+    };
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let destination = PathBuf::from(destination).join(format!("{id}-{}", stamp.as_nanos()));
+    fs::create_dir(&destination).unwrap();
+    let receipts = Path::new(STATE).join("receipts/sessions").join(id);
+    for entry in fs::read_dir(receipts).unwrap() {
+        let entry = entry.unwrap();
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".receipt.json")
+        {
+            fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+        }
+    }
+    let authorization = Path::new(STATE).join("authorizations");
+    let marker = authorization
+        .join("lifecycle")
+        .join(id)
+        .join("quarantined.json");
+    if marker.exists() {
+        fs::copy(marker, destination.join("quarantined.json")).unwrap();
+    }
+    let failure = authorization
+        .join("reconnect-failures")
+        .join(format!("{id}.json"));
+    if failure.exists() {
+        fs::copy(failure, destination.join("reconnect-failure.json")).unwrap();
+    }
+    eprintln!(
+        "daemon: unavailable Session evidence at {}",
+        destination.display()
+    );
 }
 
 pub(super) fn agent(session: LaunchedSession, config: &LauncherConfig) {

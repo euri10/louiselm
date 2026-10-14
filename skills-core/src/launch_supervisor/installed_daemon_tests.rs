@@ -492,6 +492,12 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     attention::reply(retry, &repeated, true);
     attention::wait_ack(sequence);
     inspection::status(&config, "session");
+    assert!(
+        !Path::new(STATE)
+            .join("authorizations/lifecycle/session/quarantined.json")
+            .exists(),
+        "an interrupted reconnect must not quarantine intact Session history"
+    );
     assert_eq!(
         fs::read_link(format!("/proc/{}/fd/0", restarted.0.id())).unwrap(),
         Path::new("/dev/null")

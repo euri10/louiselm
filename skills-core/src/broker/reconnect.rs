@@ -8,7 +8,7 @@ use crate::{
     },
     launch_protocol::{BrokerReconnect, ProtocolMessage, ResponseResult},
     launch_receipt::ReceiptHead,
-    launch_transport::{LauncherPacket, SeqpacketChannel},
+    launch_transport::{LauncherPacket, SeqpacketChannel, TransportError},
 };
 
 impl BrokerService {
@@ -18,8 +18,9 @@ impl BrokerService {
     /// budget reconstructed, recovery admitted, or Park automatically Resumed.
     /// # Errors
     /// Refuses foreign, conflicting, broker-ahead or unverifiable checkpoints and
-    /// unavailable storage. Refusal closes transport and durably queues Attention
-    /// when the known Session's storage remains writable.
+    /// unavailable storage. Trust refusals close transport and durably queue
+    /// Attention when the known Session's storage remains writable. Interrupted
+    /// I/O closes only that connection; it does not invalidate signed history.
     pub fn serve_reconnect<F>(
         &self,
         now_ms: u64,
@@ -61,7 +62,20 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         let result = self.reconnect_transaction(channel, request, verify);
+        // A timed-out/cancelled peer can leave an authenticated offer queued.
+        // Failure to deliver its checkpoint is not conflicting receipt evidence.
+        // Decoder, credential and receipt failures remain trust refusals, even
+        // when the transport wraps them (louiselm-fvrmf).
         if result.is_err()
+            && !matches!(
+                &result,
+                Err(BrokerError::Transport(
+                    TransportError::Closed
+                        | TransportError::Disconnected
+                        | TransportError::SendFailed
+                        | TransportError::ReceiveFailed
+                ))
+            )
             && self
                 .authorizations
                 .consumed_for_session(&request.session_id)?

@@ -305,8 +305,14 @@ the exact checkpoint. Equal prefixes reattach; a supervisor-ahead suffix is
 accepted only as continuous, valid signed bytes ending at the offered digest.
 Missing interior files, unknown entries, foreign bindings, conflicting heads,
 broker-ahead state and invalid signatures fail closed. No history is discarded,
-spliced or repaired. Known-Session refusals quarantine locally and enqueue
+spliced or repaired. Known-Session trust refusals quarantine locally and enqueue
 normalized Attention; storage failure cannot produce an acknowledgement.
+An ordinary disconnect, closed channel or kernel send/receive failure ends only
+that reconnect attempt.
+A cancelled peer's queued offer and failed checkpoint delivery are not evidence
+of corrupt history. Later attempts still verify the exact signed prefix; protocol,
+credential and receipt refusals keep their quarantine even when reported by the
+transport. Neither signed grace nor operation deadlines are extended.
 
 The returned Session worker has no reconstructed command/grant authority or
 recovery admission. It can receive signed lifecycle outcomes and settle control
