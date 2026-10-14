@@ -1,5 +1,8 @@
 locals {
   project_parent_valid = var.org_id == null || var.folder_id == null
+  android_sha1_fingerprints = toset([
+    for fingerprint in var.android_sha1_fingerprints : lower(fingerprint)
+  ])
 
   required_services = toset([
     "apikeys.googleapis.com",
@@ -130,9 +133,12 @@ resource "google_apikeys_key" "android" {
 
   restrictions {
     android_key_restrictions {
-      allowed_applications {
-        package_name     = var.android_package_name
-        sha1_fingerprint = lower(var.android_sha1_fingerprint)
+      dynamic "allowed_applications" {
+        for_each = local.android_sha1_fingerprints
+        content {
+          package_name     = var.android_package_name
+          sha1_fingerprint = allowed_applications.value
+        }
       }
     }
 
@@ -166,7 +172,7 @@ resource "google_firebase_android_app" "notifications" {
   project         = google_project.notifications.project_id
   display_name    = "LouiseLM Android"
   package_name    = var.android_package_name
-  sha1_hashes     = [lower(var.android_sha1_fingerprint)]
+  sha1_hashes     = sort(local.android_sha1_fingerprints)
   sha256_hashes   = [for fingerprint in var.android_sha256_fingerprints : lower(fingerprint)]
   api_key_id      = google_apikeys_key.android.uid
   deletion_policy = "PREVENT"

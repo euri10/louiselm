@@ -15,8 +15,8 @@ mock_provider "google" {
 mock_provider "google-beta" {}
 
 variables {
-  billing_account_id       = "ABCDEF-123456-ABCDEF"
-  android_sha1_fingerprint = "0123456789abcdef0123456789abcdef01234567"
+  billing_account_id        = "ABCDEF-123456-ABCDEF"
+  android_sha1_fingerprints = ["0123456789abcdef0123456789abcdef01234567"]
 }
 
 run "qa_unset_preserves_normal_app" {
@@ -35,10 +35,10 @@ run "qa_unset_preserves_normal_app" {
   assert {
     condition = (
       google_firebase_android_app.notifications.package_name == "dev.louiselm.capture" &&
-      google_firebase_android_app.notifications.sha1_hashes == tolist([var.android_sha1_fingerprint]) &&
+      google_firebase_android_app.notifications.sha1_hashes == sort(var.android_sha1_fingerprints) &&
       google_apikeys_key.android.restrictions[0].android_key_restrictions[0].allowed_applications == tolist([{
         package_name     = "dev.louiselm.capture"
-        sha1_fingerprint = var.android_sha1_fingerprint
+        sha1_fingerprint = one(var.android_sha1_fingerprints)
       }])
     )
     error_message = "QA support must not change the existing normal app or broaden its key."
@@ -140,12 +140,12 @@ run "qa_uses_its_own_restricted_key" {
   assert {
     condition = (
       google_firebase_android_app.notifications.package_name == "dev.louiselm.capture" &&
-      google_firebase_android_app.notifications.sha1_hashes == tolist([var.android_sha1_fingerprint]) &&
+      google_firebase_android_app.notifications.sha1_hashes == sort(var.android_sha1_fingerprints) &&
       google_firebase_android_app.notifications.api_key_id == google_apikeys_key.android.uid &&
       google_apikeys_key.android.uid != google_apikeys_key.android_qa[0].uid &&
       google_apikeys_key.android.restrictions[0].android_key_restrictions[0].allowed_applications == tolist([{
         package_name     = "dev.louiselm.capture"
-        sha1_fingerprint = var.android_sha1_fingerprint
+        sha1_fingerprint = one(var.android_sha1_fingerprints)
       }]) &&
       google_project_iam_custom_role.sender.permissions == toset(["cloudmessaging.messages.create"])
     )
@@ -159,4 +159,78 @@ run "qa_uses_its_own_restricted_key" {
     )
     error_message = "QA configuration must be fetched for the QA app, not the normal app."
   }
+}
+
+run "normal_app_accepts_each_installed_signer" {
+  command = plan
+
+  variables {
+    android_sha1_fingerprints = [
+      "0123456789abcdef0123456789abcdef01234567",
+      "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      "abcdef0123456789abcdef0123456789abcdef01",
+    ]
+  }
+
+  assert {
+    condition = toset(google_firebase_android_app.notifications.sha1_hashes) == toset([
+      "0123456789abcdef0123456789abcdef01234567",
+      "abcdef0123456789abcdef0123456789abcdef01",
+    ])
+    error_message = "The normal Firebase app must retain both installed signing certificates."
+  }
+
+  assert {
+    condition = google_apikeys_key.android.restrictions[0].android_key_restrictions[0].allowed_applications == tolist([
+      {
+        package_name     = "dev.louiselm.capture"
+        sha1_fingerprint = "0123456789abcdef0123456789abcdef01234567"
+      },
+      {
+        package_name     = "dev.louiselm.capture"
+        sha1_fingerprint = "abcdef0123456789abcdef0123456789abcdef01"
+      },
+    ])
+    error_message = "The API key must authorize exactly both signers for the normal package, normalized and deduplicated."
+  }
+
+  assert {
+    condition = toset([for target in google_apikeys_key.android.restrictions[0].api_targets : target.service]) == toset([
+      "firebase.googleapis.com",
+      "fcmregistrations.googleapis.com",
+      "firebaseinstallations.googleapis.com",
+      "logging.googleapis.com",
+    ])
+    error_message = "Additional signing certificates must not widen the allowed client APIs."
+  }
+}
+
+run "reject_empty_normal_signer_set" {
+  command = plan
+
+  variables {
+    android_sha1_fingerprints = []
+  }
+
+  expect_failures = [var.android_sha1_fingerprints]
+}
+
+run "reject_short_normal_fingerprint" {
+  command = plan
+
+  variables {
+    android_sha1_fingerprints = ["abcdef"]
+  }
+
+  expect_failures = [var.android_sha1_fingerprints]
+}
+
+run "reject_non_hex_normal_fingerprint" {
+  command = plan
+
+  variables {
+    android_sha1_fingerprints = ["zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"]
+  }
+
+  expect_failures = [var.android_sha1_fingerprints]
 }

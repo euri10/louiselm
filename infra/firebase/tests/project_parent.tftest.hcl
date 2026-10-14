@@ -15,10 +15,10 @@ mock_provider "google" {
 mock_provider "google-beta" {}
 
 variables {
-  billing_account_id       = "ABCDEF-123456-ABCDEF"
-  android_sha1_fingerprint = "0123456789abcdef0123456789abcdef01234567"
-  gitlab_issuer_url        = "https://gitlab.bartab.fr/"
-  gitlab_project_id        = "163"
+  billing_account_id        = "ABCDEF-123456-ABCDEF"
+  android_sha1_fingerprints = ["0123456789abcdef0123456789abcdef01234567"]
+  gitlab_issuer_url         = "https://gitlab.bartab.fr/"
+  gitlab_project_id         = "163"
 }
 
 run "reject_other_project_id" {

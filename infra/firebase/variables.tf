@@ -65,13 +65,17 @@ variable "android_package_name" {
   }
 }
 
-variable "android_sha1_fingerprint" {
-  description = "SHA-1 fingerprint of the Android signing certificate, without separators."
-  type        = string
+variable "android_sha1_fingerprints" {
+  description = "SHA-1 fingerprints of every supported normal-app signing certificate, without separators."
+  type        = set(string)
+  nullable    = false
 
   validation {
-    condition     = can(regex("^[0-9A-Fa-f]{40}$", var.android_sha1_fingerprint))
-    error_message = "android_sha1_fingerprint must contain 40 hexadecimal characters."
+    condition = (
+      length(var.android_sha1_fingerprints) > 0 &&
+      alltrue([for fingerprint in var.android_sha1_fingerprints : can(regex("^[0-9A-Fa-f]{40}$", fingerprint))])
+    )
+    error_message = "android_sha1_fingerprints must contain at least one fingerprint, each with 40 hexadecimal characters."
   }
 }
 

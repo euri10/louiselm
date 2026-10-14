@@ -27,7 +27,7 @@ together; never substitute a name during bootstrap. Deleted project IDs cannot
 be reused.
 
 Copy `terraform.tfvars.example` to an ignored, mode-0600 `terraform.tfvars` and
-fill in the billing account and Android signing certificate fingerprint. The
+fill in the billing account and Android signing certificate fingerprints. The
 bootstrap below is for the confirmed parentless account and requires both
 `org_id` and `folder_id` to remain unset. If a parent becomes available, update
 and re-review the create commands and assertions with exactly one parent; the
@@ -1040,6 +1040,30 @@ firebase hosting:clone "${site_id}@${version_id}" "${site_id}:live" \
 This creates a new Hosting release and does not change OpenTofu state.
 
 ## Installing Android configuration
+
+Set `android_sha1_fingerprints` to the nonempty set of normal-app signing
+certificates whose installed builds must keep working. Inspect each actual APK
+with `apksigner verify --print-certs`; use its certificate SHA-1, not its file
+hash. The Firebase app and its restricted API key consume the same normalized,
+deduplicated set. Adding a signer retains existing signers; never replace one
+while its builds are still supported. A new machine's debug keystore can produce
+a different signer even when the package and Firebase configuration match.
+
+For an existing deployment, preserve the current inputs and establish a full
+no-change baseline first. Add only the new certificate, run the source/native
+test and plan-IAM gates, then review a full saved plan using the procedure above.
+Expect in-place updates only to the normal Android app's certificate list and
+API key's package/certificate restrictions; QA, API targets, IAM and resource
+identities must remain unchanged. Obtain approval for that exact artifact before
+applying, then require a no-change plan and registration from the existing phone
+installation. After a `BAD_CONFIG` rejection, the Firebase SDK can retain a
+24-hour configuration-error backoff in memory. Returning to the Activity may
+reuse that process: after finishing any recording, fully stop and reopen the app
+once to retry with the corrected configuration. Keep Tailscale connected until
+the receiver lists the phone as enabled. No reinstall, re-pairing or app-data
+clearing is required. Rollback is another reviewed plan removing only the added
+signer, which disables push registration for builds signed by it; preserve all
+previously supported signers.
 
 Each output selects exactly its Android client and the corresponding managed
 API key. Firebase's raw SDK response can list both normal and QA keys for both
