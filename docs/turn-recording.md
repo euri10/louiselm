@@ -107,7 +107,7 @@ without selecting or changing their configuration. Auto also records payload-fre
 and requested pairs, resolved rule/workload, exact approval and global revisions,
 labelled economic basis and allowance, or a typed fallback reason. These
 figures describe approved comparisons, never factual billing or usage. See
-[routing qualification](routing-qualification.md) for `auto.rules` and explicit
+[routing qualification](https://github.com/euri10/louiselm/blob/main/docs/routing-qualification.md) for `auto.rules` and explicit
 submission metadata. The Session rechecks approvals and configuration after
 confirmation and immediately before the ACP write; stale selection rejects
 admission without retrying.

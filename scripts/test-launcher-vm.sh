@@ -90,7 +90,7 @@ cleanup() {
   rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/bin/udevadm" "$test_dir/ssh-args" \
     "$test_dir/bin/prepare-provision" "$test_dir/bin/scp" "$test_dir/bin/qemu-img" \
     "$test_dir/prepare-commands" "$test_dir/prepare-archive" "$test_dir/prepare-argv" \
-    "$test_dir/hold" "$test_dir/other cache/louiselm-launcher-vm/control.lock" \
+    "$test_dir/hold" "$test_dir/kvm" "$test_dir/other cache/louiselm-launcher-vm/control.lock" \
     "$test_dir/bin/prepare-refusal" "$test_dir/bin/"{curl,sha512sum,qemu-system-x86_64,xorriso,rustup,systemd-run} \
     "$test_dir/cache/louiselm-launcher-vm/"{build*.qcow2,build*.vars.fd,serial.log,debian*.qcow2} \
     "$test_dir/cache/louiselm-launcher-vm/"prepared*.qcow2{,.vars.fd} \
@@ -255,13 +255,14 @@ done
 
 # louiselm-gg5r: exercise prepare's real package, archive and Cargo commands.
 # Only external endpoints are doubled; no package install, VM or download runs.
-# The no-VM CI runner need not have OVMF: use disposable fixture firmware and
-# export actual sources from the tested checkout, not the lockfile-only fixture.
+# The no-VM CI runner need not have OVMF or KVM access (louiselm-z1x6p):
+# use disposable firmware/device fixtures and export actual checkout sources.
 mkdir -- "$test_dir/firmware"
-touch "$test_dir/firmware/"{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}
+touch "$test_dir/kvm" "$test_dir/firmware/"{OVMF_CODE_4M.fd,OVMF_VARS_4M.fd}
 export VM_TEST_SOURCE_ROOT="$script_dir/.."
 prepare_vm="$test_dir/checkout-one/scripts/launcher-vm"
 sed -e "s@/usr/share/OVMF/@$test_dir/firmware/@g" \
+  -e "s@/dev/kvm@$test_dir/kvm@g" \
   -e 's/git -C "\$project_root" archive HEAD/git -C "$VM_TEST_SOURCE_ROOT" archive HEAD/' \
   "$vm" >"$prepare_vm"
 cat >"$test_dir/bin/prepare-provision" <<'MOCK'
