@@ -472,4 +472,9 @@ database. Invalid filters, corrupt metadata, permissions and query/storage
 failures return typed sanitized errors. A cancelled query has no callback;
 otherwise it completes once. The private reader keeps its bounded timeout.
 
-Advisory reflection remains separate follow-up work.
+On-demand advisory reflection is provided by the maintainer's
+`louiselm-usage-reflect` skill. It consumes this structured query API, reports
+coverage and source references, and separates hypotheses from measured facts.
+It does not change configuration, authorize actions, or access transcript/tool
+content. Its source and installation belong to the maintainer's skill catalog;
+collection and exploration remain independent of it.
