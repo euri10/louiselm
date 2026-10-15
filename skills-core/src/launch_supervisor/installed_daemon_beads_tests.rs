@@ -4,7 +4,7 @@ use crate::beads_mutation::{
     ApprovedBeadsMutations, BeadsEffect, BeadsMutationKind, BeadsMutationOutcome,
     BeadsMutationRequest, BeadsRole,
 };
-use crate::launch_protocol::COMMAND_SCHEMA;
+use crate::launch_protocol::{COMMAND_SCHEMA, ErrorCode};
 
 pub(super) const TRACKER_CONFIG: &str = "/etc/louiselm-broker-beads.json";
 
@@ -307,22 +307,11 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
             },
         };
         let mut first = None;
-        for _ in 0..2 {
-            input.write_all(&[0x1e]).unwrap();
-            input.write_all(&query.canonical_bytes()).unwrap();
-            input.write_all(b"\n").unwrap();
-            input.flush().unwrap();
-            let mut reply = Vec::new();
-            output.read_until(b'\n', &mut reply).unwrap();
-            assert_eq!(reply.first(), Some(&0x1e), "{reply:?}");
-            let crate::launch_protocol::ProtocolMessage::Command(reply) =
-                crate::launch_protocol::decode_message(&reply[1..]).unwrap()
-            else {
-                panic!("expected command reply")
-            };
+        for replay in 0..2 {
+            let reply = mutation_reply(&mut input, &mut output, &query);
             if allowed {
                 let CommandOperation::BeadsMutationResult { status } = reply.operation else {
-                    panic!("expected comment success: {reply:?}")
+                    panic!("expected completed mutation: effect={index} replay={replay} {reply:?}")
                 };
                 assert_eq!(status.outcome, BeadsMutationOutcome::Completed);
                 if let Some(first) = &first {
@@ -347,6 +336,146 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
             .join("beads-replica")
             .exists()
     );
+}
+
+fn mutation_reply(
+    input: &mut impl Write,
+    output: &mut impl BufRead,
+    query: &CommandMessage,
+) -> CommandMessage {
+    let deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        assert!(Instant::now() < deadline, "tracker mutation remained busy");
+        input.write_all(&[0x1e]).unwrap();
+        input.write_all(&query.canonical_bytes()).unwrap();
+        input.write_all(b"\n").unwrap();
+        input.flush().unwrap();
+        let mut reply = Vec::new();
+        output.read_until(b'\n', &mut reply).unwrap();
+        assert_eq!(reply.first(), Some(&0x1e), "{reply:?}");
+        let crate::launch_protocol::ProtocolMessage::Command(reply) =
+            crate::launch_protocol::decode_message(&reply[1..]).unwrap()
+        else {
+            panic!("expected command reply")
+        };
+        assert_eq!(
+            reply.request_id, query.request_id,
+            "uncorrelated mutation reply"
+        );
+        assert_eq!(reply.session_id, query.session_id);
+        assert_eq!(reply.run_id, query.run_id);
+        assert_eq!(reply.envelope_revision, query.envelope_revision);
+        if !matches!(
+            reply.operation,
+            CommandOperation::BeadsMutationRefused {
+                error: ErrorCode::OperationPending,
+                escalation: None
+            }
+        ) {
+            return reply;
+        }
+        // louiselm-hp3a1: a startup/periodic posture read can cross this request.
+        // This explicit refusal precedes mutation admission; preserve the exact
+        // intent, and never retry a missing reply or an uncertain/failed outcome.
+        eprintln!(
+            "tracker mutation refused before admission: OperationPending; retrying unchanged request"
+        );
+    }
+}
+
+#[test]
+fn tracker_relay_retries_correlated_unadmitted_busy() {
+    use crate::beads_mutation::BeadsMutationStatus;
+    let query = CommandMessage {
+        schema: COMMAND_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "relay-comment".into(),
+        session_id: "tracker".into(),
+        run_id: "run-tracker".into(),
+        envelope_revision: 1,
+        operation: CommandOperation::BeadsMutation {
+            request: BeadsMutationRequest {
+                request_id: "effect-0".into(),
+                required: false,
+                kind: BeadsMutationKind::CommentAdd {
+                    issue_id: "fixture-comment".into(),
+                    text: "fixture".into(),
+                },
+            },
+        },
+    };
+    let pending = CommandMessage {
+        operation: CommandOperation::BeadsMutationRefused {
+            error: ErrorCode::OperationPending,
+            escalation: None,
+        },
+        ..query.clone()
+    };
+    let completed = CommandMessage {
+        operation: CommandOperation::BeadsMutationResult {
+            status: BeadsMutationStatus {
+                request_id: "effect-0".into(),
+                operation_id: "12345678-1234-4234-8234-123456789abc".into(),
+                outcome: BeadsMutationOutcome::Completed,
+            },
+        },
+        ..query.clone()
+    };
+    let frame =
+        |message: &CommandMessage| [vec![0x1e], message.canonical_bytes(), b"\n".to_vec()].concat();
+    let mut replies = std::io::Cursor::new([frame(&pending), frame(&completed)].concat());
+    let mut sent = Vec::new();
+    assert_eq!(mutation_reply(&mut sent, &mut replies, &query), completed);
+    assert_eq!(sent, [frame(&query), frame(&query)].concat());
+
+    for outcome in [
+        BeadsMutationOutcome::Unknown,
+        BeadsMutationOutcome::Failed { exit_code: Some(1) },
+    ] {
+        let mut reply = completed.clone();
+        let CommandOperation::BeadsMutationResult { status } = &mut reply.operation else {
+            unreachable!()
+        };
+        status.outcome = outcome;
+        let mut replies = std::io::Cursor::new(frame(&reply));
+        let mut sent = Vec::new();
+        assert_eq!(mutation_reply(&mut sent, &mut replies, &query), reply);
+        assert_eq!(
+            sent,
+            frame(&query),
+            "an uncertain or failed write is not retried"
+        );
+    }
+    for error in [ErrorCode::BrokerUnavailable, ErrorCode::CapabilityDenied] {
+        let reply = CommandMessage {
+            operation: CommandOperation::BeadsMutationRefused {
+                error,
+                escalation: None,
+            },
+            ..query.clone()
+        };
+        let mut replies = std::io::Cursor::new(frame(&reply));
+        let mut sent = Vec::new();
+        assert_eq!(mutation_reply(&mut sent, &mut replies, &query), reply);
+        assert_eq!(sent, frame(&query));
+    }
+    let mut foreign = pending;
+    foreign.request_id = "another-request".into();
+    for bytes in [
+        Vec::new(),
+        b"\x15delivery-uncertain\n".to_vec(),
+        frame(&foreign),
+    ] {
+        let mut sent = Vec::new();
+        let mut replies = std::io::Cursor::new(bytes);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mutation_reply(&mut sent, &mut replies, &query)
+            }))
+            .is_err()
+        );
+        assert_eq!(sent, frame(&query));
+    }
 }
 
 fn probe(input: &mut impl Write, output: &mut impl BufRead, replica: bool) {

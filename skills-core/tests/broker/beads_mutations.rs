@@ -128,6 +128,68 @@ fn accepted(operation: CommandOperation) -> BeadsMutationStatus {
 }
 
 #[test]
+fn posture_observation_refuses_nested_mutation_before_consuming_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let mut approved = permission("test-1");
+    approved.max_mutations = 1;
+    let (service, mut session, peer) =
+        fixture(root.path(), Some(approved), Some(Path::new("/bin/true")));
+    let query = query(session.authorization(), "test-1");
+    let status = lifecycle::status(session.authorization());
+    thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            // Queue the Agent request before answering the broker's startup or
+            // periodic posture read, forcing the installed worker's crossing.
+            settle(|done| peer.send(query.canonical_bytes(), done));
+            lifecycle::answer_one_status_query(&peer, &status);
+            let LauncherPacket::Request(ProtocolMessage::Command(reply)) =
+                settle(|done| peer.receive(done)).packet
+            else {
+                panic!("nested mutation refusal");
+            };
+            assert_eq!(reply.request_id, query.request_id);
+            assert_eq!(
+                reply.operation,
+                CommandOperation::BeadsMutationRefused {
+                    error: ErrorCode::OperationPending,
+                    escalation: None,
+                }
+            );
+        });
+        service
+            .project_posture_attention(&mut session, 3000, verify_fixture_signature)
+            .unwrap();
+        worker.join().unwrap();
+    });
+    for phase in ["requests", "outcomes"] {
+        assert_eq!(
+            fs::read_dir(
+                root.path()
+                    .join("authorizations/beads-mutations")
+                    .join(phase)
+            )
+            .unwrap()
+            .count(),
+            0,
+            "nested refusal must precede durable mutation {phase}"
+        );
+    }
+    let first = accepted(exchange(&service, &mut session, &peer, &query, true));
+    assert_eq!(first.outcome, BeadsMutationOutcome::Completed);
+    assert_eq!(
+        accepted(exchange(&service, &mut session, &peer, &query, true)),
+        first
+    );
+    assert_eq!(
+        fs::read_dir(root.path().join("authorizations/beads-mutations/outcomes"))
+            .unwrap()
+            .count(),
+        1
+    );
+    peer.close();
+}
+
+#[test]
 fn comment_requires_config_permission_exact_subject_revision_and_live_state() {
     for scenario in [
         "unset",
