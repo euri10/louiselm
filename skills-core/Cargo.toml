@@ -6,7 +6,7 @@ license = "MIT"
 description = "Trusted packaging, Inspection, and Dossier rendering for LouiseLM Skill candidates"
 
 [dependencies]
-bip39 = { version = "2.2.2", default-features = false, features = ["zeroize"] }
+bip39 = { version = "3.0.0", default-features = false, features = ["zeroize"] }
 clap = { version = "4.6", features = ["derive"] }
 httparse = "1.10"
 # System libbpf.so.1 only: defaults would compile and statically link libbpf.
