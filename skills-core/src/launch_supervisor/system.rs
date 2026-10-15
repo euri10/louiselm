@@ -55,7 +55,7 @@ use crate::{
         BROKER_RECONNECT_SCHEMA, BrokerReconnect, ControllerLossAcknowledgement,
         ControllerLossSettlement, GuardEnrollment, GuardScope, GuardUpstream, LaunchAuthorization,
         PROTOCOL_VERSION, ProtocolMessage, ProtocolResponse, RESPONSE_SCHEMA,
-        ReceiptAcknowledgement, ResponseResult,
+        ReceiptAcknowledgement, ResponseResult, StatusRequest,
     },
     launch_receipt::{ProcessExitClassification, ReceiptHead},
     launch_transport::{
@@ -198,6 +198,9 @@ struct SeqpacketLaunchBrokerState {
     guard_upstream_pending: Option<PendingGuardUpstream>,
     guard_enrollment_pending: Option<PendingGuardEnrollment>,
     session_receive_armed: bool,
+    // The serialized broker can already be awaiting status when closure starts.
+    // Keep that one observational request for the owner, never execute it here.
+    deferred_status: Option<StatusRequest>,
 }
 
 struct PendingBrokerReconnect {
@@ -248,6 +251,7 @@ impl SeqpacketLaunchBroker {
                 guard_upstream_pending: None,
                 guard_enrollment_pending: None,
                 session_receive_armed: false,
+                deferred_status: None,
             })),
         }
     }
@@ -301,6 +305,19 @@ impl SeqpacketLaunchBroker {
         }
     }
 
+    fn defer_closing_status(
+        state: &Mutex<SeqpacketLaunchBrokerState>,
+        request: &StatusRequest,
+    ) -> bool {
+        let mut state = lock(state);
+        if state.guard_close_pending.is_some() && state.deferred_status.is_none() {
+            state.deferred_status = Some(request.clone());
+            true
+        } else {
+            false
+        }
+    }
+
     fn receive_direct_guard_close(
         state: Arc<Mutex<SeqpacketLaunchBrokerState>>,
         channel: &SeqpacketChannel,
@@ -308,6 +325,15 @@ impl SeqpacketLaunchBroker {
         let next_channel = channel.clone();
         channel
             .receive(Box::new(move |received| {
+                if let Ok(packet) = &received
+                    && let LauncherPacket::Request(ProtocolMessage::Status(request)) =
+                        &packet.packet
+                    && packet.descriptors.is_none()
+                    && Self::defer_closing_status(&state, request)
+                    && Self::receive_direct_guard_close(Arc::clone(&state), &next_channel).is_ok()
+                {
+                    return;
+                }
                 if let Ok(packet) = &received
                     && let LauncherPacket::Response(response) = &packet.packet
                     && matches!(
@@ -333,6 +359,9 @@ impl SeqpacketLaunchBroker {
                     let result = received
                         .map_err(map_transport)
                         .and_then(|packet| Self::guard_close_result(&packet, &pending));
+                    if result.is_err() {
+                        lock(&state).deferred_status = None;
+                    }
                     (pending.complete)(result);
                 }
             }))
@@ -461,6 +490,23 @@ impl SeqpacketLaunchBroker {
                     }
                 };
                 let no_descriptors = packet.descriptors.is_none();
+                if let LauncherPacket::Request(ProtocolMessage::Status(request)) = &packet.packet
+                    && no_descriptors
+                    && Self::defer_closing_status(&state, request)
+                {
+                    // Keep the owner's callback off this reader until the ACK:
+                    // its event queue may be full while the owner waits for us.
+                    if let Err(error) = Self::arm_session_receive(
+                        Arc::clone(&state),
+                        &next_channel,
+                        Arc::clone(&completion),
+                    ) && let Some(complete) = lock(&completion).take()
+                    {
+                        lock(&state).session_receive_armed = false;
+                        complete(Err(error));
+                    }
+                    return;
+                }
                 if let LauncherPacket::Response(response) = packet.packet {
                     if let ResponseResult::SenderGuardAccepted { enrollment } = &response.result {
                         let retired_reply = {
@@ -568,7 +614,21 @@ impl SeqpacketLaunchBroker {
                             }
                             _ => Err(SupervisorError::CleanupUnproven),
                         };
-                        (pending.complete)(result);
+                        let deferred = {
+                            let mut state = lock(&state);
+                            let deferred = state.deferred_status.take();
+                            if deferred.is_some() {
+                                state.session_receive_armed = false;
+                            }
+                            deferred
+                        };
+                        (pending.complete)(result.clone());
+                        if let Some(request) = deferred {
+                            if let Some(complete) = lock(&completion).take() {
+                                complete(result.map(|()| ProtocolMessage::Status(request)));
+                            }
+                            return;
+                        }
                         if let Err(error) = Self::arm_session_receive(
                             Arc::clone(&state),
                             &next_channel,
@@ -629,6 +689,7 @@ impl SeqpacketLaunchBroker {
                 (Ok(response), Some(candidate)) if state.connector.is_some() => {
                     replaced = Some(std::mem::replace(&mut state.channel, candidate));
                     state.session_receive_armed = false;
+                    state.deferred_status = None;
                     (pending.complete, Ok(response))
                 }
                 (Ok(_), candidate) => {
@@ -842,12 +903,15 @@ impl LaunchBroker for SeqpacketLaunchBroker {
             lock(&self.state).guard_close_pending.take();
             return Err(SupervisorError::CleanupUnproven);
         }
-        if let Ok(result) = received.recv_timeout(timeout) {
-            result
-        } else {
-            lock(&self.state).guard_close_pending.take();
-            Err(SupervisorError::CleanupUnproven)
+        let result = received
+            .recv_timeout(timeout)
+            .unwrap_or(Err(SupervisorError::CleanupUnproven));
+        if result.is_err() {
+            let mut state = lock(&self.state);
+            state.guard_close_pending.take();
+            state.deferred_status = None;
         }
+        result
     }
 
     fn send_conformance(
@@ -1099,18 +1163,40 @@ impl LaunchBroker for SeqpacketLaunchBroker {
         complete: SupervisorCompletion<ProtocolMessage>,
     ) -> Result<(), SupervisorError> {
         let channel = self.current_channel()?;
-        {
+        let deferred = {
             let mut state = lock(&self.state);
             if state.session_receive_armed || state.guard_close_pending.is_some() {
                 return Err(SupervisorError::BrokerUnavailable);
             }
+            let deferred = state.deferred_status.take();
             state.session_receive_armed = true;
-        }
-        let result = Self::arm_session_receive(
-            Arc::clone(&self.state),
-            &channel,
-            Arc::new(Mutex::new(Some(complete))),
-        );
+            deferred
+        };
+        let result = if let Some(request) = deferred {
+            // Keep delivery on the transport's existing receive worker: calling
+            // the owner synchronously can deadlock its full event queue. This
+            // zero-deadline check consumes no packet and claims no live state.
+            let state = Arc::clone(&self.state);
+            channel
+                .wait_readable(
+                    Duration::ZERO,
+                    Box::new(move |result| {
+                        lock(&state).session_receive_armed = false;
+                        complete(
+                            result
+                                .map(|_| ProtocolMessage::Status(request))
+                                .map_err(map_transport),
+                        );
+                    }),
+                )
+                .map_err(map_transport)
+        } else {
+            Self::arm_session_receive(
+                Arc::clone(&self.state),
+                &channel,
+                Arc::new(Mutex::new(Some(complete))),
+            )
+        };
         if result.is_err() {
             lock(&self.state).session_receive_armed = false;
         }
@@ -1174,6 +1260,7 @@ impl LaunchBroker for SeqpacketLaunchBroker {
         ) = {
             let mut state = lock(&self.state);
             state.session_receive_armed = false;
+            state.deferred_status = None;
             (
                 state.connector.take(),
                 state.channel.clone(),
@@ -4331,6 +4418,188 @@ mod tests {
     }
 
     #[test]
+    fn guard_close_services_in_flight_status_with_an_armed_reader() {
+        guard_close_with_in_flight_status(true);
+    }
+
+    #[test]
+    fn guard_close_services_in_flight_status_between_requests() {
+        guard_close_with_in_flight_status(false);
+    }
+
+    fn guard_close_with_in_flight_status(armed: bool) {
+        let (_directory, _listener, broker, server, _pin) = broker_fixture();
+        let broker = Arc::new(broker);
+        let request = armed.then(|| arm_broker_receive(&broker));
+        let enrollment = guard_enrollment();
+        let (sent, completed) = mpsc::sync_channel(1);
+        let closing = Arc::clone(&broker);
+        let expected = enrollment.clone();
+        let waiter = thread::spawn(move || {
+            sent.send(closing.close_sender_guard(expected, Duration::from_secs(2)))
+                .expect("closure result received");
+        });
+        let offered = receive_packet(&server);
+        assert!(matches!(offered.packet, LauncherPacket::Response(response)
+            if response.result == ResponseResult::SenderGuardClosing { enrollment: enrollment.clone() }));
+        // Upkeep may already have sent this before seeing the closure offer.
+        // Its serialized broker worker services closure before answering status.
+        let status = status_request("status-during-guard-close");
+        send_packet(&server, status.canonical_bytes());
+        send_packet(
+            &server,
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "guard-close".into(),
+                result: ResponseResult::SenderGuardClosed { enrollment },
+            }
+            .canonical_bytes(),
+        );
+        let closed = completed.recv_timeout(Duration::from_secs(3));
+        waiter.join().expect("closure worker joins");
+        assert_eq!(closed, Ok(Ok(())), "status must not interrupt cleanup");
+        let request = request.unwrap_or_else(|| {
+            let (sent, request) = mpsc::sync_channel(1);
+            let (release, waiting) = mpsc::sync_channel(1);
+            let (returned, admitted) = mpsc::sync_channel(1);
+            let reading = Arc::clone(&broker);
+            let starter = thread::spawn(move || {
+                let result = reading.receive_session_request(Box::new(move |result| {
+                    waiting
+                        .recv_timeout(Duration::from_secs(4))
+                        .expect("owner resumes after receive admission");
+                    sent.send(result).expect("status is retained");
+                }));
+                returned.send(result).expect("receive admission observed");
+            });
+            // Deferred delivery retains the production asynchronous contract:
+            // a busy owner callback must not block receive admission itself.
+            let queued = admitted.recv_timeout(Duration::from_secs(1));
+            release.send(()).expect("owner resumes");
+            starter.join().expect("receive admission worker joins");
+            assert_eq!(queued, Ok(Ok(())), "deferred status stays asynchronous");
+            request
+        });
+        assert_eq!(
+            request
+                .recv_timeout(Duration::from_secs(2))
+                .expect("in-flight status remains available")
+                .expect("status authenticates"),
+            ProtocolMessage::Status(status)
+        );
+        let next = arm_broker_receive(&broker);
+        let status = status_request("status-after-interleaved-guard-close");
+        send_packet(&server, status.canonical_bytes());
+        assert_eq!(
+            next.recv_timeout(Duration::from_secs(2))
+                .expect("next request arrives")
+                .expect("next request authenticates"),
+            ProtocolMessage::Status(status)
+        );
+    }
+
+    #[test]
+    fn guard_close_does_not_wait_for_the_owners_status_callback() {
+        let (_directory, _listener, broker, server, _pin) = broker_fixture();
+        let broker = Arc::new(broker);
+        let (release, waiting) = mpsc::sync_channel(1);
+        let (sent, request) = mpsc::sync_channel(1);
+        broker
+            .receive_session_request(Box::new(move |result| {
+                // A busy owner's event queue cannot accept this until its
+                // synchronous closure completes. The ACK reader must stay free.
+                waiting
+                    .recv_timeout(Duration::from_secs(4))
+                    .expect("owner unblocks after closure");
+                sent.send(result).expect("status is retained");
+            }))
+            .expect("owner reader queues");
+        let enrollment = guard_enrollment();
+        let (sent, completed) = mpsc::sync_channel(1);
+        let closing = Arc::clone(&broker);
+        let expected = enrollment.clone();
+        let waiter = thread::spawn(move || {
+            sent.send(closing.close_sender_guard(expected, Duration::from_secs(2)))
+                .expect("closure result received");
+        });
+        let offered = receive_packet(&server);
+        assert!(matches!(offered.packet, LauncherPacket::Response(_)));
+        let status = status_request("status-before-owner-unblocks");
+        send_packet(&server, status.canonical_bytes());
+        send_packet(
+            &server,
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "guard-close".into(),
+                result: ResponseResult::SenderGuardClosed { enrollment },
+            }
+            .canonical_bytes(),
+        );
+        let result = completed.recv_timeout(Duration::from_secs(3));
+        release.send(()).expect("owner resumes");
+        waiter.join().expect("closure worker joins");
+        assert_eq!(result, Ok(Ok(())), "ACK precedes owner callback delivery");
+        assert_eq!(
+            request.recv_timeout(Duration::from_secs(2)),
+            Ok(Ok(ProtocolMessage::Status(status)))
+        );
+    }
+
+    #[test]
+    fn deferred_status_does_not_prove_guard_closure() {
+        for (armed, disconnect) in [(false, false), (false, true), (true, false), (true, true)] {
+            let (_directory, _listener, broker, server, _pin) = broker_fixture();
+            let broker = Arc::new(broker);
+            let request = armed.then(|| arm_broker_receive(&broker));
+            let enrollment = guard_enrollment();
+            let (sent, completed) = mpsc::sync_channel(1);
+            let closing = Arc::clone(&broker);
+            let expected = enrollment.clone();
+            let waiter = thread::spawn(move || {
+                sent.send(closing.close_sender_guard(expected, Duration::from_secs(2)))
+                    .expect("closure result received");
+            });
+            let offered = receive_packet(&server);
+            assert!(matches!(offered.packet, LauncherPacket::Response(_)));
+            send_packet(&server, status_request("pending-status").canonical_bytes());
+            if disconnect {
+                server.close();
+            } else {
+                send_packet(
+                    &server,
+                    ProtocolResponse {
+                        schema: RESPONSE_SCHEMA.into(),
+                        protocol_version: PROTOCOL_VERSION,
+                        request_id: "wrong-close".into(),
+                        result: ResponseResult::SenderGuardClosed { enrollment },
+                    }
+                    .canonical_bytes(),
+                );
+            }
+            let result = completed
+                .recv_timeout(Duration::from_secs(3))
+                .expect("closure remains bounded");
+            waiter.join().expect("closure worker joins");
+            assert!(
+                result.is_err(),
+                "status cannot replace an authenticated ACK"
+            );
+            if let Some(request) = request {
+                assert!(
+                    request
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("failed closure settles the owner receive")
+                        .is_err()
+                );
+            }
+            assert!(lock(&broker.state).deferred_status.is_none());
+            assert!(lock(&broker.state).guard_close_pending.is_none());
+        }
+    }
+
+    #[test]
     fn guard_close_routes_in_flight_upstream_ack_before_its_own_ack() {
         use std::os::fd::AsFd;
 
@@ -4437,6 +4706,13 @@ mod tests {
         assert!(
             request.try_recv().is_err(),
             "wrong ACK cannot become a request"
+        );
+        broker.close();
+        assert_eq!(
+            request
+                .recv_timeout(Duration::from_secs(2))
+                .expect("closing the broker settles its remaining reader"),
+            Err(SupervisorError::BrokerUnavailable)
         );
     }
 

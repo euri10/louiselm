@@ -297,7 +297,10 @@ fn run_installed(start_only: bool) {
             }
             assert!(
                 Instant::now() < deadline,
-                "terminal cleanup missing for {id}"
+                "terminal cleanup missing for {id}; signed head: {:?}",
+                chain
+                    .last()
+                    .map(|receipt| (receipt.payload.sequence, receipt.payload.resulting_state))
             );
             thread::sleep(Duration::from_millis(25));
         }
