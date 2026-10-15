@@ -10700,6 +10700,146 @@ fn interrupt_cannot_replace_an_active_controller_loss_settlement() {
 }
 
 #[test]
+fn successful_terminal_response_survives_disconnect_before_completion() {
+    // u7xe5: reproduce this ordering deliberately; the original installed
+    // orphan's callback order was not captured.
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let timer = Arc::new(FakeTimer::new(Arc::clone(&setup.events)));
+    let supervisor = setup.fresh_supervisor_with_timer(timer);
+    let session = complete_launch_on(&setup, &supervisor);
+    let (controller_input, relay_receiver, relay_worker) = begin_session_relay(session);
+    let disposal = disposal_request(&setup, "terminal-response-before-disconnect");
+    setup.broker.hold_session_response(&disposal.request_id);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
+    setup.broker.wait_for_session_receipt(0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(0),
+        ));
+    setup.broker.wait_for_held_session_response();
+    let mechanics = (
+        event_count(&setup.events, "agent.dispose"),
+        event_count(&setup.events, "identity.release"),
+        setup.signer.payloads().len(),
+    );
+    setup.broker.wait_for_session_request();
+    setup.broker.disconnect_session();
+    setup.broker.wait_for_reconnect(0);
+    setup.broker.release_session_response();
+
+    let outcome = relay_receiver.recv_timeout(CALLBACK_TIMEOUT);
+    if outcome.is_err() {
+        // Also clean up the red case through its authenticated exact retry,
+        // rather than leaving a detached owner in the rest of the test process.
+        setup.broker.complete_reconnect(setup.broker.reconnect(0));
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::Lifecycle(disposal));
+        setup.broker.wait_for_held_session_response();
+        setup.broker.release_session_response();
+        relay_receiver
+            .recv_timeout(CALLBACK_TIMEOUT)
+            .unwrap()
+            .unwrap();
+    }
+    drop(controller_input);
+    relay_worker.join().unwrap();
+    assert_eq!(
+        outcome.expect("successful terminal delivery must not wait for a replacement broker"),
+        Ok(0)
+    );
+    assert!(setup.broker.is_closed());
+    assert_eq!(
+        (
+            event_count(&setup.events, "agent.dispose"),
+            event_count(&setup.events, "identity.release"),
+            setup.signer.payloads().len(),
+        ),
+        mechanics,
+        "completion must not repeat disposal, identity release or signing"
+    );
+}
+
+#[test]
+fn stale_terminal_success_cannot_finish_after_replacement_connects() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let timer = Arc::new(FakeTimer::new(Arc::clone(&setup.events)));
+    let supervisor = setup.fresh_supervisor_with_timer(timer);
+    let session = complete_launch_on(&setup, &supervisor);
+    let (controller_input, relay_receiver, relay_worker) = begin_session_relay(session);
+    let disposal = disposal_request(&setup, "terminal-response-after-replacement");
+    setup.broker.hold_session_response(&disposal.request_id);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
+    setup.broker.wait_for_session_receipt(0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(0),
+        ));
+    let first = setup
+        .broker
+        .wait_for_session_response(&disposal.request_id, 0);
+    setup.broker.wait_for_held_session_response();
+    setup.broker.wait_for_session_request();
+    setup.broker.disconnect_session();
+    setup.broker.wait_for_reconnect(0);
+    setup.broker.complete_reconnect(setup.broker.reconnect(0));
+    setup.broker.wait_for_session_request();
+    setup.broker.release_session_response();
+
+    let status = request_supervisor_status(&setup, "status-after-stale-terminal-success");
+    assert_eq!(status.state, SessionState::Terminal);
+    assert_eq!(status.broker_connection, BrokerConnection::Connected);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
+    let replay = setup
+        .broker
+        .wait_for_session_response(&disposal.request_id, 1);
+    assert_eq!(replay.canonical_bytes(), first.canonical_bytes());
+    setup.broker.wait_for_held_session_response();
+    assert!(matches!(
+        relay_receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    setup.broker.release_session_response();
+    assert_eq!(
+        relay_receiver
+            .recv_timeout(CALLBACK_TIMEOUT)
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    drop(controller_input);
+    relay_worker.join().unwrap();
+    assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+    assert_eq!(event_count(&setup.events, "identity.release"), 1);
+}
+
+#[test]
 fn failed_terminal_response_send_finishes_only_after_exact_reconnect_retry() {
     let setup = setup(
         true,

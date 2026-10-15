@@ -420,10 +420,11 @@ impl Harness {
             OwnerEvent::ResponseSent {
                 connection_epoch,
                 finish,
+                terminal_head,
                 result,
             } => self
                 .owner
-                .handle_response_sent(connection_epoch, finish, result),
+                .handle_response_sent(connection_epoch, finish, terminal_head, result),
             OwnerEvent::CommandDeadline { request_id } => self.owner.command_deadline(&request_id),
             OwnerEvent::AgentStatusDeadline { request_id } => {
                 self.owner.expire_agent_status(&request_id);

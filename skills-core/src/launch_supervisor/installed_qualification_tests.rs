@@ -24,13 +24,20 @@ fn share(path: &Path, uid: u32) {
     .unwrap();
 }
 
+#[derive(Clone, Copy)]
+enum TrialCase {
+    Startup,
+    Paired,
+    RefusedVerification,
+}
+
 #[test]
 fn privileged_activated_brokered_guard_start() {
     if std::env::var_os("LOUISELM_REQUIRE_ACTIVATED_GUARD").is_none() {
         eprintln!("skipping: requires disposable VM, Neovim and private mounts");
         return;
     }
-    run_installed(true);
+    run_installed(TrialCase::Startup);
 }
 
 #[test]
@@ -39,15 +46,46 @@ fn privileged_installed_lua_qualification() {
         eprintln!("skipping: requires disposable VM, Neovim and private mounts");
         return;
     }
-    run_installed(false);
+    let refused = Command::new("/usr/bin/unshare")
+        .args(["--mount", "--net", "--propagation", "private"])
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "launch_supervisor::system::installed_tests::daemon::qualification::installed_refused_qualification_worker",
+            "--exact", "--nocapture", "--test-threads=1",
+        ])
+        .env("LOUISELM_REQUIRE_QUALIFICATION_REFUSAL", "1")
+        .stderr(Stdio::inherit())
+        .output()
+        .unwrap();
+    std::io::stdout().write_all(&refused.stdout).unwrap();
+    assert!(
+        refused.status.success()
+            && String::from_utf8(refused.stdout)
+                .unwrap()
+                .lines()
+                .any(|line| line.ends_with("INSTALLED_QUALIFICATION_REFUSAL_CLEANUP_PASSED")),
+        "refused qualification must retain Unknown and finish authenticated cleanup"
+    );
+    run_installed(TrialCase::Paired);
+}
+
+#[test]
+fn installed_refused_qualification_worker() {
+    if std::env::var_os("LOUISELM_REQUIRE_QUALIFICATION_REFUSAL").is_none() {
+        return;
+    }
+    run_installed(TrialCase::RefusedVerification);
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "One disposable installed transaction binds fixture inputs, explicit launch authority and proven terminal cleanup."
 )]
-fn run_installed(start_only: bool) {
+fn run_installed(case: TrialCase) {
+    let start_only = matches!(case, TrialCase::Startup);
+    let refused = matches!(case, TrialCase::RefusedVerification);
     assert!(rustix::process::geteuid().is_root());
+    let previous_maps = super::super::guard_cleanup::policy_maps();
     let root = tempfile::Builder::new()
         .prefix("louiselm-qualification-")
         .tempdir_in("/var/lib")
@@ -188,6 +226,21 @@ fn run_installed(start_only: bool) {
     fs::set_permissions(&input, fs::Permissions::from_mode(0o600)).unwrap();
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);
+    if refused {
+        // This invocation owns a private mount namespace. Refuse the mechanic
+        // without changing any trusted tool bytes or accepting an unknown job.
+        assert!(
+            Command::new("/usr/bin/mount")
+                .args([
+                    "--bind",
+                    "/bin/false",
+                    "/usr/lib/louiselm/verifier/bin/verifier-toolchain"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit trusted Neovim");
     let status = Command::new("/usr/bin/setpriv")
@@ -216,28 +269,42 @@ fn run_installed(start_only: bool) {
             "LOUISELM_QUALIFICATION_START_ONLY",
             if start_only { "1" } else { "0" },
         )
+        .envs(refused.then_some(("LOUISELM_QUALIFICATION_EXPECT_UNKNOWN", "1")))
         .env("QUALIFICATION_AMBIENT_SECRET", "must-not-reach-Agent")
         .env("XDG_STATE_HOME", operator.join("state"))
         .status()
         .unwrap();
-    if !status.success() {
-        terminate(&mut daemon);
+    // Controller disposal completes through the live broker even when the
+    // trial refuses a verifier outcome. Do not strand its unused verifiers.
+    if refused {
+        assert!(
+            Command::new("/usr/bin/umount")
+                .arg("/usr/lib/louiselm/verifier/bin/verifier-toolchain")
+                .status()
+                .unwrap()
+                .success()
+        );
     }
-    assert!(
-        status.success(),
-        "installed paired Lua qualification failed"
-    );
     let deadline = Instant::now() + Duration::from_secs(15);
-    let sessions = &[
-        "baseline-worker",
-        "baseline-verifier",
-        "candidate-worker",
-        "candidate-verifier",
-    ];
-    let mut identities = [0; 4];
-    for (index, suffix) in sessions.iter().enumerate() {
+    let sessions: &[&str] = if refused {
+        &["baseline-worker", "baseline-verifier", "candidate-verifier"]
+    } else {
+        &[
+            "baseline-worker",
+            "baseline-verifier",
+            "candidate-worker",
+            "candidate-verifier",
+        ]
+    };
+    let mut identities = Vec::with_capacity(sessions.len());
+    for suffix in sessions {
         let id = format!("qualification-{suffix}");
         let directory = Path::new(STATE).join("receipts/sessions").join(&id);
+        if !status.success() && !directory.try_exists().unwrap() {
+            // A failed baseline need not authorize the candidate worker. The
+            // outer-process barrier below still checks every launcher started.
+            continue;
+        }
         loop {
             // An exited worker correctly cannot return current live status.
             // Cleanup acceptance is the authenticated terminal receipt, not
@@ -279,7 +346,10 @@ fn run_installed(start_only: bool) {
                         crate::launch_protocol::LaunchRole::FixedVerifier
                     }
                 );
-                if !start_only && suffix.ends_with("verifier") {
+                if !start_only
+                    && suffix.ends_with("verifier")
+                    && (status.success() || (refused && *suffix == "baseline-verifier"))
+                {
                     let terminal = chain.last().unwrap();
                     assert!(matches!(
                         terminal.payload.outcome,
@@ -292,6 +362,16 @@ fn run_installed(start_only: bool) {
                             Digest::of(format!("qualification-{suffix}-verify").as_bytes()).hex()
                         )
                     );
+                }
+                if refused && *suffix == "candidate-verifier" {
+                    assert!(matches!(
+                        chain.last().unwrap().payload.outcome,
+                        crate::launch_receipt::ReceiptOutcome::Disposal {
+                            authority: crate::launch_receipt::ReceiptAuthority::Cause {
+                                cause: crate::launch_receipt::ReceiptCause::ControllerLost,
+                            },
+                        }
+                    ));
                 }
                 break;
             }
@@ -319,21 +399,46 @@ fn run_installed(start_only: bool) {
             panic!("sequence one must retain Start evidence");
         };
         assert_eq!(evidence.sender_guard_required, suffix.ends_with("worker"));
-        identities[index] = evidence.assigned_uid;
+        identities.push(evidence.assigned_uid);
     }
-    assert_qualification_identities(start_only, identities);
+    super::super::launcher_cleanup::assert_exited(&previous_maps);
+    terminate(&mut daemon);
+    assert!(
+        if refused {
+            status.code() == Some(6)
+        } else {
+            status.success()
+        },
+        "installed paired Lua qualification failed"
+    );
+    if refused {
+        assert!(
+            !Path::new(STATE)
+                .join("receipts/sessions/qualification-candidate-worker")
+                .try_exists()
+                .unwrap()
+        );
+        assert_eq!(
+            identities
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+    } else {
+        assert_qualification_identities(start_only, identities.try_into().unwrap());
+    }
     assert_eq!(
         fs::read(&outside).unwrap(),
         b"must remain outside every Session\n"
     );
     assert!(!snapshot.join("files/.trial-marker").exists());
-    terminate(&mut daemon);
     println!(
         "INSTALLED_{}",
-        if start_only {
-            "ACTIVATED_GUARD_START_PASSED"
-        } else {
-            "QUALIFICATION_PASSED"
+        match case {
+            TrialCase::Startup => "ACTIVATED_GUARD_START_PASSED",
+            TrialCase::Paired => "QUALIFICATION_PASSED",
+            TrialCase::RefusedVerification => "QUALIFICATION_REFUSAL_CLEANUP_PASSED",
         }
     );
 }

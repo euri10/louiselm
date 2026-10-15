@@ -72,6 +72,12 @@ mod skill_masks;
 #[path = "installed_guard_tests.rs"]
 mod guard;
 
+#[path = "installed_guard_cleanup.rs"]
+mod guard_cleanup;
+
+#[path = "installed_launcher_cleanup.rs"]
+mod launcher_cleanup;
+
 struct BrokerAccount;
 
 impl BrokerAccount {
@@ -539,10 +545,17 @@ fn installed_broker_worker() {
             "BROKER_PROVIDER_ADDR {}",
             session.provider_address_for_test().unwrap()
         );
-        let deadline = Instant::now() + Duration::from_secs(if live_provider { 90 } else { 20 });
+        let mut deadline = live_provider.then(|| Instant::now() + Duration::from_secs(90));
         let mut parked = false;
         while !root.join("guard-provider-done").exists() {
-            assert!(Instant::now() < deadline, "Provider fixture timed out");
+            // ACP setup is bounded by its controller. Start the offline request
+            // budget only when that controller is ready to send its first prompt.
+            if deadline.is_none() && root.join("guard-provider-ready").exists() {
+                deadline = Some(Instant::now() + Duration::from_secs(20));
+            }
+            if let Some(deadline) = deadline {
+                assert!(Instant::now() < deadline, "Provider fixture timed out");
+            }
             broker.drive_provider(&mut session).unwrap();
             if session.provider_handoff_pending_for_test() {
                 assert!(!broker.step(&mut session).unwrap());

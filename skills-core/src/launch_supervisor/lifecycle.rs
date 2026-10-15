@@ -375,6 +375,7 @@ enum OwnerEvent {
     ResponseSent {
         connection_epoch: u64,
         finish: Option<Result<i32, SupervisorError>>,
+        terminal_head: Option<ReceiptHead>,
         result: Result<(), SupervisorError>,
     },
     BrokerReconnected {
@@ -816,8 +817,9 @@ impl SessionOwner {
                 OwnerEvent::ResponseSent {
                     connection_epoch,
                     finish,
+                    terminal_head,
                     result,
-                } => self.handle_response_sent(connection_epoch, finish, result),
+                } => self.handle_response_sent(connection_epoch, finish, terminal_head, result),
                 OwnerEvent::BrokerReconnected {
                     connection_epoch,
                     attempt_epoch,
@@ -2329,6 +2331,15 @@ impl SessionOwner {
         let connection_epoch = self.connection_epoch;
         let sender = self.sender.clone();
         let callback_finish = finish.clone();
+        let terminal_head = match &response.result {
+            ResponseResult::Receipt { receipt }
+                if receipt.payload.resulting_state == SessionState::Terminal =>
+            {
+                Some(receipt_head(receipt))
+            }
+            _ => None,
+        };
+        let callback_terminal_head = terminal_head.clone();
         let result = self
             .resources
             .broker
@@ -2341,13 +2352,14 @@ impl SessionOwner {
                         let _ = sender.send(OwnerEvent::ResponseSent {
                             connection_epoch,
                             finish: callback_finish,
+                            terminal_head: callback_terminal_head,
                             result,
                         });
                     }),
                 )
             });
         if let Err(error) = result {
-            self.handle_response_sent(connection_epoch, finish, Err(error));
+            self.handle_response_sent(connection_epoch, finish, terminal_head, Err(error));
         }
     }
 
@@ -2355,9 +2367,28 @@ impl SessionOwner {
         &mut self,
         connection_epoch: u64,
         finish: Option<Result<i32, SupervisorError>>,
+        terminal_head: Option<ReceiptHead>,
         result: Result<(), SupervisorError>,
     ) {
         if connection_epoch != self.connection_epoch {
+            // EOF can advance the connection epoch before a successful final
+            // send reports completion. Terminal authority cannot be widened;
+            // do not strand its proven cleanup waiting for a replacement peer.
+            if let (Some(Ok(code)), Some(head)) = (finish, terminal_head)
+                && result.is_ok()
+                && self.state == SessionState::Terminal
+                && matches!(
+                    self.broker_connection,
+                    BrokerConnection::Grace | BrokerConnection::Disconnected
+                )
+                && head == self.broker_head
+                && head == receipt_head(self.receipt())
+                && !self.has_receipt_backlog()
+                && !self.quarantined
+                && !self.cleanup_unproven
+            {
+                self.request_finish(Ok(code));
+            }
             return;
         }
         match result {

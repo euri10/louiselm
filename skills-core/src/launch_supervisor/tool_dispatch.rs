@@ -148,6 +148,7 @@ impl SessionOwner {
                         let _ = sender.send(OwnerEvent::ResponseSent {
                             connection_epoch,
                             finish: None,
+                            terminal_head: None,
                             result,
                         });
                     }),

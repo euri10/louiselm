@@ -6,6 +6,7 @@ local nvim = vim
 nvim.opt.rtp:prepend(nvim.fn.getcwd())
 local selection = nvim.json.decode(table.concat(nvim.fn.readfile(nvim.env.LOUISELM_QUALIFICATION_FIXTURE), "\n"))
 local start_only = nvim.env.LOUISELM_QUALIFICATION_START_ONLY == "1"
+local expect_unknown = nvim.env.LOUISELM_QUALIFICATION_EXPECT_UNKNOWN == "1"
 -- Decode diagnostic metadata only after failure, outside the live callback path.
 -- Never print request/output bytes or Agent stderr.
 local control_trace = {}
@@ -81,6 +82,24 @@ if failure then
     end
     print(nvim.json.encode(metadata))
   end
+end
+if expect_unknown then
+  assert(failure == "verification outcome uncertain; inspect the original request", failure)
+  local unknown, runs = false, 0
+  for _, observation in ipairs(control_trace) do
+    if observation.argv[2] == "verification" and observation.reply then
+      local decoded, value = pcall(nvim.json.decode, observation.reply.stdout or "")
+      if decoded and type(value) == "table" and value.kind == "status" and type(value.status) == "table" then
+        unknown = unknown or value.status.state == "unknown"
+      end
+      local request = nvim.json.decode(observation.stdin or "{}")
+      runs = runs + (request.kind == "run" and 1 or 0)
+    end
+  end
+  assert(unknown, "refused mechanic must leave a durable Unknown, not success or refunded authority")
+  assert(runs == 1, "uncertain verification must not be retried")
+  print("PAIRED_TRIAL_REFUSAL_RETAINS_UNKNOWN")
+  nvim.cmd("cquit 6")
 end
 assert(not failure, failure)
 for _, arm in ipairs({ "baseline", "candidate" }) do

@@ -21,6 +21,7 @@ fn privileged_installed_lua_bead_executor() {
         return;
     }
     assert!(rustix::process::geteuid().is_root());
+    let previous_maps = super::super::guard_cleanup::policy_maps();
     let index: usize = std::env::var("LOUISELM_BEAD_EXECUTOR_CASE")
         .expect("explicit installed case")
         .parse()
@@ -369,7 +370,8 @@ fn privileged_installed_lua_bead_executor() {
             wait_terminal(&format!("lua-verifier-{index}"));
         }
     }
-    eprintln!("installed Lua workers and verifiers: durable terminal cleanup receipts");
+    super::super::launcher_cleanup::assert_exited(&previous_maps);
+    eprintln!("installed Lua workers and verifiers: terminal receipts and launcher exit");
     terminate(&mut daemon);
 }
 

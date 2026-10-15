@@ -1,8 +1,6 @@
 //! Disposable-VM composition of the installed Brokered launch handoff.
 
 use super::*;
-#[path = "installed_guard_cleanup.rs"]
-mod guard_cleanup;
 #[path = "installed_guard_resume.rs"]
 mod warm;
 
@@ -115,7 +113,13 @@ fn signed_certificate(
     clippy::too_many_lines,
     reason = "installed provider fixture keeps the wire assertions together"
 )]
-fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread::JoinHandle<()>) {
+fn prepare_provider_upstream(
+    root: &std::path::Path,
+    stock: bool,
+) -> (
+    u16,
+    impl FnOnce(mpsc::Receiver<()>) -> thread::JoinHandle<()>,
+) {
     let root_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let root_certificate = signed_certificate("LouiseLM test root", &root_key, None, 1);
     fs::write(
@@ -138,97 +142,132 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
-    let worker = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        for request_index in 0..2 {
-            let stream = loop {
-                assert!(Instant::now() < deadline, "upstream was not reached");
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(10));
+    let worker = move |ready: mpsc::Receiver<()>| {
+        thread::spawn(move || {
+            if ready.recv().is_err() {
+                // Setup was cancelled before any upstream request was due.
+                return;
+            }
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs(20);
+            for request_index in 0..2 {
+                let stream = loop {
+                    assert!(Instant::now() < deadline, "upstream was not reached");
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("upstream accept: {error}"),
                     }
-                    Err(error) => panic!("upstream accept: {error}"),
+                };
+                if stock {
+                    eprintln!(
+                        "STOCK_UPSTREAM request={request_index} phase=accepted elapsed_ms={}",
+                        started.elapsed().as_millis()
+                    );
                 }
-            };
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut tls = acceptor.accept(stream).unwrap();
-            assert_eq!(
-                tls.ssl().servername(NameType::HOST_NAME),
-                Some("api.openai.com")
-            );
-            let mut request = Vec::new();
-            loop {
-                let mut buffer = [0; 4096];
-                let count = tls.read(&mut buffer).unwrap();
-                assert!(count > 0, "upstream request ended before its body");
-                request.extend_from_slice(&buffer[..count]);
-                if let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
-                {
-                    let header =
-                        String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
-                    let length = header
-                        .lines()
-                        .find_map(|line| line.strip_prefix("content-length: "))
-                        .unwrap()
-                        .parse::<usize>()
-                        .unwrap();
-                    if request.len() >= header_end + 4 + length {
-                        assert!(header.contains("authorization: bearer fixture-secret"));
-                        if stock {
-                            let body: serde_json::Value = serde_json::from_slice(
-                                &request[header_end + 4..header_end + 4 + length],
-                            )
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut tls = acceptor.accept(stream).unwrap();
+                assert_eq!(
+                    tls.ssl().servername(NameType::HOST_NAME),
+                    Some("api.openai.com")
+                );
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let count = tls.read(&mut buffer).unwrap();
+                    assert!(count > 0, "upstream request ended before its body");
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(header_end) =
+                        request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                    {
+                        let header =
+                            String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                        let length = header
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                            .unwrap()
+                            .parse::<usize>()
                             .unwrap();
-                            assert_eq!(body["model"], "gpt-5.6-luna");
-                            assert_eq!(body["reasoning"]["effort"], "low");
-                            if request_index == 0 {
-                                assert!(
-                                    body["input"]
+                        if request.len() >= header_end + 4 + length {
+                            assert!(header.contains("authorization: bearer fixture-secret"));
+                            if stock {
+                                let body: serde_json::Value = serde_json::from_slice(
+                                    &request[header_end + 4..header_end + 4 + length],
+                                )
+                                .unwrap();
+                                assert_eq!(body["model"], "gpt-5.6-luna");
+                                assert_eq!(body["reasoning"]["effort"], "low");
+                                if request_index == 0 {
+                                    assert!(
+                                        body["input"].as_array().unwrap().iter().all(|item| {
+                                            item["type"] != "custom_tool_call_output"
+                                        })
+                                    );
+                                } else {
+                                    let output = body["input"]
                                         .as_array()
                                         .unwrap()
                                         .iter()
-                                        .all(|item| { item["type"] != "custom_tool_call_output" })
-                                );
+                                        .find(|item| item["type"] == "custom_tool_call_output")
+                                        .expect("Codex did not return the exec result");
+                                    assert_eq!(output["call_id"], "call_tool");
+                                    assert!(output.to_string().contains("TOOL_OK"), "{output}");
+                                }
                             } else {
-                                let output = body["input"]
-                                    .as_array()
-                                    .unwrap()
-                                    .iter()
-                                    .find(|item| item["type"] == "custom_tool_call_output")
-                                    .expect("Codex did not return the exec result");
-                                assert_eq!(output["call_id"], "call_tool");
-                                assert!(output.to_string().contains("TOOL_OK"), "{output}");
+                                assert!(
+                                    request[header_end + 4..header_end + 4 + length]
+                                        .windows(b"fixture-model".len())
+                                        .any(|bytes| bytes == b"fixture-model")
+                                );
                             }
-                        } else {
-                            assert!(
-                                request[header_end + 4..header_end + 4 + length]
-                                    .windows(b"fixture-model".len())
-                                    .any(|bytes| bytes == b"fixture-model")
-                            );
+                            break;
                         }
-                        break;
                     }
                 }
-            }
-            let response = if stock {
-                stock_response(request_index == 0)
-            } else {
-                b"event: first\n\nevent: last\n\n".to_vec()
-            };
-            write!(
+                let response = if stock {
+                    stock_response(request_index == 0)
+                } else {
+                    b"event: first\n\nevent: last\n\n".to_vec()
+                };
+                write!(
                 tls,
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                 response.len(),
             )
             .unwrap();
-            tls.write_all(&response).unwrap();
-            tls.flush().unwrap();
-        }
-    });
+                tls.write_all(&response).unwrap();
+                tls.flush().unwrap();
+            }
+        })
+    };
     (port, worker)
+}
+
+#[test]
+fn prepared_provider_listener_is_released_without_start() {
+    let root = tempfile::tempdir().unwrap();
+    let (port, start) = prepare_provider_upstream(root.path(), false);
+    drop(start);
+    TcpListener::bind(("127.0.0.1", port))
+        .expect("abandoning fixture setup must not retain its upstream listener");
+}
+
+#[test]
+fn started_provider_without_ready_releases_its_listener_on_cancel() {
+    let root = tempfile::tempdir().unwrap();
+    let (port, start) = prepare_provider_upstream(root.path(), false);
+    let (ready, wait_ready) = mpsc::channel();
+    let worker = start(wait_ready);
+    drop(ready);
+    worker
+        .join()
+        .expect("cancelled setup must not expire an upstream request");
+    TcpListener::bind(("127.0.0.1", port))
+        .expect("cancelled setup must release the prepared upstream listener");
 }
 
 fn stock_response(first: bool) -> Vec<u8> {
@@ -628,7 +667,7 @@ fn installed_guard_case_for(
         _ => None,
     };
     let tls_server = (provider && live_address.is_none())
-        .then(|| start_provider_upstream(root.path(), matches!(codex, CodexCase::Stock(_))));
+        .then(|| prepare_provider_upstream(root.path(), matches!(codex, CodexCase::Stock(_))));
     if provider {
         super::provider_credentials::provision_empty_state(root.path());
         if let Some((port, _)) = &tls_server {
@@ -689,6 +728,9 @@ fn installed_guard_case_for(
         certificate.observations
     );
 
+    // Setup and certification do not spend the upstream's request deadline.
+    let (provider_ready, wait_ready) = mpsc::channel();
+    let tls_server = tls_server.map(|(port, start)| (port, start(wait_ready)));
     let (mut broker_child, lines) = broker_process(root.path(), no_permission.then_some("refuse"));
     marker(&lines, "BROKER_READY");
     let mut platform =
@@ -799,6 +841,12 @@ fn installed_guard_case_for(
         .unwrap();
         let _ = done.send(session.relay_stdio(relay));
     });
+    let mark_provider_ready = || {
+        fs::write(root.path().join("guard-provider-ready"), b"").unwrap();
+        if tls_server.is_some() {
+            provider_ready.send(()).unwrap();
+        }
+    };
     if matches!(codex, CodexCase::Stock(_) | CodexCase::Live(_, _)) {
         if live_address.is_some() {
             stock_acp_live_prompts(
@@ -812,6 +860,7 @@ fn installed_guard_case_for(
                 &mut controller_peer_input,
                 &mut controller_peer_output,
                 &sessions,
+                mark_provider_ready,
             );
         }
     } else if !matches!(codex, CodexCase::None) {
@@ -852,6 +901,9 @@ fn installed_guard_case_for(
     // Run exhaustion reports its Park mid-test; teardown must not await a second.
     let mut parked_seen = false;
     if let Some(address) = provider_address {
+        if !matches!(codex, CodexCase::Stock(_)) {
+            mark_provider_ready();
+        }
         if warm_resume {
             warm::drive(
                 root.path(),
@@ -1031,12 +1083,18 @@ fn stock_acp_prompt(
     input: &mut std::os::unix::net::UnixStream,
     output: &mut std::os::unix::net::UnixStream,
     sessions: &Path,
+    provider_ready: impl FnOnce(),
 ) {
+    let started = Instant::now();
     output
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let mut reader = BufReader::new(output.try_clone().unwrap());
     let mut request = |id: u64, method: &str, params: serde_json::Value| {
+        eprintln!(
+            "STOCK_ACP method={method} phase=send elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
         writeln!(
             input,
             "{}",
@@ -1047,7 +1105,9 @@ fn stock_acp_prompt(
         loop {
             line.clear();
             assert!(
-                reader.read_line(&mut line).unwrap() > 0,
+                reader.read_line(&mut line).unwrap_or_else(|error| {
+                    panic!("ACP {method} read after {:?}: {error}", started.elapsed())
+                }) > 0,
                 "ACP closed before {method} replied"
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -1060,6 +1120,10 @@ fn stock_acp_prompt(
                 "ACP {method} refused: {frame}"
             );
             if frame.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+                eprintln!(
+                    "STOCK_ACP method={method} phase=reply elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
                 return frame["result"].clone();
             }
         }
@@ -1082,6 +1146,7 @@ fn stock_acp_prompt(
         }),
     );
     let session_id = created["sessionId"].as_str().unwrap();
+    provider_ready();
     let completed = request(
         3,
         "session/prompt",
