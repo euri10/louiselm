@@ -390,6 +390,27 @@ fn privileged_installed_brokered_guard_start_and_disposal() {
 }
 
 #[test]
+fn privileged_installed_brokered_fixture_releases_guard_before_returning() {
+    if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
+        eprintln!("requires disposable root and a current installed guard certificate");
+        return;
+    }
+    let previous = guard_cleanup::policy_maps();
+    installed_guard_case(false, false, false, false, false);
+    // ac6rv/4b1et: terminal receipts and identity release can precede inherited
+    // pin-namespace release. A later fixture may reuse that namespace's inode
+    // and port, so returning with a retired deny-only guard is already wrong.
+    let retained: Vec<_> = guard_cleanup::policy_maps()
+        .into_iter()
+        .filter(|id| !previous.contains(id))
+        .collect();
+    assert!(
+        retained.is_empty(),
+        "fixture returned with live guard policy maps: {retained:?}"
+    );
+}
+
+#[test]
 fn privileged_installed_brokered_guard_lost_close_ack_poison() {
     installed_guard_case(true, false, false, false, false);
 }

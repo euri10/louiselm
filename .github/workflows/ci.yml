@@ -240,6 +240,7 @@ jobs:
               /bin/bash -c '\''umask 022; mount --bind /dev/null /sys/kernel/btf/vmlinux; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture'\'' bash "$library_test"
             for scenario in \
               privileged_installed_brokered_guard_start_and_disposal \
+              privileged_installed_brokered_fixture_releases_guard_before_returning \
               privileged_installed_brokered_guard_lost_close_ack_poison \
               privileged_installed_brokered_guard_broker_outage_poison \
               privileged_installed_brokered_guard_park_closes_before_receipt \
