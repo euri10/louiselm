@@ -1060,10 +1060,12 @@ local function handle_exit(self, result)
 end
 
 ---@param self louiselm.session.Session
----@param callback fun(error?: string)
+---@param callback? fun(error?: string) Required when the operation depends on durable routing authority.
 local function save_routing(self, callback)
   if self.acp_session_id == nil then
-    callback("Session routing preferences require an ACP Session identity")
+    if callback ~= nil then
+      callback("Session routing preferences require an ACP Session identity")
+    end
     return
   end
   local preference =
@@ -1073,7 +1075,11 @@ local function save_routing(self, callback)
     if self.state.status == "disposed" or self.state.status == "error" then
       return
     end
-    callback(err and "could not save Session routing preference: " .. err.message or nil)
+    -- Observation-only saves report storage errors through recording_changed;
+    -- they cannot change the outcome already observed from the Agent.
+    if callback ~= nil then
+      callback(err and "could not save Session routing preference: " .. err.message or nil)
+    end
   end)
 end
 
@@ -1087,11 +1093,7 @@ recover_economical = function(self, reason)
     return
   end
   self.state.routing_recovery = { turn_id = admission.id, reason = reason }
-  save_routing(self, function(err)
-    if err ~= nil then
-      fail(self, err)
-    end
-  end)
+  save_routing(self)
 end
 
 ---@param self louiselm.session.Session
@@ -1437,11 +1439,7 @@ local function handle_prompt_result(self, result, rpc_error)
     recover_economical(self, "turn_failed")
   elseif result.stopReason ~= "cancelled" and self.admission ~= nil and self.admission.decision.recovery ~= nil then
     self.state.routing_recovery = nil
-    save_routing(self, function(err)
-      if err ~= nil then
-        fail(self, err)
-      end
-    end)
+    save_routing(self)
   end
   record_observation(self, "outcome", {
     outcome = turn_error ~= nil and "failed" or (result.stopReason == "cancelled" and "cancelled" or "completed"),

@@ -174,6 +174,11 @@ Actual protocol and process failures continue to terminate the Session.
 Recording failures publish `recording_changed` with a typed, sanitized error and
 pending-write state. `Session:inspect()` exposes the same fields. Active work
 continues; subsequent prompt admission must first flush the failed queue.
+After dispatch, a recording failure preserves the Agent's terminal result and
+ACP connection, including when saving or clearing economical recovery metadata.
+The completion callback and terminal event still describe the Agent's outcome.
+Startup and explicit Model/effort or Auto/pin changes retain their durable-save
+requirement; a failed admission still sends no prompt.
 `api:flush_recording(function(err) ... end)` retries without starting work and
 also supports acknowledging final facts after registry Disposal. It never blocks
 Neovim. Do not quit the editor before its callback if final-write confirmation

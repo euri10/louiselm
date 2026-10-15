@@ -463,8 +463,8 @@ T["an older matching approval remains eligible at the current global revision"] 
   MiniTest.expect.equality(saved.selection.qualification.approval_revision, 2)
 end
 
-local function candidate_prompt(session)
-  local id = assert(session:prompt("original mutating request", nil, { workload = "implementation" }))
+local function candidate_prompt(session, callback)
+  local id = assert(session:prompt("original mutating request", callback, { workload = "implementation" }))
   local request = latest("session/set_config_option")
   respond(request.id, { configOptions = options("small", "high") })
   request = latest("session/set_config_option")
@@ -501,6 +501,118 @@ local function baseline_prompt()
   MiniTest.expect.equality(request.params.value, "high")
   respond(request.id, { configOptions = options() })
   return latest("session/prompt")
+end
+
+for _, storage_error in ipairs({ "permissions", "locked" }) do
+  for _, outcome in ipairs({ "failed", "completed" }) do
+    T[storage_error .. " recording preserves the Agent's " .. outcome .. " terminal result"] = function()
+      local restore_storage
+      -- Finally runs in registration order; restore storage before API disposal.
+      MiniTest.finally(function()
+        if restore_storage then
+          restore_storage()
+        end
+      end)
+      local session = start(true)
+      local completions, completion = 0, nil
+      local function completed(result, err)
+        completions = completions + 1
+        completion = { result = result, error = err }
+      end
+      local turn_id, request = candidate_prompt(session, outcome == "failed" and completed or nil)
+      if outcome == "completed" then
+        respond(request.id, failed_result())
+        turn_id = assert(session:prompt("explicit continuation", completed, { workload = "implementation" }))
+        request = baseline_prompt()
+      end
+      -- Synchronize all dispatch writes before making the real store unavailable.
+      query("SELECT id FROM turns")
+      local errors, terminal = {}, {}
+      session:on(function(event)
+        if event.type == "recording_changed" then
+          assert(not nvim.in_fast_event())
+        elseif event.type == "error" then
+          errors[#errors + 1] = event.data.message
+        elseif event.type == "turn_done" then
+          terminal[#terminal + 1] = event.data
+        end
+      end)
+      if storage_error == "permissions" then
+        restore_storage = function()
+          assert(nvim.uv.fs_chmod(directory, 448))
+        end
+        assert(nvim.uv.fs_chmod(directory, 320))
+      else
+        local held, exited = false, false
+        local locker = original_system({ "sqlite3", directory .. "/turns.sqlite3" }, {
+          stdin = true,
+          stdout = function(_, data)
+            if data and data:find("held", 1, true) then
+              held = true
+            end
+          end,
+        }, function()
+          exited = true
+        end)
+        restore_storage = function()
+          if not exited then
+            locker:kill(9)
+            locker:wait()
+          end
+        end
+        locker:write("BEGIN IMMEDIATE;\nSELECT 'held';\n")
+        wait_for(function()
+          return held
+        end)
+      end
+      local result = outcome == "failed" and failed_result() or { stopReason = "end_turn", usage = { totalTokens = 7 } }
+      respond(request.id, result)
+      local recording_failure
+      api:flush_recording(function(err)
+        recording_failure = assert(err)
+      end)
+      wait_for(function()
+        return recording_failure ~= nil
+      end)
+      MiniTest.expect.equality(recording_failure.code, storage_error)
+      MiniTest.expect.equality(completions, 1)
+      MiniTest.expect.equality(
+        completion,
+        outcome == "failed" and { error = "Capacity unavailable" } or { result = result }
+      )
+      MiniTest.expect.equality(session:inspect().status, "ready")
+      MiniTest.expect.equality(process.closed, false)
+      MiniTest.expect.equality(errors, outcome == "failed" and { "Capacity unavailable" } or {})
+      MiniTest.expect.equality(terminal, outcome == "completed" and { result } or {})
+      MiniTest.expect.equality(session:inspect().recording_error.code, storage_error)
+      MiniTest.expect.equality(session:inspect().recording_pending, true)
+      local sent, rejected = #process.writes, false
+      assert(session:prompt("must await durability", function(_, err)
+        assert(err == recording_failure.message, err)
+        rejected = true
+      end))
+      wait_for(function()
+        return rejected
+      end)
+      MiniTest.expect.equality(#process.writes, sent)
+      restore_storage()
+      restore_storage = nil
+      local rows = query("SELECT turn_id,data FROM turn_events WHERE kind='outcome' AND turn_id='" .. turn_id .. "'")
+      MiniTest.expect.equality(#rows, 1)
+      MiniTest.expect.equality(nvim.json.decode(rows[1].data), {
+        outcome = outcome,
+        peer_response = true,
+        usage = outcome == "completed" and { total_tokens = 7 } or nil,
+      })
+      local saved = nvim.json.decode(query("SELECT preference FROM routing_preferences")[1].preference)
+      MiniTest.expect.equality(
+        saved.recovery,
+        outcome == "failed" and { turn_id = turn_id, reason = "turn_failed" } or nil
+      )
+      MiniTest.expect.equality(session:inspect().recording_error, nil)
+      MiniTest.expect.equality(completions, 1)
+    end
+  end
 end
 
 T["failed economical turn preserves one mutating effect and confirms baseline for explicit continuation"] = function()
