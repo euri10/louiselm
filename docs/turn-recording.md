@@ -399,8 +399,10 @@ Dimension names are `agent`, `provider`, `model`, `session` (the ACP Session ID)
 and `option:<recorded option ID>`. For example,
 `{"agent":"codex","model":"astra","option:reasoning":"medium","option:enabled":false}`
 is one joint filter. Boolean `false` differs from string `"false"`; JSON `null`
-matches an absent dimension. Filters always use recorded attribution and the
-immutable starting tuple. Unknown query fields and invalid values are errors.
+matches an absent dimension. Strings match their decoded values even when the
+recorder and SQLite use different JSON escapes. Filters always use recorded
+attribution and the immutable starting tuple. Unknown query fields and invalid
+values are errors.
 Dimension values reflect matching recorded turns, not current Agent settings.
 
 Turn ranges and buckets use the recorded `prepared_at` timestamp. Event ranges

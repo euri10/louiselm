@@ -39,9 +39,10 @@ local function cohort(model, enabled, agent, provider)
 end
 -- Synthetic normalized recorder facts, not claimed ACP frames/order. Real wire
 -- collection/order remains covered by recording_spec and option_recording_spec.
-local function turn(id, filter, usage, costs, outcome, timestamp)
+local function turn(id, filter, usage, costs, outcome, timestamp, acp_session_id)
   local record = nvim.deepcopy(filter)
-  record.id, record.acp_session_id, record.prepared_at = id, "session", timestamp or "2026-09-07T12:00:00Z"
+  record.id, record.acp_session_id, record.prepared_at =
+    id, acp_session_id or "session", timestamp or "2026-09-07T12:00:00Z"
   record.model = record.options.model
   record.cost_baseline = costs and costs[1]
   writer:append(record)
@@ -350,6 +351,27 @@ T["explorer discovers all typed dimensions without interpolating their names"] =
   for _, key in ipairs({ "agent", "provider", "model", "option:enabled", "option:reasoning", 'option:strange".option' }) do
     MiniTest.expect.equality(found[key], true)
   end
+end
+
+T["explorer matches decoded dimension strings across JSON encoders"] = function()
+  -- Neovim escapes DEL as \u007f; SQLite's json_quote retains its literal byte.
+  local value = "recorded\127value"
+  local filter = cohort(value, false, value, value)
+  filter.options.marker = value
+  turn("encoded", filter, { total_tokens = 12 }, nil, nil, nil, value)
+  flush()
+  MiniTest.expect.equality(assert(summaries({ filter }))[1].turns, 1)
+  local filters = { agent = value, provider = value, model = value, session = value, ["option:marker"] = value }
+  for key, expected in pairs(filters) do
+    local page = assert(explore({ filters = { [key] = expected } }))
+    MiniTest.expect.equality(page.summary.turns, 1)
+  end
+  local page =
+    assert(explore({ filters = filters, group_by = { "agent", "provider", "model", "session", "option:marker" } }))
+  MiniTest.expect.equality(page.summary.turns, 1)
+  MiniTest.expect.equality(page.rows[1].dimensions, filters)
+  MiniTest.expect.equality(assert(explore({ filters = { ["option:enabled"] = "false" } })).summary.turns, 0)
+  MiniTest.expect.equality(assert(explore({ filters = { ["option:enabled"] = false } })).summary.turns, 1)
 end
 
 T["explorer validates closed query shapes and reports empty or corrupt stores"] = function()

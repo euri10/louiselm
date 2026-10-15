@@ -270,9 +270,18 @@ end
 local function predicates(query, quote, alias, with_time)
   local clauses = {}
   for key, value in pairs(query.filters or {}) do
-    clauses[#clauses + 1] = value_sql(key, quote, alias)
-      .. " IS "
-      .. (value == nvim.NIL and "NULL" or quote(nvim.json.encode(value)))
+    local actual = value_sql(key, quote, alias)
+    if type(value) == "string" then
+      -- Compare decoded strings: Neovim and SQLite may choose different JSON escapes.
+      clauses[#clauses + 1] = "json_type("
+        .. actual
+        .. ")='text' AND json_extract("
+        .. actual
+        .. ",'$') IS "
+        .. quote(value)
+    else
+      clauses[#clauses + 1] = actual .. " IS " .. (value == nvim.NIL and "NULL" or quote(nvim.json.encode(value)))
+    end
   end
   if query.turn_id then
     clauses[#clauses + 1] = alias .. ".id=" .. quote(query.turn_id)
