@@ -211,6 +211,33 @@ T["cancel during configuration prevents a late ACK from sending"] = function()
   MiniTest.expect.equality(#children[1].prompts, 0)
 end
 
+T["a dependent choice rejected after a Model change cannot dispatch"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("dependent-choice")
+  req.options = { { id = "model", value = "b" }, { id = "effort", value = "high" } }
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1, options("a"))
+  wait_for(function()
+    return #children[1].changes == 1
+  end)
+  local replacement = options("b")
+  replacement[2].options = { { value = "low" } }
+  acknowledge(children[1], 1, replacement)
+  wait_for(function()
+    return #children[1].changes == 2
+  end)
+  children[1].changes[2].callback(nil, "effort is no longer advertised for this Model")
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "failed"
+  end)
+  MiniTest.expect.equality(#children[1].prompts, 0)
+  assert(control:request(req))
+  MiniTest.expect.equality(#children, 1)
+end
+
 T["cancel during admission reports cancellation despite the completion failure callback"] = function()
   local control, children, _, ready = fixture()
   assert(control:request(request("admission-cancel")))
@@ -414,6 +441,55 @@ T["startup deadline disposes its child and ignores late readiness"] = function()
   MiniTest.expect.equality(#children, 1)
 end
 
+T["unlimited operations allocate no deadline and still release their observers"] = function()
+  for _, ending in ipairs({ "complete", "cancel", "dispose" }) do
+    local control, children, _, ready = fixture()
+    local req = request("unlimited-" .. ending)
+    req.timeout_ms = false
+    assert(control:request(req))
+    MiniTest.expect.equality(control.operations[req.id].timer, nil)
+    wait_for(function()
+      return #children == 1
+    end)
+    ready(1)
+    wait_for(function()
+      return #children[1].prompts == 1
+    end)
+    if ending == "complete" then
+      children[1].state.status = "ready"
+      children[1].complete({ stopReason = "end_turn" })
+    elseif ending == "cancel" then
+      assert(control:request({ action = "cancel", id = req.id }))
+    else
+      control:dispose()
+    end
+    wait_for(function()
+      return control.operations[req.id].terminal
+    end)
+    MiniTest.expect.equality(next(children[1].listeners), nil)
+    MiniTest.expect.equality(control.operations[req.id].timer, nil)
+    MiniTest.expect.equality(
+      control.operations[req.id].snapshot.phase,
+      ending == "complete" and "completed" or "cancelled"
+    )
+  end
+end
+
+T["omitted deadlines remain finite and malformed deadlines create nothing"] = function()
+  local control, children = fixture()
+  for _, timeout in ipairs({ true, 0, -1, 1.5, 3600001, "unlimited" }) do
+    local req = request("invalid-deadline")
+    req.timeout_ms = timeout
+    local state, err = control:request(req)
+    MiniTest.expect.equality(state, nil)
+    assert(assert(err):find("timeout_ms", 1, true))
+  end
+  MiniTest.expect.equality(control.count, 0)
+  MiniTest.expect.equality(#children, 0)
+  assert(control:request(request("default-deadline")))
+  assert(control.operations["default-deadline"].timer ~= nil)
+end
+
 T["running deadline retains the reason and final child status without replay"] = function()
   -- Observed: codex/01a13881-37a8-7c93-a011-777c7ab3edc4, operation
   -- 01a1387a-b795-7113-b3a2-c6f6b5a54465:next-1, timeout_ms=3600000.
@@ -506,6 +582,7 @@ T["configured entrypoint runs two real mock children without changing the curren
   nvim.api.nvim_set_current_buf(parent)
   nvim.api.nvim_buf_set_lines(parent, 0, -1, false, { "human draft stays here" })
   local first, second = request("real-first"), request("real-second")
+  first.timeout_ms = false
   first.cwd, second.cwd = root, root .. "/tests"
   assert(plugin.session_control(first))
   assert(plugin.session_control(second))

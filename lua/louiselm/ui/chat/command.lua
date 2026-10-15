@@ -19,11 +19,11 @@ local M = {}
 local configured ---@type table?
 local dispose_registered ---@type fun()?
 local staleness_generation = 0
-local control_request ---@type (fun(request: unknown): louiselm.SessionControlSnapshot?, string?)?
+local control_request ---@type (fun(request: unknown): louiselm.SessionControlSnapshot|louiselm.SessionControlDiscovery|nil, string?)?
 
 ---Operate on the configured editor's explicitly identified child Sessions.
 ---@param request unknown Data-only request, validated before constructing an owner.
----@return louiselm.SessionControlSnapshot? snapshot Compact operation state.
+---@return louiselm.SessionControlSnapshot|louiselm.SessionControlDiscovery|nil snapshot Compact state or advertisements.
 ---@return string? error_message Unavailable registration, invalid request or operation failure.
 function M.session_control(request)
   local err = SessionControl.validate(request)
@@ -547,6 +547,9 @@ function M.register()
   end
 
   control_request = function(request)
+    if request.action == "discover" then
+      return SessionControl.discover(chat and chat.api, configured and configured.agents or {}, request)
+    end
     if control == nil then
       if request.action ~= "start" then
         return nil, "unknown operation id in this editor registration; do not automatically replay after restart"

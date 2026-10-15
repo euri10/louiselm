@@ -16,12 +16,13 @@
 ---@field recording_probe? string Test-only SQLite path. Reply with committed turn IDs visible when the prompt arrives.
 ---@field replay_updates? table[] Ordered session/load updates from a captured structural fixture.
 ---@field usage? table Completed-turn ACP usage returned with each prompt result.
+---@field config_options? table[] ACP configOptions advertised and independently mutable per mock Session.
 
 ---@class louiselm.dev.MockAgentState
 ---@field initialized boolean
 ---@field next_session integer
 ---@field next_permission integer
----@field sessions table<string, { cwd: string }>
+---@field sessions table<string, { cwd: string, config_options?: table[] }>
 ---@field pending_prompt? { id: louiselm.acp.JsonRpcId, session_id: string, text: string }
 ---@field pending_permission? string|number
 
@@ -205,8 +206,11 @@ local function handle_message(message, state, options)
   if method == "session/new" then
     local session_id = "mock-session-" .. state.next_session
     state.next_session = state.next_session + 1
-    state.sessions[session_id] = { cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd() }
-    write_response(message.id, { sessionId = session_id })
+    state.sessions[session_id] = {
+      cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd(),
+      config_options = options.config_options and nvim.deepcopy(options.config_options) or nil,
+    }
+    write_response(message.id, { sessionId = session_id, configOptions = state.sessions[session_id].config_options })
     if options.available_commands ~= nil then
       write_notification("session/update", {
         sessionId = session_id,
@@ -275,6 +279,27 @@ local function handle_message(message, state, options)
       end
     end
     write_response(message.id, { sessions = sessions })
+    return true
+  end
+
+  if method == "session/set_config_option" then
+    local session = state.sessions[params.sessionId]
+    for _, option in ipairs(session and session.config_options or {}) do
+      if option.id == params.configId then
+        local valid = option.type == "boolean" and type(params.value) == "boolean"
+        for _, choice in ipairs(option.options or {}) do
+          valid = valid or choice.value == params.value
+        end
+        if not valid then
+          write_error(message.id, -32602, "unsupported config value")
+          return true
+        end
+        option.currentValue = params.value
+        write_response(message.id, { configOptions = session.config_options })
+        return true
+      end
+    end
+    write_error(message.id, -32602, "unknown session or config option")
     return true
   end
 
@@ -387,6 +412,7 @@ function M.run(options)
     recording_probe = options.recording_probe or nvim.env.LOUISELM_MOCK_RECORDING_PROBE,
     replay_updates = options.replay_updates,
     usage = options.usage,
+    config_options = options.config_options,
   }
   local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }
 

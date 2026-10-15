@@ -18,8 +18,21 @@ local Mcp = require("louiselm.mcp")
 ---@field context? {name: string, text: string}[] Up to 16 explicit text snapshots; prompt and context together at most 262144 bytes. Never consumes Chat drafts.
 ---@field options? {id: string, value: string|boolean}[] Up to 32 ordered advertised choices; Model before dependent effort.
 ---@field parent_turn_id? string Actual parent admission/turn identity; correlation does not grant authority.
----@field timeout_ms? integer Whole-operation deadline, default 300000, maximum 3600000; expiry disposes the child.
+---@field timeout_ms? integer|false Whole-operation deadline, default 300000, maximum 3600000; false explicitly disables it. Expiry disposes the child.
 ---@field result? boolean Include the bounded assistant-text tail on inspect only.
+
+---@class louiselm.SessionControlDiscoveryRequest
+---@field action "discover"
+---@field agent? string Select a configured Agent; omit to list names only.
+---@field session_id? string Select an existing local Session of that Agent; never starts a probe.
+---@field option_id? string Return only this advertised option; requires session_id.
+
+---@class louiselm.SessionControlDiscovery
+---@field agents string[] Sorted configured names, at most 128; no commands, environments or credentials.
+---@field sessions {session_id: string, acp_session_id?: string, status: louiselm.session.Status, options: table<string, string|boolean>}[] At most 32 Sessions of the selected Agent.
+---@field availability "available"|"unavailable"|"select_session" Advertisements need an explicitly selected existing Session.
+---@field truncated boolean More Sessions exist; select an exact session_id.
+---@field options? louiselm.session.ConfigOption[] Selected Session's current advertisement, with descriptions omitted; whole response at most 64 KiB.
 
 ---@class louiselm.SessionControlSnapshot
 ---@field id string Operation key, not a Session identity.
@@ -39,14 +52,14 @@ local Mcp = require("louiselm.mcp")
 
 ---@class louiselm.Module
 ---@field setup fun(config?: louiselm.Config): boolean, louiselm.schema.Report? Validate configuration and register the plugin's owners and commands.
----@field session_control fun(request: louiselm.SessionControlRequest): louiselm.SessionControlSnapshot?, string? Start, inspect or cancel an operation through the configured owner.
+---@field session_control fun(request: louiselm.SessionControlRequest|louiselm.SessionControlDiscoveryRequest): louiselm.SessionControlSnapshot|louiselm.SessionControlDiscovery|nil, string? Operate on children or discover existing advertisements through the configured owner.
 local M = {}
 
----Create, inspect or cancel a scoped child through this editor's configured owner.
+---Discover existing choices or create, inspect or cancel a child through the configured owner.
 ---Call on the main loop; asynchronous work is observed through compact snapshots.
 ---Exact start retries reuse their operation. Unknown keys after restart are not replayed.
----@param request louiselm.SessionControlRequest Data-only start, inspect or cancel request.
----@return louiselm.SessionControlSnapshot? snapshot State, not proof of task acceptance.
+---@param request louiselm.SessionControlRequest|louiselm.SessionControlDiscoveryRequest Data-only operation or read-only discovery request.
+---@return louiselm.SessionControlSnapshot|louiselm.SessionControlDiscovery|nil snapshot State, not proof of task acceptance.
 ---@return string? error_message Invalid request, missing owner or unknown/conflicting operation.
 function M.session_control(request)
   return Command.session_control(request)

@@ -123,14 +123,85 @@ follow-up; later human turns do not reactivate that operation.
 
 Snapshots contain operation/Session/turn IDs, `revision`, `phase`, latest
 Session `status`, admission result, confirmed options and bounded errors.
-`options` contains confirmed values, not an advertised-choice catalog. The
-control surface has no option-discovery operation. If requested labels cannot be mapped to
-known advertised IDs/values, ask for exact choices rather than guessing or
-launching probe children. Compact discovery is follow-up **louiselm-cozqr**.
+`options` contains confirmed values, not an advertised-choice catalog.
 Watch prints only changed revisions and terminal state. Use `--result` when needed:
 it adds an assistant-text tail and a truncation flag, not tool payloads or the
 complete transcript. A returned turn ID means admission began; `ready` means
 idle; `completed` means the initial turn ended. None certifies task acceptance.
+
+### Read-only option discovery
+
+```sh
+"$control" discover
+"$control" discover codex
+"$control" discover codex '<local-session-id>'
+"$control" discover codex '<local-session-id>' model
+```
+
+These return configured Agent names, then candidate Session IDs/current values,
+then an explicitly selected Session's advertised option IDs, labels, values and
+current selections. The last selector narrows to one option. The Lua request is
+`{action="discover", agent=..., session_id=..., option_id=...}`; selectors are
+optional from right to left. Responses omit descriptions and all configuration
+commands/environments; they cap Sessions at 32 (with `truncated`) and the encoded
+response at 64 KiB. Oversized advertisements require narrower selectors.
+
+Discovery never initializes an owner or child, changes a Model, sends a prompt,
+or opens UI. `availability` is `unavailable`, `select_session` or `available`.
+No existing advertisement means explicit unavailability, not permission to spawn
+a probe. When interpreting dependent effort choices, inspect the source
+Session's current Model. Existing advertisements are advisory: the launch
+controller validates every choice against the child's fresh, ordered replacement
+lists, refusing dispatch if a value disappeared or was not confirmed. Unknown
+labels require clarification, not invented option IDs.
+
+### One-command background batches
+
+Create a manifest with shared settings and 1–16 selected task briefs:
+
+```json
+{
+  "agent": "codex",
+  "cwd": "/path/to/project",
+  "branch": "main",
+  "options": [],
+  "timeout_ms": false,
+  "tasks": [
+    {"id": "<own-acp-id>:task-1", "issue": "ISSUE-1", "name": "First task", "prompt": "Read AGENTS.md. Claim ISSUE-1 with your own Session identity, implement it on main, preserve unrelated edits, run required checks and report."},
+    {"id": "<own-acp-id>:task-2", "issue": "ISSUE-2", "name": "Second task", "prompt": "Read AGENTS.md. Claim ISSUE-2 with your own Session identity, implement it on main, preserve unrelated edits, run required checks and report."}
+  ]
+}
+```
+
+```sh
+"$control" batch batch.json --timeout-ms 60000
+```
+
+Supply the Agent's actual advertised options; the example's empty list preserves
+configured defaults. Shared fields are `agent`, `cwd`, `options`, `timeout_ms`,
+`context` and `parent_turn_id`. Each task accepts `id`, `name`, `prompt` and an
+optional `issue` output label. All inputs validate before any RPC. Optional
+`branch` checks the current Git branch before launch; it never switches branches
+and does not lock Git against concurrent changes. No task is claimed by the
+coordinator. Task choice stays in the project's bounded `br scheduler`/`br ready`
+workflow; batch execution neither ranks work nor guesses capability eligibility.
+
+The command starts/configures children via the existing owner and emits one JSON
+line per operation after dispatch or failure. It exits nonzero on any failure
+or uncertainty, retaining successful children. Its local wait is at most 60
+seconds and does not cancel children, even with `timeout_ms: false` in the
+manifest. Permission waits remain visible. After an unknown result, inspect the
+original ID; never generate a replacement ID. Exact manifest retries reuse
+existing operations, including failed ones. Completed children remain available.
+
+The offline five-child CLI gate measured **one helper invocation, 1,610 output
+bytes and 320 ms** on this host. It also checks exact retries, selected options,
+cwd, `main`, one visible prompt per child, and unchanged draft/focus/windows.
+The historical live launch used 34 model responses, 49 shell invocations,
+280,648 retained tool-output bytes and 575,309 ms. These are different workloads
+(offline mock versus live Agents); this proves the deterministic launch path,
+not a real-Provider speedup or token/billing savings. Worker implementation
+consumption is outside the launch measurement.
 
 ### Limits and recovery
 
@@ -141,9 +212,14 @@ idle; `completed` means the initial turn ended. None certifies task acceptance.
 | Task/context | Prompt at most 64 KiB; at most 16 named text snapshots; combined prompt/context at most 256 KiB |
 | Options | At most 32 distinct IDs, processed in caller order |
 | Results/errors | Assistant tail at most 8192 bytes; error at most 1024 bytes |
-| Child deadline | `timeout_ms` covers creation through initial-turn completion; default 300000, maximum 3600000; expiry disposes the child |
+| Child deadline | `timeout_ms` covers creation through initial-turn completion; default 300000, maximum 3600000; `false` explicitly means no deadline; expiry disposes the child |
 | Local watch | Default/maximum 60000 ms per call; expiration does not cancel the child |
-| CLI transport | JSON file/stdin at most 1 MiB; ordinary RPC calls have a 5-second client deadline |
+| CLI transport | JSON file/stdin at most 1 MiB; ordinary RPC calls have a 5-second client deadline; batch dispatch waiting is at most 60 seconds |
+
+For an explicitly unlimited task, set `"timeout_ms": false`. No operation timer
+is allocated. Cancellation and owner disposal still stop owned work and release
+observers. This does not extend the bounded client/watch waits or provide Run
+supervision, containment or a durable operation record.
 
 Deadline expiry retains the reason in the Session snapshot and chat, and the
 operation reports the child's final `disposed` status. In a stopped ordinary

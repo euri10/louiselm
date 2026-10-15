@@ -92,8 +92,26 @@ function M.validate(value)
   if type(value) ~= "table" then
     return "request must be an object"
   end
+  if value.action == "discover" then
+    local err = fields(value, { action = true, agent = true, session_id = true, option_id = true }, "request")
+    if err then
+      return err
+    end
+    for _, key in ipairs({ "agent", "session_id", "option_id" }) do
+      if value[key] ~= nil and not text(value[key], 128) then
+        return key .. " must be a non-empty string of at most 128 bytes"
+      end
+    end
+    if value.session_id and not value.agent then
+      return "session_id requires agent"
+    end
+    if value.option_id and not value.session_id then
+      return "option_id requires session_id"
+    end
+    return
+  end
   if value.action ~= "start" and value.action ~= "inspect" and value.action ~= "cancel" then
-    return "action must be start, inspect or cancel"
+    return "action must be start, inspect, cancel or discover"
   end
   local allowed = value.action == "start" and START_FIELDS
     or { action = true, id = true, result = value.action == "inspect" }
@@ -127,6 +145,7 @@ function M.validate(value)
   end
   if
     value.timeout_ms ~= nil
+    and value.timeout_ms ~= false
     and (
       type(value.timeout_ms) ~= "number"
       or value.timeout_ms % 1 ~= 0
@@ -134,7 +153,7 @@ function M.validate(value)
       or value.timeout_ms > 3600000
     )
   then
-    return "timeout_ms must be an integer from 1 to 3600000"
+    return "timeout_ms must be false (no deadline) or an integer from 1 to 3600000"
   end
   local seen = {}
   if value.options ~= nil then
@@ -182,6 +201,84 @@ local function values(options)
   local result = {}
   for _, option in ipairs(options) do
     result[option.id] = option.current_value
+  end
+  return result
+end
+
+---Read existing advertisements only; never construct a Session, change options or open UI.
+---@param api? louiselm.session.Api Existing configured owner, if already initialized.
+---@param definitions table Configured Agent definitions; only their names are returned.
+---@param request louiselm.SessionControlDiscoveryRequest Validated selectors.
+---@return louiselm.SessionControlDiscovery? discovery Bounded metadata, not a guarantee of future choices.
+---@return string? error_message Unknown selector or oversized advertisement.
+function M.discover(api, definitions, request)
+  if request.agent and not definitions[request.agent] then
+    return nil, "unknown configured Agent"
+  end
+  local result = { agents = {}, sessions = {}, availability = "unavailable", truncated = false }
+  for name in pairs(definitions) do
+    if not request.agent or name == request.agent then
+      result.agents[#result.agents + 1] = name
+    end
+  end
+  table.sort(result.agents)
+  if #result.agents > 128 then
+    return nil, "too many configured Agents; select agent"
+  end
+  if request.agent and api then
+    for _, id in ipairs(request.session_id and { request.session_id } or api:list_sessions()) do
+      local session = api:get_session(id)
+      local state = session and session:inspect()
+      if request.session_id and (not state or state.agent ~= request.agent) then
+        return nil, "Session is unavailable or belongs to a different Agent"
+      end
+      if state and state.agent == request.agent then
+        if #result.sessions == 32 then
+          result.truncated = true
+          break
+        end
+        result.sessions[#result.sessions + 1] = {
+          session_id = state.id,
+          acp_session_id = state.acp_session_id,
+          status = state.status,
+          options = values(state.config_options),
+        }
+        result.availability = "select_session"
+        if request.session_id then
+          result.availability = "unavailable"
+          if state.status ~= "disposed" and state.status ~= "starting" and #state.config_options > 0 then
+            result.options = {}
+            for _, option in ipairs(state.config_options) do
+              if not request.option_id or option.id == request.option_id then
+                local selected = {
+                  id = option.id,
+                  name = option.name,
+                  category = option.category,
+                  type = option.type,
+                  current_value = option.current_value,
+                }
+                if option.options then
+                  selected.options = {}
+                  for _, choice in ipairs(option.options) do
+                    selected.options[#selected.options + 1] = { name = choice.name, value = choice.value }
+                  end
+                end
+                result.options[#result.options + 1] = selected
+              end
+            end
+            if request.option_id and #result.options == 0 then
+              return nil, "option is not advertised by this Session"
+            end
+            result.availability = "available"
+          end
+        end
+      end
+    end
+  elseif request.session_id then
+    return nil, "Session advertisements are unavailable; no configured owner is initialized"
+  end
+  if #nvim.json.encode(result) > 65536 then
+    return nil, "discovery exceeds 64 KiB; select agent, session_id and option_id"
   end
   return result
 end
@@ -468,20 +565,23 @@ function Control:request(request)
       self.operations[request.id] = op
       self.count = self.count + 1
       local created = op
-      created.timer = nvim.defer_fn(function()
-        if self.disposed or created.terminal or created.completion_received then
-          return
-        end
-        local reason = deadline_reason(request.timeout_ms or 300000)
-        finish(created, "timed_out", reason)
-        if created.session then
-          local disposed, dispose_error = created.session:dispose(reason)
-          update(created, { status = created.session:inspect().status })
-          if not disposed then
-            update(created, { error = dispose_error or "deadline disposal failed" })
+      if request.timeout_ms ~= false then
+        local timeout_ms = request.timeout_ms or 300000
+        created.timer = nvim.defer_fn(function()
+          if self.disposed or created.terminal or created.completion_received then
+            return
           end
-        end
-      end, request.timeout_ms or 300000)
+          local reason = deadline_reason(timeout_ms)
+          finish(created, "timed_out", reason)
+          if created.session then
+            local disposed, dispose_error = created.session:dispose(reason)
+            update(created, { status = created.session:inspect().status })
+            if not disposed then
+              update(created, { error = dispose_error or "deadline disposal failed" })
+            end
+          end
+        end, timeout_ms)
+      end
       scheduled(self, created, function()
         start(self, created)
       end)

@@ -8,7 +8,9 @@ local root = nvim.fn.getcwd()
 local function server(source)
   local directory = nvim.fn.tempname()
   assert(nvim.fn.mkdir(directory .. "/lua", "p") == 1)
-  assert(nvim.fn.writefile(nvim.split(source, "\n", { plain = true }), directory .. "/lua/louiselm.lua") == 0)
+  if source then
+    assert(nvim.fn.writefile(nvim.split(source, "\n", { plain = true }), directory .. "/lua/louiselm.lua") == 0)
+  end
   local child = MiniTest.new_child_neovim()
   MiniTest.finally(function()
     child.stop()
@@ -58,6 +60,7 @@ T["start forwards JSON data from a file or stdin without evaluating prompt text"
     cwd = directory,
     prompt = "quotes '\" \\ and $(touch /tmp/not-executed)\nreturn error('not code')",
     options = { { id = "mode", value = false } },
+    timeout_ms = false,
   }
   local encoded = nvim.json.encode(request)
   assert(nvim.fn.writefile({ encoded }, directory .. "/request.json") == 0)
@@ -82,6 +85,188 @@ T["inspect result and cancel send only their selected operation"] = function()
     { action = "inspect", id = "qa", result = true },
     { action = "cancel", id = "qa" },
   })
+end
+
+T["discover forwards only explicit selectors without starting a child"] = function()
+  local child, directory = server(stub)
+  local result = run(directory, { "discover", "mock", "known", "model" })
+  MiniTest.expect.equality(result.code, 0)
+  MiniTest.expect.equality(child.lua_get("require('louiselm').requests"), {
+    { action = "discover", agent = "mock", session_id = "known", option_id = "model" },
+  })
+  MiniTest.expect.equality(run(directory, { "discover" }).code, 0)
+end
+
+local function manifest(directory)
+  local result = {
+    agent = "mock",
+    cwd = directory,
+    branch = "main",
+    timeout_ms = false,
+    options = { { id = "model", value = "sol" }, { id = "effort", value = "max" }, { id = "mode", value = "full" } },
+    tasks = {},
+  }
+  for index = 1, 5 do
+    result.tasks[index] =
+      { id = "task-" .. index, issue = "issue-" .. index, name = "Task " .. index, prompt = "Do issue-" .. index }
+  end
+  return result
+end
+
+T["batch validates every task and checks the branch before any start"] = function()
+  local child, directory = server(stub)
+  assert(nvim.system({ "git", "init", "--initial-branch=other", directory }):wait().code == 0)
+  local input = manifest(directory)
+  local result = run(directory, { "batch", "-" }, nvim.json.encode(input))
+  MiniTest.expect.equality(result.code, 1)
+  assert(records(result)[1].error:find("branch", 1, true))
+  input.branch, input.tasks[5].prompt = nil, ""
+  result = run(directory, { "batch", "-" }, nvim.json.encode(input))
+  MiniTest.expect.equality(result.code, 1)
+  input.tasks[5].prompt, input.tasks[5].id = "valid", input.tasks[1].id
+  result = run(directory, { "batch", "-" }, nvim.json.encode(input))
+  MiniTest.expect.equality(result.code, 1)
+  MiniTest.expect.equality(child.lua_get("#require('louiselm').requests"), 0)
+end
+
+T["batch returns dispatched children and preserves per-ID partial failures"] = function()
+  local child, directory = server([[
+local M = { starts = {}, inspections = {} }
+function M.session_control(request)
+  if request.action == "start" then
+    M.starts[#M.starts + 1] = request
+    if request.id == "task-2" then return nil, "option unavailable" end
+    return { id = request.id, phase = "starting", revision = 1 }
+  end
+  M.inspections[request.id] = (M.inspections[request.id] or 0) + 1
+  return { id = request.id, phase = "running", revision = 2,
+    admission = "dispatched", status = request.id == "task-3" and "waiting_permission" or "prompting",
+    session_id = request.id .. "-session", turn_id = request.id .. "-turn", options = { model = "sol", effort = "max", mode = "full" } }
+end
+return M
+]])
+  assert(nvim.system({ "git", "init", "--initial-branch=main", directory }):wait().code == 0)
+  local result = run(directory, { "batch", "-", "--timeout-ms", "2000" }, nvim.json.encode(manifest(directory)))
+  MiniTest.expect.equality(result.code, 1)
+  local rows = records(result)
+  MiniTest.expect.equality(#rows, 5)
+  assert(#result.stdout < 10240)
+  local by_id = {}
+  for _, row in ipairs(rows) do
+    by_id[row.id] = row
+  end
+  MiniTest.expect.equality(by_id["task-2"].error, "option unavailable")
+  MiniTest.expect.equality(by_id["task-3"].status, "waiting_permission")
+  MiniTest.expect.equality(by_id["task-5"].admission, "dispatched")
+  MiniTest.expect.equality(by_id["task-5"].issue, "issue-5")
+  local starts = child.lua_get("require('louiselm').starts")
+  MiniTest.expect.equality(#starts, 5)
+  for index, request in ipairs(starts) do
+    MiniTest.expect.equality(request.cwd, directory)
+    MiniTest.expect.equality(request.timeout_ms, false)
+    MiniTest.expect.equality(request.options, manifest(directory).options)
+    MiniTest.expect.equality(request.prompt, "Do issue-" .. index)
+  end
+end
+
+T["batch lost acknowledgments report original IDs without replay or cancellation"] = function()
+  local child, directory = server([[
+local M = { requests = {} }
+function M.session_control(request)
+  M.requests[#M.requests + 1] = request
+  if #M.requests == 1 then
+    return { id = request.id, phase = "completed", revision = 1 }
+  end
+  vim.wait(1000, function() return false end)
+  return { id = request.id, phase = "starting", revision = 1 }
+end
+
+return M
+]])
+  local input = manifest(directory)
+  input.branch = nil
+  local result = run(directory, { "batch", "-", "--timeout-ms", "100" }, nvim.json.encode(input))
+  MiniTest.expect.equality(result.code, 1)
+  local rows = records(result)
+  MiniTest.expect.equality(#rows, 5)
+  for index, row in ipairs(rows) do
+    MiniTest.expect.equality(row.id, "task-" .. index)
+    if index == 1 then
+      MiniTest.expect.equality(row.outcome, nil)
+    else
+      MiniTest.expect.equality(row.outcome, "unknown")
+    end
+  end
+  MiniTest.expect.equality(rows[1].phase, "completed")
+  -- The second request might have been admitted; preserve the first ACK and never replay either.
+  MiniTest.expect.equality(child.lua_get("#require('louiselm').requests"), 2)
+end
+
+T["one batch starts five real configured mock Sessions exactly once in the background"] = function()
+  local child, directory = server()
+  child.lua("vim.opt.runtimepath:prepend(...)", { root })
+  assert(nvim.system({ "git", "init", "--initial-branch=main", directory }):wait().code == 0)
+  child.lua(
+    [[
+    local root = ...
+    assert(require("louiselm").setup({ agents = { mock = {
+      provider = "test-service", command = vim.v.progpath,
+      args = { "--headless", "--noplugin", "-i", "NONE", "--cmd", "set runtimepath^=" .. vim.fn.fnameescape(root),
+        "-u", root .. "/tests/mock/init.lua", "-l", root .. "/tests/mock/session_control.lua" },
+    } } }))
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "human draft stays here" })
+  ]],
+    { root }
+  )
+  local buffer, windows = child.api.nvim_get_current_buf(), child.api.nvim_list_wins()
+  local input = manifest(directory)
+  local started = nvim.uv.hrtime()
+  local result = run(directory, { "batch", "-", "--timeout-ms", "5000" }, nvim.json.encode(input))
+  local elapsed_ms = (nvim.uv.hrtime() - started) / 1000000
+  MiniTest.expect.equality(result.code, 0)
+  local rows = records(result)
+  MiniTest.expect.equality(#rows, 5)
+  assert(#result.stdout < 10240)
+  MiniTest.add_note(
+    string.format(
+      "five-child batch: one helper invocation, %d output bytes, %.1f ms (offline mock)",
+      #result.stdout,
+      elapsed_ms
+    )
+  )
+  local repeated = run(directory, { "batch", "-", "--timeout-ms", "5000" }, nvim.json.encode(input))
+  MiniTest.expect.equality(repeated.code, 0)
+  MiniTest.expect.equality(child.api.nvim_get_current_buf(), buffer)
+  MiniTest.expect.equality(child.api.nvim_list_wins(), windows)
+  MiniTest.expect.equality(child.api.nvim_buf_get_lines(buffer, 0, -1, false), { "human draft stays here" })
+  MiniTest.expect.equality(child.lua_get("#require('louiselm.session').exit_verdict()"), 5)
+  for _, row in ipairs(rows) do
+    MiniTest.expect.equality(row.admission, "dispatched")
+    MiniTest.expect.equality(row.options, { model = "sol", effort = "max", mode = "full" })
+    assert(row.session_id and row.acp_session_id and row.turn_id)
+    local actual = child.lua_get(
+      [[(function(id)
+      for _, verdict in ipairs(require("louiselm.session").exit_verdict()) do
+        local state = verdict.session:inspect()
+        if state.id == id then return { cwd = state.working_dir, turns = state.current_turn } end
+      end
+    end)(...)]],
+      { row.session_id }
+    )
+    MiniTest.expect.equality(actual, { cwd = directory, turns = 1 })
+    local found = run(directory, { "discover", "mock", row.session_id, "model" })
+    MiniTest.expect.equality(found.code, 0)
+    MiniTest.expect.equality(records(found)[1].options[1].current_value, "sol")
+    local lines = child.api.nvim_buf_get_lines(row.buffer, 0, -1, false)
+    local count = 0
+    for _, line in ipairs(lines) do
+      if line == "> Do " .. row.issue then
+        count = count + 1
+      end
+    end
+    MiniTest.expect.equality(count, 1)
+  end
+  child.lua("require('louiselm.ui.chat.command').register()")
 end
 
 T["watch emits changed snapshots once then stops at a terminal phase"] = function()

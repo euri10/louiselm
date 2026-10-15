@@ -40,7 +40,22 @@ louiselm.SessionControlPhase:
 - `parent_turn_id: string?` -- Actual parent admission/turn identity; correlation does not grant authority.
 - `prompt: string?` -- Explicit non-empty task text; required for start, at most 65536 bytes.
 - `result: boolean?` -- Include the bounded assistant-text tail on inspect only.
-- `timeout_ms: integer?` -- Whole-operation deadline, default 300000, maximum 3600000; expiry disposes the child.
+- `timeout_ms: (integer|false)?` -- Whole-operation deadline, default 300000, maximum 3600000; false explicitly disables it. Expiry disposes the child.
+
+### louiselm.SessionControlDiscoveryRequest
+
+- `action: "discover"`
+- `agent: string?` -- Select a configured Agent; omit to list names only.
+- `option_id: string?` -- Return only this advertised option; requires session_id.
+- `session_id: string?` -- Select an existing local Session of that Agent; never starts a probe.
+
+### louiselm.SessionControlDiscovery
+
+- `agents: string[]` -- Sorted configured names, at most 128; no commands, environments or credentials.
+- `availability: "available"|"select_session"|"unavailable"` -- Advertisements need an explicitly selected existing Session.
+- `options: louiselm.session.ConfigOption[]?` -- Selected Session's current advertisement, with descriptions omitted; whole response at most 64 KiB.
+- `sessions: { session_id: string, acp_session_id: string, status: "admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6), options: table<string, boolean|string> }[]` -- At most 32 Sessions of the selected Agent.
+- `truncated: boolean` -- More Sessions exist; select an exact session_id.
 
 ### louiselm.SessionControlSnapshot
 
@@ -61,7 +76,7 @@ louiselm.SessionControlPhase:
 
 ### louiselm.Module
 
-- `session_control: fun(request: louiselm.SessionControlRequest):(louiselm.SessionControlSnapshot)?, string?` -- Start, inspect or cancel an operation through the configured owner.
+- `session_control: fun(request: louiselm.SessionControlDiscoveryRequest|louiselm.SessionControlRequest):louiselm.SessionControlDiscovery|louiselm.SessionControlSnapshot|nil, string?` -- Operate on children or discover existing advertisements through the configured owner.
 - `setup: fun(config?: louiselm.Config):boolean, (louiselm.schema.Report)?` -- Validate configuration and register the plugin's owners and commands.
 
 ## Headless Session API
