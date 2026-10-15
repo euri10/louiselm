@@ -10,6 +10,7 @@ View.__index = View
 ---@field query? fun(query: louiselm.session.UsageQuery, callback: louiselm.session.UsageQueryCallback): fun()? Asynchronous reader returning optional cancellation; defaults to the shared recording store.
 ---@class louiselm.ui.UsageView
 ---@field buffer integer
+---@field previous_buffer integer Buffer to return to when closing the active explorer.
 ---@field disposed boolean
 ---@field generation integer
 ---@field query louiselm.session.UsageQuery
@@ -358,6 +359,9 @@ function View:dispose()
     self.cancel()
     self.cancel = nil
   end
+  if nvim.api.nvim_get_current_buf() == self.buffer and nvim.api.nvim_buf_is_valid(self.previous_buffer) then
+    nvim.api.nvim_set_current_buf(self.previous_buffer)
+  end
   if nvim.api.nvim_buf_is_valid(self.buffer) then
     nvim.api.nvim_buf_delete(self.buffer, { force = true })
   end
@@ -404,6 +408,7 @@ function M.open(options)
     end
   end
   local self = setmetatable({
+    previous_buffer = nvim.api.nvim_get_current_buf(),
     buffer = nvim.api.nvim_create_buf(false, true),
     disposed = false,
     generation = 0,

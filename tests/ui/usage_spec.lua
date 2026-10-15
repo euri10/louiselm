@@ -193,6 +193,67 @@ T["completed results do not move focus or cursor in another buffer"] = function(
   MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 2, 3 })
 end
 
+T["q returns to the unlisted entry buffer and ignores late reads"] = function()
+  -- ChatBuffer is unlisted with bufhidden=hide; deletion fallback skips it.
+  local origin = nvim.api.nvim_create_buf(false, true)
+  nvim.bo[origin].bufhidden = "hide"
+  nvim.api.nvim_buf_set_lines(origin, 0, -1, false, { "chat", "keep cursor here" })
+  nvim.api.nvim_set_current_buf(origin)
+  nvim.api.nvim_win_set_cursor(0, { 2, 3 })
+  MiniTest.finally(function()
+    if nvim.api.nvim_buf_is_valid(origin) then
+      nvim.api.nvim_buf_delete(origin, { force = true })
+    end
+  end)
+  local view, calls = open()
+  deliver(calls[1], page())
+  view:refresh()
+  nvim.api.nvim_feedkeys("q", "mx!", false)
+  MiniTest.expect.equality(view.disposed, true)
+  MiniTest.expect.equality(calls[2].cancelled, true)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), origin)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 2, 3 })
+  deliver(calls[2], page())
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), origin)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 2, 3 })
+end
+
+T["disposal leaves another active window alone"] = function()
+  local origin = nvim.api.nvim_get_current_buf()
+  local view, calls = open()
+  local other = nvim.api.nvim_create_buf(false, true)
+  local other_window = nvim.api.nvim_open_win(other, true, { split = "right" })
+  MiniTest.finally(function()
+    if nvim.api.nvim_win_is_valid(other_window) and #nvim.api.nvim_list_wins() > 1 then
+      nvim.api.nvim_win_close(other_window, true)
+    end
+    if nvim.api.nvim_buf_is_valid(other) then
+      nvim.api.nvim_buf_delete(other, { force = true })
+    end
+  end)
+  nvim.api.nvim_buf_set_lines(other, 0, -1, false, { "other buffer", "keep cursor" })
+  nvim.api.nvim_win_set_cursor(0, { 2, 1 })
+  view:dispose()
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(view.buffer), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(origin), true)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), other_window)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), other)
+  deliver(calls[1], page())
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 2, 1 })
+end
+
+T["closing does not revive a deleted entry buffer"] = function()
+  local origin = nvim.api.nvim_create_buf(false, true)
+  nvim.bo[origin].bufhidden = "hide"
+  nvim.api.nvim_set_current_buf(origin)
+  local view = open()
+  nvim.api.nvim_buf_delete(origin, { force = true })
+  view:dispose()
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(origin), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(view.buffer), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(nvim.api.nvim_get_current_buf()), true)
+end
+
 T["group and turn navigation preserve query and show starting state and source"] = function()
   local view, calls = open()
   local row = {

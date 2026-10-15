@@ -374,6 +374,8 @@ starts with totals across all recorded dispatched turns. There is no optional
 configuration gate. Each refresh queries SQLite asynchronously; closing the
 buffer or replacing the query cancels its reader. Pending recorder writes are
 not flushed by exploration. Refresh after a turn finishes to include new facts.
+Pressing `q` returns to the buffer that opened the explorer when it still exists,
+including an unlisted chat. Disposing from another active buffer keeps its focus.
 Pressing `p` while a next page loads returns to the previous page.
 Completed queries select the first result while the explorer is active, so
 Enter inspects that result immediately after paging or returning to a list.
