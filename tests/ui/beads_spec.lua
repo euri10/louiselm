@@ -69,6 +69,55 @@ local function complete_where(calls, scheduled, prefix)
   scheduled[1]()
 end
 
+---Deliver a process completion without pumping its main-loop work yet.
+---@param callback fun()
+---@return fun() finish Pump the real scheduler after checking pre-display/disposal state.
+local function complete_in_fast_event(callback)
+  -- A global capture steals unrelated callbacks and can overshoot an exact
+  -- count (louiselm-bk3zs). Use Neovim's fast-only wait instead.
+  rawset(nvim, "schedule", original_schedule)
+  local delivered, finished, unrelated_ran = false, false, false
+  local was_fast, succeeded, callback_error
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end)
+  timer:start(0, 0, function()
+    timer:stop()
+    timer:close()
+    was_fast = nvim.in_fast_event()
+    nvim.schedule(function()
+      unrelated_ran = true
+    end)
+    succeeded, callback_error = pcall(callback)
+    delivered = true
+    nvim.schedule(function()
+      finished = true
+    end)
+  end)
+  assert(
+    nvim.wait(1000, function()
+      return delivered
+    end, 10, true),
+    "process completion timer was not delivered"
+  )
+  MiniTest.expect.equality(was_fast, true)
+  assert(succeeded, callback_error)
+  MiniTest.expect.equality(unrelated_ran, false)
+  return function()
+    assert(
+      nvim.wait(1000, function()
+        return finished
+      end, 10),
+      "scheduled process completion did not finish"
+    )
+    MiniTest.expect.equality(unrelated_ran, true)
+  end
+end
+
 ---Fake sibling `.beads/beads.db` discovery: `db_paths` is returned verbatim
 ---for every glob call, regardless of the root pattern requested.
 ---@param db_paths string[]
@@ -184,17 +233,11 @@ T["beads"]["renders ownership, related issues and multiline comments from the fe
       },
     },
   })
-  local timer = assert(nvim.uv.new_timer())
-  timer:start(0, 0, function()
-    timer:stop()
-    timer:close()
+  local finish = complete_in_fast_event(function()
     calls[2].on_exit({ code = 0, signal = 0, stdout = payload, stderr = "" })
   end)
-  assert(nvim.wait(1000, function()
-    return #scheduled == 2
-  end))
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
-  scheduled[2]()
+  finish()
   MiniTest.expect.equality(#calls, 2)
   local popup = assert(find_buffer("louiselm://beads/louiselm-atrv"))
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
@@ -333,20 +376,11 @@ for _, layout in ipairs({
     local payload = nvim.json.encode({
       { id = "louiselm-hgmv", title = "Readable issue", status = "open", priority = 2, description = description },
     })
-    local callback_was_fast
-    local timer = assert(nvim.uv.new_timer())
-    timer:start(0, 0, function()
-      timer:stop()
-      timer:close()
-      callback_was_fast = nvim.in_fast_event()
+    local finish = complete_in_fast_event(function()
       calls[2].on_exit({ code = 0, signal = 0, stdout = payload, stderr = "" })
     end)
-    assert(nvim.wait(1000, function()
-      return #scheduled == 2
-    end))
-    MiniTest.expect.equality(callback_was_fast, true)
     MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
-    scheduled[2]()
+    finish()
 
     local popup = assert(find_buffer("louiselm://beads/louiselm-hgmv"))
     local window = nvim.api.nvim_get_current_win()
@@ -629,12 +663,7 @@ for _, entry in ipairs({ "bare cursor", "prefixed cursor", "manual prompt" }) do
     -- Captured from br 0.5.10 `show louiselm-w1ez --json`, 2026-09-06,
     -- codex/01a07709-0512-7a31-a9ec-9770ffa13fba (louiselm-6dpl).
     -- Omit unconsumed fields; preserve the requested/resolved ID difference.
-    local callback_was_fast
-    local timer = assert(nvim.uv.new_timer())
-    timer:start(0, 0, function()
-      timer:stop()
-      timer:close()
-      callback_was_fast = nvim.in_fast_event()
+    local finish = complete_in_fast_event(function()
       calls[2].on_exit({
         code = 0,
         signal = 0,
@@ -642,12 +671,8 @@ for _, entry in ipairs({ "bare cursor", "prefixed cursor", "manual prompt" }) do
         stderr = "",
       })
     end)
-    assert(nvim.wait(1000, function()
-      return #scheduled == 2
-    end))
-    MiniTest.expect.equality(callback_was_fast, true)
     MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
-    scheduled[2]()
+    finish()
 
     MiniTest.expect.equality(errors, {})
     MiniTest.expect.equality(prompts, entry == "manual prompt" and 1 or 0)
@@ -975,22 +1000,13 @@ for _, entry in ipairs({ "prefixed cursor", "bare cursor", "manual prompt", "sib
         complete_where(calls, scheduled, "louiselm")
       end
       local lookup_index = #calls
-      local callback_was_fast
-      local timer = assert(nvim.uv.new_timer())
-      timer:start(0, 0, function()
-        timer:stop()
-        timer:close()
-        callback_was_fast = nvim.in_fast_event()
+      local finish = complete_in_fast_event(function()
         calls[lookup_index].on_exit({ code = 1, signal = 0, stdout = "", stderr = recovery_error })
       end)
-      assert(nvim.wait(1000, function()
-        return #scheduled == lookup_index
-      end))
-      MiniTest.expect.equality(callback_was_fast, true)
       MiniTest.expect.equality(errors, {})
       MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
       active = not disposed
-      scheduled[lookup_index]()
+      finish()
 
       MiniTest.expect.equality(errors, disposed and {} or { recovery_message })
       MiniTest.expect.equality(prompts, entry == "manual prompt" and 1 or 0)
