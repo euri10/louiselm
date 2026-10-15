@@ -7,10 +7,16 @@ local Compaction = require("louiselm.session.compaction")
 local Provider = require("louiselm.agent.provider")
 local Routing = require("louiselm.routing.routing")
 local SelectedContent = require("louiselm.session.selected_content")
+local ResumePermissions = require("louiselm.session.resume_permissions")
 local Mcp = require("louiselm.mcp")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
+
+---@class louiselm.session.ResumePermissionMode
+---@field id string Opaque Agent-advertised replacement mode identifier.
+---@field name string Display name; choosing it replaces the saved policy.
+---@field description? string Agent-advertised summary of the replacement permissions.
 
 ---@alias louiselm.session.Status "starting"|"ready"|"admitting"|"configuring"|"preparing"|"prompting"|"running"|"waiting_permission"|"cancelling"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
@@ -48,6 +54,7 @@ local nvim = vim
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
 ---@field activity? string Current generic tool activity.
 ---@field session_failure? louiselm.session.SessionFailure Latest Agent-provided Session failure status.
+---@field resume_permission_modes? louiselm.session.ResumePermissionMode[] Explicit replacement choices after a refused load; no mode has been selected.
 ---@field skills_policy louiselm.skills.Policy Effective session-static Agent Skills policy.
 ---@field embedded_context boolean Whether the Agent accepts embedded resource prompt context.
 ---@field commands louiselm.session.AvailableCommand[] Latest agent-advertised commands, replaced wholesale on each update.
@@ -70,6 +77,7 @@ local nvim = vim
 ---@field broker_session_id? string Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 ---@field launch_request? louiselm.acp.LaunchRequest Launch through the installed supervisor instead of the configured command.
 ---@field selected_content? louiselm.session.SelectedContentLimits Immutable tool-less one-attempt contract; unsupported Agents fail before session/new.
+---@field resume_mode? string Explicit replacement permission mode for an unmanaged load only; the Agent must acknowledge it. Never inferred from defaults.
 ---@field disable_mcp? boolean Suppress LouiseLM-supplied MCP servers, for example during transcript replay. Does not control Agent-native configuration.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store? louiselm.permission.Store Remembered-permission owner.
@@ -1301,6 +1309,23 @@ local function handle_initialized(self, result, rpc_error)
       return
     end
     if session_error ~= nil then
+      local modes = method == "load" and ResumePermissions.from_error(session_error) or nil
+      local unmaterialized = method == "load"
+        and type(session_error) == "table"
+        and session_error.code == -32600
+        and type(session_error.data) == "table"
+        and session_error.data.reason == "resume_unmaterialized_unavailable"
+      if modes ~= nil or unmaterialized then
+        self.state.resume_permission_modes = modes
+        local message = unmaterialized
+            and "This Session has no saved prompt history and its permissions cannot be verified; start a new Session"
+          or "Saved permissions could not be preserved; choose a replacement mode or cancel Resume"
+        if #self.mcp_servers > 0 then
+          self.state.mcp.error = message
+        end
+        fail(self, message)
+        return
+      end
       if method == "load" and type(session_error) == "table" and session_error.code == ACP_RESOURCE_NOT_FOUND then
         fail(
           self,
@@ -1335,6 +1360,12 @@ local function handle_initialized(self, result, rpc_error)
       self.acp_session_id = session_result.sessionId
     elseif type(session_result) ~= "table" or session_result == nvim.NIL then
       fail(self, "ACP session/load returned a malformed result")
+      return
+    end
+    if
+      self.options.resume_mode ~= nil and not ResumePermissions.acknowledged(session_result, self.options.resume_mode)
+    then
+      fail(self, "Agent did not confirm the selected replacement permissions")
       return
     end
     if selected_content ~= nil then
@@ -1374,6 +1405,10 @@ local function handle_initialized(self, result, rpc_error)
     end)
   end
   local meta = session_meta(self.definition)
+  if self.options.resume_mode ~= nil then
+    meta = nvim.deepcopy(meta or {})
+    meta[ResumePermissions.key] = { version = 1, modeId = self.options.resume_mode }
+  end
   if selected_content ~= nil then
     meta = nvim.deepcopy(meta or {})
     meta[SelectedContent.key] = nvim.deepcopy(selected_content)

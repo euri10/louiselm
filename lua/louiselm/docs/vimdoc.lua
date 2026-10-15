@@ -239,6 +239,11 @@ local function emit_api(lines, context)
   )
   append_prose(
     lines,
+    "An unmanaged load refused because saved permissions cannot be preserved may expose session:inspect().resume_permission_modes. An explicit operator choice can retry api:load_session with options.resume_mode set to an advertised id. This replaces the saved policy, never preserves it implicitly. The Agent must acknowledge the selected mode; absence or mismatch fails the load. No prompt is sent. New Sessions, managed launches and Agent-default metadata cannot supply resume_mode.",
+    context
+  )
+  append_prose(
+    lines,
     "api:read_selected_content(job, callback) answers one explicit question about selected line snapshots in a separate tool-less Session. A current approved reader comparison and the maintained adapter's selectedContent/1 contract are required. Unsupported Agents fail before receiving content. Input, output, one request and the local/parent deadline are bounded; cancellation does not imply zero billing. References establish source membership, not semantic truth. Main Session options and history are untouched. See docs/selected-content-reader.md for the job and result contract.",
     context
   )
@@ -348,6 +353,11 @@ local SECTIONS = {
       append_prose(
         lines,
         "Delegated Sessions have a separate operation deadline. Expiry shows Timed out after the configured duration. In a stopped ordinary Session with a saved conversation, click Resume this Session in the winbar or run :LouiselmResume. Loading replaces the stopped view only after success and retains its latest draft and staged context; failed loads leave them available for retry. No prompt or queued follow-up is sent automatically. Managed Sessions require their Run recovery. From an active Session, :LouiselmResume opens the workspace history picker; :LouiselmResume! always opens history across all workspaces.",
+        context
+      )
+      append_prose(
+        lines,
+        "When an Agent reports that it cannot safely preserve saved permissions and offers replacement modes, Resume offers Cancel or an explicit choice. Choosing a mode replaces the saved permissions and retries loading only; it does not submit the draft. Cancel leaves the stopped conversation intact. Current mandatory restrictions still apply, and Full access remains a supported operator choice. An explicit replacement fails unless the Agent acknowledges it. Other Agents retain their own Resume behavior.",
         context
       )
       append_prose(

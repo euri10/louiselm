@@ -4905,6 +4905,197 @@ local function finish_recovery(load, failure)
   end, 1))
 end
 
+local function resume_permission_picker()
+  local pickers = {}
+  nvim.ui.select = function(items, options, callback)
+    pickers[#pickers + 1] = { items = items, options = options, callback = callback }
+  end
+  return pickers
+end
+
+local function offer_resume_permissions(load)
+  load.session.state.resume_permission_modes = {
+    { id = "read-only", name = "Read Only", description = "No file changes" },
+    { id = "agent-full-access", name = "Full Access", description = "Unrestricted access without approval" },
+  }
+  finish_recovery(load, "Saved permissions cannot be restored")
+end
+
+T["chat"]["resume permission choice is explicit, cancel-first and preserves the latest draft"] = function()
+  local chat, _, loads = recovery_fixture()
+  local pickers = resume_permission_picker()
+  local original = chat:buffer()
+  assert(chat:queue_context({ label = "notes", text = "keep this context" }))
+  assert(chat:resume_session())
+  offer_resume_permissions(loads[1])
+  MiniTest.expect.equality(#pickers, 1)
+  local picker = pickers[1]
+  MiniTest.expect.equality(picker.items[1].name, "Cancel")
+  assert(picker.options.prompt:find("replaces saved permissions", 1, true))
+  assert(picker.options.format_item(picker.items[2]):find("No file changes", 1, true))
+  assert(picker.options.format_item(picker.items[3]):find("without approval", 1, true))
+  MiniTest.expect.equality(loads[1].session.disposed, true)
+  MiniTest.expect.equality(chat:buffer(), original)
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(original), "original history"), true)
+  assert(chat:resume_session())
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality(#loads, 1)
+  picker.callback(picker.items[2])
+  picker.callback(picker.items[3])
+  MiniTest.expect.equality(#loads, 2)
+  MiniTest.expect.equality(loads[2].options, { cwd = "/tmp/project", name = "My work", resume_mode = "read-only" })
+  chat.views.source.renderer:set_prefix(chat.views.source.draft.context_prefix, "edited after choosing")
+  finish_recovery(loads[2])
+  local restored = chat.views[loads[2].session.state.id]
+  MiniTest.expect.equality(restored.renderer:prompt_text(), "[context: notes] edited after choosing")
+  MiniTest.expect.equality(restored.draft.contexts[1].text, "keep this context")
+  MiniTest.expect.equality(loads[1].session.prompts, {})
+  MiniTest.expect.equality(loads[2].session.prompts, {})
+end
+
+T["chat"]["resume permission cancellation and forged choices never retry or submit"] = function()
+  for _, choice in ipairs({ "nil", "cancel", "forged" }) do
+    local chat, _, loads = recovery_fixture()
+    local pickers = resume_permission_picker()
+    assert(chat:resume_session())
+    offer_resume_permissions(loads[1])
+    local picker = assert(pickers[1])
+    local selected = choice == "cancel" and picker.items[1]
+      or choice == "forged" and { id = "agent-full-access", name = "Full Access" }
+      or nil
+    picker.callback(selected)
+    MiniTest.expect.equality(#loads, 1)
+    MiniTest.expect.equality(chat.current_id, "source")
+    MiniTest.expect.equality(loads[1].session.prompts, {})
+    assert(chat:resume_session())
+    MiniTest.expect.equality(#pickers, 2)
+    MiniTest.expect.equality(#loads, 1)
+    picker.callback(picker.items[3])
+    MiniTest.expect.equality(#loads, 1)
+    chat:dispose()
+  end
+end
+
+T["chat"]["resume permission choices cannot revive a switched, closed or disposed view"] = function()
+  for _, action in ipairs({ "switch", "switch-back", "close", "dispose" }) do
+    local chat, _, loads = recovery_fixture()
+    local pickers = resume_permission_picker()
+    assert(chat:resume_session())
+    offer_resume_permissions(loads[1])
+    local picker = assert(pickers[1])
+    if action == "switch" or action == "switch-back" then
+      local other = fake_session("other", "claude")
+      MiniTest.finally(function()
+        other:dispose()
+      end)
+      assert(chat:attach(other))
+      if action == "switch-back" then
+        assert(chat:switch("source"))
+      end
+    elseif action == "close" then
+      assert(chat:close_session())
+    else
+      chat:dispose()
+    end
+    picker.callback(picker.items[3])
+    MiniTest.expect.equality(#loads, 1)
+    MiniTest.expect.equality(loads[1].session.prompts, {})
+    chat:dispose()
+  end
+end
+
+T["chat"]["resume permission discovery ignores a choice after its invoking view closes"] = function()
+  local chat, source, loads, api = recovery_fixture()
+  source.state.status = "ready"
+  local pickers = resume_permission_picker()
+  function api:discover_sessions(_, callback)
+    callback({ { agent = "codex", session_id = "discovered-acp", cwd = "/tmp/discovered" } }, {})
+    return true
+  end
+  assert(chat:resume_session())
+  assert(nvim.wait(1000, function()
+    return #pickers == 1
+  end, 1))
+  assert(chat:close_session())
+  pickers[1].callback(pickers[1].items[1])
+  MiniTest.expect.equality(#loads, 0)
+  MiniTest.expect.equality(chat:buffer(), nil)
+end
+
+T["chat"]["resume permission discovery owns a pending load until disposal"] = function()
+  local chat, source, loads, api = recovery_fixture()
+  source.state.status = "ready"
+  local pickers = resume_permission_picker()
+  function api:discover_sessions(_, callback)
+    callback({ { agent = "codex", session_id = "discovered-acp", cwd = "/tmp/discovered" } }, {})
+    return true
+  end
+  assert(chat:resume_session())
+  assert(nvim.wait(1000, function()
+    return #pickers == 1
+  end, 1))
+  pickers[1].callback(pickers[1].items[1])
+  MiniTest.expect.equality(#loads, 1)
+  chat:dispose()
+  MiniTest.expect.equality(loads[1].session.disposed, true)
+  offer_resume_permissions(loads[1])
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality(chat:buffer(), nil)
+  MiniTest.expect.equality(loads[1].session.prompts, {})
+end
+
+T["chat"]["discovered resume permission recovery retains both views and staged input without prompting"] = function()
+  local chat, source, loads, api = recovery_fixture()
+  source.state.status = "ready"
+  local pickers = resume_permission_picker()
+  local discoveries = 0
+  function api:discover_sessions(_, callback)
+    discoveries = discoveries + 1
+    nvim.schedule(function()
+      callback({ { agent = "codex", session_id = "discovered-acp", cwd = "/tmp/discovered" } }, {})
+    end)
+    return true
+  end
+  assert(chat:resume_session())
+  assert(chat:resume_session())
+  assert(nvim.wait(1000, function()
+    return #pickers > 0
+  end, 1))
+  MiniTest.expect.equality(discoveries, 1)
+  local discovery = pickers[1]
+  discovery.callback(discovery.items[1])
+  discovery.callback(discovery.items[1])
+  MiniTest.expect.equality(#loads, 1)
+  local stopped_id = loads[1].session.state.id
+  assert(chat:queue_context({ label = "notes", text = "discovery context" }))
+  chat.views[stopped_id].renderer:set_prefix(chat.views[stopped_id].draft.context_prefix, "unsent discovery draft")
+  offer_resume_permissions(loads[1])
+  MiniTest.expect.equality(loads[1].session.disposed, true)
+  MiniTest.expect.equality(chat.current_id, stopped_id)
+  MiniTest.expect.equality(chat.views.source ~= nil, true)
+  MiniTest.expect.equality(#pickers, 2)
+  pickers[2].callback(pickers[2].items[1])
+  MiniTest.expect.equality(#loads, 1)
+  assert(chat:resume_session())
+  MiniTest.expect.equality(#pickers, 3)
+  pickers[3].callback(pickers[3].items[2])
+  MiniTest.expect.equality(#loads, 2)
+  MiniTest.expect.equality(loads[2].session.state.acp_session_id, "discovered-acp")
+  MiniTest.expect.equality(loads[2].options, {
+    cwd = "/tmp/discovered",
+    name = "discovered-acp",
+    resume_mode = "read-only",
+  })
+  finish_recovery(loads[2])
+  local restored = chat.views[loads[2].session.state.id]
+  MiniTest.expect.equality(restored.renderer:prompt_text(), "[context: notes] unsent discovery draft")
+  MiniTest.expect.equality(restored.draft.contexts[1].text, "discovery context")
+  MiniTest.expect.equality(chat.views.source ~= nil, true)
+  MiniTest.expect.equality(chat.views[stopped_id], nil)
+  MiniTest.expect.equality(loads[1].session.prompts, {})
+  MiniTest.expect.equality(loads[2].session.prompts, {})
+end
+
 T["chat"]["resumes a timed-out Session directly with its latest draft and no automatic prompt"] = function()
   local chat, _, loads = recovery_fixture()
   local original = chat:buffer()

@@ -1432,6 +1432,10 @@ T["command"]["resume discovers the current workspace and bang discovers all with
   MiniTest.expect.equality(current_request.method, "session/list")
   MiniTest.expect.equality(current_request.params, { cwd = nvim.fn.getcwd() })
   respond(process, 2, { sessions = {} })
+  -- Discovery completion is scheduled; a second click while it is pending is ignored.
+  assert(nvim.wait(1000, function()
+    return notifications == 1
+  end, 1))
 
   nvim.api.nvim_cmd({ cmd = "LouiselmResume", args = {}, bang = true }, {})
   respond(process, 1, {

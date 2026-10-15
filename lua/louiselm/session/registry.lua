@@ -10,6 +10,7 @@ local Recording = require("louiselm.session.recording")
 local Paths = require("louiselm.paths")
 local Qualification = require("louiselm.routing.qualification")
 local SelectedContent = require("louiselm.session.selected_content")
+local ResumePermissions = require("louiselm.session.resume_permissions")
 local Mcp = require("louiselm.mcp")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -192,6 +193,7 @@ local function valid_options(value)
       and key ~= "broker_session_id"
       and key ~= "launch_request"
       and key ~= "selected_content"
+      and key ~= "resume_mode"
       and key ~= "disable_mcp"
     then
       return false
@@ -639,6 +641,20 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
   if options == nil then
     options = {}
   end
+  if options.resume_mode ~= nil then
+    if
+      load_id == nil
+      or options.broker_session_id ~= nil
+      or options.launch_request ~= nil
+      or not ResumePermissions.valid_mode(options.resume_mode)
+    then
+      return nil, "resume_mode requires a valid explicit mode for an unmanaged load"
+    end
+  end
+  local configured_meta = definition.options and definition.options._meta
+  if type(configured_meta) == "table" and configured_meta[ResumePermissions.key] ~= nil then
+    return nil, "replacement permissions require an explicit load_session resume_mode, not Agent defaults"
+  end
   if options.on_event ~= nil and type(options.on_event) ~= "function" then
     return nil, "session option on_event must be a function"
   end
@@ -680,6 +696,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     broker_session_id = options.broker_session_id,
     launch_request = options.launch_request and nvim.deepcopy(options.launch_request) or nil,
     selected_content = options.selected_content and nvim.deepcopy(options.selected_content) or nil,
+    resume_mode = options.resume_mode,
     disable_mcp = options.disable_mcp,
     permission_policy = permission_policy,
     permission_store = self.permission_store,

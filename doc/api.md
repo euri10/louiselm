@@ -137,6 +137,12 @@ fun(path?: string, error_message?: string)
 - `identity: fun(acp_session_id: string):string?, string?` -- Resolve the calling Session's `<agent>/<acp session id>` identity.
 - `new: fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions):(louiselm.session.Api)?, louiselm.agent.ConfigError[]` -- Create a headless session API.
 
+### louiselm.session.ResumePermissionMode
+
+- `description: string?` -- Agent-advertised summary of the replacement permissions.
+- `id: string` -- Opaque Agent-advertised replacement mode identifier.
+- `name: string` -- Display name; choosing it replaces the saved policy.
+
 ### louiselm.session.Status
 
 ```lua
@@ -189,6 +195,7 @@ string|table
 - `name: string` -- User-facing session name.
 - `recording_error: (louiselm.session.RecordingError)?` -- Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
 - `recording_pending: boolean` -- Whether the registry has unacknowledged writes.
+- `resume_permission_modes: louiselm.session.ResumePermissionMode[]?` -- Explicit replacement choices after a refused load; no mode has been selected.
 - `routing_recovery: (louiselm.session.RoutingRecovery)?` -- Next authorized continuation uses baseline in Auto; retained until a continuation completes.
 - `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
@@ -222,6 +229,7 @@ string|table
 - `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
+- `resume_mode: string?` -- Explicit replacement permission mode for an unmanaged load only; the Agent must acknowledge it. Never inferred from defaults.
 - `schedule: fun(delay_ms: integer, callback: fun())?` -- Testable scheduling boundary; defaults to `vim.defer_fn`.
 - `selected_content: (louiselm.session.SelectedContentLimits)?` -- Immutable tool-less one-attempt contract; unsupported Agents fail before session/new.
 - `start_timeout_ms: integer?` -- Milliseconds to wait for the ACP handshake before failing a Session stuck "starting"; defaults to 20000.

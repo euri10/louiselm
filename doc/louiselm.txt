@@ -123,6 +123,14 @@ Sessions                                                   *louiselm-sessions*
   |:LouiselmResume| opens the workspace history picker; |:LouiselmResume|!
   always opens history across all workspaces.
 
+  When an Agent reports that it cannot safely preserve saved permissions and
+  offers replacement modes, Resume offers Cancel or an explicit choice.
+  Choosing a mode replaces the saved permissions and retries loading only; it
+  does not submit the draft. Cancel leaves the stopped conversation intact.
+  Current mandatory restrictions still apply, and Full access remains a
+  supported operator choice. An explicit replacement fails unless the Agent
+  acknowledges it. Other Agents retain their own Resume behavior.
+
   Agents supporting the Session activity extension can run again after a
   prompt completes, for example when Claude wakes for a scheduled check.
   LouiseLM shows Model responding and queues input until the Agent reports
@@ -943,6 +951,14 @@ Session API                                                     *louiselm-api*
   connection. MCP startup errors retain safe context and numeric protocol
   codes; raw Agent errors and process stderr are withheld because they may
   contain credentials.
+
+  An unmanaged load refused because saved permissions cannot be preserved may
+  expose session:inspect().resume_permission_modes. An explicit operator
+  choice can retry api:load_session with options.resume_mode set to an
+  advertised id. This replaces the saved policy, never preserves it
+  implicitly. The Agent must acknowledge the selected mode; absence or
+  mismatch fails the load. No prompt is sent. New Sessions, managed launches
+  and Agent-default metadata cannot supply resume_mode.
 
   api:read_selected_content(job, callback) answers one explicit question about
   selected line snapshots in a separate tool-less Session. A current approved

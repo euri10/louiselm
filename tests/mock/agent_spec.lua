@@ -497,6 +497,119 @@ T["mock agent"]["names a resource-not-found session/load failure rather than the
   MiniTest.expect.equality(session:inspect().status, "error")
 end
 
+T["mock agent"]["resumes across the wire only after an explicit permission choice and ACK"] = function()
+  local key = "io.github.euri10.louiselm.resumePermissions"
+  local ledger = nvim.fn.tempname()
+  local original_select = nvim.ui.select
+  local api = assert(Session.new({
+    mock = {
+      provider = "test-service",
+      command = "python3",
+      args = { project_root .. "/tests/mock/resume_permissions.py", ledger },
+    },
+  }))
+  local chat
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+    if chat ~= nil then
+      chat:dispose()
+    end
+    assert(api:dispose())
+    nvim.fn.delete(ledger)
+  end)
+  local function requests(method)
+    local result = {}
+    for _, line in ipairs(nvim.fn.readfile(ledger)) do
+      local request = nvim.json.decode(line)
+      if request.method == method then
+        result[#result + 1] = request.params
+      end
+    end
+    return result
+  end
+  local ready
+  local source = assert(api:load_session("mock", "retained-permissions", { cwd = project_root }, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  wait_for(function()
+    return ready ~= nil
+  end)
+  MiniTest.expect.equality(ready.session, nil)
+  MiniTest.expect.equality(source:inspect().status, "error")
+  MiniTest.expect.equality(source:inspect().resume_permission_modes, {
+    { id = "fixture-read-only", name = "Read Only", description = "No file changes" },
+    { id = "fixture-full-access", name = "Full Access", description = "No approval prompts" },
+  })
+  MiniTest.expect.equality(#requests("session/load"), 1)
+  MiniTest.expect.equality(requests("session/prompt"), {})
+
+  chat = assert(Chat.new(api, { agents = { "mock" }, start_insert_on_switch = false }))
+  assert(chat:attach(source))
+  local source_id = source:inspect().id
+  local original_buffer = chat:buffer()
+  local view = chat.views[source_id]
+  view.renderer:replace_prompt("staged draft")
+  assert(chat:queue_context({ label = "notes", text = "retained fixture context" }))
+  local pickers = {}
+  nvim.ui.select = function(items, options, callback)
+    pickers[#pickers + 1] = { items = items, options = options, callback = callback }
+  end
+  assert(chat:resume_session())
+  wait_for(function()
+    return #pickers == 1
+  end)
+  MiniTest.expect.equality(pickers[1].items[1].name, "Cancel")
+  MiniTest.expect.equality(pickers[1].items[3].id, "fixture-full-access")
+  pickers[1].callback(pickers[1].items[1])
+  MiniTest.expect.equality(chat:buffer(), original_buffer)
+  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: notes] staged draft")
+  MiniTest.expect.equality(view.draft.contexts[1].text, "retained fixture context")
+  MiniTest.expect.equality(#requests("session/load"), 2)
+  MiniTest.expect.equality(requests("session/prompt"), {})
+
+  assert(chat:resume_session())
+  MiniTest.expect.equality(#pickers, 2)
+  MiniTest.expect.equality(#requests("session/load"), 2)
+  pickers[2].callback(pickers[2].items[3])
+  local loading = assert(view.resuming)
+  view.renderer:set_prefix(view.draft.context_prefix, "edited while resuming")
+  wait_for(function()
+    local status = loading:inspect().status
+    return status == "ready" or status == "error" or status == "disposed"
+  end)
+  MiniTest.expect.equality(loading:inspect().status, "ready")
+  wait_for(function()
+    return chat.current_id == loading:inspect().id
+  end)
+  local restored = chat.views[loading:inspect().id]
+  MiniTest.expect.equality(restored.renderer:prompt_text(), "[context: notes] edited while resuming")
+  MiniTest.expect.equality(restored.draft.contexts[1].text, "retained fixture context")
+  MiniTest.expect.equality(requests("session/prompt"), {})
+  local loads = requests("session/load")
+  MiniTest.expect.equality(#loads, 3)
+  for index, load in ipairs(loads) do
+    MiniTest.expect.equality(load.sessionId, "retained-permissions")
+    MiniTest.expect.equality(load.cwd, project_root)
+    MiniTest.expect.equality(load._meta and load._meta[key], index == 3 and {
+      version = 1,
+      modeId = "fixture-full-access",
+    } or nil)
+  end
+  local lines = nvim.api.nvim_buf_get_lines(assert(chat:buffer()), 0, -1, false)
+  MiniTest.expect.equality(nvim.tbl_contains(lines, "replayed fixture history"), true)
+
+  -- Only this explicit submission may send the retained draft/context.
+  assert(chat:submit())
+  wait_for(function()
+    return loading:inspect().status == "ready" and #requests("session/prompt") > 0
+  end)
+  local prompts = requests("session/prompt")
+  MiniTest.expect.equality(#prompts, 1)
+  local wire_text = nvim.json.encode(prompts[1].prompt)
+  MiniTest.expect.equality(wire_text:find("edited while resuming", 1, true) ~= nil, true)
+  MiniTest.expect.equality(wire_text:find("retained fixture context", 1, true) ~= nil, true)
+end
+
 ---Write an executable fake `br` and return the directory to put on `PATH`.
 ---@param behaviour string Shell body for the `create` branch.
 ---@return string directory

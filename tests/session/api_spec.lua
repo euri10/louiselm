@@ -1847,6 +1847,159 @@ T["new"]["closes the ACP process when loading returns a malformed result"] = fun
   restore_processes(original_system)
 end
 
+local RESUME_PERMISSIONS_KEY = "io.github.euri10.louiselm.resumePermissions"
+-- Negotiated option-B contract (louiselm-qr287), not a captured peer frame yet.
+-- Real native+adapter acceptance must exercise these shapes before promotion.
+
+T["new"]["retains a typed Resume permission choice without retrying or submitting"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local ready
+  local session = assert(api:load_session("agent", "prior-acp", nil, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  local modes = {
+    { id = "read-only", name = "Read-only", description = "Read files; ask before editing." },
+    { id = "agent-full-access", name = "Full access", description = "Unrestricted access." },
+  }
+  respond_error(process, 2, {
+    code = -32600,
+    message = "private peer details must not be displayed",
+    data = {
+      reason = "resume_permissions_unavailable",
+      [RESUME_PERMISSIONS_KEY] = { version = 1, modes = modes },
+    },
+  })
+  MiniTest.expect.equality(
+    ready,
+    { error = "Saved permissions could not be preserved; choose a replacement mode or cancel Resume" }
+  )
+  MiniTest.expect.equality(session:inspect().resume_permission_modes, modes)
+  local observed = session:inspect()
+  observed.resume_permission_modes[1].name = "changed"
+  MiniTest.expect.equality(session:inspect().resume_permission_modes, modes)
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(process.closed, true)
+  MiniTest.expect.equality(#process.writes, 2)
+end
+
+T["new"]["ignores malformed Resume permission offers"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  for _, offer in ipairs({
+    { version = 2, modes = { { id = "mode", name = "Mode" } } },
+    { version = 1, modes = {} },
+    { version = 1, modes = { { id = "mode", name = "Mode" }, { id = "mode", name = "Duplicate" } } },
+    { version = 1, modes = { { id = "mode", name = "misleading\nchoice" } } },
+    { version = 1, modes = { { id = "mode", name = "Mode", description = 42 } } },
+    { version = 1, modes = { { id = "mode", name = string.rep("x", 257) } } },
+  }) do
+    local session = assert(api:load_session("agent", "prior-acp"))
+    local process = processes[#processes]
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+    respond_error(process, 2, {
+      code = -32600,
+      message = "Load failed",
+      data = { reason = "resume_permissions_unavailable", [RESUME_PERMISSIONS_KEY] = offer },
+    })
+    MiniTest.expect.equality(session:inspect().resume_permission_modes, nil)
+    MiniTest.expect.equality(session:inspect().status, "error")
+    MiniTest.expect.equality(#process.writes, 2)
+  end
+end
+
+T["new"]["sends only an explicit Resume mode and requires a matching acknowledgement"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  for _, acknowledgement in ipairs({ false, "read-only", "agent-full-access" }) do
+    local session = assert(api:load_session("agent", "prior-acp", { resume_mode = "agent-full-access" }))
+    local process = processes[#processes]
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+    local request = assert(Protocol.decode(process.writes[2]:sub(1, -2)))
+    MiniTest.expect.equality(
+      request.params._meta[RESUME_PERMISSIONS_KEY],
+      { version = 1, modeId = "agent-full-access" }
+    )
+    MiniTest.expect.equality(request.params.sessionId, "prior-acp")
+    local result = acknowledgement
+        and { _meta = { [RESUME_PERMISSIONS_KEY] = { version = 1, modeId = acknowledgement } } }
+      or {}
+    respond(process, 2, result)
+    if acknowledgement == "agent-full-access" then
+      wait_ready(session)
+    else
+      MiniTest.expect.equality(session:inspect().status, "error")
+      MiniTest.expect.equality(process.closed, true)
+    end
+    MiniTest.expect.equality(#process.writes, 2)
+    MiniTest.expect.equality(session:inspect().resume_permission_modes, nil)
+  end
+end
+
+T["new"]["rejects invalid or implicit Resume mode selection before starting an Agent"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  for _, mode in ipairs({ "", false, "bad\nmode", string.rep("x", 129) }) do
+    local session, err = api:load_session("agent", "prior-acp", { resume_mode = mode })
+    MiniTest.expect.equality(session, nil)
+    MiniTest.expect.equality(err, "resume_mode requires a valid explicit mode for an unmanaged load")
+  end
+  local session, err = api:create_session("agent", { resume_mode = "read-only" })
+  MiniTest.expect.equality(session, nil)
+  MiniTest.expect.equality(err, "resume_mode requires a valid explicit mode for an unmanaged load")
+  session, err = api:load_session("agent", "prior-acp", { resume_mode = "read-only", broker_session_id = "worker" })
+  MiniTest.expect.equality(session, nil)
+  MiniTest.expect.equality(err, "resume_mode requires a valid explicit mode for an unmanaged load")
+  local configured = assert(new_api({
+    agent = {
+      provider = "test-service",
+      command = "agent",
+      args = {},
+      options = { _meta = { [RESUME_PERMISSIONS_KEY] = { version = 1, modeId = "agent-full-access" } } },
+    },
+  }))
+  session, err = configured:load_session("agent", "prior-acp")
+  MiniTest.expect.equality(session, nil)
+  MiniTest.expect.equality(
+    err,
+    "replacement permissions require an explicit load_session resume_mode, not Agent defaults"
+  )
+  MiniTest.expect.equality(processes, {})
+end
+
+T["new"]["explains an unmaterialized Resume refusal without offering futile choices"] = function()
+  local processes = fake_processes()
+  for _, with_mcp in ipairs({ false, true }) do
+    local api = assert(
+      new_api(
+        { agent = { provider = "test-service", command = "agent" } },
+        nil,
+        with_mcp and { mcp = mcp_config() } or nil
+      )
+    )
+    local ready
+    local session = assert(api:load_session("agent", "prior-acp", nil, function(value, err)
+      ready = { session = value, error = err }
+    end))
+    local process = processes[#processes]
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+    respond_error(process, 2, {
+      code = -32600,
+      message = "private peer details",
+      data = { reason = "resume_unmaterialized_unavailable" },
+    })
+    MiniTest.expect.equality(ready, {
+      error = "This Session has no saved prompt history and its permissions cannot be verified; start a new Session",
+    })
+    MiniTest.expect.equality(session:inspect().resume_permission_modes, nil)
+    MiniTest.expect.equality(session:inspect().status, "error")
+    MiniTest.expect.equality(process.closed, true)
+    MiniTest.expect.equality(#process.writes, 2)
+  end
+end
+
 T["new"]["explains a Codex active-writer load failure without exposing its thread id"] = function()
   local processes, original_system = fake_processes()
   local ready

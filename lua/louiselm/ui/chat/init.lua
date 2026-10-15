@@ -69,6 +69,8 @@ local nvim = vim
 ---@field unsubscribe fun() Session event listener removal function.
 ---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
 ---@field resuming? louiselm.session.Session Pending replacement owned until load succeeds or this view closes.
+---@field resume_permission_modes? louiselm.session.ResumePermissionMode[] Validated replacement choices retained after a failed load.
+---@field resume_choice? table Ownership token for an explicit replacement-policy picker.
 
 ---@class louiselm.ui.Chat
 ---@field api louiselm.session.Api Session API used to create sessions.
@@ -104,6 +106,7 @@ local nvim = vim
 ---@field winbar_hover_namespace? integer Mouse observer removed on disposal.
 ---@field winbar_hover_autocmd? integer Tooltip dismissal observer.
 ---@field current_id string? Currently displayed session id.
+---@field resume_discovery? {session?: louiselm.session.Session} Pending discovery/load owned by this chat.
 ---@field overview? louiselm.ui.OverviewState Current-Session sidebar owned by this chat.
 ---@field handoffs louiselm.ui.Handoffs Review buffers and takeover validation.
 ---@field recovery louiselm.workflow.Recovery Park admission and pending resume resources.
@@ -2203,6 +2206,15 @@ function Chat:switch(session_id)
     end
   end
   restore_winbars(self)
+  if self.current_id ~= session_id then
+    local previous = self.current_id and self.views[self.current_id]
+    if previous ~= nil then
+      previous.resume_choice = nil
+    end
+    if self.resume_discovery ~= nil and self.resume_discovery.session == nil then
+      self.resume_discovery = nil
+    end
+  end
   self.current_id = session_id
   view.unread_turn = false
   view.renderer:show(window, self.start_insert_on_switch)
@@ -2480,6 +2492,15 @@ end
 ---@param replacement? string Successfully loaded replacement to focus if this view is current.
 local function close_view(self, view, replacement)
   local id = view.session:inspect().id
+  view.resume_choice = nil
+  if
+    self.resume_discovery ~= nil
+    and (
+      self.resume_discovery.session == view.session or (self.current_id == id and self.resume_discovery.session == nil)
+    )
+  then
+    self.resume_discovery = nil
+  end
   for _, source in pairs(self.views) do
     if source.resuming == view.session then
       source.resuming = nil
@@ -2989,12 +3010,59 @@ function Chat:hand_off()
   return true
 end
 
----Reload the current stopped conversation without discovery or automatic submission.
----The old view and its editable draft survive failed loads; success replaces the view.
+local resume_current_session
+
 ---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+local function choose_resume_permissions(self, view)
+  local id = view.session:inspect().id
+  if
+    self.disposed
+    or self.views[id] ~= view
+    or self.current_id ~= id
+    or view.resume_choice ~= nil
+    or self.decisions:is_active()
+  then
+    return
+  end
+  local choice = {}
+  view.resume_choice = choice
+  local items = { { name = "Cancel", description = "Keep this Session stopped; retain its draft" } }
+  for _, mode in ipairs(view.resume_permission_modes or {}) do
+    items[#items + 1] = mode
+  end
+  Picker.select(items, {
+    prompt = "Resume: choosing a mode replaces saved permissions: ",
+    format_item = function(item)
+      return item.name .. (item.description and (" — " .. item.description) or "")
+    end,
+  }, function(selected)
+    if view.resume_choice ~= choice then
+      return
+    end
+    view.resume_choice = nil
+    if
+      selected == nil
+      or selected == items[1]
+      or not nvim.tbl_contains(items, selected)
+      or self.disposed
+      or self.views[id] ~= view
+      or self.current_id ~= id
+    then
+      return
+    end
+    local started, resume_error = resume_current_session(self, selected.id)
+    if not started then
+      nvim.notify("louiselm: " .. (resume_error or "could not resume Session"), nvim.log.levels.ERROR)
+    end
+  end)
+end
+
+---@param self louiselm.ui.Chat
+---@param resume_mode? string Explicit replacement, never inferred from approval policy.
 ---@return boolean started
----@return string? error_message Missing identity, managed/active Session or immediate load failure.
-function Chat:resume_current_session()
+---@return string? error_message
+resume_current_session = function(self, resume_mode)
   if self.disposed then
     return false, "chat UI is disposed"
   end
@@ -3015,7 +3083,11 @@ function Chat:resume_current_session()
   if state.acp_session_id == nil then
     return false, "current Session has no ACP Session id to resume"
   end
-  if view.resuming ~= nil then
+  if view.resuming ~= nil or view.resume_choice ~= nil then
+    return true
+  end
+  if resume_mode == nil and view.resume_permission_modes ~= nil then
+    choose_resume_permissions(self, view)
     return true
   end
   for _, id in ipairs(self.api:list_sessions()) do
@@ -3037,6 +3109,7 @@ function Chat:resume_current_session()
   session, load_error = self.api:load_session(state.agent, state.acp_session_id, {
     cwd = state.working_dir,
     name = state.name,
+    resume_mode = resume_mode,
   }, function(ready, ready_error)
     nvim.schedule(function()
       if settled then
@@ -3050,6 +3123,7 @@ function Chat:resume_current_session()
       view.resuming = nil
       local replacement = self.views[loading:inspect().id]
       if ready == nil or ready ~= loading or ready:inspect().status ~= "ready" or replacement == nil then
+        local modes = loading:inspect().resume_permission_modes
         if replacement ~= nil then
           close_view(self, replacement)
         else
@@ -3057,6 +3131,14 @@ function Chat:resume_current_session()
           if dispose_error ~= nil then
             ready_error = (ready_error or "could not resume Session") .. "; " .. dispose_error
           end
+        end
+        if modes ~= nil then
+          view.resume_permission_modes = modes
+          view.renderer:append({
+            "Saved permissions cannot be restored. Resume requires an explicit replacement mode or Cancel.",
+          })
+          choose_resume_permissions(self, view)
+          return
         end
         local message = ready_error or "could not resume Session"
         view.renderer:append({ "Resume failed: " .. message .. ". Use :LouiselmResume to retry." })
@@ -3093,6 +3175,15 @@ function Chat:resume_current_session()
   return true
 end
 
+---Reload the current stopped conversation without discovery or automatic submission.
+---The old view and its editable draft survive failed loads; success replaces the view.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message Missing identity, managed/active Session or immediate load failure.
+function Chat:resume_current_session()
+  return resume_current_session(self)
+end
+
 ---Recover the current stopped Session, or discover a prior ACP session to load.
 ---@param self louiselm.ui.Chat
 ---@param all_workspaces? boolean Omit the current-workspace filter when true.
@@ -3108,7 +3199,13 @@ function Chat:resume_session(all_workspaces)
   if all_workspaces ~= nil and type(all_workspaces) ~= "boolean" then
     return false, "all_workspaces must be a boolean"
   end
+  if self.resume_discovery ~= nil then
+    return true
+  end
   local current = self.current_id and self.views[self.current_id]
+  if current ~= nil and (current.resuming ~= nil or current.resume_choice ~= nil) then
+    return true
+  end
   if current ~= nil and not all_workspaces then
     local status = current.session:inspect().status
     if status == "disposed" or status == "error" then
@@ -3120,71 +3217,99 @@ function Chat:resume_session(all_workspaces)
     options.cwd = nvim.fn.getcwd()
   end
 
-  return self.api:discover_sessions(options, function(sessions, errors)
+  local discovery = {}
+  self.resume_discovery = discovery
+  local discovered = false
+  local started, discovery_error = self.api:discover_sessions(options, function(sessions, errors)
     -- ACP process callbacks are fast events; all selection and buffer work stays on the main loop.
     nvim.schedule(function()
-      if self.disposed then
+      if discovered or self.disposed or self.resume_discovery ~= discovery then
         return
       end
+      discovered = true
       if #errors > 0 then
         local level = #sessions == 0 and nvim.log.levels.ERROR or nvim.log.levels.WARN
         nvim.notify("louiselm: session discovery: " .. discovery_error_summary(errors), level)
       end
       if #sessions == 0 then
+        self.resume_discovery = nil
         if #errors == 0 then
           nvim.notify("louiselm: no recoverable sessions found", nvim.log.levels.INFO)
         end
         return
       end
 
+      local selected_once = false
       Picker.select(sessions, {
         prompt = all_workspaces and "louiselm session (all workspaces): " or "louiselm session: ",
         format_item = discovered_session_summary,
       }, function(selected)
-        if selected == nil or self.disposed then
+        if selected_once or self.disposed or self.resume_discovery ~= discovery then
           return
         end
-        local error_reported = false
-        local session, load_error = self.api:load_session(selected.agent, selected.session_id, {
+        selected_once = true
+        if selected == nil or not nvim.tbl_contains(sessions, selected) or self.decisions:is_active() then
+          self.resume_discovery = nil
+          return
+        end
+        local settled = false
+        local session, load_error
+        session, load_error = self.api:load_session(selected.agent, selected.session_id, {
           cwd = selected.cwd,
           name = selected.session_id,
         }, function(ready_session, ready_error)
-          if ready_error == nil then
-            if ready_session ~= nil and self.attention ~= nil then
-              nvim.schedule(function()
-                if self.disposed then
-                  return
-                end
-                local state = ready_session:inspect()
-                local view = self.views[state.id]
-                if view ~= nil and view.session == ready_session and state.status == "ready" then
-                  self.attention:session_resumed(state.acp_session_id)
-                end
-              end)
-            end
-            return
-          end
-          error_reported = true
           nvim.schedule(function()
-            if not self.disposed then
-              nvim.notify("louiselm: " .. ready_error, nvim.log.levels.ERROR)
+            if settled or self.disposed or self.resume_discovery ~= discovery or session == nil then
+              return
+            end
+            settled = true
+            self.resume_discovery = nil
+            local state = session:inspect()
+            local view = self.views[state.id]
+            if view == nil or view.session ~= session then
+              return
+            end
+            if ready_session == session and state.status == "ready" and ready_error == nil then
+              if self.attention ~= nil then
+                self.attention:session_resumed(state.acp_session_id)
+              end
+              return
+            end
+            view.resume_permission_modes = state.resume_permission_modes
+            local _, dispose_error = session:dispose()
+            if dispose_error ~= nil then
+              nvim.notify("louiselm: " .. dispose_error, nvim.log.levels.ERROR)
+            end
+            if view.resume_permission_modes ~= nil then
+              choose_resume_permissions(self, view)
+            else
+              nvim.notify("louiselm: " .. (ready_error or "could not load session"), nvim.log.levels.ERROR)
             end
           end)
         end)
         if session == nil then
-          if not error_reported then
-            nvim.notify("louiselm: " .. (load_error or "could not load session"), nvim.log.levels.ERROR)
-          end
+          settled = true
+          self.resume_discovery = nil
+          nvim.notify("louiselm: " .. (load_error or "could not load session"), nvim.log.levels.ERROR)
           return
         end
+        discovery.session = session
         local attached, attach_error = self:attach(session)
         if not attached then
-          session:dispose()
-          nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
+          self.resume_discovery = nil
+          local _, dispose_error = session:dispose()
+          nvim.notify(
+            "louiselm: " .. (dispose_error or attach_error or "could not attach loaded session"),
+            nvim.log.levels.ERROR
+          )
         end
       end)
     end)
   end)
+  if not started and self.resume_discovery == discovery then
+    self.resume_discovery = nil
+  end
+  return started, discovery_error
 end
 
 ---Discover and load a durable cold-Parked Run through an operator picker.
@@ -3268,6 +3393,16 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  if self.resume_discovery ~= nil then
+    local session = self.resume_discovery.session
+    self.resume_discovery = nil
+    if session ~= nil then
+      local _, dispose_error = session:dispose()
+      if dispose_error ~= nil then
+        nvim.notify("louiselm: " .. dispose_error, nvim.log.levels.ERROR)
+      end
+    end
+  end
   local pending = {}
   for cancel in pairs(self.markdown_reads) do
     pending[#pending + 1] = cancel
