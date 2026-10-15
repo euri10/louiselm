@@ -7,7 +7,7 @@
     "site:test:browser": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "1.63.0",
+    "@playwright/test": "1.64.0",
     "mystmd": "1.11.0"
   }
 }
