@@ -186,6 +186,142 @@ fn posture_read_services_guard_closure_before_terminal_cleanup() {
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "One authenticated export trace proves asynchronous guard closure, its ACK and exact verification-response correlation."
+)]
+fn verification_read_services_guard_closure_without_losing_reply_correlation() {
+    use louiselm_skills::launch_protocol::{
+        VERIFICATION_SCHEMA, VerificationOperation, VerificationRequest,
+    };
+    for foreign_reply in [false, true] {
+        let mut fixture = fixture(Some(approval(5)), Some("openai"));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let pins = File::open("/proc/self/ns/mnt").unwrap();
+        let network = File::open("/proc/self/ns/net").unwrap();
+        let mut enrollment = enrollment(&listener, &pins, &network);
+        enrollment.scope.session_id = fixture.session.authorization().session_id.clone();
+        enrollment.scope.envelope_revision = fixture.session.authorization().envelope_revision;
+        let enrolled = response(ResponseResult::SenderGuardEnrolled {
+            enrollment: enrollment.clone(),
+        });
+        settle(|done| {
+            fixture.peer.send_descriptors(
+                enrolled.canonical_bytes(),
+                [listener.as_fd(), pins.as_fd(), network.as_fd()],
+                done,
+            )
+        });
+        fixture
+            .service
+            .step(&mut fixture.session, 2500, None, verify_fixture_signature)
+            .unwrap();
+        let _accepted = settle(|done| fixture.peer.receive(done));
+        drop(listener);
+        let caller = LifecycleCaller::Operator {
+            uid: CONTROLLER_UID,
+        };
+        let park = lifecycle::park(fixture.session.authorization());
+        let parked = thread::scope(|threads| {
+            let peer = &fixture.peer;
+            let current = &fixture.current;
+            let driver = threads.spawn(move || lifecycle::drive_lifecycle_peer(peer, current));
+            let receipt = fixture
+                .service
+                .request_lifecycle(
+                    &mut fixture.session,
+                    &caller,
+                    &park,
+                    2500,
+                    verify_fixture_signature,
+                )
+                .unwrap();
+            assert_eq!(driver.join().unwrap(), receipt);
+            receipt
+        });
+        let head = louiselm_skills::launch_receipt::ReceiptHead {
+            sequence: parked.payload.sequence,
+            digest: parked.digest().to_string(),
+        };
+        fixture.current.state = SessionState::Parked;
+        fixture.current.channel_state = ChannelState::Revoked;
+        fixture.current.launcher_head = Some(head.clone());
+        fixture.current.broker_head = Some(head.clone());
+        let request = VerificationRequest {
+            schema: VERIFICATION_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "export-after-park".into(),
+            launch: request(&fixture.session.authorization().session_id),
+            head,
+            expires_at_ms: 30_000,
+            operation: VerificationOperation::Export {
+                input_id: "selected-input".into(),
+                input_digest: Digest::of(b"selected-input").to_string(),
+            },
+        };
+        thread::scope(|threads| {
+            let peer = &fixture.peer;
+            let current = &fixture.current;
+            let driver = threads.spawn(move || {
+                lifecycle::answer_one_status_query(peer, current);
+                let packet = settle(|done| peer.receive(done));
+                let LauncherPacket::Request(ProtocolMessage::Verification(query)) = packet.packet
+                else {
+                    panic!("expected exact verification request");
+                };
+                let closing = response(ResponseResult::SenderGuardClosing {
+                    enrollment: enrollment.clone(),
+                });
+                settle(|done| peer.send(closing.canonical_bytes(), done));
+                let closed = settle(|done| peer.receive(done));
+                assert!(matches!(closed.packet, LauncherPacket::Response(ack)
+                    if ack.request_id == closing.request_id
+                        && ack.result == ResponseResult::SenderGuardClosed { enrollment }));
+                // A real mechanic refusal must survive the handshake; an
+                // unrelated response must still fail exact correlation.
+                let refusal = ProtocolResponse {
+                    schema: RESPONSE_SCHEMA.into(),
+                    protocol_version: PROTOCOL_VERSION,
+                    request_id: if foreign_reply {
+                        "unrelated".into()
+                    } else {
+                        query.request_id
+                    },
+                    result: ResponseResult::Error {
+                        error: ProtocolError::new(
+                            ErrorCode::LifecycleMechanicUnavailable,
+                            Some(SessionState::Parked),
+                            Some(2),
+                        ),
+                    },
+                };
+                settle(|done| peer.send(refusal.canonical_bytes(), done));
+            });
+            let result = fixture.service.export_verification(
+                &mut fixture.session,
+                &caller,
+                &request,
+                2500,
+                verify_fixture_signature,
+            );
+            let expected = if foreign_reply {
+                matches!(result, Err(BrokerError::RequestMismatch))
+            } else {
+                matches!(result, Err(BrokerError::Policy(ref error))
+                    if error.code == ErrorCode::LifecycleMechanicUnavailable)
+            };
+            // An early protocol failure must wake the peer waiting for its ACK.
+            if !expected {
+                fixture.peer.close();
+            }
+            let driver = driver.join();
+            assert!(expected, "{result:?}");
+            driver.unwrap();
+        });
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "One authenticated handoff, Park and Resume dispatch trace."
 )]
 fn operator_resume_dispatches_fresh_authority_bound_to_the_durable_park() {

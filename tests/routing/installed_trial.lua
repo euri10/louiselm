@@ -6,6 +6,9 @@ local nvim = vim
 nvim.opt.rtp:prepend(nvim.fn.getcwd())
 local selection = nvim.json.decode(table.concat(nvim.fn.readfile(nvim.env.LOUISELM_QUALIFICATION_FIXTURE), "\n"))
 local start_only = nvim.env.LOUISELM_QUALIFICATION_START_ONLY == "1"
+-- Decode diagnostic metadata only after failure, outside the live callback path.
+-- Never print request/output bytes or Agent stderr.
+local control_trace = {}
 -- Use the existing ACP metadata extension, not forbidden registered arguments
 -- or environment. This selects synthetic peer behavior, not launch authority.
 local api = assert(require("louiselm.session").new({
@@ -20,12 +23,10 @@ local api = assert(require("louiselm.session").new({
 local controller = assert(require("louiselm.routing.trial").new(selection, {
   session_api = api,
   system = function(argv, options, done)
+    local observation = { argv = argv, stdin = options.stdin }
+    control_trace[#control_trace + 1] = observation
     return nvim.system(argv, options, function(reply)
-      if reply.code ~= 0 then
-        nvim.schedule(function()
-          print("fixture Control refusal: " .. reply.stderr)
-        end)
-      end
+      observation.reply = reply
       done(reply)
     end)
   end,
@@ -44,6 +45,43 @@ assert(
   end, 10),
   "installed paired trial timed out"
 )
+if failure then
+  local verification_requests = {}
+  print("fixture Control metadata:")
+  for _, observation in ipairs(control_trace) do
+    local argv, reply = observation.argv, observation.reply or {}
+    local request = observation.stdin and nvim.json.decode(observation.stdin) or {}
+    local launch = request.request and request.request.launch
+    local subject = launch and launch.session_id or request.session_id or argv[4]
+    if argv[2] == "verification" and request.kind == "run" then
+      verification_requests[subject] = request.request
+    end
+    local decoded, value = pcall(nvim.json.decode, reply.stdout or "")
+    value = decoded and type(value) == "table" and value or {}
+    local status = type(value.status) == "table" and value.status or {}
+    local record = type(status.detail) == "table" and status.detail or value.record
+    local execution = type(record) == "table" and record.execution or {}
+    local metadata = {
+      operation = argv[2],
+      request_kind = request.kind,
+      code = reply.code,
+      signal = reply.signal,
+      decoded = decoded,
+      response_kind = value.kind,
+      state = value.state or status.state,
+      head_sequence = type(value.broker_head) == "table" and value.broker_head.sequence or nil,
+      cleanup_proven = execution.cleanup_proven,
+      interrupted = execution.interrupted,
+      request_matches = execution.request and nvim.deep_equal(execution.request, verification_requests[subject]),
+    }
+    for _, suffix in ipairs({ "baseline-worker", "baseline-verifier", "candidate-worker", "candidate-verifier" }) do
+      if subject == selection.envelope.run_id .. "-" .. suffix then
+        metadata.subject = suffix
+      end
+    end
+    print(nvim.json.encode(metadata))
+  end
+end
 assert(not failure, failure)
 for _, arm in ipairs({ "baseline", "candidate" }) do
   local observation = assert(result.observations.arms[arm])

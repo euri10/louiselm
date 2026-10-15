@@ -313,6 +313,13 @@ impl BrokerService {
                 .checked_duration_since(Instant::now())
                 .ok_or(BrokerError::Expired)?;
             let packet = receive_for(session.channel(), remaining)?;
+            if let LauncherPacket::Response(response) = &packet.packet
+                && matches!(response.result, ResponseResult::SenderGuardClosing { .. })
+            {
+                // The asynchronous closure owns its ACK, not this job's reply ID.
+                self.lifecycle_packet(session, packet, verify)?;
+                continue;
+            }
             if let LauncherPacket::Response(response) = packet.packet {
                 if response.request_id != request.request_id {
                     return Err(BrokerError::RequestMismatch);
