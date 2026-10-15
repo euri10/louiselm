@@ -250,6 +250,11 @@ durable Run/Attention state. Keep package pins separate from interface revisions
 and persisted schemas. Bump the affected interface when its consumed contract
 changes incompatibly.
 
+Attention reports a repeated connection failure once until communication succeeds.
+Input and Session actions keep retrying; queued Attention mutations resume when
+a compatible companion reconnects. A different failure or a new failure after
+recovery is reported again.
+
 Capture checks additionally run `python3 scripts/test-capture-release.py`, the
 complete capture Rust and Lua gates, and the existing pinned Release Please
 fixtures. Local fixtures prove refusal and retry behavior; hosted PR/event,

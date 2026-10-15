@@ -19,6 +19,7 @@ local RunClient = require("louiselm.workflow.run_client")
 ---@field schedule fun(delay_ms: integer, callback: fun())
 ---@field now_ms fun(): integer
 ---@field on_error fun(message: string)
+---@field last_error? string Last reported failure since successful communication.
 ---@field client louiselm.workflow.AttentionClient?
 ---@field connecting boolean
 ---@field queue table[] Pending socket operations.
@@ -101,7 +102,8 @@ local function key_for(state)
 end
 
 local function notify(self, message)
-  if not self.disposed then
+  if not self.disposed and self.last_error ~= message then
+    self.last_error = message
     self.on_error(message)
   end
 end
@@ -174,6 +176,7 @@ local function ensure_connection(self)
         return
       end
       local client, connect_error = AttentionClient.connect(self.socket_path, function()
+        self.last_error = nil
         flush(self)
       end, {
         operator_capability = capability,
