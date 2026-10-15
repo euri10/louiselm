@@ -212,6 +212,14 @@ derived request sum for that turn, and show which method was selected. Validate
 against the existing LouiseLM recorder contract, including absent measurements,
 unknown completion and currency-separated complete cost deltas.
 
+Codex imports both top-level `token_usage_record` envelopes and the older
+`event_msg` payload form, keyed by Session and `response_id`. Repeated imports
+and mirrored logs do not multiply those records. Native `input_tokens` includes
+`cached_input_tokens`; `reasoning_output_tokens` is part of output, not an extra
+addend. Legacy `token_count` cumulative snapshots remain explicitly unsummed.
+The parser version invalidates older unchanged imports on the next explicit
+`index` refresh; queries do not silently refresh histories.
+
 Never divide turn input tokens among tools to invent their cost. Tool outputs can
 reappear in later input, be cached, summarized, compacted, truncated or omitted.
 Historical output reduction therefore does not establish billing, quota or

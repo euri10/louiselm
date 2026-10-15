@@ -169,3 +169,90 @@ fn structured_file_changes_inside_orchestration_are_tools() {
     assert_eq!(rows["rows"][0]["tool"], "<file change>");
     assert_eq!(rows["rows"][0]["calls"], 1);
 }
+
+#[test]
+fn top_level_response_usage_is_deduplicated_without_summing_cumulative_snapshots() {
+    let fixture = Fixture::new();
+    // Envelope observed 2026-10-15 in a current Codex rollout. All IDs/counters
+    // are synthetic. Native input includes cache hits; reasoning is in output.
+    let record = json!({
+        "type":"token_usage_record", "timestamp":"2026-10-15T05:22:31Z",
+        "payload":{
+            "response_id":"response-a", "root_turn_id":"turn-a", "turn_id":"turn-a",
+            "session_id":"session-a", "thread_id":"session-a",
+            "usage":{"input_tokens":100,"cached_input_tokens":80,"cache_write_input_tokens":0,
+                "output_tokens":20,"reasoning_output_tokens":7,"total_tokens":120},
+            "thread_token_usage":{"total_tokens":9000},"turn_token_usage":{"total_tokens":9000}
+        }
+    });
+    let mut records = events()[..2].to_vec();
+    records.extend([record.clone(), record.clone()]);
+    let mut nested = record.clone();
+    nested["type"] = json!("event_msg");
+    nested["payload"]["type"] = json!("token_usage_record");
+    records.push(nested);
+    let mut second = record;
+    second["payload"]["response_id"] = json!("response-b");
+    records.push(second);
+    records.push(json!({"type":"event_msg","payload":{"type":"token_count",
+        "info":{"total_token_usage":{"total_tokens":9000},"last_token_usage":{"total_tokens":120}}}}));
+    let source = fixture.log("codex", "current.jsonl", &records);
+    let mirror = fixture.log("codex", "mirror.jsonl", &records);
+    let first = fixture.run(&["index", "--source", &source, "--source", &mirror]);
+    assert_eq!(first.status.code(), Some(4)); // Legacy snapshot coverage stays explicit.
+    let stats = fixture.ok(&["stats", "requests"]);
+    let row = &stats["rows"][0];
+    assert_eq!(row["requests"], 2);
+    assert_eq!(row["reported_input_tokens"], 200);
+    assert_eq!(row["reported_cached_read_tokens"], 160);
+    assert_eq!(row["reported_output_tokens"], 40);
+    assert_eq!(row["reported_thought_tokens"], 14);
+    assert_eq!(row["reported_total_tokens"], 240);
+    let refreshed = fixture.run(&["index", "--source", &source, "--source", &mirror]);
+    let refresh: Value = serde_json::from_slice(&refreshed.stdout).unwrap();
+    assert_eq!(refresh["indexed_sources"], 0);
+    assert_eq!(fixture.ok(&["stats", "requests"])["rows"], stats["rows"]);
+    let sources = fixture.ok(&["sources"]);
+    assert!(
+        sources
+            .to_string()
+            .contains("legacy_usage_snapshot_not_summed")
+    );
+}
+
+#[test]
+fn codex_parser_upgrade_reimports_unchanged_usage_once() {
+    let fixture = Fixture::new();
+    let records = [
+        events()[0].clone(),
+        json!({"type":"token_usage_record","payload":{
+            "response_id":"response", "usage":{"total_tokens":12}
+        }}),
+    ];
+    let source = fixture.log("codex", "usage.jsonl", &records);
+    fixture.ok(&["index", "--source", &source]);
+    // Exact pre-fix fingerprint: normalizer unchanged, parser version 4.
+    let normalizer = sha256_hex(concat!(
+        include_str!("../src/command.rs"),
+        include_str!("../src/command/prefix.rs")
+    ));
+    let content = fs::read(fixture.0.join("usage.jsonl")).unwrap();
+    let digest = sha256_hex(format!("4:{normalizer}:{}", sha256_hex(content)));
+    let db = rusqlite::Connection::open(fixture.0.join("state/index.sqlite3")).unwrap();
+    db.execute("UPDATE sources SET digest=?1", [&digest])
+        .unwrap();
+    db.execute_batch("DELETE FROM requests;").unwrap();
+    drop(db);
+    assert_eq!(
+        fixture.ok(&["index", "--source", &source])["indexed_sources"],
+        1
+    );
+    assert_eq!(
+        fixture.ok(&["stats", "requests"])["rows"][0]["reported_total_tokens"],
+        12
+    );
+    assert_eq!(
+        fixture.ok(&["index", "--source", &source])["indexed_sources"],
+        0
+    );
+}

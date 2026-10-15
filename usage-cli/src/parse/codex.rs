@@ -34,6 +34,7 @@ impl State {
                 }
             }
             Some("response_item") => self.response(p, event, source, line, parsed),
+            Some("token_usage_record") => self.usage(p, event, source, line, parsed),
             Some("event_msg") if p["type"] == "token_usage_record" => {
                 self.usage(p, event, source, line, parsed);
             }

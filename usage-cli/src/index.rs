@@ -82,7 +82,11 @@ fn refresh(connection: &mut rusqlite::Connection, source: &sources::Source) -> R
     } else {
         fingerprint(&source.path)?
     };
-    let version = if source.format == "claude" { 5 } else { 4 };
+    let version = if matches!(source.format.as_str(), "claude" | "codex") {
+        5
+    } else {
+        4
+    };
     // Normalizer edits must invalidate otherwise unchanged source histories too.
     let normalizer = digest(
         concat!(
