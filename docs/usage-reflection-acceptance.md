@@ -1,7 +1,8 @@
 # Usage reflection acceptance — louiselm-a1a9
 
 Implemented and exercised on 2026-10-15 by
-`codex/01a13e67-0aaa-75a1-9a1a-c9559ae2b826`. Human acceptance is pending.
+`codex/01a13e67-0aaa-75a1-9a1a-c9559ae2b826`. Human acceptance was confirmed
+on 2026-10-15 after the repository-scoped demonstration below.
 
 The owned source is
 `/home/lotso/dotfiles/agentskills/.config/agentskills/louiselm-usage-reflect/`;
@@ -112,10 +113,26 @@ Validation:
   unavailable (`/usr/lib/louiselm/verifier` absent); no confined or stable-release
   acceptance is claimed. No plugin runtime code, schema, types or CI changed.
 
-## Pending human acceptance
+## Repository demonstration and human acceptance
 
-Confirm the installed skill's invocation/report is useful and that the source
-references, coverage, request-versus-observation distinction and causal limits
-above are correct. In a new Session, invoke `louiselm-usage-reflect` explicitly
-on the synthetic fixture or a chosen private date range. Keep `louiselm-a1a9`
-open until that confirmation is recorded; automated checks do not supply it.
+The maintainer requested a real invocation on this repository after commits
+`e23dfbf` (dotfiles skill) and `8e8f971` (LouiseLM evidence) were pushed. The
+report used structured usage queries for
+`[2026-10-08T00:00:00Z, 2026-10-15T00:00:00Z)`, matching Agent Session metadata
+to `/home/lotso/code/louiselm`. Reads at07:39–07:40Z identified42 Sessions and248
+turns,239 with output-token measurements, and132 request-linked option changes.
+All5 Agent/Session grouping pages,42 Session turn queries and43 event pages
+(687 observations) were reviewed. Unmatched Sessions were excluded; the report
+did not claim an exhaustive repository census.
+
+The report separated repeated baseline-setting selections from the hypothesis
+of setup/resume reapplication, named alternatives, and supplied exact Session,
+turn, observer/sequence and UTC references for2 review candidates. Those private
+references remain in the implementing Session. No transcript content was read,
+no Model-quality or causal conclusion was claimed, and no settings were changed.
+
+After being asked to confirm that this demonstrated report met expectations,
+the maintainer replied "confirmed" in the implementing Session on2026-10-15.
+That explicit acceptance satisfies the remaining human gate for `louiselm-a1a9`;
+the earlier pending status is superseded. It does not assert trusted Skill
+Admission, stable-release verification, or resolution of unrelated `louiselm-bk3zs`.
