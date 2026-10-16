@@ -1797,6 +1797,17 @@ local function enter_view(self, view)
   if self.overview ~= nil and self.overview.session_id ~= state.id then
     require("louiselm.ui.session_overview").close(self)
   end
+  if self.current_id ~= state.id then
+    local previous = self.current_id and self.views[self.current_id]
+    if previous ~= nil then
+      previous.resume_choice = nil
+    end
+    if self.resume_discovery ~= nil and self.resume_discovery.session == nil then
+      self.resume_discovery = nil
+    end
+  end
+  self.current_id = state.id
+  view.unread_turn = false
   if self.attention ~= nil and state.acp_session_id ~= nil then
     self.attention:seen(state.acp_session_id)
   end
@@ -2206,17 +2217,6 @@ function Chat:switch(session_id)
     end
   end
   restore_winbars(self)
-  if self.current_id ~= session_id then
-    local previous = self.current_id and self.views[self.current_id]
-    if previous ~= nil then
-      previous.resume_choice = nil
-    end
-    if self.resume_discovery ~= nil and self.resume_discovery.session == nil then
-      self.resume_discovery = nil
-    end
-  end
-  self.current_id = session_id
-  view.unread_turn = false
   view.renderer:show(window, self.start_insert_on_switch)
   render_winbars(self)
   return true

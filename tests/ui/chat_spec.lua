@@ -407,6 +407,65 @@ T["chat"]["background attachment preserves focus and skips only the initial opti
   end, 10))
 end
 
+T["chat"]["ordinary buffer entry selects a background Session for context commands"] = function()
+  -- Maintainer reproduction: background helper -> :buffer -> :LouiselmMentionBuffer
+  -- reported no attached Session (louiselm-background-chat-buffer-not-active-qmded).
+  local session = fake_session("background-entry", "agent")
+  local chat = assert(Chat.new(fake_api(), { start_insert_on_switch = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  local source = nvim.api.nvim_get_current_buf()
+  local window = nvim.api.nvim_get_current_win()
+  assert(chat:attach(session, { background = true }))
+  local buffer = assert(chat:buffer("background-entry"))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), source)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), window)
+  MiniTest.expect.equality(chat:buffer(), nil)
+
+  nvim.api.nvim_set_current_buf(buffer)
+
+  MiniTest.expect.equality({ chat:mention_buffer() }, { true })
+  MiniTest.expect.equality(chat:buffer(), buffer)
+  MiniTest.expect.equality(chat:staged_context()[session].contexts, 1)
+  MiniTest.expect.equality(session.prompts, {})
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), window)
+end
+
+T["chat"]["ordinary window entry routes commands to the visible Session"] = function()
+  local first = fake_session("window-first", "agent")
+  local second = fake_session("window-second", "agent")
+  local chat = assert(Chat.new(fake_api(), { start_insert_on_switch = false }))
+  local first_window = nvim.api.nvim_get_current_win()
+  local second_window
+  MiniTest.finally(function()
+    if second_window ~= nil and nvim.api.nvim_win_is_valid(second_window) then
+      nvim.api.nvim_win_close(second_window, true)
+    end
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  assert(chat:attach(second, { background = true }))
+  nvim.cmd.vsplit()
+  second_window = nvim.api.nvim_get_current_win()
+  nvim.api.nvim_set_current_buf(assert(chat:buffer("window-second")))
+
+  assert(chat:queue_context({ label = "second", text = "second context" }))
+  MiniTest.expect.equality(chat:staged_context()[first].contexts, 0)
+  MiniTest.expect.equality(chat:staged_context()[second].contexts, 1)
+  nvim.api.nvim_set_current_win(first_window)
+  assert(chat:queue_context({ label = "first", text = "first context" }))
+  MiniTest.expect.equality(chat:staged_context()[first].contexts, 1)
+  MiniTest.expect.equality(chat:staged_context()[second].contexts, 1)
+  nvim.api.nvim_set_current_win(second_window)
+  assert(chat:submit("second window prompt"))
+  MiniTest.expect.equality(first.prompts, {})
+  MiniTest.expect.equality(#second.prompts, 1)
+  MiniTest.expect.equality(chat:staged_context()[first].contexts, 1)
+  MiniTest.expect.equality(chat:staged_context()[second].contexts, 0)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), second_window)
+end
+
 T["chat"]["renders externally dispatched content on the editor loop without consuming staged context"] = function()
   local session = fake_session("external-content", "agent")
   local chat = assert(Chat.new(fake_api()))
