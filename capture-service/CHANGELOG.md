@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/euri10/louiselm/compare/capture-v0.1.0...capture-v0.1.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **capture:** isolate one-shot blocking work ([223c339](https://github.com/euri10/louiselm/commit/223c339086da7375526314b8fd98c8e694c29a33))
+* **capture:** replace transcription default ([8155389](https://github.com/euri10/louiselm/commit/8155389e9d44c97a1142289dde6d591abc0691a8))
+
 ## 0.1.0 (2026-10-08)
 
 
