@@ -143,6 +143,46 @@ pub(super) fn cleanup_if_ready(paths: &LauncherPaths, key_id: &str) -> Result<()
     Ok(())
 }
 
+/// Only the privileged recovery owner calls after its exact separate proof ACK.
+/// A broker/operator status message cannot complete this signing reference.
+pub(super) fn complete_recovery(
+    paths: &LauncherPaths,
+    proof: &crate::launch_recovery::Proof,
+) -> Result<(), LauncherError> {
+    proof
+        .validate()
+        .map_err(|error| LauncherError::Malformed(error.to_string()))?;
+    let _lock = history::signing_lock(paths, Instant::now() + std::time::Duration::from_secs(5))?;
+    super::revocation::require_key(paths, &proof.payload.signing_key_id)?;
+    let original = history::recovery_binding(paths, &proof.payload.binding.authorization)?;
+    if original.as_ref().map(|(digest, _)| digest) != proof.payload.receipt_binding_digest.as_ref()
+    {
+        return Err(LauncherError::Invalid(
+            "recovery completion registration changed".into(),
+        ));
+    }
+    let Some((_, anchor)) = original else {
+        return Ok(());
+    };
+    let mut ring = public_keyring(paths)?;
+    let key = ring
+        .keys
+        .iter_mut()
+        .find(|key| key.key_id == anchor.signing_key_id)
+        .ok_or_else(|| LauncherError::Invalid("original recovery signing key is missing".into()))?;
+    let Some(sessions) = key.signing_sessions.as_mut() else {
+        // Preserve pre-existing unknown exhaustive authority. This known cleanup
+        // never reconstructs other Sessions or permits private-key deletion.
+        return Ok(());
+    };
+    let state = sessions.get_mut(&anchor.session_id).ok_or_else(|| {
+        LauncherError::Invalid("original recovery signing reference is missing".into())
+    })?;
+    *state = SessionKeyState::Complete;
+    write_json_atomic(&paths.keyring(), &ring, 0o444)?;
+    cleanup_if_ready(paths, &anchor.signing_key_id)
+}
+
 /// Retries removal of exactly one routinely retired private key.
 ///
 /// This administrative maintenance action is outside the Agent protocol and

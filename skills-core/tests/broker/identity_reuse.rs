@@ -5,6 +5,248 @@ fn broker(root: &Path, socket: &str) -> BrokerService {
     broker_with_slots(root, socket, 1)
 }
 
+fn recovery_proof(
+    service: &BrokerService,
+    authorization: &LaunchAuthorization,
+) -> louiselm_skills::launch_recovery::Proof {
+    use louiselm_skills::launch_recovery::{Payload, Proof, SCHEMA, SIGNED_SCHEMA};
+    let snapshot = service
+        .consumed_recovery_snapshot(&authorization.authorization_id, verify_fixture_signature)
+        .unwrap();
+    assert!(snapshot.recovered.is_none());
+    let payload = Payload {
+        schema: SCHEMA.into(),
+        binding: snapshot.binding,
+        arm_digest: Digest::of(b"actual-root-arm-fixture").to_string(),
+        receipt_binding_digest: None,
+        armed_boot_id: "00000000-0000-0000-0000-000000000001".into(),
+        recovered_boot_id: "00000000-0000-0000-0000-000000000002".into(),
+        retained_storage: louiselm_skills::launch_recovery::RetainedStorage::Sealed,
+        release_id: trusted_release().release_id,
+        signing_key_id: trusted_release().signing_key_id,
+    };
+    let signature = Digest::of(&payload.canonical_bytes()).to_string();
+    Proof {
+        schema: SIGNED_SCHEMA.into(),
+        payload,
+        signature,
+    }
+}
+
+#[test]
+fn missing_receipt_recovery_reuses_the_slot_without_replaying_consumption_or_refilling_run() {
+    let root = TempDir::new().unwrap();
+    let service = broker(root.path(), "first.sock");
+    let authorization = consume(&service, "refused-before-admission");
+    let consumption = fs::read_dir(root.path().join("authorizations/consumed"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let original = fs::read(&consumption).unwrap();
+    let proof = recovery_proof(&service, &authorization);
+    assert!(matches!(
+        service.authorize(&grant(&request("later")), 3000, verify_fixture_signature),
+        Err(BrokerError::IdentityExhausted(_))
+    ));
+    let ack = service
+        .accept_consumed_recovery(&proof, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(ack.proof_digest, proof.digest());
+    assert!(matches!(
+        service.receipts().append(
+            &authorization,
+            &launch_receipt(&authorization).canonical_bytes(),
+            None,
+            verify_fixture_signature,
+        ),
+        Err(BrokerError::ReceiptUnauthorized)
+    ));
+    drop(service);
+    let service = broker(root.path(), "second.sock");
+    assert_eq!(
+        service
+            .accept_consumed_recovery(&proof, verify_fixture_signature)
+            .unwrap(),
+        ack
+    );
+    assert_eq!(
+        service
+            .consumed_recovery_snapshot(&authorization.authorization_id, verify_fixture_signature)
+            .unwrap()
+            .recovered,
+        Some(proof.clone())
+    );
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes(&authorization.session_id)
+            .unwrap(),
+        [] as [Vec<u8>; 0]
+    );
+    let inspection = service.inspect(&authorization.session_id).unwrap().unwrap();
+    assert_eq!(inspection.state, SessionState::Terminal);
+    assert!(inspection.broker_head.is_none());
+    assert!(inspection.launch_evidence.is_none());
+    assert_eq!(fs::read(consumption).unwrap(), original);
+    assert!(matches!(
+        service.authorizations().consume(
+            &request("refused-before-admission"),
+            CONTROLLER_UID,
+            3000
+        ),
+        Err(BrokerError::UnknownAuthorization)
+    ));
+    consume(&service, "new-session");
+    assert_eq!(
+        service
+            .authorizations()
+            .session_count_for_run("run-1")
+            .unwrap(),
+        2
+    );
+    // Historical retry must not clear or reassign the new live occupant.
+    assert_eq!(
+        service
+            .accept_consumed_recovery(&proof, verify_fixture_signature)
+            .unwrap(),
+        ack
+    );
+    assert!(matches!(
+        service.authorize(&grant(&request("third")), 3000, verify_fixture_signature),
+        Err(BrokerError::IdentityExhausted(_))
+    ));
+}
+
+#[test]
+fn recovery_rejects_forged_same_boot_foreign_or_conflicting_proofs() {
+    let root = TempDir::new().unwrap();
+    let service = broker(root.path(), "broker.sock");
+    let authorization = consume(&service, "held");
+    let proof = recovery_proof(&service, &authorization);
+    let mut forged = proof.clone();
+    forged.signature = Digest::of(b"forged").to_string();
+    assert!(matches!(
+        service.accept_consumed_recovery(&forged, verify_fixture_signature),
+        Err(BrokerError::Recovery(
+            louiselm_skills::launch_recovery::ProofError::InvalidSignature
+        ))
+    ));
+    for mutation in 0..4 {
+        use louiselm_skills::launch_recovery::{Proof, ProofError};
+        let mut changed = proof.payload.clone();
+        match mutation {
+            0 => changed.recovered_boot_id.clone_from(&changed.armed_boot_id),
+            1 => changed.binding.consumption_digest = Digest::of(b"other-consumption").to_string(),
+            2 => changed.binding.authorization.assigned_uid += 1,
+            _ => changed.binding.authorization.run_id = "foreign-run".into(),
+        }
+        let signature = Digest::of(&changed.canonical_bytes()).to_string();
+        let result = service.accept_consumed_recovery(
+            &Proof {
+                payload: changed,
+                signature,
+                ..proof.clone()
+            },
+            verify_fixture_signature,
+        );
+        match mutation {
+            0 => assert!(matches!(
+                result,
+                Err(BrokerError::Recovery(ProofError::InvalidBoot))
+            )),
+            _ => assert!(matches!(result, Err(BrokerError::RequestMismatch))),
+        }
+    }
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes(&authorization.session_id)
+            .unwrap(),
+        [] as [Vec<u8>; 0]
+    );
+    let launch = launch_receipt(&authorization);
+    service
+        .receipts()
+        .append(
+            &authorization,
+            &launch.canonical_bytes(),
+            None,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    assert!(matches!(
+        service
+            .consumed_recovery_snapshot(&authorization.authorization_id, verify_fixture_signature),
+        Err(BrokerError::InvalidGrant)
+    ));
+    assert!(matches!(
+        service.accept_consumed_recovery(&proof, verify_fixture_signature),
+        Err(BrokerError::InvalidGrant)
+    ));
+}
+
+#[test]
+fn recovery_proof_is_canonical_closed_and_separate_from_launcher_receipts() {
+    use louiselm_skills::launch_recovery::{Proof, ProofError};
+    let root = TempDir::new().unwrap();
+    let service = broker(root.path(), "broker.sock");
+    let authorization = consume(&service, "held");
+    let proof = recovery_proof(&service, &authorization);
+    assert_eq!(Proof::parse(&proof.canonical_bytes()).unwrap(), proof);
+    assert_eq!(
+        SignedReceipt::parse_canonical(&proof.canonical_bytes()),
+        Err(
+            louiselm_skills::launch_receipt::ReceiptError::UnsupportedSchema(
+                louiselm_skills::launch_recovery::SIGNED_SCHEMA.into()
+            )
+        )
+    );
+    let mut noncanonical = proof.canonical_bytes();
+    noncanonical.push(b' ');
+    assert_eq!(Proof::parse(&noncanonical), Err(ProofError::NonCanonical));
+    let mut value = serde_json::to_value(&proof).unwrap();
+    value["payload"]["sequence"] = serde_json::json!(0);
+    assert_eq!(
+        Proof::parse(&serde_json::to_vec(&value).unwrap()),
+        Err(ProofError::Malformed)
+    );
+}
+
+#[test]
+fn corrupt_recovery_holds_its_slot_after_restore_without_blocking_another_identity() {
+    let root = TempDir::new().unwrap();
+    let service = broker_with_slots(root.path(), "broker.sock", 2);
+    let authorization = consume(&service, "held");
+    let proof = recovery_proof(&service, &authorization);
+    service
+        .accept_consumed_recovery(&proof, verify_fixture_signature)
+        .unwrap();
+    let path = fs::read_dir(root.path().join("receipts/consumed-recoveries"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut corrupt = proof.clone();
+    corrupt.signature = Digest::of(b"forged").to_string();
+    fs::write(&path, corrupt.canonical_bytes()).unwrap();
+    assert_eq!(
+        service
+            .authorize(&grant(&request("next")), 3000, verify_fixture_signature)
+            .unwrap()
+            .identity
+            .slot,
+        1
+    );
+    fs::write(path, proof.canonical_bytes()).unwrap();
+    assert!(matches!(
+        service.authorize(&grant(&request("third")), 3000, verify_fixture_signature),
+        Err(BrokerError::IdentityExhausted(_))
+    ));
+}
+
 fn broker_with_slots(root: &Path, socket: &str, slots: u32) -> BrokerService {
     BrokerService::bind(
         &root.join(socket),

@@ -695,6 +695,8 @@ fn schema_identifiers() -> Vec<String> {
         crate::launch_protocol::RESPONSE_SCHEMA,
         crate::launch_receipt::RECEIPT_SCHEMA,
         crate::launch_receipt::SIGNED_RECEIPT_SCHEMA,
+        crate::launch_recovery::SCHEMA,
+        crate::launch_recovery::SIGNED_SCHEMA,
         crate::launcher_install::CONFIG_SCHEMA,
         crate::launcher_install::KEYRING_SCHEMA,
         crate::launcher_install::STATUS_SCHEMA,

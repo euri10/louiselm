@@ -11,7 +11,11 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn generated_help_is_public_and_does_not_acquire_authority() {
-    for args in [vec!["--help"], vec!["run", "--help"]] {
+    for args in [
+        vec!["--help"],
+        vec!["run", "--help"],
+        vec!["recover-arm", "--help"],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_louiselm-launch"))
             .args(args)
             .env_clear()
@@ -28,7 +32,7 @@ fn generated_help_is_public_and_does_not_acquire_authority() {
 
 #[test]
 fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
-    // Only exact run/prepare/certify are operator verbs; no caller-selected commands.
+    // Fixed verbs only; administrative recovery accepts no paths or commands.
     let binary = env!("CARGO_BIN_EXE_louiselm-launch");
     for arguments in [
         vec![],
@@ -38,6 +42,10 @@ fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
         vec!["certify", "--probe", "private-command"],
         vec!["prepare", "--root", "/tmp/private-storage"],
         vec!["cleanup", "--root", "/tmp/private-storage"],
+        vec!["recover-arm"],
+        vec!["recover-complete"],
+        vec!["recover-arm", "approval", "--root", "/tmp/private-storage"],
+        vec!["recover-complete", "approval", "--broker", "/tmp/socket"],
         vec!["__conformance-worker", "private-command"],
     ] {
         let output = Command::new(binary)
@@ -51,8 +59,25 @@ fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
             if arguments.len() > 1 {
                 "louiselm-launch: unexpected arguments\n"
             } else {
-                "louiselm-launch: expected exactly 'run', 'prepare', 'certify' or root-only 'cleanup'\n"
+                "louiselm-launch: invalid launcher command; see --help\n"
             }
+        );
+    }
+}
+
+#[test]
+fn development_recovery_cannot_acquire_installed_authority() {
+    for verb in ["recover-arm", "recover-complete"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_louiselm-launch"))
+            .args([verb, "approval"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(output.stdout, [] as [u8; 0]);
+        assert!(
+            output.stderr == b"louiselm-launch: root launcher authority required\n"
+                || output.stderr == b"louiselm-launch: running launcher release is untrusted\n"
         );
     }
 }

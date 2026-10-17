@@ -206,6 +206,8 @@ fn a_bundle_binds_its_source_toolchain_dependencies_policy_and_bytes() {
         launch_protocol::RESPONSE_SCHEMA,
         launch_receipt::RECEIPT_SCHEMA,
         launch_receipt::SIGNED_RECEIPT_SCHEMA,
+        louiselm_skills::launch_recovery::SCHEMA,
+        louiselm_skills::launch_recovery::SIGNED_SCHEMA,
     ] {
         assert!(
             manifest.schemas.iter().any(|candidate| candidate == schema),

@@ -203,6 +203,55 @@ pub struct AuthorizationStore {
 }
 
 impl AuthorizationStore {
+    pub(super) fn require_recovery_reservation(
+        &self,
+        held: &PendingAuthorization,
+        terminal: &mut impl FnMut(&PendingAuthorization) -> Result<bool, BrokerError>,
+    ) -> Result<(), BrokerError> {
+        // Caller already holds assignment through with_consumption.
+        let occupants = self.occupants(super::now_ms()?, terminal)?;
+        let slot: Vec<_> = occupants
+            .iter()
+            .filter(|occupant| occupant.slot == held.identity.slot)
+            .collect();
+        if slot.len() != 1 || slot[0].session_id != held.session_id {
+            return Err(BrokerError::InvalidGrant);
+        }
+        Ok(())
+    }
+
+    pub(super) fn with_consumption<T>(
+        &self,
+        id: &str,
+        apply: impl FnOnce(&PendingAuthorization, &str) -> Result<T, BrokerError>,
+    ) -> Result<T, BrokerError> {
+        let _assignment = lock(&self.assignment);
+        let (record, digest) = self.read_consumption(id)?;
+        apply(&record, &digest)
+    }
+
+    pub(super) fn consumption_digest(
+        &self,
+        held: &PendingAuthorization,
+    ) -> Result<String, BrokerError> {
+        let (record, digest) = self.read_consumption(&held.authorization_id)?;
+        if record != *held {
+            return Err(BrokerError::RequestMismatch);
+        }
+        Ok(digest)
+    }
+
+    fn read_consumption(&self, id: &str) -> Result<(PendingAuthorization, String), BrokerError> {
+        let path = self.consumed_path(&record_name(id)?);
+        let bytes = super::read_bounded(&path)?.ok_or(BrokerError::UnknownAuthorization)?;
+        let record: ConsumedAuthorization = serde_json::from_slice(&bytes)
+            .map_err(|_| super::corrupt("consumption record is malformed"))?;
+        if record.authorization.authorization_id != id {
+            return Err(BrokerError::RequestMismatch);
+        }
+        Ok((record.authorization, Digest::of(&bytes).to_string()))
+    }
+
     /// Counts every distinct Session authorized for a Run, including consumed
     /// grants and expired pending grants so retries cannot reclaim the ceiling.
     /// # Errors

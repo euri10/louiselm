@@ -386,6 +386,16 @@ impl BrokerService {
             })
             .transpose()?;
         let head = chain.last();
+        let recovered = if chain.is_empty() {
+            let digest = self.authorizations.consumption_digest(&authorization)?;
+            self.history_result(
+                session_id,
+                self.receipts.inspection_recovery(&authorization, &digest),
+            )?
+            .is_some()
+        } else {
+            false
+        };
         let last_failure = self
             .audit()?
             .into_iter()
@@ -403,9 +413,14 @@ impl BrokerService {
             run_id: authorization.run_id.clone(),
             envelope_revision: authorization.envelope_revision,
             identity_slot: authorization.identity.slot,
-            state: head.map_or(SessionState::Starting, |receipt| {
-                receipt.payload.resulting_state
-            }),
+            state: head.map_or(
+                if recovered {
+                    SessionState::Terminal
+                } else {
+                    SessionState::Starting
+                },
+                |receipt| receipt.payload.resulting_state,
+            ),
             broker_head: head.map(|receipt| ReceiptHead {
                 sequence: receipt.payload.sequence,
                 digest: receipt.digest().to_string(),

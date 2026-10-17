@@ -116,6 +116,23 @@ fn signed(payload: ReceiptPayload) -> SignedReceipt {
 }
 
 #[test]
+fn recovery_cannot_substitute_a_terminal_receipt_for_launch_genesis() {
+    let receipt = payload(
+        0,
+        None,
+        1,
+        "no-launch",
+        ReceiptOutcome::Disposal {
+            authority: ReceiptAuthority::Cause {
+                cause: ReceiptCause::ControllerLost,
+            },
+        },
+        SessionState::Terminal,
+    );
+    assert_eq!(receipt.validate(), Err(ReceiptError::GenesisNotLaunch));
+}
+
+#[test]
 fn provider_credentials_cannot_extend_receipt_records() {
     for field in ["credential", "provider_credentials", "authorization_header"] {
         let mut value = serde_json::to_value(&chain()[0]).unwrap();

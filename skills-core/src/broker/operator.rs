@@ -1,5 +1,6 @@
 //! Bounded local operator inspection and skill decisions, authenticated before lookup.
 
+pub mod consumed_recovery;
 mod launch_inputs;
 mod lifecycle;
 mod wire;
@@ -825,6 +826,21 @@ fn exchange(
     request: &Request,
     timeout: Duration,
 ) -> Result<Vec<u8>, InspectError> {
+    let max = if matches!(request, Request::Conformance { .. }) {
+        MAX_INSPECTION_BYTES
+    } else {
+        crate::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES
+    };
+    exchange_document(path, broker_uid, request, timeout, max)
+}
+
+fn exchange_document(
+    path: &Path,
+    broker_uid: u32,
+    request: &impl Serialize,
+    timeout: Duration,
+    max: usize,
+) -> Result<Vec<u8>, InspectError> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or(InspectError::InvalidRequest)?;
@@ -847,11 +863,6 @@ fn exchange(
     }
     let bytes = serde_json::to_vec(&request).map_err(|_| InspectError::InvalidRequest)?;
     wire::write(&mut stream, &bytes, deadline).map_err(|_| InspectError::BrokerUnavailable)?;
-    let max = if matches!(request, Request::Conformance { .. }) {
-        MAX_INSPECTION_BYTES
-    } else {
-        crate::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES
-    };
     let bytes = wire::read_bounded(&mut stream, deadline, max)
         .map_err(|_| InspectError::BrokerUnavailable)?;
     if let Some(error) = InspectError::parse(&bytes) {

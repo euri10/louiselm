@@ -44,7 +44,7 @@ fn main() -> ExitCode {
             let message = if args.len() > 2 {
                 "unexpected arguments"
             } else {
-                "expected exactly 'run', 'prepare', 'certify' or root-only 'cleanup'"
+                "invalid launcher command; see --help"
             };
             eprintln!("louiselm-launch: {message}");
             return ExitCode::FAILURE;
@@ -63,6 +63,8 @@ fn main() -> ExitCode {
         Command::Prepare => preparation(),
         Command::Certify => certification(false),
         Command::Cleanup => cleanup(),
+        Command::RecoverArm { authorization_id } => consumed_recovery(&authorization_id, false),
+        Command::RecoverComplete { authorization_id } => consumed_recovery(&authorization_id, true),
         Command::SenderGuardObject => {
             use std::io::Write;
             io::stdout()
@@ -109,6 +111,32 @@ fn cleanup() -> Result<i32, &'static str> {
         .write_all(&bytes)
         .map_err(|_| "cleanup output unavailable")?;
     Ok(i32::from(report.failed != 0))
+}
+
+fn consumed_recovery(id: &str, complete: bool) -> Result<i32, &'static str> {
+    use louiselm_skills::launcher_install::consumed_recovery::{self, RecoveryError};
+    use std::io::Write;
+    let (paths, config) = authority(true)?;
+    let result = if complete {
+        consumed_recovery::complete(&paths, config.operator_uid, id)
+            .and_then(|proof| serde_json::to_vec(&proof).map_err(|_| RecoveryError::Conflict))
+    } else {
+        consumed_recovery::arm(&paths, config.operator_uid, id)
+            .and_then(|arm| serde_json::to_vec(&arm).map_err(|_| RecoveryError::Conflict))
+    };
+    let bytes = result.map_err(|error| match error {
+        RecoveryError::NotArmed => "arm this exact authorization before rebooting",
+        RecoveryError::RebootRequired => "reboot required after arming; reservation retained",
+        RecoveryError::Conflict => "recovery binding conflict; inspect preserved evidence",
+        RecoveryError::Busy => "recovery owner is busy; reservation retained",
+        RecoveryError::Installation(_) => "recovery installation or durability unavailable; retain evidence and retry the same authorization",
+        RecoveryError::Broker(_) => "recovery broker unavailable or refused; inspect evidence and retry the same authorization",
+    })?;
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|_| "recovery output unavailable; retry the same authorization")?;
+    Ok(0)
 }
 
 fn authority(operator_required: bool) -> Result<(LauncherPaths, LauncherConfig), &'static str> {

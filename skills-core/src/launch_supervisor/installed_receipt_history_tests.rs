@@ -48,7 +48,7 @@ fn authorization(root: &Path, config: &LauncherConfig, session: &str) -> LaunchA
     store.consume_for_launcher(&request, 2000).unwrap()
 }
 
-fn genesis(signer: &LauncherSigner, auth: &LaunchAuthorization) -> ReceiptPayload {
+pub(super) fn genesis(signer: &LauncherSigner, auth: &LaunchAuthorization) -> ReceiptPayload {
     ReceiptPayload {
         schema: crate::launch_receipt::RECEIPT_SCHEMA.into(),
         session_id: auth.session_id.clone(),

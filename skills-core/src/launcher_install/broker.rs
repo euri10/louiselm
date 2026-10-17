@@ -125,6 +125,45 @@ impl LauncherVerifier {
             ));
         }
         super::history::load(&self.paths, &receipt.session_id)?.check(&receipt)?;
+        self.verify_document(key_id, payload, signature, RECEIPT_SCHEMA)
+    }
+
+    /// Verify a separate recovery fact with retained machine-key authority.
+    /// It neither creates nor substitutes a Session receipt genesis.
+    /// # Errors
+    /// Refuses invalid proof, conflicting root history, unknown/revoked keys,
+    /// release/tool changes, foreign namespaces or failed bounded verification.
+    pub fn verify_recovery(
+        &self,
+        proof: &crate::launch_recovery::Proof,
+    ) -> Result<(), LauncherError> {
+        proof
+            .validate()
+            .map_err(|error| LauncherError::Malformed(error.to_string()))?;
+        if super::history::recovery_binding(&self.paths, &proof.payload.binding.authorization)?
+            .map(|(digest, _)| digest)
+            != proof.payload.receipt_binding_digest
+        {
+            return Err(LauncherError::Invalid(
+                "recovery conflicts with retained receipt registration".into(),
+            ));
+        }
+        super::load_release(&self.paths, &proof.payload.release_id)?;
+        self.verify_document(
+            &proof.payload.signing_key_id,
+            &proof.payload.canonical_bytes(),
+            &proof.signature,
+            crate::launch_recovery::SCHEMA,
+        )
+    }
+
+    fn verify_document(
+        &self,
+        key_id: &str,
+        payload: &[u8],
+        signature: &str,
+        namespace: &str,
+    ) -> Result<(), LauncherError> {
         require_root_metadata(&self.paths.keyring(), 0o444, false, "launcher keyring")?;
         let keyring = public_keyring(&self.paths)?;
         let key = keyring
@@ -133,7 +172,7 @@ impl LauncherVerifier {
         super::revocation::require_key(&self.paths, key_id)?;
         let parsed = sshsig::parse(signature)
             .map_err(|_| LauncherError::Invalid("invalid launcher signature".to_owned()))?;
-        if parsed.namespace != RECEIPT_SCHEMA || parsed.openssh_public_key() != key.public_key {
+        if parsed.namespace != namespace || parsed.openssh_public_key() != key.public_key {
             return Err(LauncherError::Invalid(
                 "launcher signature authority mismatch".to_owned(),
             ));
@@ -159,7 +198,7 @@ impl LauncherVerifier {
                 "-I".into(),
                 "launcher".into(),
                 "-n".into(),
-                RECEIPT_SCHEMA.into(),
+                namespace.into(),
                 "-s".into(),
                 signature_path.into_os_string(),
             ],

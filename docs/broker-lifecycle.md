@@ -296,6 +296,55 @@ Consumed authorizations and receipt bytes are never deleted or rewritten to free
 capacity. They continue to enforce single-use authorization, Session uniqueness
 and the Run's cumulative Session ceiling after disposal and broker restart.
 
+### Consumed launch without a receipt
+
+An explicit operator recovery can recover a consumed authorization for which no
+Launcher receipt exists. It is an abort-only administrative exception to normal
+supervisor ownership: it never adopts, resumes or replaces an old process tree.
+Use the exact **authorization ID**, not a process ID or a guessed Session ID:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-launch recover-arm <authorization-id>
+# Operator reboots the machine after the arm command succeeds.
+sudo /usr/local/lib/louiselm/current/bin/louiselm-launch recover-complete <authorization-id>
+```
+
+These commands require the configured operator's administrative sudo authority;
+they are not added to the Agent's fixed launcher sudo rules. The existing
+unprivileged broker serves a separate root-authenticated `recovery.sock` endpoint.
+Ordinary operator and Agent requests cannot reach this protocol. After an
+upgrade, restart the broker as documented above before using the new endpoint.
+
+Arming verifies the broker's exact consumption, exclusively fences its assigned
+identity with the existing durable poison marker, then stores root-owned intent
+and the actual kernel boot ID. It releases no broker reservation. A live lease,
+unknown marker, conflicting history or failed durability refuses. An interrupted
+arm never clears poison; retry the same authorization instead of reconstructing it.
+
+Completion requires a different kernel boot and exclusive identity ownership.
+The boot change proves that the old launcher and descendants cannot resume;
+process absence, expiry, broker restart and an upgrade alone prove no cleanup.
+The root owner verifies the protected directory chain and seals any retained
+Session directory to root-owned 0700, preserving its bytes and retention records.
+Only then does it release the stale lease, preserve an exact recovery payload and
+signature, and submit a separate recovery proof under the independent
+`louiselm.launch.recovery/1` signature namespace. This is a new authenticated
+cleanup fact, without invented Launch/Start measurements or a receipt-chain head.
+The broker verifies its original authorization, consumption digest, identity,
+operator, boot proof and storage outcome, then durably stores exact bytes under
+`receipts/consumed-recoveries` before ACK. Only that verified cleanup permits
+later allocation. If preparation was signed but not delivered, recovery binds
+and preserves its exact root registration; the original signing reference can
+complete only after the exact recovery ACK. Unknown exhaustive key history is
+retained, never reconstructed to permit private-key deletion.
+
+Lost replies and broker restarts retain exact outcome bytes for retry. A completed
+retry only resubmits those bytes, even if another Session now holds the slot.
+Existing ordinary receipts, quarantined history or a changed/foreign root
+registration are preserved and refused, never spliced or replaced. Consumption,
+anti-replay, Run counts and the pool size remain unchanged. The first supported
+recovery path requires a reboot; there is no same-boot shortcut.
+
 ## Broker restart
 
 `InstalledBroker::serve_reconnect` accepts an authenticated supervisor on the

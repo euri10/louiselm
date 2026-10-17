@@ -35,6 +35,7 @@ use crate::{
 mod broker;
 #[cfg(test)]
 mod conformance_policy_tests;
+pub mod consumed_recovery;
 mod foreground;
 #[cfg(all(test, target_os = "linux"))]
 mod foreground_tests;
@@ -1518,7 +1519,7 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
     }
 }
 
-/// A measured signer bound to the launch-receipt namespace and installed keyring.
+/// A measured machine signer bound to installed authority and explicit namespaces.
 pub struct LauncherSigner {
     paths: LauncherPaths,
     ssh_keygen: PathBuf,
@@ -1628,10 +1629,6 @@ impl LauncherSigner {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Validation, signing, verification and private-scratch cleanup form one transaction."
-    )]
     fn sign_receipt_using(
         &self,
         runner: &impl CommandRunner,
@@ -1655,6 +1652,52 @@ impl LauncherSigner {
         self.require_key_authority(key_id)?;
         let registration = history::prepare(&self.paths, &receipt)?;
         key_cleanup::register_session(&self.paths, &receipt, registration.is_some())?;
+        let signature = self.sign_document(runner, key_id, payload, RECEIPT_SCHEMA)?;
+        if let Some(binding) = registration {
+            history::register(&self.paths, &binding)?;
+        }
+        Ok(signature)
+    }
+
+    /// Sign a separate recovery fact under its own namespace. No Session is
+    /// admitted and no Session signing lifetime is created by this operation.
+    /// # Errors
+    /// Refuses invalid proof, noncurrent release/key, changed tool, signing or cleanup failure.
+    pub fn sign_recovery(
+        &self,
+        payload: &crate::launch_recovery::Payload,
+    ) -> Result<String, LauncherError> {
+        payload
+            .validate()
+            .map_err(|error| LauncherError::Malformed(error.to_string()))?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let _install_lock = history::signing_lock(&self.paths, deadline)?;
+        let current: LauncherConfig = read_required_json(&self.paths.config())?;
+        require_configured_release(&self.paths, &current)?;
+        if payload.release_id != current.release_id
+            || payload.release_id != self.release_id
+            || payload.signing_key_id != public_keyring(&self.paths)?.active_key_id
+        {
+            return Err(LauncherError::Invalid(
+                "recovery requires current launcher signing authority".into(),
+            ));
+        }
+        self.require_key_authority(&payload.signing_key_id)?;
+        self.sign_document(
+            &BoundedSystemCommandRunner { deadline },
+            &payload.signing_key_id,
+            &payload.canonical_bytes(),
+            crate::launch_recovery::SCHEMA,
+        )
+    }
+
+    fn sign_document(
+        &self,
+        runner: &impl CommandRunner,
+        key_id: &str,
+        payload: &[u8],
+        namespace: &str,
+    ) -> Result<String, LauncherError> {
         let enrolled = self.keyring.key(key_id).ok_or_else(|| {
             LauncherError::Invalid(format!(
                 "launcher key '{key_id}' is not in the installed keyring"
@@ -1681,7 +1724,7 @@ impl LauncherSigner {
                     OsString::from("sign"),
                     OsString::from("-q"),
                     OsString::from("-n"),
-                    OsString::from(RECEIPT_SCHEMA),
+                    OsString::from(namespace),
                     OsString::from("-f"),
                     key.into_os_string(),
                     message.as_os_str().to_owned(),
@@ -1710,9 +1753,7 @@ impl LauncherSigner {
                 .map_err(|source| io_error("receipt signature", source))?;
             let parsed = sshsig::parse(&signature)
                 .map_err(|error| LauncherError::Malformed(error.to_string()))?;
-            if parsed.namespace != RECEIPT_SCHEMA
-                || parsed.openssh_public_key() != enrolled.public_key
-            {
+            if parsed.namespace != namespace || parsed.openssh_public_key() != enrolled.public_key {
                 return Err(LauncherError::Invalid(
                     "ssh-keygen produced a receipt signature for the wrong authority".to_owned(),
                 ));
@@ -1734,7 +1775,7 @@ impl LauncherSigner {
                         OsString::from("-I"),
                         OsString::from("louiselm-launch"),
                         OsString::from("-n"),
-                        OsString::from(RECEIPT_SCHEMA),
+                        OsString::from(namespace),
                         OsString::from("-s"),
                         signature_path.into_os_string(),
                     ],
@@ -1749,11 +1790,7 @@ impl LauncherSigner {
             }
             Ok(signature)
         })();
-        let signature = finish_private_scratch(&scratch, result)?;
-        if let Some(binding) = registration {
-            history::register(&self.paths, &binding)?;
-        }
-        Ok(signature)
+        finish_private_scratch(&scratch, result)
     }
 }
 

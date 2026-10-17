@@ -217,6 +217,20 @@ software-signed fixture installations, without implicit thaw, and identity reuse
 only after disposal. Toy source metadata and software keys prove no desktop
 reproduction, fresh clean-build provenance or hardware ceremony.
 
+Consumed-launch recovery changes additionally require
+`bash scripts/test-consumed-recovery-vm <guest-library-test-executable>` in the
+disposable launcher VM. Build the candidate binaries and library test first.
+This gate preserves exact state across a real guest shutdown/start, checking
+pre-admission GuardUnavailable, a killed identity owner, same-boot refusal,
+authenticated recovery, lost ACK and broker restart, history/Run ceilings and
+retry while a successor holds the reused identity. Both phases must report one
+passed test and their evidence markers. The first phase privately masks the
+guard measurement; its disk fixture must remain on persistent storage across
+the kernel reboot, not an ephemeral mount. A required storage subgate checks
+absence, privacy sealing, byte preservation and untrusted-path refusals.
+It uses distinct fixture identities and software signing; it does not certify
+desktop recovery. CI requires it.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is

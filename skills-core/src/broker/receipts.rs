@@ -10,6 +10,7 @@
 //! treats as durability must never outrun the filesystem.
 
 mod conformance;
+mod consumed_recovery;
 #[cfg(test)]
 mod tests;
 pub(super) use conformance::validate_report;
@@ -174,6 +175,9 @@ impl ReceiptStore {
         check_authorized(&receipt, authorization)?;
 
         let appending = lock(&self.appending);
+        if self.recovery_exists(&authorization.authorization_id)? {
+            return Err(BrokerError::ReceiptUnauthorized);
+        }
         let stored = self.chain(&authorization.session_id)?;
         let head = self.verified_head(&stored, authorization, &mut verify_signature)?;
         match head {

@@ -148,8 +148,9 @@ impl IdentityLease {
     /// Permanently withholds this slot after process-tree cleanup could not be
     /// proved.
     ///
-    /// Repair requires an operator to prove the old tree gone and truncate the
-    /// root-owned lock file; ordinary install and acquisition never clear it.
+    /// Repair uses explicit arm/reboot/complete recovery with authenticated
+    /// proof; ordinary install/acquisition never clear it. Process absence is
+    /// not permission to truncate the root-owned marker.
     ///
     /// # Errors
     /// Returns an unlock error. The durable fail-closed marker remains intact regardless.
@@ -428,6 +429,31 @@ pub(super) fn acquire_with_runner(
     slot: u32,
     runner: &impl CommandRunner,
 ) -> Result<IdentityLease, LauncherError> {
+    acquire_using(paths, slot, runner, false)
+}
+
+// Only the explicit recovery owner may hold a known poison marker. Acquisition
+// still validates every authority and excludes live owners; it never clears it.
+pub(super) fn acquire_for_recovery(
+    paths: &LauncherPaths,
+    slot: u32,
+) -> Result<IdentityLease, LauncherError> {
+    acquire_using(
+        paths,
+        slot,
+        &super::BoundedSystemCommandRunner {
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+        },
+        true,
+    )
+}
+
+fn acquire_using(
+    paths: &LauncherPaths,
+    slot: u32,
+    runner: &impl CommandRunner,
+    recovery: bool,
+) -> Result<IdentityLease, LauncherError> {
     super::validate_paths(paths)?;
     require_system_config(paths)?;
     let config: LauncherConfig = read_required_json(&paths.config())?;
@@ -451,7 +477,11 @@ pub(super) fn acquire_with_runner(
     let mut file = open_existing_regular(&path, *paths == LauncherPaths::system())?;
     match file.try_lock() {
         Ok(()) => {
-            require_unpoisoned(&mut file, slot)?;
+            if let Err(error) = require_unpoisoned(&mut file, slot)
+                && (!recovery || !matches!(error, LauncherError::Poisoned { .. }))
+            {
+                return Err(error);
+            }
             mark_active(&mut file)?;
             Ok(IdentityLease {
                 identity,

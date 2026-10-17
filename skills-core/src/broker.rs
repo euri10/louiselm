@@ -27,6 +27,7 @@ mod command_replay;
 mod command_restore;
 pub mod commands;
 pub mod conformance_inspection;
+pub mod consumed_recovery;
 mod current_conformance;
 pub mod delegation;
 mod dependencies;
@@ -102,6 +103,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// A separate recovery proof is malformed or cannot authenticate its evidence.
+    #[error(transparent)]
+    Recovery(#[from] crate::launch_recovery::ProofError),
     /// An exact operator waiver request was refused.
     #[error("{0}")]
     Waiver(#[from] waiver::WaiverError),

@@ -36,6 +36,9 @@ const ACCOUNT: &str = "louiselm-broker-gate";
 #[path = "installed_failure_tests.rs"]
 mod failures;
 
+#[path = "installed_consumed_recovery_tests.rs"]
+mod consumed_recovery;
+
 #[path = "installed_recovery_tests.rs"]
 mod recovery;
 

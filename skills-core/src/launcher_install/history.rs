@@ -86,6 +86,32 @@ fn path(paths: &LauncherPaths, session_id: &str) -> PathBuf {
     directory(paths).join(format!("{}.json", Digest::of(session_id.as_bytes()).hex()))
 }
 
+pub(super) fn has_binding(paths: &LauncherPaths, session_id: &str) -> Result<bool, LauncherError> {
+    match fs::symlink_metadata(path(paths, session_id)) {
+        Ok(_) => load(paths, session_id).map(|_| true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error("receipt binding", error)),
+    }
+}
+
+pub(super) fn recovery_binding(
+    paths: &LauncherPaths,
+    authorization: &crate::launch_protocol::LaunchAuthorization,
+) -> Result<Option<(String, ChainAnchor)>, LauncherError> {
+    if !has_binding(paths, &authorization.session_id)? {
+        return Ok(None);
+    }
+    let binding = load(paths, &authorization.session_id)?;
+    if binding.run_id != authorization.run_id {
+        return Err(LauncherError::Invalid(
+            "recovery conflicts with original receipt registration".into(),
+        ));
+    }
+    let bytes = serde_json::to_vec(&binding)
+        .map_err(|error| LauncherError::Malformed(error.to_string()))?;
+    Ok(Some((Digest::of(&bytes).to_string(), binding.anchor())))
+}
+
 fn require_binding(path: &Path, owner: u32) -> Result<(), LauncherError> {
     let metadata = fs::symlink_metadata(path).map_err(|e| io_error("receipt binding", e))?;
     if !metadata.is_file()

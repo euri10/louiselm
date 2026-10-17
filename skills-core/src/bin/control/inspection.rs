@@ -1,5 +1,7 @@
 //! Operator CLI and daemon routing into the one owning Session worker.
 
+#[path = "consumed_recovery.rs"]
+mod consumed_recovery;
 #[path = "operator_lifecycle.rs"]
 mod operator_lifecycle;
 
@@ -335,6 +337,7 @@ impl Queries {
         });
         let owner = Arc::clone(&queries);
         Self::start_promotion_listener(&queries, config.operator_uid)?;
+        consumed_recovery::start(Arc::clone(&broker))?;
         thread::Builder::new()
             .name("louiselm-operator-inspect".into())
             .spawn(move || {

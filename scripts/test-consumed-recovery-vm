@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Real-reboot recovery gate; use only the existing disposable launcher guest.
+set -euo pipefail
+if [[ $# != 1 || $1 != /var/tmp/louiselm-skills-target/debug/deps/louiselm_skills-* ]]; then
+  echo 'usage: test-consumed-recovery-vm /var/tmp/louiselm-skills-target/debug/deps/louiselm_skills-<hash>' >&2
+  exit 2
+fi
+library_test=$1
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+evidence=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/louiselm-consumed-recovery.XXXXXXXX")
+prefix=launch_supervisor::system::installed_tests::consumed_recovery
+phase() {
+  local name=$1 marker=$2
+  local fixture=()
+  if [[ $name == before_reboot ]]; then
+    # Actual unsupported guard measurement, isolated from the guest's host view.
+    # The persistent disk fixture still crosses a real kernel reboot below.
+    fixture=(unshare --mount --propagation private -- /bin/bash -eu -c
+      'mount --bind /dev/null /sys/kernel/security/lsm; exec "$@"' recovery-gate)
+  fi
+  "$repo/scripts/launcher-vm" exec sudo -n env LOUISELM_REQUIRE_CONSUMED_RECOVERY=1 \
+    timeout 180 "${fixture[@]}" "$library_test" "$prefix::privileged_consumed_recovery_$name" \
+    --exact --nocapture --test-threads=1 | tee "$evidence/$name.log"
+  rg -q '^test result: ok\. 1 passed; 0 failed;' "$evidence/$name.log"
+  rg -q "$marker" "$evidence/$name.log"
+}
+echo "Recovery VM evidence: $evidence"
+"$repo/scripts/launcher-vm" exec sudo -n env LOUISELM_REQUIRE_CONSUMED_RECOVERY=1 \
+  timeout 30 "$library_test" launcher_install::consumed_recovery::storage::tests::privileged_recovery_storage_preserves_bytes_and_refuses_untrusted_paths \
+  --exact --nocapture --test-threads=1 | tee "$evidence/storage.log"
+rg -q '^test result: ok\. 1 passed; 0 failed;' "$evidence/storage.log"
+rg -q RECOVERY_STORAGE_TRUST_AND_PRESERVATION "$evidence/storage.log"
+phase before_reboot RECOVERY_ARMED_REBOOT_REQUIRED
+"$repo/scripts/launcher-vm" stop
+"$repo/scripts/launcher-vm" start
+phase after_reboot RECOVERY_PROVED_HISTORY_RETAINED
+"$repo/scripts/launcher-vm" get /var/tmp/louiselm-consumed-recovery-evidence.json "$evidence/proof.json"
+echo "Recovery VM passed across a real kernel reboot: $evidence"

@@ -28,6 +28,34 @@ fn private_root() -> tempfile::TempDir {
 }
 
 #[test]
+fn consumed_recovery_rejects_an_ordinary_operator_before_target_lookup() {
+    use louiselm_skills::broker::operator::consumed_recovery::{self, Request};
+    let uid = rustix::process::geteuid().as_raw();
+    if uid == 0 {
+        return;
+    }
+    let root = private_root();
+    let path = root.path().join("recovery.sock");
+    let server = OperatorServer::bind(&path, 0).unwrap();
+    let worker = thread::spawn(move || {
+        server
+            .serve_recovery_once(|_| panic!("foreign caller reached recovery lookup"))
+            .unwrap();
+    });
+    assert!(matches!(
+        consumed_recovery::exchange(
+            &path,
+            uid,
+            &Request::Prepare {
+                authorization_id: "must-not-be-looked-up".into()
+            }
+        ),
+        Err(InspectError::AuthenticationRefused)
+    ));
+    worker.join().unwrap();
+}
+
+#[test]
 fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
     use louiselm_skills::{
         Digest,

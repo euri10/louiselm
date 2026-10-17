@@ -28,6 +28,7 @@ pub mod isolation;
 pub mod launch;
 pub mod launch_protocol;
 pub mod launch_receipt;
+pub mod launch_recovery;
 #[cfg(target_os = "linux")]
 pub mod launch_supervisor;
 #[cfg(target_os = "linux")]

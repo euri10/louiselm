@@ -6,7 +6,7 @@ use std::ffi::OsString;
 #[derive(Parser)]
 #[command(
     name = "louiselm-launch",
-    about = "Run, prepare or certify the installed Session launcher"
+    about = "Run or administer the installed Session launcher"
 )]
 pub(super) struct Cli {
     #[command(subcommand)]
@@ -23,6 +23,16 @@ pub(super) enum Command {
     Certify,
     /// Clean expired retained storage; root authority required.
     Cleanup,
+    /// Explicitly fence and arm a consumed launch for recovery after reboot.
+    RecoverArm {
+        /// Exact original consumed authorization identity.
+        authorization_id: String,
+    },
+    /// Complete an armed recovery after a different kernel boot.
+    RecoverComplete {
+        /// Same original authorization identity used when arming.
+        authorization_id: String,
+    },
     #[command(
         name = "__sandbox_bootstrap",
         hide = true,
