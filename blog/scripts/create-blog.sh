@@ -62,13 +62,13 @@
 # plugin normally does. Instead this script hardcodes the small set of agents
 # this repo actually documents a launch command for today (see README.md):
 #
-#   claude -> { command = "claude-agent-acp", args = {} }
-#   codex  -> { command = "codex-acp",         args = {} }
+#   claude -> { command = "claude-agent-acp", provider = "Anthropic", args = {} }
+#   codex  -> { command = "codex-acp", provider = "OpenAI", args = {} }
 #
 # For any other agent name, set an override environment variable before
 # running this script:
 #
-#   LOUISELM_CREATE_BLOG_AGENT_DEFINITION_<NAME>='{ command = "...", args = { ... } }'
+#   LOUISELM_CREATE_BLOG_AGENT_DEFINITION_<NAME>='{ command = "...", provider = "Access service", args = { ... } }'
 #
 # where <NAME> is the agent name uppercased with every character outside
 # [A-Za-z0-9_] replaced by "_" (e.g. agent "my-agent" -> env var suffix
@@ -167,10 +167,10 @@ lua_quote() {
 known_agent_definition() {
 	case "$1" in
 	claude)
-		printf '{ command = %s, args = {} }' "$(lua_quote "claude-agent-acp")"
+		printf '{ command = %s, provider = "Anthropic", args = {} }' "$(lua_quote "claude-agent-acp")"
 		;;
 	codex)
-		printf '{ command = %s, args = {} }' "$(lua_quote "codex-acp")"
+		printf '{ command = %s, provider = "OpenAI", args = {} }' "$(lua_quote "codex-acp")"
 		;;
 	*)
 		return 1

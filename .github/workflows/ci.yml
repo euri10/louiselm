@@ -85,6 +85,8 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Check public site configuration and artifact boundaries
+        run: npm run site:test
       - name: Check version, commit policy and publication refusals
         run: |
           ./scripts/generate-plugin-version --check

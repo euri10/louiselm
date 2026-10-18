@@ -52,7 +52,7 @@ mock_definition=""
 if [ -n "$nvim_bin" ]; then
 	mock_definition=$(
 		cat <<EOF
-{ command = "$nvim_bin", args = { "--headless", "--noplugin", "-u", "$repo_root/tests/mock/init.lua", "-c", "lua require('louiselm.dev.mock_agent').run()" }, env = { LOUISELM_MOCK_REPLAY_USER = "what did we decide last time" } }
+{ command = "$nvim_bin", provider = "test-service", args = { "--headless", "--noplugin", "-u", "$repo_root/tests/mock/init.lua", "-c", "lua require('louiselm.dev.mock_agent').run()" }, env = { LOUISELM_MOCK_REPLAY_USER = "what did we decide last time" } }
 EOF
 	)
 fi
@@ -178,7 +178,7 @@ else
 
 	export LOUISELM_CREATE_BLOG_AGENT_DEFINITION_MOCK=$(
 		cat <<EOF
-{ command = "$nvim_bin", args = { "--headless", "--noplugin", "-u", "$repo_root/tests/mock/init.lua", "-c", "lua require('louiselm.dev.mock_agent').run()" }, env = { LOUISELM_MOCK_CRASH_ON = "session/load" } }
+{ command = "$nvim_bin", provider = "test-service", args = { "--headless", "--noplugin", "-u", "$repo_root/tests/mock/init.lua", "-c", "lua require('louiselm.dev.mock_agent').run()" }, env = { LOUISELM_MOCK_CRASH_ON = "session/load" } }
 EOF
 	)
 	if "$create_blog_sh" crash-post "mock/session-x" >"$work_dir/crash.log" 2>&1; then
@@ -208,6 +208,29 @@ EOF
 		fail "the collision error names both conflicting arguments and the shared target"
 		cat "$work_dir/collide.log" >&2 || true
 	fi
+
+	echo
+	echo "== part 8: built-in Agent definitions export through mock ACP executables =="
+	mkdir -p "$work_dir/bin"
+	for agent in claude codex; do
+		command_name=codex-acp
+		if [ "$agent" = claude ]; then
+			command_name=claude-agent-acp
+		fi
+		cat >"$work_dir/bin/$command_name" <<EOF
+#!/usr/bin/env bash
+exec "$nvim_bin" --headless --noplugin -u "$repo_root/tests/mock/init.lua" -c "lua require('louiselm.dev.mock_agent').run()"
+EOF
+		chmod +x "$work_dir/bin/$command_name"
+		if PATH="$work_dir/bin:$PATH" LOUISELM_MOCK_REPLAY_USER="built-in fixture" \
+			"$create_blog_sh" "known-$agent" "$agent/prior-acp-session" >"$work_dir/known-$agent.log" 2>&1 &&
+			grep -q 'built-in fixture' "$blog_root/post-known-$agent/conversations/$agent-prior-acp-session.md"; then
+			ok "built-in $agent definition exports the mock transcript"
+		else
+			fail "built-in $agent definition exports the mock transcript"
+			cat "$work_dir/known-$agent.log" >&2
+		fi
+	done
 fi
 
 echo
