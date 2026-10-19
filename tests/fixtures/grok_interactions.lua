@@ -1,7 +1,10 @@
 -- Official-source fixtures, not captured live frames. Pin: xai-org/grok-build
 -- 72a61251fcffb464bcc687aeb5a998e5a98ec0c9, crates/codegen/xai-grok-tools/src/
 -- implementations/grok_build/{ask_user_question,exit_plan_mode}/types.rs and
--- ask_user_question/mod.rs; wrapped envelope: xai-grok-shell/src/leader/server.rs.
+-- ask_user_question/mod.rs. ACP prefixes the method but keeps params flat;
+-- grok_ask_user_question.json captures that wire shape from real Grok QA
+-- on 2026-10-19 (louiselm-hosvi), proxy Session01a15350-f134-71f0-bd33-d506e3bb2f50,
+-- log.jsonl line80 at08:39:41.710Z. Its harmless QA payload is otherwise unchanged.
 -- Tests choose synthetic lifecycle ordering; no live ordering is asserted.
 return {
   question = {

@@ -1,0 +1,37 @@
+{
+  "jsonrpc": "2.0",
+  "id": 0,
+  "method": "_x.ai/ask_user_question",
+  "params": {
+    "sessionId": "01a15350-f134-71f0-bd33-d506e3bb2f50",
+    "toolCallId": "call-28205d18-5e8f-4ee8-8dff-aea0fac7a1ee-0",
+    "questions": [
+      {
+        "question": "Which QA color?",
+        "options": [
+          { "label": "Blue", "description": "QA blue", "preview": "QA preview: blue" },
+          { "label": "Green", "description": "QA green" }
+        ],
+        "multiSelect": false
+      },
+      {
+        "question": "Which QA shapes?",
+        "options": [
+          { "label": "Circle", "description": "QA circle" },
+          { "label": "Square", "description": "QA square" },
+          { "label": "Triangle", "description": "QA triangle" }
+        ],
+        "multiSelect": true
+      },
+      {
+        "question": "Which QA note?",
+        "options": [
+          { "label": "Short", "description": "QA short note" },
+          { "label": "Long", "description": "QA long note" }
+        ],
+        "multiSelect": false
+      }
+    ],
+    "mode": "default"
+  }
+}

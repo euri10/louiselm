@@ -27,15 +27,14 @@ local function array(value)
 end
 
 ---Validate the pinned xAI interaction contract and copy only consumed fields.
----Wrapped methods must agree with their inner method; unknown optional fields are ignored.
----@param request louiselm.acp.JsonRpcRequest Direct or ACP-wrapped request.
+---ACP's underscore prefixes only the method; params remain flat. Unknown optional fields are ignored.
+---@param request louiselm.acp.JsonRpcRequest Direct or ACP-prefixed request.
 ---@param session_id string? Current Agent-side Session identity.
 ---@return louiselm.session.InteractionData? data Owned normalized request.
 ---@return louiselm.acp.JsonRpcError? error Invalid params (-32602) or unsupported method (-32601).
 function M.parse(request, session_id)
   local method = request.method
-  local wrapped = method:sub(1, 1) == "_"
-  if wrapped then
+  if method:sub(1, 1) == "_" then
     method = method:sub(2)
   end
   local kind = METHODS[method]
@@ -43,12 +42,6 @@ function M.parse(request, session_id)
     return nil, { code = -32601, message = "Method not found" }
   end
   local params = request.params
-  if wrapped then
-    if type(params) ~= "table" or params.method ~= method then
-      return nil, { code = -32602, message = "malformed xAI interaction envelope" }
-    end
-    params = params.params
-  end
   if
     type(params) ~= "table"
     or not text(params.sessionId)

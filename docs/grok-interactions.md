@@ -1,9 +1,11 @@
 # Grok interactive ACP requests
 
 LouiseLM consumes `x.ai/ask_user_question` and `x.ai/exit_plan_mode`, including
-the ACP wrapped methods `_x.ai/ask_user_question` and `_x.ai/exit_plan_mode`.
-Wrapped `params` contain the matching inner `method` and its `params` object.
-These are JSON-RPC methods, distinct from `_meta.x.ai/sessionConfig.options`.
+the ACP-prefixed methods `_x.ai/ask_user_question` and `_x.ai/exit_plan_mode`.
+The underscore changes only the method name: `params` directly contains
+`sessionId`, `toolCallId` and the question or plan fields, without an inner
+`{method, params}` envelope. These are JSON-RPC methods, distinct from
+`_meta.x.ai/sessionConfig.options`.
 
 The contract is pinned to xai-org/grok-build commit
 `72a61251fcffb464bcc687aeb5a998e5a98ec0c9`:
@@ -12,7 +14,7 @@ The contract is pinned to xai-org/grok-build commit
 - [Question and option definitions](https://github.com/xai-org/grok-build/blob/72a61251fcffb464bcc687aeb5a998e5a98ec0c9/crates/codegen/xai-grok-tools/src/implementations/grok_build/ask_user_question/mod.rs)
 - [Plan wire types](https://github.com/xai-org/grok-build/blob/72a61251fcffb464bcc687aeb5a998e5a98ec0c9/crates/codegen/xai-grok-tools/src/implementations/grok_build/exit_plan_mode/types.rs)
 
-The Session validates identity, envelope agreement, question/option arrays,
+The Session validates identity, question/option arrays,
 mode, optional booleans/previews and plan content before publishing a typed
 `interaction_requested` event. Its data uses snake_case names; its responder
 accepts the exact wire result shapes below. Unknown optional peer fields are
@@ -36,7 +38,7 @@ multiple selections never return a preview. Partial answers contain strings:
 multiple labels are joined with `", "`, and freeform-only answers become
 `"Other"` without notes. The partial outcomes are available only in plan mode.
 Empty answer maps encode as JSON objects, and empty annotations are omitted.
-Wrapped requests receive these same result objects without another envelope.
+ACP-prefixed requests receive these same result objects without another envelope.
 
 A synchronous headless listener may answer during event delivery. An
 asynchronous consumer must successfully call `event.claim()` during delivery,
@@ -58,8 +60,11 @@ visible until dismissed; it cannot authorize a response or release a newer
 Session's decision slot.
 
 Fixtures in `tests/fixtures/grok_interactions.lua` derive from the official
-source above. Their lifecycle order is synthetic, including libuv delivery
-races; it is not a captured Grok run. `louiselm-byvq` remains open for maintainer
+source above. `tests/fixtures/grok_ask_user_question.json` is a real harmless
+questionnaire frame captured on 2026-10-19; it exposed the incorrect extra
+envelope assumption tracked in `louiselm-hosvi`. Lifecycle ordering and plan
+review fixtures remain synthetic, including libuv delivery races.
+`louiselm-byvq` remains open for maintainer
 acceptance when Grok quota permits: exercise single/multiple/freeform answers,
 both plan interview actions, approve/change/abandon review, cancel while
 feedback input is active, and dispose with late callbacks. Confirm continuation

@@ -62,15 +62,7 @@ local function harness()
   local function request(id, kind, wrapped, params)
     local method = "x.ai/" .. (kind == "question" and "ask_user_question" or "exit_plan_mode")
     params = nvim.deepcopy(params or Fixtures[kind])
-    receive(
-      assert(
-        Protocol.request(
-          id,
-          wrapped and "_" .. method or method,
-          wrapped and { method = method, params = params } or params
-        )
-      )
-    )
+    receive(assert(Protocol.request(id, wrapped and "_" .. method or method, params)))
   end
   local function replies(id)
     local result = {}

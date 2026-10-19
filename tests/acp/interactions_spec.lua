@@ -11,11 +11,24 @@ local function parse(kind, params, wrapped)
     jsonrpc = "2.0",
     id = 7,
     method = wrapped and "_" .. method or method,
-    params = wrapped and { method = method, params = params } or params,
+    params = params,
   }, "grok-acp")
 end
 
-T["rejects contradictory envelopes and malformed consumed fields"] = function()
+T["accepts the captured Grok question frame without an extra params envelope"] = function()
+  -- louiselm-hosvi: real QA frame, 2026-10-19T08:39:41.710Z; only harmless QA choices.
+  local request = nvim.json.decode(table.concat(nvim.fn.readfile("tests/fixtures/grok_ask_user_question.json"), "\n"))
+  local data, err = Interactions.parse(request, request.params.sessionId)
+  MiniTest.expect.equality(err, nil)
+  data = assert(data)
+  MiniTest.expect.equality(data.request_id, 0)
+  MiniTest.expect.equality(data.kind, "question")
+  MiniTest.expect.equality(data.mode, "default")
+  MiniTest.expect.equality(data.questions[1].options[1].preview, "QA preview: blue")
+  MiniTest.expect.equality(data.questions[2].multi_select, true)
+end
+
+T["rejects nested envelopes and malformed consumed fields"] = function()
   local data, err = Interactions.parse({
     jsonrpc = "2.0",
     id = 1,
