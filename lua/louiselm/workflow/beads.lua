@@ -5,6 +5,9 @@ local Service = require("louiselm.workflow.service")
 local Ledger = require("louiselm.workflow.ledger")
 local Session = require("louiselm.session")
 local Launch = require("louiselm.acp.launch")
+-- Broker preparation can consume its 30s transaction budget before ACP starts.
+-- This Run-only bound leaves room for initialization; ordinary Sessions keep theirs.
+local START_TIMEOUT_MS = 60000
 ---@diagnostic disable-next-line: undefined-global -- Neovim runtime API.
 local nvim = vim
 local M = {}
@@ -523,6 +526,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
                       cwd = "/var/lib/louiselm/sessions/" .. verifier_launch.session_id .. "/workspace",
                       broker_session_id = verifier_launch.session_id,
                       launch_request = verifier_launch,
+                      start_timeout_ms = START_TIMEOUT_MS,
                       permission_policy = {
                         name = "contained-verifier",
                         evaluate = function()
@@ -760,6 +764,7 @@ next_bead = function(self)
                 cwd = "/var/lib/louiselm/sessions/" .. launch.session_id .. "/workspace",
                 broker_session_id = launch.session_id,
                 launch_request = launch,
+                start_timeout_ms = START_TIMEOUT_MS,
                 permission_policy = {
                   name = "contained-worker",
                   evaluate = function()

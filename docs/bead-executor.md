@@ -108,6 +108,13 @@ option is cancelled without opening a human prompt. The launcher registry select
 their command and environment; ordinary configured Agents retain their selected policy. No
 Run ledger token or Provider credential is passed to a worker environment.
 
+Worker and verifier startup has a 60-second deadline, including the installed
+supervisor and ACP initialization. The supervisor allows 30 seconds per broker
+transaction: authorization must retain source inputs and build the native Beads
+replica before replying. Authority acquisition, signing and platform waits keep
+their five-second bounds. These waits do not extend the approved Run expiry or
+Provider budget, and ordinary Sessions retain their existing startup timeout.
+
 `dispose()` cancels active turns and closes each launcher's controller input.
 The existing supervisor then owns its authenticated Park, loss settlement and
 disposal sequence. A successful Lua return confirms local disposal; only a

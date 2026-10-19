@@ -266,6 +266,7 @@ T["sequences contained workers across the verification continuation"] = function
   MiniTest.expect.equality(worker.options.env, nil)
   MiniTest.expect.equality(worker.options.launch_request.session_id, "worker-1")
   MiniTest.expect.equality(worker.options.broker_session_id, "worker-1")
+  MiniTest.expect.equality(worker.options.start_timeout_ms, 60000)
   worker.complete()
   wait(function()
     return #f.handoffs == 1
@@ -295,6 +296,9 @@ T["sequences contained workers across the verification continuation"] = function
   MiniTest.expect.equality(f.summary.failed, {})
   MiniTest.expect.equality(f.runner.executor:inspect().status, "completed")
   MiniTest.expect.equality(#f.verifiers, 2)
+  for _, verifier in ipairs(f.verifiers) do
+    MiniTest.expect.equality(verifier.options.start_timeout_ms, 60000)
+  end
   MiniTest.expect.equality(f.last_run.operation.kind, "run")
 end
 

@@ -38,6 +38,13 @@ fn privileged_installed_lua_bead_executor() {
         crate::conformance::admission::Enforcement::PreCutover,
         6,
     );
+    if index == 1 && std::env::var_os("LOUISELM_TEST_BR").is_none() {
+        // louiselm-3hdk7: the real 1,593-issue tracker took 5.683s to export
+        // and rebuild before the broker could answer the launch authorization.
+        // Replay that ordering beyond the old 5s launcher wait, within the
+        // replica import's existing 10s bound. No Provider or real Agent runs.
+        fs::write(root.path().join("slow-replica-import"), b"").unwrap();
+    }
     let (program, tracker, bead_id) = beads::provision(root.path());
     let manifest = workspace::fixture_manifest();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
