@@ -62,10 +62,51 @@ Session's decision slot.
 Fixtures in `tests/fixtures/grok_interactions.lua` derive from the official
 source above. `tests/fixtures/grok_ask_user_question.json` is a real harmless
 questionnaire frame captured on 2026-10-19; it exposed the incorrect extra
-envelope assumption tracked in `louiselm-hosvi`. Lifecycle ordering and plan
-review fixtures remain synthetic, including libuv delivery races.
+envelope assumption tracked in `louiselm-hosvi`. The real plan-review frame in
+`tests/fixtures/grok_exit_plan_mode.json` was captured in ACP Session
+`01a15376-b52e-73c2-a67b-d51d4f32d95e`, proxy `log.jsonl` line198, during
+qa-round `louiselm-r3gec`. Its harmless plan was approved by the maintainer.
+Lifecycle race ordering remains synthetic, including libuv delivery races.
 `louiselm-byvq` remains open for maintainer
 acceptance when Grok quota permits: exercise single/multiple/freeform answers,
 both plan interview actions, approve/change/abandon review, cancel while
 feedback input is active, and dispose with late callbacks. Confirm continuation
 on a surviving Session. Automated gates do not establish that live acceptance.
+
+## Offline UI replay
+
+For human UI checks without Provider access, the existing mock accepts a trusted
+captured request through `interaction_file` or `LOUISELM_MOCK_INTERACTION_FILE`.
+Each prompt replays that frame, changing only request/Session/tool-call IDs.
+It waits for the actual client response, displays that response as JSON, and
+ends the turn. Cancel retires the pending request; late responses cannot complete
+a later prompt. Unset, the mock keeps its existing behavior. Invalid replay
+files fail explicitly instead of falling back to echo.
+
+Start a **separate** Neovim from the checkout, with private state and no shada:
+
+```sh
+qa_state=$(mktemp -d /tmp/louiselm-interactions.XXXXXX)
+XDG_STATE_HOME="$qa_state" nvim --noplugin -i NONE \
+  -u scripts/interaction_qa.lua --listen "$qa_state/nvim.sock"
+```
+
+This uses Neovim's native selectors, not the maintainer's customized UI provider.
+To check the usual configured selectors in a separate instance, omit
+`--noplugin -u scripts/interaction_qa.lua` and instead add
+`-c 'luafile scripts/interaction_qa.lua'`. The init refuses live Sessions; never
+source it into an active editor. It configures only `replay-plan`,
+`replay-questions`, and `replay-echo`, and starts none of them.
+
+Use `scripts/session-control` with `NVIM` set to that new socket to launch each
+explicit case. Keep one fresh operation ID per attempt and record its returned
+Session/turn IDs. The human operates the picker; do not drive it with simulated
+input. `replay-plan` opens the captured approval plan, `replay-questions` opens
+the captured questionnaire, and `replay-echo` checks surviving-Session replies.
+No model, credentials, or Provider call is involved. Retain the private state
+and operation results as the round's evidence until cleanup is decided.
+
+Replay establishes LouiseLM UI/lifecycle behavior with known peer data. It does
+not establish a stock Agent's current behavior or real Grok cancellation timing;
+report those acceptance limits separately. The process regressions deliberately
+inject late/repeated replies rather than claiming those races were captured.

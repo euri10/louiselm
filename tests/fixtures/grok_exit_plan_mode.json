@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "id": 0,
+  "method": "_x.ai/exit_plan_mode",
+  "params": {
+    "sessionId": "01a15376-b52e-73c2-a67b-d51d4f32d95e",
+    "toolCallId": "call-d4c222d9-a6ea-4d26-ac4c-4f1af1d0c41e-3",
+    "planContent": "# byvq approval QA\n\n1. Display this harmless QA plan for human review.\n2. Acknowledge the actual review outcome and stop.\n\nNo repository changes, commands, or implementation are authorized.\n"
+  }
+}

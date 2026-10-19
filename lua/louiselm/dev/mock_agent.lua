@@ -17,14 +17,15 @@
 ---@field replay_updates? table[] Ordered session/load updates from a captured structural fixture.
 ---@field usage? table Completed-turn ACP usage returned with each prompt result.
 ---@field config_options? table[] ACP configOptions advertised and independently mutable per mock Session.
+---@field interaction_file? string Captured xAI JSON-RPC request to replay per prompt. Only request, Session and tool-call IDs change; replies are echoed as JSON. No Provider calls.
 
 ---@class louiselm.dev.MockAgentState
 ---@field initialized boolean
 ---@field next_session integer
----@field next_permission integer
+---@field next_request integer
 ---@field sessions table<string, { cwd: string, config_options?: table[] }>
 ---@field pending_prompt? { id: louiselm.acp.JsonRpcId, session_id: string, text: string }
----@field pending_permission? string|number
+---@field pending_request? integer
 
 local M = {}
 
@@ -95,6 +96,7 @@ end
 
 ---@param state louiselm.dev.MockAgentState
 local function finish_cancelled_prompt(state)
+  state.pending_request = nil
   local prompt = state.pending_prompt
   if prompt == nil then
     return
@@ -156,14 +158,17 @@ end
 ---@param message table
 ---@param state louiselm.dev.MockAgentState
 ---@param options louiselm.dev.MockAgentOptions
+---@param interaction? louiselm.acp.JsonRpcRequest Captured request; lifecycle ordering is controlled by this double.
 ---@return boolean continue_loop
-local function handle_message(message, state, options)
+local function handle_message(message, state, options, interaction)
   if message.method == nil then
-    if state.pending_permission ~= nil and message.id == state.pending_permission then
-      state.pending_permission = nil
+    if state.pending_request ~= nil and message.id == state.pending_request then
+      state.pending_request = nil
       local prompt = state.pending_prompt
       if prompt ~= nil then
-        local response = configured_response(options)
+        local response = interaction
+            and nvim.json.encode({ id = message.id, result = message.result, error = message.error })
+          or configured_response(options)
         finish_prompt(state, prompt, response ~= "" and response or prompt.text, options.usage)
       end
     end
@@ -322,11 +327,18 @@ local function handle_message(message, state, options)
       text = prompt_text(params.prompt),
     }
     state.pending_prompt = prompt
-    if options.mode == "permission" then
-      local permission_id = 1000 + state.next_permission
-      state.next_permission = state.next_permission + 1
-      state.pending_permission = permission_id
-      write_permission_request(permission_id, {
+    if interaction ~= nil or options.mode == "permission" then
+      state.pending_request = 1000 + state.next_request
+      state.next_request = state.next_request + 1
+    end
+    if interaction ~= nil then
+      local request = nvim.deepcopy(interaction)
+      request.id = state.pending_request
+      request.params.sessionId = prompt.session_id
+      request.params.toolCallId = "mock-interaction-" .. state.pending_request
+      write_message(request)
+    elseif options.mode == "permission" then
+      write_permission_request(state.pending_request, {
         sessionId = prompt.session_id,
         toolCall = {
           kind = "edit",
@@ -372,10 +384,33 @@ local function handle_message(message, state, options)
 end
 
 ---Run the mock ACP agent until stdin closes or the process is terminated.
+---An invalid replay file emits a payload-free -32602 error and exits before initialization.
 ---@param options? louiselm.dev.MockAgentOptions Behavior overrides, primarily for direct development use.
 ---@return nil
 function M.run(options)
   options = options or {}
+  local interaction_file = options.interaction_file
+  if interaction_file == nil then
+    interaction_file = nvim.env.LOUISELM_MOCK_INTERACTION_FILE
+  end
+  local interaction
+  if interaction_file ~= nil then
+    local read_ok, request = pcall(function()
+      return nvim.json.decode(table.concat(nvim.fn.readfile(interaction_file), "\n"))
+    end)
+    if
+      not read_ok
+      or type(request) ~= "table"
+      or request.jsonrpc ~= "2.0"
+      or (request.method ~= "_x.ai/ask_user_question" and request.method ~= "_x.ai/exit_plan_mode")
+      or type(request.params) ~= "table"
+      or nvim.islist(request.params)
+    then
+      write_error(nil, -32602, "invalid mock interaction fixture")
+      return
+    end
+    interaction = request
+  end
   local mode = options.mode or nvim.env.LOUISELM_MOCK_MODE or "echo"
   local response = options.response
   if response == nil then
@@ -414,7 +449,7 @@ function M.run(options)
     usage = options.usage,
     config_options = options.config_options,
   }
-  local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }
+  local state = { initialized = false, next_session = 1, next_request = 1, sessions = {} }
 
   while true do
     local line = io.read("*l")
@@ -425,7 +460,7 @@ function M.run(options)
     if not call_ok or type(message) ~= "table" then
       write_error(nil, -32700, "invalid JSON")
     else
-      handle_message(message, state, configured)
+      handle_message(message, state, configured, interaction)
     end
   end
 end

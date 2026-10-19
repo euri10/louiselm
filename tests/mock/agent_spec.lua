@@ -65,6 +65,148 @@ T["mock agent"] = MiniTest.new_set({
   },
 })
 
+local function interaction_trace(fixture, tail)
+  local definition = mock_definition("echo", nil, { LOUISELM_MOCK_INTERACTION_FILE = fixture })
+  local command = { definition.command }
+  nvim.list_extend(command, definition.args)
+  nvim.list_extend(command, { "-c", "qa!" })
+  local requests = {
+    { jsonrpc = "2.0", id = 1, method = "initialize" },
+    { jsonrpc = "2.0", id = 2, method = "session/new", params = {} },
+    {
+      jsonrpc = "2.0",
+      id = 3,
+      method = "session/prompt",
+      params = { sessionId = "mock-session-1", prompt = {} },
+    },
+  }
+  nvim.list_extend(requests, tail)
+  local lines = {}
+  for _, request in ipairs(requests) do
+    lines[#lines + 1] = nvim.json.encode(request)
+  end
+  local result = nvim
+    .system(command, {
+      cwd = project_root,
+      env = definition.env,
+      text = true,
+      stdin = table.concat(lines, "\n") .. "\n",
+    })
+    :wait(3000)
+  MiniTest.expect.equality(result.code, 0)
+  local messages = {}
+  for line in result.stdout:gmatch("[^\n]+") do
+    messages[#messages + 1] = nvim.json.decode(line)
+  end
+  return messages
+end
+
+T["mock agent"]["replays captured interaction requests and reports their exact response once"] = function()
+  -- Actual peer frames: proxy/sessions/<ACP-ID>/log.jsonl under the maintainer's
+  -- .local/state/acp-llm-adapter. Question: 01a15350-f134-71f0-bd33-d506e3bb2f50:80;
+  -- plan: 01a15376-b52e-73c2-a67b-d51d4f32d95e:198 (2026-10-19, round r3gec).
+  -- Initialize/new/prompt sequencing here is a controlled replay, not captured timing.
+  for _, case in ipairs({
+    { "grok_ask_user_question.json", { outcome = "cancelled" } },
+    { "grok_exit_plan_mode.json", { outcome = "abandoned" } },
+  }) do
+    local fixture = project_root .. "/tests/fixtures/" .. case[1]
+    local original = nvim.json.decode(table.concat(nvim.fn.readfile(fixture), "\n"))
+    local messages = interaction_trace(fixture, {
+      { jsonrpc = "2.0", id = 1001, result = case[2] },
+      { jsonrpc = "2.0", id = 1001, result = case[2] },
+    })
+    local expected = nvim.deepcopy(original)
+    expected.id = 1001
+    expected.params.sessionId = "mock-session-1"
+    expected.params.toolCallId = "mock-interaction-1001"
+    MiniTest.expect.equality(messages[3], expected)
+    MiniTest.expect.equality(#messages, 6)
+    MiniTest.expect.equality(nvim.json.decode(messages[4].params.update.content.text), {
+      id = 1001,
+      result = case[2],
+    })
+    MiniTest.expect.equality(messages[6], { jsonrpc = "2.0", id = 3, result = { stopReason = "end_turn" } })
+  end
+end
+
+T["mock agent"]["cancelled replay ignores late responses while the next turn is waiting"] = function()
+  -- Deliberately injected ordering; the old response is not an observed Grok race.
+  local messages = interaction_trace(project_root .. "/tests/fixtures/grok_exit_plan_mode.json", {
+    { jsonrpc = "2.0", method = "session/cancel", params = { sessionId = "mock-session-1" } },
+    {
+      jsonrpc = "2.0",
+      id = 4,
+      method = "session/prompt",
+      params = { sessionId = "mock-session-1", prompt = {} },
+    },
+    { jsonrpc = "2.0", id = 1001, result = { outcome = "approved" } },
+    { jsonrpc = "2.0", id = 1002, result = { outcome = "cancelled", feedback = "surviving feedback" } },
+    { jsonrpc = "2.0", id = 1002, result = { outcome = "approved" } },
+  })
+  MiniTest.expect.equality(#messages, 9)
+  MiniTest.expect.equality(messages[3].id, 1001)
+  MiniTest.expect.equality(messages[5], { jsonrpc = "2.0", id = 3, result = { stopReason = "cancelled" } })
+  MiniTest.expect.equality(messages[6].id, 1002)
+  MiniTest.expect.equality(nvim.json.decode(messages[7].params.update.content.text), {
+    id = 1002,
+    result = { outcome = "cancelled", feedback = "surviving feedback" },
+  })
+  MiniTest.expect.equality(messages[9], { jsonrpc = "2.0", id = 4, result = { stopReason = "end_turn" } })
+end
+
+T["mock agent"]["unreadable interaction fixture fails explicitly rather than falling back to echo"] = function()
+  local messages = interaction_trace(project_root .. "/tests/fixtures/no-such-interaction.json", {})
+  MiniTest.expect.equality(messages, {
+    { jsonrpc = "2.0", id = nvim.NIL, error = { code = -32602, message = "invalid mock interaction fixture" } },
+  })
+end
+
+T["mock agent"]["captured plan replay crosses the real Session interaction boundary"] = function()
+  local api = assert(Session.new({
+    replay = mock_definition("echo", nil, {
+      LOUISELM_MOCK_INTERACTION_FILE = project_root .. "/tests/fixtures/grok_exit_plan_mode.json",
+    }),
+  }))
+  MiniTest.finally(function()
+    assert(api:dispose())
+  end)
+  local ready, completed, interaction, reply
+  local session = assert(api:create_session("replay", {
+    cwd = project_root,
+    on_event = function(event)
+      if event.type == "interaction_requested" then
+        interaction = event
+        assert(event.claim())
+        nvim.schedule(function()
+          assert(event.respond({ outcome = "abandoned" }))
+        end)
+      elseif event.type == "chunk" then
+        reply = event.data.content.text
+      end
+    end,
+  }, function(value, err)
+    assert(value, err)
+    ready = true
+  end))
+  wait_for(function()
+    return ready
+  end)
+  assert(session:prompt("replay the captured plan", function(result, err)
+    assert(result, err)
+    completed = result
+  end))
+  wait_for(function()
+    return completed ~= nil
+  end)
+  MiniTest.expect.equality(interaction.data.kind, "plan_review")
+  MiniTest.expect.equality(interaction.data.plan_content:match("^# byvq approval QA"), "# byvq approval QA")
+  MiniTest.expect.equality(nvim.json.decode(reply), { id = 1001, result = { outcome = "abandoned" } })
+  MiniTest.expect.equality(completed.stopReason, "end_turn")
+  local sent, err = interaction.respond({ outcome = "approved" })
+  MiniTest.expect.equality({ sent, err }, { false, "interaction request was already answered" })
+end
+
 T["mock agent"]["ignores unknown notifications, rejects unknown requests, and still cancels"] = function()
   local definition = mock_definition("permission")
   local command = { definition.command }
