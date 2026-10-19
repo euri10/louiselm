@@ -10,7 +10,7 @@ if
   not metadata
   or metadata.type ~= "file"
   or metadata.size > 65536
-  or metadata.uid ~= nvim.uv.os_getuid()
+  or metadata.uid ~= nvim.uv.getuid()
   or metadata.mode % 512 ~= 384
 then
   return refuse("Run selection must be an operator-owned mode-0600 JSON file, at most 64KiB")
