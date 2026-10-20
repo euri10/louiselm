@@ -53,12 +53,21 @@ nvim.keymap.set("n", "q", function()
   end
 end, { buffer = buffer, desc = "Stop Bead Run or close its summary" })
 local started, start_error = controller:start(function(ok, message, summary)
-  local disposed, dispose_error = controller:dispose()
-  if leave then
+  -- A budget hold preserves work until the operator explicitly disposes it.
+  local held = controller.status == "held"
+  local disposed, dispose_error = true, nil
+  if not held then
+    disposed, dispose_error = controller:dispose()
+  end
+  if leave and not held then
     nvim.api.nvim_del_autocmd(leave)
     leave = nil
   end
-  local output = { ok and "Run complete" or "Run stopped: " .. (message or "unknown outcome") }
+  local output =
+    { ok and "Run complete" or (held and "Run held: " or "Run stopped: ") .. (message or "unknown outcome") }
+  if held then
+    output[#output + 1] = "No successor will start. Press q to dispose retained Sessions."
+  end
   if not disposed then
     output[#output + 1] = dispose_error or "Run disposal failed"
   end

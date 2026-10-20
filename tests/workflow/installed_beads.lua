@@ -13,7 +13,7 @@ local completed, failure, observed = false, nil, false
 local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
   envelope = case.envelope,
-  bead_ids = { case.bead_id },
+  bead_ids = index >= 6 and { case.bead_id, "held-successor" } or { case.bead_id },
   worktree = index == 4 and { path = case.worktree, journal_parent = case.journal_parent, head = case.base_commit }
     or nil,
   on_promotion = index == 4 and function(preview, decide)
@@ -28,6 +28,26 @@ local controller = assert(Workflow.new_bead_executor({
         done({ code = 0, stdout = '{"token":"fixture-capture-only"}', stderr = "" })
       end)
       return nil
+    end
+    if index >= 6 and argv[2] == "run" then
+      local request = nvim.json.decode(options.stdin)
+      local inject = index == 6 and request.kind == "provider_status"
+        or index == 7 and request.kind == "session" and request.grant.role == "fixed_verifier"
+      if inject then
+        nvim.fn.writefile({}, case.hold_ready)
+        local deadline = nvim.uv.hrtime() + 10000000000
+        local function published()
+          if nvim.uv.fs_stat(case.hold_published) then
+            nvim.system(argv, options, done)
+          elseif nvim.uv.hrtime() >= deadline then
+            done({ code = 1, stdout = "", stderr = "fixture hold publication timed out" })
+          else
+            nvim.defer_fn(published, 10)
+          end
+        end
+        published()
+        return nil
+      end
     end
     return nvim.system(argv, options, done)
   end,
@@ -123,6 +143,16 @@ local controller = assert(Workflow.new_bead_executor({
   end,
 }))
 assert(controller:start(function(ok, err, summary)
+  if index >= 6 then
+    assert(not ok and controller.status == "held", err)
+    assert(controller.run.status == "parked")
+    assert(summary.provider_hold.reason == "exhausted")
+    assert(#controller.run.workers == 1, "no successor worker or verifier may launch")
+    assert(#summary.accepted == 0 and #summary.failed == 0)
+    assert(not observed, "held Run must not reach the ordinary worker-failure continuation")
+    completed = true
+    return
+  end
   if not ok then
     failure = err or "unexpected Run outcome"
   end
@@ -144,5 +174,5 @@ local disposed, dispose_error = controller:dispose()
 assert(disposed, dispose_error)
 assert(finished, "installed Lua controller timed out")
 assert(not failure, failure)
-assert(observed, "installed Lua controller did not report worker result for case " .. index)
+assert(index >= 6 or observed, "installed Lua controller did not report worker result for case " .. index)
 print("installed Lua Bead executor case " .. index .. " complete")

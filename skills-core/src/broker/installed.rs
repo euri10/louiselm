@@ -663,6 +663,23 @@ impl InstalledBroker {
         })
     }
 
+    /// Reads a durable Provider hold under the operator's exact Run approval.
+    /// No grant, budget extension or lifecycle transition is performed.
+    /// # Errors
+    /// Refuses unknown, foreign or changed approvals and unreadable hold records.
+    pub fn inspect_run_provider_hold(
+        &self,
+        run_id: &str,
+        expected_envelope_digest: &str,
+    ) -> Result<Option<super::provider_requests::ProviderHold>, BrokerError> {
+        self.run_envelopes.inspect(
+            run_id,
+            expected_envelope_digest,
+            self.verifier.config().operator_uid,
+        )?;
+        self.service.provider_hold(run_id)
+    }
+
     /// Records one bounded failed-Bead comment through the canonical tracker.
     /// The at-most-once mutation ledger owns uncertain effects; callers must
     /// inspect the returned status and must never retry with another identity.

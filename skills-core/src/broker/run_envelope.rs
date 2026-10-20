@@ -284,6 +284,23 @@ impl RunEnvelopeStore {
         self.with_child(grant, now_ms, |current| Ok(current.clone()))
     }
 
+    // Inspection remains available after expiry so the controller can explain a hold.
+    pub(super) fn inspect(
+        &self,
+        run_id: &str,
+        expected_digest: &str,
+        controller_uid: u32,
+    ) -> Result<(), BrokerError> {
+        let _serial = lock(&self.serial);
+        let current = self.current(run_id)?.ok_or(BrokerError::InvalidGrant)?;
+        if current.controller_uid != controller_uid
+            || Digest::of(&current.canonical_bytes()).to_string() != expected_digest
+        {
+            return Err(BrokerError::RequestMismatch);
+        }
+        Ok(())
+    }
+
     /// Holds the revision lock while a bounded child authorization is made durable.
     /// # Errors
     /// Refuses absent or widened authority, or propagates the authorization failure.

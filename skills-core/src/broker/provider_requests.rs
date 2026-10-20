@@ -172,6 +172,19 @@ impl ProviderLedger {
         self.held_locked(run_id)
     }
 
+    /// Serialize child authorization with hold publication and explicit extension.
+    pub(super) fn with_unheld<T>(
+        &self,
+        run_id: &str,
+        authorize: impl FnOnce() -> Result<T, BrokerError>,
+    ) -> Result<T, BrokerError> {
+        let _guard = lock(&self.writing);
+        if let Some(hold) = self.held_locked(run_id)? {
+            return Err(BrokerError::ProviderRunHeld(hold));
+        }
+        authorize()
+    }
+
     /// Durably appends an extension lifting the Run's current hold.
     ///
     /// A retry with the same `request_id` and fields returns the recorded

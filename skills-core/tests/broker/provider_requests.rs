@@ -696,6 +696,59 @@ impl Fixture {
 }
 
 #[test]
+fn held_run_refuses_worker_and_verifier_authorization_without_reserving_identity() {
+    for expired in [false, true] {
+        let mut permission = approval(1);
+        if expired {
+            permission.expires_at_ms = 2600;
+        }
+        let mut fixture = fixture(Some(permission), Some("openai"));
+        let upstream = FakeUpstream::replying(200);
+        fixture.admit(&upstream, 2500).unwrap();
+        if expired {
+            assert!(matches!(
+                fixture.refuse(&upstream, 2600),
+                BrokerError::Expired
+            ));
+        } else {
+            assert!(matches!(
+                fixture.admit(&upstream, 2600),
+                Err(BrokerError::ProviderBudgetExhausted)
+            ));
+        }
+        let hold = fixture.service.provider_hold("run-1").unwrap().unwrap();
+        let before = fixture
+            .service
+            .authorizations()
+            .session_count_for_run("run-1")
+            .unwrap();
+        for role in [
+            louiselm_skills::launch_protocol::LaunchRole::Agent,
+            louiselm_skills::launch_protocol::LaunchRole::FixedVerifier,
+        ] {
+            let mut child = grant(&request("held-child"));
+            child.role = role;
+            let result = fixture
+                .service
+                .authorize(&child, 2700, verify_fixture_signature);
+            assert!(
+                matches!(result, Err(BrokerError::ProviderRunHeld(ref observed)) if observed == &hold),
+                "{result:?}"
+            );
+            assert_eq!(
+                fixture
+                    .service
+                    .authorizations()
+                    .session_count_for_run("run-1")
+                    .unwrap(),
+                before
+            );
+        }
+        assert_eq!(upstream.calls(), 1);
+    }
+}
+
+#[test]
 fn exhaustion_holds_the_run_parks_the_session_and_raises_one_attention_item() {
     let mut fixture = fixture(Some(approval(1)), Some("openai"));
     let upstream = FakeUpstream::replying(200);

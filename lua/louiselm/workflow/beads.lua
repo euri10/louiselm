@@ -49,6 +49,7 @@ local advance, next_bead
 ---@field commits table<string, string> Accepted Bead to exact Run branch commit, when promotion is enabled.
 ---@field branch? string Fetchable Run branch for VM to host handoff.
 ---@field failed louiselm.workflow.BeadFailure[]
+---@field provider_hold? { run_id: string, reason: "exhausted"|"expired", held_at_ms: integer } Authenticated Run-wide hold; no automatic extension or retry.
 ---@field text string Human-readable host handoff, with no worker output.
 
 ---@class louiselm.workflow.BeadExecutorOptions
@@ -66,13 +67,14 @@ local advance, next_bead
 ---@field options louiselm.workflow.BeadExecutorOptions
 ---@field run louiselm.workflow.Run
 ---@field executor louiselm.workflow.WorkflowExecutor
----@field status "new"|"active"|"completed"|"failed"|"disposed"
+---@field status "new"|"active"|"held"|"completed"|"failed"|"disposed"
 ---@field index integer
 ---@field envelope_digest? string
 ---@field head? string Current committed Run branch HEAD.
 ---@field callback? fun(ok: boolean, error_message?: string)
 ---@field summary louiselm.workflow.BeadRunSummary
 ---@field owned_api? louiselm.session.Api
+---@field cancel_hold_poll? fun() Owned pending-prompt poll cancellation.
 ---@field start fun(self: louiselm.workflow.BeadExecutor, callback: fun(ok: boolean, error_message?: string, summary: louiselm.workflow.BeadRunSummary)): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.BeadExecutor): boolean, string?
 
@@ -102,9 +104,13 @@ end
 ---@param ok boolean
 ---@param err? string
 local function finish(self, ok, err)
+  if self.cancel_hold_poll then
+    self.cancel_hold_poll()
+    self.cancel_hold_poll = nil
+  end
   local callback = self.callback
   self.callback = nil
-  if self.status ~= "disposed" then
+  if self.status ~= "disposed" and self.status ~= "held" then
     self.status = ok and "completed" or "failed"
   end
   if callback then
@@ -115,6 +121,9 @@ local function finish(self, ok, err)
     }
     if summary.branch then
       lines[#lines + 1] = "Branch: " .. summary.branch
+    end
+    if summary.provider_hold then
+      lines[#lines + 1] = "Provider budget held: " .. summary.provider_hold.reason
     end
     for _, id in ipairs(summary.accepted) do
       if summary.commits[id] then
@@ -141,6 +150,28 @@ local function finish(self, ok, err)
       callback(ok, err, nvim.deepcopy(summary))
     end)
   end
+end
+
+local function valid_hold(self, hold)
+  return type(hold) == "table"
+    and hold.run_id == self.options.envelope.run_id
+    and nvim.tbl_contains({ "exhausted", "expired" }, hold.reason)
+    and type(hold.held_at_ms) == "number"
+    and hold.held_at_ms >= 0
+    and hold.held_at_ms % 1 == 0
+end
+
+local function hold_run(self, hold)
+  if not valid_hold(self, hold) then
+    return finish(self, false, "Control broker returned invalid Provider hold")
+  end
+  local parked, err = self.run:accept_park()
+  if not parked then
+    return finish(self, false, err)
+  end
+  self.summary.provider_hold = nvim.deepcopy(hold)
+  self.status = "held"
+  finish(self, false, "Run Provider budget " .. hold.reason .. "; explicit operator action required")
 end
 
 -- Every boundary is one-shot and scheduled, including caller-provided preparation
@@ -186,6 +217,26 @@ local function authorize(self, request, callback)
       )
     end
     local decoded, value = pcall(nvim.json.decode, result.stdout)
+    if decoded and type(value) == "table" then
+      if request.kind == "session" and value.kind == "held" and value.envelope_digest == self.envelope_digest then
+        return hold_run(self, value.hold)
+      end
+      if request.kind == "provider_status" then
+        if
+          value.kind ~= "provider_status"
+          or value.run_id ~= self.options.envelope.run_id
+          or value.envelope_digest ~= self.envelope_digest
+          or value.hold == nil
+          or (value.hold ~= nvim.NIL and not valid_hold(self, value.hold))
+        then
+          return finish(self, false, "Control broker returned invalid Provider status")
+        end
+        if value.hold ~= nvim.NIL then
+          return hold_run(self, value.hold)
+        end
+        return callback(value)
+      end
+    end
     if not decoded or type(value) ~= "table" or value.kind ~= request.kind or type(value.receipt) ~= "table" then
       return finish(self, false, "Control broker returned invalid " .. request.kind .. " response")
     end
@@ -200,6 +251,40 @@ local function authorize(self, request, callback)
   if not started then
     finish(self, false, "could not start Control broker authorization: " .. tostring(err))
   end
+end
+
+local function provider_status(self, callback)
+  authorize(self, {
+    kind = "provider_status",
+    run_id = self.options.envelope.run_id,
+    expected_envelope_digest = self.envelope_digest,
+  }, callback)
+end
+
+-- A broker Park can suspend the Agent before its prompt callback returns.
+-- Keep at most one status query pending; disposal also cancels the next timer.
+local function watch_provider_hold(self)
+  local pending, timer = true, nil
+  local function poll()
+    timer = nil
+    if not pending or self.status ~= "active" then
+      return
+    end
+    provider_status(self, function()
+      if pending and self.status == "active" then
+        timer = nvim.defer_fn(poll, 1000)
+      end
+    end)
+  end
+  self.cancel_hold_poll = function()
+    pending = false
+    if timer and not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+    timer = nil
+  end
+  timer = nvim.defer_fn(poll, 1000)
 end
 
 ---@param self louiselm.workflow.BeadExecutor
@@ -753,9 +838,15 @@ next_bead = function(self)
               request_digest = receipt.request_digest,
             }
             local completed = response(self, function(_, worker_error)
+              if self.cancel_hold_poll then
+                self.cancel_hold_poll()
+                self.cancel_hold_poll = nil
+              end
               result.error = worker_error
-              advance(self, "verify", function()
-                verify_worker(self, result, prepared, input_id, staged.input_digest)
+              provider_status(self, function()
+                advance(self, "verify", function()
+                  verify_worker(self, result, prepared, input_id, staged.input_digest)
+                end)
               end)
             end)
             local session, start_error = self.run:create_session(
@@ -783,6 +874,7 @@ next_bead = function(self)
                     completed(nil, prompt_error or "worker prompt refused")
                   else
                     result.worker_turn_id = sent
+                    watch_provider_hold(self)
                   end
                 end
                 if self.index ~= 1 then

@@ -211,6 +211,9 @@ pub enum BrokerError {
     /// Every approved Provider request attempt of the Run has already been spent.
     #[error("Provider request budget exhausted")]
     ProviderBudgetExhausted,
+    /// A durable Run hold forbids authorizing another child, including a verifier.
+    #[error("Run Provider budget is held")]
+    ProviderRunHeld(provider_requests::ProviderHold),
     /// The Provider upstream could not be reached or its stream failed.
     /// The attempt's outcome is unknown and its unit stays spent.
     #[error("Provider upstream is unavailable")]

@@ -998,7 +998,13 @@ idle tick calls `settle_provider_hold`. It records an expiry hold for an idle
 Session too. It queues one `RunParked` Attention item per Run, and Parks its own
 Session through the ordinary lifecycle owner as `LifecycleCaller::ProviderBudget`,
 which may only Park Sessions of its own Run. While the hold stands, Resume is
-refused and withheld from status. Only an operator extension lifts it:
+refused and withheld from status, and no new child authorization may reserve an
+identity, including a fixed verifier. Child authorization and hold publication
+share the Provider ledger lock. The operator's `run authorize --json` exchange
+accepts a read-only `provider_status` request naming the exact Run and approval
+digest, and reports a typed `held` response when a child is refused. The Lua
+controller consumes these authenticated results without interpreting HTTP prose.
+Only an operator extension lifts the hold:
 `BrokerService::extend_provider_budget`, reached through
 `louiselm-control provider-extend` (see
 [broker lifecycle](../docs/broker-lifecycle.md#provider-budget-holds-and-extensions)).

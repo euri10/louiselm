@@ -358,6 +358,16 @@ impl Queries {
                                 AuthorizationRequest, AuthorizationResponse,
                             };
                             let result = match request {
+                                AuthorizationRequest::ProviderStatus {
+                                    run_id,
+                                    expected_envelope_digest,
+                                } => broker
+                                    .inspect_run_provider_hold(run_id, expected_envelope_digest)
+                                    .map(|hold| AuthorizationResponse::ProviderStatus {
+                                        run_id: run_id.clone(),
+                                        envelope_digest: expected_envelope_digest.clone(),
+                                        hold,
+                                    }),
                                 AuthorizationRequest::Run { envelope } => broker
                                     .authorize_run(envelope)
                                     .map(|receipt| AuthorizationResponse::Run { receipt }),
@@ -366,7 +376,16 @@ impl Queries {
                                     expected_envelope_digest,
                                 } => broker
                                     .authorize_child(grant, expected_envelope_digest)
-                                    .map(|receipt| AuthorizationResponse::Session { receipt }),
+                                    .map(|receipt| AuthorizationResponse::Session { receipt })
+                                    .or_else(|error| match error {
+                                        BrokerError::ProviderRunHeld(hold) => {
+                                            Ok(AuthorizationResponse::Held {
+                                                envelope_digest: expected_envelope_digest.clone(),
+                                                hold,
+                                            })
+                                        }
+                                        error => Err(error),
+                                    }),
                                 AuthorizationRequest::BeadFailure { report } => broker
                                     .record_bead_failure(report)
                                     .map(|receipt| AuthorizationResponse::BeadFailure { receipt }),

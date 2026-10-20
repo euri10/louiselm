@@ -101,6 +101,22 @@ Run owner and ledger; traversing this fixed list creates no generated-work charg
 Capture currently anchors a Run to its first initialized Session. The broker
 retains each child's durable binding, and the Lua Run owns all live Sessions.
 
+During a worker prompt and again when it finishes, the controller reads the
+authenticated Provider hold under the exact Run approval. Polls are one second
+apart with at most one outstanding poll, and stop on completion or disposal.
+An exhausted or expired hold returns a `held`
+controller and `summary.provider_hold`, Parks the local Run and stops progression.
+It is a Run condition, not a failed Bead, and is never inferred from an Agent's
+HTTP error text. The broker independently refuses every new child authorization,
+including verifiers, while that hold remains active. Hold publication and child
+authorization share the Provider ledger lock. A missing or mismatched status
+response stops the controller without granting another child.
+
+The operator buffer displays the hold and retains Sessions until `q` or editor
+exit disposes them. No request is retried, budget extended or Session resumed
+automatically; the existing explicit operator extension rules remain in force.
+Terminal launcher receipts remain the proof of confined cleanup.
+
 Workers use a private headless Session API with OpenAI Provider attribution and
 native Skills. Their ACP permission policy automatically allows requests inside
 the installed containment boundary. A request without a compatible approval
@@ -229,7 +245,7 @@ policy, ledger admission, cancellation and fast-event callbacks. The installed
 gate is required in the `sender-guard-vm` CI job:
 
 ```sh
-for bead_case in 1 2 3 4 5; do
+for bead_case in 1 2 3 4 5 6 7; do
   ./scripts/launcher-vm exec sudo -n env \
     LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
     LOUISELM_TEST_LUA_ROOT=/home/vm \
@@ -258,3 +274,8 @@ caller with the real capture CLI, three separately promoted commits, next-HEAD
 snapshots and six durable terminal cleanup receipts. Its ACP peer and verification
 plan remain offline fixtures, not live acceptance. Live Codex/Provider acceptance remains the
 persistent-VM Run's responsibility.
+Cases 6–7 inject a captured durable Provider hold after worker completion and
+after a clear status check, respectively. They use the real operator exchange,
+child authorization, Lua controller and terminal cleanup, proving that neither
+a successor worker nor verifier receives authority. The hold is an explicit
+offline spending double; these cases make no Provider calls.

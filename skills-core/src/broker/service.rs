@@ -490,9 +490,14 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         self.receipts.check_authority()?;
-        self.authorizations.authorize_inner(grant, now_ms, |held| {
-            self.identity_disposed(held, &mut verify)
-        })
+        // Lock order: Provider ledger -> identity assignment -> receipt append.
+        // A concurrent hold must precede or follow the durable authorization.
+        self.provider_requests
+            .with_unheld(&grant.request.run_id, || {
+                self.authorizations.authorize_inner(grant, now_ms, |held| {
+                    self.identity_disposed(held, &mut verify)
+                })
+            })
     }
 
     /// The durable receipt chains this service appends to.

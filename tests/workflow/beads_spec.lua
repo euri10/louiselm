@@ -160,6 +160,22 @@ local function fixture()
         end
       elseif argv[2] == "run" then
         local input = nvim.json.decode(options.stdin)
+        if input.kind == "provider_status" then
+          response = f.provider_status
+            or {
+              kind = "provider_status",
+              run_id = f.options.envelope.run_id,
+              envelope_digest = DIGEST,
+              hold = f.provider_hold or nvim.NIL,
+            }
+          later(done, { code = 0, stdout = nvim.json.encode(response), stderr = "" })
+          return { kill = function() end }
+        end
+        if input.kind == "session" and f.child_hold then
+          response = { kind = "held", envelope_digest = DIGEST, hold = f.child_hold }
+          later(done, { code = 0, stdout = nvim.json.encode(response), stderr = "" })
+          return { kill = function() end }
+        end
         if input.kind == "bead_failure" then
           MiniTest.expect.equality(input.run_id, nil)
           f.failure_requests = f.failure_requests or {}
@@ -485,6 +501,139 @@ T["worker failure gets one broker comment and the Run continues"] = function()
   MiniTest.expect.equality(f.summary.failed[1].comment_operation_id, "11111111-2222-4333-8444-555555555555")
   MiniTest.expect.equality(f.summary.text:find("b-1", 1, true) ~= nil, true)
   MiniTest.expect.equality(f.summary.text:find("worker failed", 1, true), nil)
+end
+
+T["a durable Provider hold stops the Run before another child"] = function()
+  for _, reason in ipairs({ "exhausted", "expired" }) do
+    local f = fixture()
+    f.options.on_worker = function(_, continue)
+      continue(false)
+    end
+    f:start()
+    wait(function()
+      return f.workers[1] and f.workers[1].complete
+    end)
+    -- Captured Run 1405a0d6, live-ready-20261020.4E1JBs/audit.jsonl:
+    -- durable exhausted hold -> worker prompt error -> successor authorization.
+    -- Expired uses the same typed boundary; it was not observed in that capture.
+    f.provider_hold = {
+      run_id = f.options.envelope.run_id,
+      reason = reason,
+      held_at_ms = 1792490237790,
+    }
+    f.workers[1].complete("exceeded retry limit, last status: 429 Too Many Requests")
+    wait(function()
+      return f.finished == 1 or #f.workers > 1
+    end)
+    MiniTest.expect.equality(f.finished, 1)
+    MiniTest.expect.equality(f.ok, false)
+    MiniTest.expect.equality(f.error, "Run Provider budget " .. reason .. "; explicit operator action required")
+    MiniTest.expect.equality(f.runner.status, "held")
+    MiniTest.expect.equality(f.runner.run.status, "parked")
+    MiniTest.expect.equality(f.summary.provider_hold, f.provider_hold)
+    MiniTest.expect.equality(f.prepared, { "b-1" })
+    MiniTest.expect.equality(#f.workers, 1)
+    MiniTest.expect.equality(#f.verifiers, 0)
+    MiniTest.expect.equality(f.workers[1].disposed, 0)
+  end
+end
+
+T["an upstream 429 without a broker hold remains an ordinary worker failure"] = function()
+  local f = fixture()
+  f.options.on_worker = function(_, continue)
+    continue(false)
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete("429 Too Many Requests")
+  wait(function()
+    return f.workers[2] and f.workers[2].complete
+  end)
+  MiniTest.expect.equality(f.runner.status, "active")
+  MiniTest.expect.equality(#f.failure_requests, 1)
+end
+
+T["malformed or foreign Provider status cannot advance a Run"] = function()
+  for _, mutation in ipairs({
+    function(status)
+      status.run_id = "other"
+    end,
+    function(status)
+      status.envelope_digest = "sha256:" .. string.rep("b", 64)
+    end,
+    function(status)
+      status.hold = nil
+    end,
+    function(status)
+      status.hold = { run_id = "other", reason = "exhausted", held_at_ms = 1 }
+    end,
+    function(status)
+      status.hold.reason = "429"
+    end,
+    function(status)
+      status.hold.held_at_ms = -1
+    end,
+  }) do
+    local f = fixture()
+    f.provider_status = {
+      kind = "provider_status",
+      run_id = f.options.envelope.run_id,
+      envelope_digest = DIGEST,
+      hold = { run_id = f.options.envelope.run_id, reason = "exhausted", held_at_ms = 1 },
+    }
+    mutation(f.provider_status)
+    f:start()
+    wait(function()
+      return f.workers[1] and f.workers[1].complete
+    end)
+    f.workers[1].complete()
+    wait(function()
+      return f.finished == 1
+    end)
+    MiniTest.expect.equality(f.error, "Control broker returned invalid Provider status")
+    MiniTest.expect.equality(#f.verifiers, 0)
+    MiniTest.expect.equality(#f.workers, 1)
+  end
+end
+
+T["a hold arriving after the status check still prevents verifier launch"] = function()
+  local f = fixture()
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.child_hold = { run_id = f.options.envelope.run_id, reason = "exhausted", held_at_ms = 1 }
+  f.workers[1].complete()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.runner.status, "held")
+  MiniTest.expect.equality(#f.verifiers, 0)
+  MiniTest.expect.equality(f.summary.provider_hold, f.child_hold)
+end
+
+T["a Provider hold reaches the operator while the worker prompt remains pending"] = function()
+  local f = fixture()
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.provider_hold = { run_id = f.options.envelope.run_id, reason = "exhausted", held_at_ms = 1 }
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.runner.status, "held")
+  MiniTest.expect.equality(f.workers[1].cancelled, 1)
+  MiniTest.expect.equality(f.workers[1].disposed, 0)
+  f.workers[1].complete("late cancellation")
+  nvim.wait(20, function()
+    return false
+  end, 1)
+  MiniTest.expect.equality(f.finished, 1)
+  MiniTest.expect.equality(#f.workers, 1)
+  MiniTest.expect.equality(#f.verifiers, 0)
 end
 
 T["failed command is reported, commented and advances the next Bead"] = function()

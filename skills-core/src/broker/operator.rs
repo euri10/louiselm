@@ -342,6 +342,13 @@ pub fn verification(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorizationRequest {
+    /// Read the Provider hold without changing the exact approved Run.
+    ProviderStatus {
+        /// Approved Run identity.
+        run_id: String,
+        /// Digest returned by the operator's Run approval.
+        expected_envelope_digest: String,
+    },
     /// Persist the exact Run policy as the authenticated operator.
     Run {
         /// Exact policy the operator approves.
@@ -365,6 +372,22 @@ pub enum AuthorizationRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorizationResponse {
+    /// Authenticated observation of the exact Run's durable Provider hold.
+    ProviderStatus {
+        /// Inspected Run identity.
+        run_id: String,
+        /// Exact approved envelope being inspected.
+        envelope_digest: String,
+        /// Unlifted hold, or null when none is recorded.
+        hold: Option<super::provider_requests::ProviderHold>,
+    },
+    /// No child was authorized because the Run is held.
+    Held {
+        /// Exact approved envelope of the refused child.
+        envelope_digest: String,
+        /// Durable cause; this response conveys no launch authority.
+        hold: super::provider_requests::ProviderHold,
+    },
     /// The immutable approved Run record.
     Run {
         /// Durable Run approval.
@@ -406,6 +429,31 @@ pub fn authorization(
         return Err(InspectError::StatusUnavailable);
     }
     let matches = match (authorization, &response) {
+        (
+            AuthorizationRequest::ProviderStatus {
+                run_id,
+                expected_envelope_digest,
+            },
+            AuthorizationResponse::ProviderStatus {
+                run_id: observed,
+                envelope_digest,
+                hold,
+            },
+        ) => {
+            run_id == observed
+                && expected_envelope_digest == envelope_digest
+                && hold.as_ref().is_none_or(|hold| hold.run_id == *run_id)
+        }
+        (
+            AuthorizationRequest::Session {
+                grant,
+                expected_envelope_digest,
+            },
+            AuthorizationResponse::Held {
+                envelope_digest,
+                hold,
+            },
+        ) => grant.request.run_id == hold.run_id && expected_envelope_digest == envelope_digest,
         (AuthorizationRequest::Run { envelope }, AuthorizationResponse::Run { receipt }) => {
             receipt.schema == "louiselm.broker.run-authorization/1"
                 && receipt.run_id == envelope.run_id

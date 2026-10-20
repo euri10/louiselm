@@ -132,3 +132,57 @@ fn operator_authorization_checks_peer_identity_and_exact_run_digest() {
     ));
     worker.join().unwrap();
 }
+
+#[test]
+fn provider_status_is_bound_to_the_exact_run_and_envelope() {
+    use louiselm_skills::broker::provider_requests::{HoldReason, ProviderHold};
+    for scenario in ["clear", "held", "wrong-run", "wrong-digest", "foreign-hold"] {
+        let root = private_root();
+        let path = root.path().join("inspect.sock");
+        let uid = rustix::process::geteuid().as_raw();
+        let server = OperatorServer::bind(&path, uid).unwrap();
+        let digest = Digest::of(b"approved").to_string();
+        let request = AuthorizationRequest::ProviderStatus {
+            run_id: "run".into(),
+            expected_envelope_digest: digest.clone(),
+        };
+        let worker = thread::spawn(move || {
+            server.serve_once(
+                |_, _| panic!("not lifecycle"),
+                |_| panic!("not staging"),
+                |_, _| panic!("not verification"),
+                |request| {
+                    assert!(matches!(request, AuthorizationRequest::ProviderStatus { run_id, expected_envelope_digest }
+                        if run_id == "run" && expected_envelope_digest == &digest));
+                    Ok(AuthorizationResponse::ProviderStatus {
+                        run_id: if scenario == "wrong-run" { "other" } else { "run" }.into(),
+                        envelope_digest: if scenario == "wrong-digest" { Digest::of(b"other").to_string() } else { digest.clone() },
+                        hold: (scenario != "clear").then(|| ProviderHold {
+                            run_id: if scenario == "foreign-hold" { "other" } else { "run" }.into(),
+                            reason: HoldReason::Exhausted,
+                            held_at_ms: 123,
+                        }),
+                    })
+                },
+                |_, _| panic!("not dependencies"),
+                |_, _| panic!("not Session inspection"),
+                |_| panic!("not conformance"),
+                |_, _| panic!("not skills"),
+                |_, _| panic!("not Beads"),
+                |_, _| panic!("not retention"),
+                |_, _, _| panic!("not waiver"),
+                |_, _, _| panic!("not extension"),
+            ).unwrap();
+        });
+        let result = authorization(&path, uid, &request, Duration::from_secs(2));
+        worker.join().unwrap();
+        if matches!(scenario, "clear" | "held") {
+            assert!(matches!(
+                result,
+                Ok(AuthorizationResponse::ProviderStatus { .. })
+            ));
+        } else {
+            assert!(matches!(result, Err(InspectError::StatusUnavailable)));
+        }
+    }
+}

@@ -26,7 +26,7 @@ fn privileged_installed_lua_bead_executor() {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=5).contains(&index));
+    assert!((1..=7).contains(&index));
     let root = tempfile::Builder::new()
         .prefix("louiselm-lua-beads-")
         .tempdir_in("/var/lib")
@@ -143,7 +143,11 @@ fn privileged_installed_lua_bead_executor() {
     )
     .unwrap();
     let snapshot_digest = Digest::of(snapshot_bytes.as_bytes()).to_string();
-    for index in 1..=4 {
+    for index in 1..=7 {
+        if index == 5 {
+            cases.push(serde_json::Value::Null);
+            continue;
+        }
         let mut launch = named_request(&format!("lua-worker-{index}"));
         launch.run_id = format!("lua-run-{index}");
         launch.session_input_manifest_id = if index == 4 {
@@ -207,6 +211,12 @@ fn privileged_installed_lua_bead_executor() {
         envelope.bead_scope.clone_from(&grant.beads_mutations);
         envelope.bead_scope.as_mut().unwrap().role = crate::beads_mutation::BeadsRole::Coordinator;
         envelope.max_sessions = 2;
+        if index >= 6 {
+            envelope.max_sessions = 4;
+            let scope = envelope.bead_scope.as_mut().unwrap();
+            scope.issue_ids.push("held-successor".into());
+            scope.max_mutations = 2;
+        }
         cases.push(
             serde_json::json!({"bead_id":bead_id,"envelope":envelope,"grant":grant,
             "verifier_grant":verifier_grant,"snapshot":if index == 4 { &promotion_snapshot } else { &snapshot },
@@ -218,7 +228,8 @@ fn privileged_installed_lua_bead_executor() {
                 cache: promotion_cache.clone(), expected_base_commit: promotion_preview.base_commit.clone(),
             }) } else { None },
             "journal_parent":if index == 4 { Some(&journal) } else { None },
-            "plan":plan,"plan_digest":plan_digest}),
+            "plan":plan,"plan_digest":plan_digest,
+            "hold_ready":operator.join("hold-ready"),"hold_published":operator.join("hold-published")}),
         );
     }
     let input = root.path().join("controller.json");
@@ -239,6 +250,7 @@ fn privileged_installed_lua_bead_executor() {
     let state = operator;
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);
+    let hold_injector = (index >= 6).then(|| inject_provider_hold(&state, index, now));
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit stable Neovim executable");
     let groups = if index == 5 {
@@ -277,6 +289,20 @@ fn privileged_installed_lua_bead_executor() {
         .env("LOUISELM_BEADS_CASE", index.to_string())
         .status()
         .unwrap();
+    if let Some(injector) = hold_injector {
+        injector.join().unwrap();
+        let store = crate::broker::AuthorizationStore::open(
+            &Path::new(STATE).join("authorizations"),
+            config.pool.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .session_count_for_run(&format!("lua-run-{index}"))
+                .unwrap(),
+            1
+        );
+    }
     assert!(
         status.success(),
         "installed Lua Bead executor case {index} failed"
@@ -380,6 +406,44 @@ fn privileged_installed_lua_bead_executor() {
     super::super::launcher_cleanup::assert_exited(&previous_maps);
     eprintln!("installed Lua workers and verifiers: terminal receipts and launcher exit");
     terminate(&mut daemon);
+}
+
+fn inject_provider_hold(state: &Path, index: usize, now: u64) -> thread::JoinHandle<()> {
+    let ready = state.join("hold-ready");
+    let published = state.join("hold-published");
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "Lua did not reach hold injection boundary"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        // Offline double only for Provider spending: publish the captured durable
+        // hold at the observed prompt-completion boundary (case 6), or after a
+        // clear status but before verifier authorization (case 7). No upstream.
+        let run_id = format!("lua-run-{index}");
+        let directory = Path::new(STATE)
+            .join("authorizations/provider-requests/holds")
+            .join(Digest::of(run_id.as_bytes()).hex());
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let record = directory.join("0.json");
+        write_json(
+            &record,
+            &crate::broker::provider_requests::ProviderHold {
+                run_id,
+                reason: crate::broker::provider_requests::HoldReason::Exhausted,
+                held_at_ms: now,
+            },
+        );
+        fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+        own(&directory, BROKER_UID);
+        fs::File::open(&record).unwrap().sync_all().unwrap();
+        fs::File::open(&directory).unwrap().sync_all().unwrap();
+        fs::write(published, b"").unwrap();
+    })
 }
 
 fn operator_selection(
