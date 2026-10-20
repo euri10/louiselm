@@ -849,7 +849,8 @@ pub trait LaunchPlatform: Send + Sync {
     /// This prerequisite is rechecked against the actual runtime after restricted start.
     ///
     /// # Errors
-    /// Returns `ToolIsolationUnproven` for missing or unsupported integration.
+    /// Returns `ToolIsolationUnproven` for missing/unsupported integration or a
+    /// registered runtime inside the tool-visible system mounts.
     fn check_integration(
         &self,
         request: &LaunchRequest,

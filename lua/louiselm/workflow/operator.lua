@@ -67,6 +67,8 @@ local function validate(selection, options)
     or type(manifest.agent) ~= "table"
     or type(manifest.agent.id) ~= "string"
     or type(manifest.envelope) ~= "table"
+    or type(manifest.isolation) ~= "table"
+    or not nvim.tbl_contains({ "denied", "brokered" }, manifest.isolation.network)
     or require("louiselm.acp.launch").encode_skills(manifest.skills) == nil
     or not digest(manifest.cache_base_digest)
     or manifest.envelope.id ~= envelope.envelope_id
@@ -264,7 +266,7 @@ function M.new(selection, options)
         },
       })
     end
-    execute({ "/usr/bin/stat", "--format=%u:%g:%a", "--", selection.snapshot_parent }, nil, function(metadata)
+    local function snapshot_parent_checked(metadata)
       if metadata ~= selection.envelope.controller_uid .. ":" .. selection.input_group .. ":750\n" then
         finish(nil, "snapshot parent must be operator-owned, input-group-owned and mode 0750")
         return
@@ -350,7 +352,40 @@ function M.new(selection, options)
           end)
         end
       )
-    end)
+    end
+    local function prepare_snapshot()
+      execute({ "/usr/bin/stat", "--format=%u:%g:%a", "--", selection.snapshot_parent }, nil, snapshot_parent_checked)
+    end
+    if selection.manifest.isolation.network == "brokered" then
+      -- This caller prepares Agent workers, not just network-denied fixed verifiers.
+      -- PreCutover always yields Unevaluated, which cannot admit Brokered startup.
+      execute(
+        { "louiselm-skills", "workspace", "qa-runtime", "inspect-installation", "--robot-json" },
+        nil,
+        function(bytes)
+          local ok, installed = pcall(nvim.json.decode, bytes)
+          if
+            not ok
+            or type(installed) ~= "table"
+            or installed.operator_uid ~= selection.envelope.controller_uid
+            or not digest(installed.release_id)
+            or not digest(installed.policy_digest)
+            or not nvim.tbl_contains({ "pre_cutover", "enforced" }, installed.conformance)
+          then
+            finish(nil, "current installed conformance policy is unavailable or invalid")
+          elseif installed.conformance ~= "enforced" then
+            finish(
+              nil,
+              "Brokered workers require enforced conformance and current certification; policy was not changed"
+            )
+          else
+            prepare_snapshot()
+          end
+        end
+      )
+    else
+      prepare_snapshot()
+    end
     return true
   end
   local controller, construction_error = Workflow.new_bead_executor({

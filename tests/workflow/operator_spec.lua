@@ -34,6 +34,7 @@ local function fixture()
       envelope = { id = "env", revision = 1 },
       skills = { mode = "enabled", generation_digest = DIGEST, view_digest = DIGEST },
       cache_base_digest = DIGEST,
+      isolation = { network = "denied" },
     },
     input_group = 1500,
     snapshot_parent = "/private/inputs",
@@ -86,6 +87,50 @@ local function fixture()
     return self.calls[#self.calls].options.stdin and nvim.json.decode(self.calls[#self.calls].options.stdin)
   end
   return f
+end
+
+T["brokered worker refuses pre-cutover before snapshots or child grants"] = function()
+  local f = fixture()
+  f.selection.manifest.isolation.network = "brokered"
+  f.controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
+  f:prepare("b-1", HEAD)
+  MiniTest.expect.equality(f.calls[1].argv, {
+    "louiselm-skills",
+    "workspace",
+    "qa-runtime",
+    "inspect-installation",
+    "--robot-json",
+  })
+  f:reply(0, { conformance = "pre_cutover", operator_uid = 1000, release_id = DIGEST, policy_digest = DIGEST })
+  assert(f.done and not f.prepared)
+  assert(f.error:find("Brokered workers require enforced conformance", 1, true))
+  MiniTest.expect.equality(#f.calls, 1)
+  assert(f.controller:dispose())
+end
+
+T["brokered worker requires valid current installed policy without changing it"] = function()
+  for _, response in ipairs({
+    {},
+    { conformance = "enforced", operator_uid = 2000, release_id = DIGEST, policy_digest = DIGEST },
+    { conformance = "unknown", operator_uid = 1000, release_id = DIGEST, policy_digest = DIGEST },
+  }) do
+    local f = fixture()
+    f.selection.manifest.isolation.network = "brokered"
+    f.controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
+    f:prepare("b-1", HEAD)
+    f:reply(0, response)
+    assert(f.done and not f.prepared and f.error)
+    MiniTest.expect.equality(#f.calls, 1)
+    assert(f.controller:dispose())
+  end
+  local f = fixture()
+  f.selection.manifest.isolation.network = "brokered"
+  f.controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
+  f:prepare("b-1", HEAD)
+  f:reply(0, { conformance = "enforced", operator_uid = 1000, release_id = DIGEST, policy_digest = DIGEST })
+  f:stage(HEAD)
+  MiniTest.expect.equality(f.calls[#f.calls].argv, { "louiselm-control", "launch-inputs", "stage", "--json" })
+  assert(f.controller:dispose())
 end
 
 T["prepares exact HEAD and fresh scoped worker/verifier grants"] = function()

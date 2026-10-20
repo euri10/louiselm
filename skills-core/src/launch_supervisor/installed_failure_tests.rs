@@ -4,6 +4,70 @@ use super::*;
 use crate::launch_receipt::{ReceiptOutcome, ReceiptPayload};
 
 #[test]
+fn installed_preflight_rejects_runtime_inside_tool_system_mount() {
+    if std::env::var_os("LOUISELM_TEST_ROOT_LAUNCHER").is_none() {
+        eprintln!("skipping: installed preflight requires the disposable launcher VM");
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root());
+    let _account = BrokerAccount::create();
+    let root = tempfile::Builder::new()
+        .prefix("louiselm-runtime-preflight-")
+        .tempdir_in("/var/lib")
+        .unwrap();
+    let (paths, config, registry_root) = install_fixture(root.path());
+    let mut platform = SystemLaunchPlatform::new(paths, config, Duration::from_secs(5)).unwrap();
+    platform.registry_root = registry_root.clone();
+    let runtime_path = registry_root.join("runtimes.json");
+    let original: serde_json::Value =
+        serde_json::from_slice(&fs::read(&runtime_path).unwrap()).unwrap();
+    // Like the deployed /usr/local/lib/louiselm-runtimes/... package: a valid,
+    // root-owned measured runtime whose placement alone breaks tool isolation.
+    let system_runtime = tempfile::Builder::new()
+        .prefix("louiselm-runtime-preflight-")
+        .tempdir_in("/usr/local/lib")
+        .unwrap();
+    fs::set_permissions(system_runtime.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::copy(
+        root.path().join("runtime/agent"),
+        system_runtime.path().join("agent"),
+    )
+    .unwrap();
+    for (runtime, executable, expected) in [
+        (
+            system_runtime.path().to_path_buf(),
+            "agent",
+            Err(SupervisorError::ToolIsolationUnproven),
+        ),
+        (root.path().join("runtime"), "agent", Ok(())),
+    ] {
+        let mut registration = original.clone();
+        registration["entries"][0]["root"] = runtime.display().to_string().into();
+        registration["entries"][0]["executable"] = executable.into();
+        registration["entries"][0]["executable_sha256"] =
+            Digest::of(&fs::read(runtime.join(executable)).unwrap())
+                .hex()
+                .into();
+        write_json(&runtime_path, &registration);
+        Registry::open_trusted(&registry_root).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        platform
+            .check_integration(
+                &request(),
+                Box::new(move |result| sender.send(result).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+            expected,
+            "registered runtime {}",
+            runtime.display()
+        );
+        assert!(!root.path().join("sessions/session").exists());
+    }
+}
+
+#[test]
 fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn() {
     if std::env::var_os("LOUISELM_TEST_ROOT_LAUNCHER").is_none() {
         eprintln!("skipping: measured backend rejection requires the disposable launcher VM");

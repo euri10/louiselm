@@ -2966,7 +2966,7 @@ fn known_unsupported_integration_refuses_before_authorization_or_spawn() {
     let events = event_snapshot(&setup.events);
     assert!(!events.iter().any(|event| matches!(
         event.as_str(),
-        "identity.acquire" | "agent.start" | "capability.enable"
+        "broker.consume" | "identity.acquire" | "agent.start" | "capability.enable"
     )));
 }
 

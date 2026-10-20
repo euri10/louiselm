@@ -845,7 +845,7 @@ jobs:
             LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
             /bin/bash -c 'umask 077; exec "$1" privileged_supervisor_launches_agent_under_the_assigned_outer_identity --exact --nocapture' bash "$supervisor_test"
 
-      - name: Test measured Bubblewrap rejection in the production launch path
+      - name: Test installed runtime preflight and measured Bubblewrap rejection
         run: |
           set -eu
           cargo build --bins --all-features --locked
@@ -855,10 +855,14 @@ jobs:
               tail -n 1
           )"
           test -n "$library_test"
-          sudo env \
-            LOUISELM_TEST_ROOT_LAUNCHER=1 \
-            LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
-            /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::installed_tests::failures::production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn --exact --nocapture' bash "$library_test"
+          for case in \
+            installed_preflight_rejects_runtime_inside_tool_system_mount \
+            production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn; do
+            sudo env \
+              LOUISELM_TEST_ROOT_LAUNCHER=1 \
+              LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
+              /bin/bash -c 'umask 077; exec "$1" "launch_supervisor::system::installed_tests::failures::$2" --exact --nocapture' bash "$library_test" "$case"
+          done
 
       - name: Test root-owned installed release boundary
         run: |

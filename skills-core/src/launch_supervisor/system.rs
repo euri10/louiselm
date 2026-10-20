@@ -1602,6 +1602,17 @@ impl LaunchPlatform for SystemLaunchPlatform {
             let agent = registry
                 .agent(&request.agent_id)
                 .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+            let runtime = registry
+                .runtime(&agent.runtime_id)
+                .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+            // Tool trees mount these roots. Reject known overlapping packages
+            // before consuming authorization, not after workspace preparation.
+            if crate::sandbox::default_system_roots()
+                .iter()
+                .any(|root| runtime.root.starts_with(root))
+            {
+                return Err(SupervisorError::ToolIsolationUnproven);
+            }
             super::tool_integration::validate_registration(&agent).map(|_| ())
         })();
         complete(result);

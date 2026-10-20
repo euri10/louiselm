@@ -196,11 +196,20 @@ contains:
 The installed signed launcher/broker/runtime, canonical broker Beads tracker,
 trusted verifier tools, current supply and compatible `louiselm-capture` CLI are
 prerequisites. The caller installs none of them and reads no credential store.
+The Agent runtime must live outside the tool-visible system mounts (`/usr`,
+`/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`), for example under
+`/var/lib/louiselm-runtimes`. A runtime under `/usr/local/lib` is inside `/usr`
+and cannot satisfy Agent/tool isolation.
 The broker retains its credential and validates the full envelope and grants.
-No Verified cutover or recovery exception is enabled: grants explicitly use
-unattended conformance with no waiver and do not require cold recovery for this
-first Contained Run. Deployment must retain its selected pre-cutover posture;
-an enforced installation can refuse this caller without being weakened.
+Grants use unattended conformance without a waiver and do not require cold
+recovery. Brokered workers require an explicitly selected `enforced` installation
+and valid current certification; `pre_cutover` produces Unevaluated evidence and
+cannot admit Brokered startup. Preparation checks the installed policy before
+staging snapshots or creating child grants. This check is not certification:
+the launcher still validates the actual runtime, host and certificate. The
+caller never changes policy, enables Verified posture or weakens a refusal.
+Network-denied offline fixtures may retain `pre_cutover`; their success alone
+does not establish that the deployed Brokered configuration can launch.
 
 Each preparation captures the current accepted HEAD through the existing workspace
 CLI, refuses unaccepted working-copy changes, shares that new snapshot privately,
