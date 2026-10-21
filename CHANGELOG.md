@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.4.0](https://github.com/euri10/louiselm/compare/plugin-v0.3.0...plugin-v0.4.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **broker:** configure_beads_tracker requires trusted_group; pass None for single-owner admission.
+
+### Features
+
+* **acp:** support Grok interactive requests ([4bb5caf](https://github.com/euri10/louiselm/commit/4bb5cafd780ce88d1e47d298354c2f27062f2604))
+* **android:** enable Firebase by default ([cf470f0](https://github.com/euri10/louiselm/commit/cf470f074025831d069b74601fe1dbe1617ae99d))
+* **broker:** deny unused Run capabilities ([d7ef109](https://github.com/euri10/louiselm/commit/d7ef1099de0b73f31a1356d9582fd23ec2eb9fd7))
+* **broker:** restore commands only by explicit Resume ([025a0c5](https://github.com/euri10/louiselm/commit/025a0c5eb776515825b486daa56f8d0d9db21b8a))
+* offer explicit Resume permission recovery ([e970d56](https://github.com/euri10/louiselm/commit/e970d56e8e11d232ba50104d56a595d083c6d529))
+* **qa:** add bounded offline Run coordinator ([03015c4](https://github.com/euri10/louiselm/commit/03015c4f50398ad0088affd7c80b69b8a94f1745))
+* **qa:** add reversible retired-pin fault ([d9862bc](https://github.com/euri10/louiselm/commit/d9862bc53b8cc1211d8406912e6271e4ceddf831))
+* **qa:** add reviewed enforcement window ([37c1472](https://github.com/euri10/louiselm/commit/37c14724e1f9731b0fef0d4b2fb624b4b5fc03a4))
+* **qa:** split coordinator start into authorize and launch ([5ab1859](https://github.com/euri10/louiselm/commit/5ab1859c2acad5c7306be935803b905130bee725))
+* **session:** add scoped delegation controls ([4fe67b6](https://github.com/euri10/louiselm/commit/4fe67b63d7b501fd7a7245002c3d42a38ef12bc4))
+* **sessions:** add background batch launch ([7a480ca](https://github.com/euri10/louiselm/commit/7a480caaabaf620583cd7717e755c5aa14cb8a7c))
+* **skills:** add explicit skills-off launches ([8988f5a](https://github.com/euri10/louiselm/commit/8988f5afcb3f0b2777c279722e24d70422d229d8))
+
+
+### Bug Fixes
+
+* **attention:** deduplicate failure notices ([f5f52a7](https://github.com/euri10/louiselm/commit/f5f52a7fe3c858c5f086f820e5c45f8d538b3b6f))
+* **beads:** preserve safe CLI failure causes ([0746aaa](https://github.com/euri10/louiselm/commit/0746aaabc3e017309a285af9fce5387e431ca574))
+* **broker:** handle guard close in verification ([0c6b145](https://github.com/euri10/louiselm/commit/0c6b145f10d1e52de6a41182c9b6cb6a254dfaef))
+* **broker:** opt in to shared Beads databases ([3c450bd](https://github.com/euri10/louiselm/commit/3c450bdb0f3852a40e1ee0fcf0bca844ff679559))
+* **broker:** preserve reconnectable history ([4924222](https://github.com/euri10/louiselm/commit/492422230c28f91a9ae5c340d1129c0d85a38930))
+* **broker:** reuse identities after disposal ([eaa138a](https://github.com/euri10/louiselm/commit/eaa138a5ac62d755538190ab1f2281c7c9f38944))
+* **chat:** resume stopped sessions in place ([4f3e626](https://github.com/euri10/louiselm/commit/4f3e6268fa9fc559c143aa02ddfcaa2bbc54364b))
+* **chat:** select Session on buffer entry ([6f4f39d](https://github.com/euri10/louiselm/commit/6f4f39d901c3e30ead020aac0d5d7f0e4351c531))
+* **ci:** restore VM and site contract checks ([dd62e94](https://github.com/euri10/louiselm/commit/dd62e94574f91df4a6aa879c3c3fb295e959fd75))
+* **launcher:** prove terminal cleanup ([6c31cf1](https://github.com/euri10/louiselm/commit/6c31cf1f975f68465b41613a740c133b44bbba58))
+* **launcher:** ship broker units with the release ([6a8e9d1](https://github.com/euri10/louiselm/commit/6a8e9d1741bdba24bb6b08ddc0677fb19ed58806))
+* **limits:** format reset days and hours ([786a025](https://github.com/euri10/louiselm/commit/786a025823ccdc7f1d5bbe8fe3e7f11d6251fc13))
+* **qa:** keep coordinator after certain refusals ([09364f4](https://github.com/euri10/louiselm/commit/09364f47134b03347b601b5eb77225cade467625))
+* **qa:** publish into a host without a registry ([6ee2be9](https://github.com/euri10/louiselm/commit/6ee2be991a941470f9aa41b376421ded2663977c))
+* **qa:** set publisher modes independent of umask ([ca835b5](https://github.com/euri10/louiselm/commit/ca835b5d8ff698f095e36f6fe4d6f797196b81b4))
+* **qa:** show every launcher refusal line ([93f8286](https://github.com/euri10/louiselm/commit/93f8286a4e7f56cefb3b4abf0c796af6f6c20d81))
+* **session:** preserve Agent turn outcomes ([79697c4](https://github.com/euri10/louiselm/commit/79697c474620c8bce1cf30440a27904eed65e9c8))
+* **usage:** compare decoded filter strings ([52eb3ff](https://github.com/euri10/louiselm/commit/52eb3ff0a760b1c58941823283cd78bc4f9109a3))
+* **usage:** index current Codex response records ([ff14840](https://github.com/euri10/louiselm/commit/ff148405a0908ec29c2e80e1346d37d1043906ea))
+* **usage:** return to chat when closing ([47319c7](https://github.com/euri10/louiselm/commit/47319c783f6648d5bee6d0f038ad14f072d7a6e6))
+
 ## [0.3.0](https://github.com/euri10/louiselm/compare/plugin-v0.2.0...plugin-v0.3.0) (2026-10-09)
 
 
