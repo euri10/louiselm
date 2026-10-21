@@ -91,8 +91,11 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
     }
     let expires = selection.expires_at_ms.ok_or("promotion expiry missing")?;
     let now = now_ms()?;
-    if expires <= now || expires - now > 300_000 {
-        return Err("promotion selection expired or too long");
+    if expires <= now {
+        return Err("promotion preview expired; no changes applied");
+    }
+    if expires - now > 300_000 {
+        return Err("promotion preview expiry exceeds five minutes");
     }
     let head = promotion::clean_run_head(&selection.checkout, &selection.run_id)
         .map_err(|_| "Run worktree is dirty or on the wrong branch")?;
@@ -240,7 +243,14 @@ pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
             Err(_) => 1,
         },
         Err(message) => {
-            eprintln!("louiselm-control: {message}");
+            // Every operation error is a static, payload-free diagnostic.
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "schema": "louiselm.run-promotion-error/1",
+                    "message": message,
+                })
+            );
             1
         }
     }

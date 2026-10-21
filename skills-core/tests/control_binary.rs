@@ -6,6 +6,7 @@
 
 use std::{
     fs::File,
+    io::Write as _,
     os::fd::OwnedFd,
     path::Path,
     process::{Command, Stdio},
@@ -14,6 +15,72 @@ use std::{
 use rustix::net::{
     AddressFamily, SocketAddrUnix, SocketFlags, SocketType, bind, listen, socket_with, socketpair,
 };
+
+#[test]
+fn promotion_expiry_is_distinct_and_refusals_do_not_echo_private_input() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let marker = directory.path().join("private-source.txt");
+    std::fs::write(&marker, b"unchanged").unwrap();
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    // The live e0500a6e preview predated cleanup by more than four minutes
+    // (louiselm-run-promotion-no-commit-pynio); its original stderr was lost.
+    // This replays expiry, not a claim to recover that historical refusal.
+    for (expires, expected) in [
+        (1, "promotion preview expired; no changes applied"),
+        (
+            now + 600_000,
+            "promotion preview expiry exceeds five minutes",
+        ),
+        (
+            now + 240_000,
+            "Run worktree is dirty or on the wrong branch",
+        ),
+    ] {
+        let input = serde_json::json!({
+            "selection": {
+                "schema": "louiselm.run-promotion-selection/1",
+                "run_id": "run-one", "bead_id": "bead-one",
+                "producer_session_id": "worker-one", "verifier_session_id": "verifier-one",
+                "request_id": "private-request", "checkout": directory.path(),
+                "journal_parent": directory.path().join("private-journals"),
+                "expected_head": "a".repeat(40), "expires_at_ms": expires,
+            },
+            "approval_digest": "private-approval",
+        });
+        let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
+            .args(["promotion", "commit", "--json"])
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stdout, [] as [u8; 0]);
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(
+            error,
+            serde_json::json!({
+                "schema": "louiselm.run-promotion-error/1", "message": expected,
+            })
+        );
+        assert_eq!(std::fs::read(&marker).unwrap(), b"unchanged");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}
 
 #[test]
 fn generated_help_needs_no_installed_authority_or_stdin_payload() {

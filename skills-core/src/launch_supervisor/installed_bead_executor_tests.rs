@@ -26,7 +26,11 @@ fn privileged_installed_lua_bead_executor() {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=7).contains(&index));
+    assert!((1..=8).contains(&index));
+    // Case 8 reuses the passing promotion fixture, with an actual human-review
+    // delay crossing its selected expiry before Accept reaches the real CLI.
+    let delayed_promotion = index == 8;
+    let index = if delayed_promotion { 4 } else { index };
     let root = tempfile::Builder::new()
         .prefix("louiselm-lua-beads-")
         .tempdir_in("/var/lib")
@@ -217,6 +221,12 @@ fn privileged_installed_lua_bead_executor() {
             scope.issue_ids.push("held-successor".into());
             scope.max_mutations = 2;
         }
+        if index == 4 && delayed_promotion {
+            envelope.max_sessions = 4;
+            let scope = envelope.bead_scope.as_mut().unwrap();
+            scope.issue_ids.push("promotion-successor".into());
+            scope.max_mutations = 2;
+        }
         cases.push(
             serde_json::json!({"bead_id":bead_id,"envelope":envelope,"grant":grant,
             "verifier_grant":verifier_grant,"snapshot":if index == 4 { &promotion_snapshot } else { &snapshot },
@@ -287,6 +297,10 @@ fn privileged_installed_lua_bead_executor() {
         .env("XDG_DATA_HOME", state.join("data"))
         .env("LOUISELM_BEADS_FIXTURE", &input)
         .env("LOUISELM_BEADS_CASE", index.to_string())
+        .env(
+            "LOUISELM_TEST_PROMOTION_DELAY",
+            if delayed_promotion { "1" } else { "0" },
+        )
         .status()
         .unwrap();
     if let Some(injector) = hold_injector {
@@ -345,14 +359,22 @@ fn privileged_installed_lua_bead_executor() {
             String::from_utf8(output.stdout).unwrap().trim().to_owned()
         };
         let head = git(&["rev-parse", "HEAD"]);
-        assert_ne!(head, promotion_preview.base_commit);
-        assert_eq!(git(&["rev-parse", "HEAD^"]), promotion_preview.base_commit);
         assert_eq!(git(&["status", "--porcelain"]), "");
-        assert_eq!(
-            fs::read(checkout.join("accepted.txt")).unwrap(),
-            b"accepted Bead output\n"
-        );
-        assert!(git(&["show", "-s", "--format=%B", &head]).contains(&format!("Refs {bead_id}")));
+        if delayed_promotion {
+            assert_eq!(head, promotion_preview.base_commit);
+            assert!(!checkout.join("accepted.txt").exists());
+            assert_eq!(fs::read_dir(&journal).unwrap().count(), 0);
+        } else {
+            assert_ne!(head, promotion_preview.base_commit);
+            assert_eq!(git(&["rev-parse", "HEAD^"]), promotion_preview.base_commit);
+            assert_eq!(
+                fs::read(checkout.join("accepted.txt")).unwrap(),
+                b"accepted Bead output\n"
+            );
+            assert!(
+                git(&["show", "-s", "--format=%B", &head]).contains(&format!("Refs {bead_id}"))
+            );
+        }
     }
     if (2..=3).contains(&index) && std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let read = |arguments: &[&str]| {

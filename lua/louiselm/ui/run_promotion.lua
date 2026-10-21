@@ -10,6 +10,8 @@ function M.prompt(preview, decide)
   local lines = {
     "Promote " .. preview.selection.bead_id .. " into run/" .. preview.selection.run_id .. "?",
     "Approval digest: " .. preview.approval_digest,
+    "Expires at: " .. os.date("!%Y-%m-%d %H:%M:%S UTC", math.floor(preview.selection.expires_at_ms / 1000)),
+    "Expiry stops the Run without applying this preview.",
   }
   for _, group in ipairs({ { "added", "+ " }, { "modified", "~ " }, { "deleted", "- " } }) do
     for _, path in ipairs(preview.changes[group[1]] or {}) do

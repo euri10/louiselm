@@ -139,7 +139,7 @@ local function fixture()
         local input = nvim.json.decode(options.stdin)
         if argv[3] == "preview" then
           f.preview_calls = (f.preview_calls or 0) + 1
-          input.selection.expires_at_ms = 9999999999999
+          input.selection.expires_at_ms = f.preview_expiry or 9999999999999
           response = {
             schema = "louiselm.run-promotion-preview/1",
             selection = input.selection,
@@ -149,7 +149,7 @@ local function fixture()
         else
           f.commit_calls = (f.commit_calls or 0) + 1
           if f.fail_promotion_commit then
-            later(done, { code = 1, stdout = "", stderr = "" })
+            later(done, { code = 1, stdout = "", stderr = f.promotion_stderr or "private unstructured diagnostic" })
             return { kill = function() end }
           end
           response = {
@@ -809,13 +809,13 @@ T["rejected promotion does not commit and a stale next snapshot refuses"] = func
   MiniTest.expect.equality(rejected.prepared_heads, { head, head })
 end
 
-T["uncertain promotion commit stops the Run before another snapshot"] = function()
+T["promotion preview requires a usable deadline before opening the prompt"] = function()
   local f = fixture()
   f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
-  f.options.on_promotion = function(_, decide)
-    decide(true)
+  f.options.on_promotion = function()
+    error("invalid expiry must not reach the UI")
   end
-  f.fail_promotion_commit = true
+  f.preview_expiry = nvim.NIL
   f:start()
   wait(function()
     return f.workers[1] and f.workers[1].complete
@@ -828,8 +828,66 @@ T["uncertain promotion commit stops the Run before another snapshot"] = function
   wait(function()
     return f.finished == 1
   end)
-  MiniTest.expect.equality(f.error, "Run promotion commit refused; inspect its journal and worktree")
+  MiniTest.expect.equality(f.error, "Run promotion returned a mismatched preview")
+  MiniTest.expect.equality(f.commit_calls, nil)
+end
+
+T["promotion refusals stop before another snapshot and expose only structured safe messages"] = MiniTest.new_set({
+  parametrize = {
+    {
+      nvim.json.encode({
+        schema = "louiselm.run-promotion-error/1",
+        message = "promotion preview expired; no changes applied",
+      }),
+      "Run promotion commit refused: promotion preview expired; no changes applied",
+    },
+    {
+      nvim.json.encode({
+        schema = "louiselm.run-promotion-error/1",
+        message = "promotion applied but Git commit failed; inspect worktree",
+      }),
+      "Run promotion commit refused: promotion applied but Git commit failed; inspect worktree",
+    },
+    { "private unstructured diagnostic", "Run promotion commit outcome unavailable; inspect state before any retry" },
+    {
+      nvim.json.encode({ schema = "wrong-schema", message = "private diagnostic" }),
+      "Run promotion commit outcome unavailable; inspect state before any retry",
+    },
+    {
+      nvim.json.encode({ schema = "louiselm.run-promotion-error/1", message = "unsafe\ncontrol character" }),
+      "Run promotion commit outcome unavailable; inspect state before any retry",
+    },
+  },
+})
+
+T["promotion refusals stop before another snapshot and expose only structured safe messages"]["commit"] = function(
+  stderr,
+  expected
+)
+  local f = fixture()
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = function(_, decide)
+    decide(true)
+  end
+  f.fail_promotion_commit = true
+  f.promotion_stderr = stderr
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, expected)
   MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(f.summary.accepted, {})
+  MiniTest.expect.equality(f.summary.commits, {})
+  MiniTest.expect.equality(f.commit_calls, 1)
 end
 
 return T

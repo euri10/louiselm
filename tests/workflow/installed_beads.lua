@@ -8,21 +8,43 @@ local Workflow = require("louiselm.workflow")
 local input = nvim.json.decode(table.concat(nvim.fn.readfile(nvim.env.LOUISELM_BEADS_FIXTURE), "\n"))
 local index = assert(tonumber(nvim.env.LOUISELM_BEADS_CASE), "explicit installed case")
 local case = assert(input.cases[index], "selected installed case")
+local delayed_promotion = nvim.env.LOUISELM_TEST_PROMOTION_DELAY == "1"
+local function now_ms()
+  local seconds, micros = nvim.uv.gettimeofday()
+  return seconds * 1000 + math.floor(micros / 1000)
+end
 print("installed verification case " .. index)
 local completed, failure, observed = false, nil, false
 local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
   envelope = case.envelope,
-  bead_ids = index >= 6 and { case.bead_id, "held-successor" } or { case.bead_id },
+  bead_ids = delayed_promotion and { case.bead_id, "promotion-successor" }
+    or index >= 6 and { case.bead_id, "held-successor" }
+    or { case.bead_id },
   worktree = index == 4 and { path = case.worktree, journal_parent = case.journal_parent, head = case.base_commit }
     or nil,
   on_promotion = index == 4 and function(preview, decide)
     assert(preview.schema == "louiselm.run-promotion-preview/1")
     assert(preview.selection.expected_head == case.base_commit)
     assert(nvim.deep_equal(preview.changes.added, { "accepted.txt" }))
-    decide(true)
+    if delayed_promotion then
+      -- Same event order as Run e0500a6e (pynio): verification, preview,
+      -- human delay, Accept. Use a shorter explicit deadline, never alter the
+      -- returned selection or its approval digest to simulate expiration.
+      assert(preview.selection.expires_at_ms > now_ms(), "preview must arrive before expiry")
+      nvim.defer_fn(function()
+        decide(true)
+      end, preview.selection.expires_at_ms - now_ms() + 50)
+    else
+      decide(true)
+    end
   end or nil,
   system = function(argv, options, done)
+    if delayed_promotion and argv[2] == "promotion" and argv[3] == "preview" then
+      local request = nvim.json.decode(options.stdin)
+      request.selection.expires_at_ms = now_ms() + 30000
+      options.stdin = nvim.json.encode(request)
+    end
     if argv[1] == "louiselm-capture" then
       nvim.schedule(function()
         done({ code = 0, stdout = '{"token":"fixture-capture-only"}', stderr = "" })
@@ -143,6 +165,14 @@ local controller = assert(Workflow.new_bead_executor({
   end,
 }))
 assert(controller:start(function(ok, err, summary)
+  if delayed_promotion then
+    assert(not ok and controller.status == "failed")
+    assert(err == "Run promotion commit refused: promotion preview expired; no changes applied", err)
+    assert(#summary.accepted == 0 and #summary.failed == 0 and next(summary.commits) == nil)
+    assert(#controller.run.workers == 2, "expiry must not start a successor")
+    completed = true
+    return
+  end
   if index >= 6 then
     assert(not ok and controller.status == "held", err)
     assert(controller.run.status == "parked")

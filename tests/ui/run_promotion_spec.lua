@@ -15,7 +15,7 @@ T["promotion prompt shows paths and accepts only the exact choice"] = function()
     prompt, choose = options.prompt, callback
   end
   Promotion.prompt({
-    selection = { bead_id = "bead-1", run_id = "run-1" },
+    selection = { bead_id = "bead-1", run_id = "run-1", expires_at_ms = 1792567515000 },
     approval_digest = "sha256:approval",
     changes = { added = { "new.txt" }, modified = { "old.txt" }, deleted = {} },
     tainted_review_digest = nvim.NIL,
@@ -24,6 +24,8 @@ T["promotion prompt shows paths and accepts only the exact choice"] = function()
   end)
   MiniTest.expect.equality(prompt:find("+ new.txt", 1, true) ~= nil, true)
   MiniTest.expect.equality(prompt:find("~ old.txt", 1, true) ~= nil, true)
+  MiniTest.expect.equality(prompt:find("Expires at: 2026-10-21 07:25:15 UTC", 1, true) ~= nil, true)
+  MiniTest.expect.equality(prompt:find("Expiry stops the Run without applying this preview.", 1, true) ~= nil, true)
   choose("Accept exact preview")
   MiniTest.expect.equality(decision, true)
 end
@@ -40,7 +42,7 @@ T["tainted promotion shows the exact-use review"] = function()
   end
   local rejected
   Promotion.prompt({
-    selection = { bead_id = "bead-1", run_id = "run-1" },
+    selection = { bead_id = "bead-1", run_id = "run-1", expires_at_ms = 1792567515000 },
     approval_digest = "sha256:approval",
     changes = { added = {}, modified = {}, deleted = {} },
     tainted_review = {

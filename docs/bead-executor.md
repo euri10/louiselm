@@ -74,12 +74,21 @@ the digest-selected snapshot before staging. The dedicated checkout must be clea
 `run/<run-id>`; its journal parent is private and outside the checkout. After a
 passing verification and `on_worker` continuation, the operator CLI rechecks the
 broker record, destination identity, clean tree and branch. `on_promotion`
-receives the exact changed paths and approval digest; the supplied UI helper
-shows them to the maintainer. Rejection makes no checkout change. Acceptance
+receives the exact changed paths, approval digest and expiry; the supplied UI
+helper shows them and the UTC deadline to the maintainer. The default preview
+expires four minutes after construction. Acceptance after that deadline stops
+the Run with an explicit expiry message before any checkout changes. It does
+not refresh approval or retry. Rejection makes no checkout change. Acceptance
 reopens the same selection, rechecks the digest, applies through the existing
 broker promotion protocol, and creates one LouiseLM Git commit with
 `Refs <bead-id>`. A changed or uncertain operation stops the Run for inspection.
 Only the new commit becomes the `expected_head` of the next Bead.
+Promotion CLI failures return a `louiselm.run-promotion-error/1` JSON diagnostic
+on stderr, containing a payload-free `message`. The controller displays that
+specific refusal, distinguishing expiry from uncertain application or a Git
+commit failure. Unstructured diagnostics are withheld; an unavailable outcome
+requires inspection before any retry. A pre-application refusal creates no
+promotion journal.
 
 The completion callback receives `{ run_id, accepted, commits, branch, failed, text }` even when
 the Run stops early. `failed` is ordered and includes each Bead ID, safe outcome,
@@ -245,7 +254,7 @@ policy, ledger admission, cancellation and fast-event callbacks. The installed
 gate is required in the `sender-guard-vm` CI job:
 
 ```sh
-for bead_case in 1 2 3 4 5 6 7; do
+for bead_case in 1 2 3 4 5 6 7 8; do
   ./scripts/launcher-vm exec sudo -n env \
     LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
     LOUISELM_TEST_LUA_ROOT=/home/vm \
@@ -279,3 +288,9 @@ after a clear status check, respectively. They use the real operator exchange,
 child authorization, Lua controller and terminal cleanup, proving that neither
 a successor worker nor verifier receives authority. The hold is an explicit
 offline spending double; these cases make no Provider calls.
+Case 8 reuses the passing promotion fixture with an explicit thirty-second
+preview deadline and accepts only after it passes. The real CLI reports expiry,
+the Run starts no successor, HEAD and checkout stay unchanged, no journal is
+created, and worker/verifier disposal still produces terminal receipts. This
+reproduces the delayed-acceptance ordering; the original live refusal text was
+lost and is not claimed as recovered.

@@ -338,7 +338,19 @@ local function promotion_control(self, action, request, callback)
   end
   local done = response(self, function(result)
     if type(result) ~= "table" or result.code ~= 0 then
-      return callback(nil, "Run promotion " .. action .. " refused; inspect its journal and worktree")
+      local decoded, refusal = pcall(nvim.json.decode, type(result) == "table" and result.stderr or "")
+      if
+        decoded
+        and type(refusal) == "table"
+        and refusal.schema == "louiselm.run-promotion-error/1"
+        and type(refusal.message) == "string"
+        and #refusal.message > 0
+        and #refusal.message <= 256
+        and not refusal.message:find("%c")
+      then
+        return callback(nil, "Run promotion " .. action .. " refused: " .. refusal.message)
+      end
+      return callback(nil, "Run promotion " .. action .. " outcome unavailable; inspect state before any retry")
     end
     local decoded, value = pcall(nvim.json.decode, result.stdout)
     if not decoded or type(value) ~= "table" then
@@ -388,6 +400,10 @@ local function promote(self, result, callback)
       or preview.selection.verifier_session_id ~= selection.verifier_session_id
       or preview.selection.request_id ~= selection.request_id
       or preview.selection.expected_head ~= self.head
+      or type(preview.selection.expires_at_ms) ~= "number"
+      or preview.selection.expires_at_ms <= 0
+      or preview.selection.expires_at_ms > 9007199254740991
+      or preview.selection.expires_at_ms % 1 ~= 0
     then
       return callback(nil, "Run promotion returned a mismatched preview")
     end
