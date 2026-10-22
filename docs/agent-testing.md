@@ -228,15 +228,22 @@ reproduction, fresh clean-build provenance or hardware ceremony.
 
 Consumed-launch recovery changes additionally require
 `bash scripts/test-consumed-recovery-vm <guest-library-test-executable>` in the
-disposable launcher VM. Build the candidate binaries and library test first.
+fresh disposable launcher VM with no system installation or retained Sessions.
+Build the candidate binaries and library test first. The fixture uses fixed
+production paths inside that disposable VM, never the retained live guest.
 This gate preserves exact state across a real guest shutdown/start, checking
 pre-admission GuardUnavailable, killed identity owners with receiptless and
 nonterminal receipted histories, same-boot refusal,
 authenticated recovery, lost ACK and broker restart, history/Run ceilings and
 retry while successors hold the reused identities. Both phases must report one
 passed test and their evidence markers, including
-`RECOVERY_RECEIPTED_HEAD_PRESERVED` after reboot. The first phase privately masks the
-guard measurement; its disk fixture must remain on persistent storage across
+`RECOVERY_RECEIPTED_HEAD_PRESERVED` and `RECOVERY_INSTALLED_INSPECTION_VERIFIED`
+after reboot. The installed `recover-inspect` executable must distinguish
+unrecovered, normal Disposal and separate reboot recovery, preserve the original
+head/state across broker restart without a supervisor, refuse malformed proof,
+unknown subjects and foreign operators, and create no arm from inspection.
+The first phase privately masks the guard measurement; its disk fixture must
+remain on persistent storage across
 the kernel reboot, not an ephemeral mount. A required storage subgate checks
 absence, privacy sealing, byte preservation and untrusted-path refusals.
 It uses distinct fixture identities and software signing; it does not certify

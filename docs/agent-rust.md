@@ -75,6 +75,10 @@ but must not silently weaken it.
   so the type writes its own output and then refuses to read it back. Nothing
   fails at compile time, and the round trip breaks only at runtime (broker
   audit entries, 2026-09-10). Nest the value under a named field instead.
+  Internally tagged variants with no fields must use empty struct form
+  (`Missing {}`), not unit form: Serde can ignore unknown fields on unit variants even
+  with `deny_unknown_fields`. Test unknown-field rejection as well as round trips
+  (louiselm-qbr.5.1.2.4.3, louiselm-receipted-recovery-gktb7.2).
 - Keep Tokio as capture-service's async runtime; do not introduce a second
   runtime or require one in synchronous skills-core code. Blocking filesystem,
   process, and network work must stay off async executor threads. Do not hold

@@ -2,7 +2,8 @@
 pub use crate::launch_recovery::Binding;
 use crate::{
     broker::{BrokerError, BrokerService, InstalledBroker},
-    launch_recovery::{Acknowledgement, Proof},
+    launch_receipt::{ReceiptHead, SessionState},
+    launch_recovery::{Acknowledgement, Inspection, InspectionOutcome, Proof},
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,60 @@ pub struct Snapshot {
 }
 
 impl BrokerService {
+    /// Inspect authenticated durable history, without a live supervisor or cleanup.
+    /// Existing history quarantine remains authoritative; no reservation is released.
+    /// # Errors
+    /// Refuses unknown consumption, invalid/revoked history or inconsistent proof.
+    pub fn inspect_consumed_recovery<F>(
+        &self,
+        id: &str,
+        mut verify: F,
+    ) -> Result<Inspection, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        self.authorizations().with_consumption(id, |held, digest| {
+            self.check_history(&held.session_id)?;
+            let chain = self
+                .receipts()
+                .verified_chain(&held.launch_authorization(), &mut verify)?;
+            let proof = self
+                .receipts()
+                .verified_recovery(held, digest, &mut verify)?;
+            let binding = Binding {
+                authorization: held.launch_authorization(),
+                consumption_digest: digest.into(),
+                receipt_head: chain.last().map(|receipt| ReceiptHead {
+                    sequence: receipt.payload.sequence,
+                    digest: receipt.digest().to_string(),
+                }),
+            };
+            let receipt_state = chain.last().map(|receipt| receipt.payload.resulting_state);
+            let outcome = if let Some(proof) = proof {
+                // A concurrent append/recovery between the reads must not combine
+                // different heads into a success-looking inspection.
+                if proof.payload.binding != binding {
+                    return Err(BrokerError::RequestMismatch);
+                }
+                InspectionOutcome::RecoveredAfterReboot {
+                    proof: Box::new(proof),
+                }
+            } else if receipt_state == Some(SessionState::Terminal) {
+                InspectionOutcome::Disposed {}
+            } else {
+                InspectionOutcome::Unrecovered {}
+            };
+            let inspection = Inspection {
+                schema: "louiselm.consumed-recovery.inspection/1".into(),
+                binding,
+                receipt_state,
+                outcome,
+            };
+            inspection.validate()?;
+            Ok(inspection)
+        })
+    }
+
     /// Inspect one exact consumption under the assignment lock, without mechanics.
     /// # Errors
     /// Refuses unknown/changed consumption, quarantine or invalid/terminal history.
@@ -85,6 +140,16 @@ impl BrokerService {
 }
 
 impl InstalledBroker {
+    /// Inspect original history and any separate recovery using installed authority.
+    /// # Errors
+    /// Refuses unknown subjects, revoked/malformed evidence or unavailable storage.
+    pub fn inspect_consumed_recovery(&self, id: &str) -> Result<Inspection, BrokerError> {
+        self.service
+            .inspect_consumed_recovery(id, |key, payload, signature| {
+                self.verifier.verify(key, payload, signature).is_ok()
+            })
+    }
+
     /// Inspect a root-authenticated candidate with installed historical authority.
     /// # Errors
     /// Refuses unknown/changed/quarantined or conflicting state.

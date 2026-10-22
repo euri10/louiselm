@@ -19,6 +19,11 @@ pub(super) fn start(broker: Arc<InstalledBroker>) -> Result<(), BrokerError> {
             loop {
                 let result = endpoint.serve_recovery_once(|request| {
                     let result = match request {
+                        Request::Inspect { authorization_id } => broker
+                            .inspect_consumed_recovery(&authorization_id)
+                            .map(|inspection| Response::Inspection {
+                                inspection: Box::new(inspection),
+                            }),
                         Request::Prepare { authorization_id } => broker
                             .consumed_recovery_snapshot(&authorization_id)
                             .map(|snapshot| Response::Snapshot {

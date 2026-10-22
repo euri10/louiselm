@@ -1,6 +1,8 @@
 //! Two real kernel boots, actual pre-admission refusal, killed lease owner,
 //! distinct broker UID, installed signer and authenticated recovery transport.
 use super::*;
+#[path = "installed_recovery_inspection_tests.rs"]
+mod inspection;
 #[path = "installed_receipted_recovery_tests.rs"]
 mod receipted;
 use crate::{
@@ -18,37 +20,40 @@ const MARKER: &str = "/var/tmp/louiselm-consumed-recovery-gate.json";
 const RECOVERY_WORKER: &str = "launch_supervisor::system::installed_tests::consumed_recovery::installed_consumed_recovery_broker_worker";
 const CRASH_WORKER: &str = "launch_supervisor::system::installed_tests::consumed_recovery::installed_consumed_recovery_crash_worker";
 
+fn endpoint() -> PathBuf {
+    PathBuf::from(crate::broker::operator::consumed_recovery::SOCKET)
+}
+
+fn sessions() -> PathBuf {
+    PathBuf::from(crate::launch_supervisor::SYSTEM_SESSIONS_ROOT)
+}
+
 fn complete_at(
     paths: &LauncherPaths,
     operator: u32,
     id: &str,
     endpoint: &Path,
 ) -> Result<crate::launch_recovery::Proof, RecoveryError> {
-    // Only this private fixture changes the fixed production storage location.
-    let root = paths.state_root.parent().unwrap().parent().unwrap();
     crate::launcher_install::consumed_recovery::complete_at(
         paths,
         operator,
         id,
         endpoint,
-        &root.join("sessions"),
+        &sessions(),
     )
 }
 
 fn assert_storage_failure_keeps_reservation(
-    root: &Path,
     paths: &LauncherPaths,
     operator: u32,
     session: &str,
     slot: u32,
 ) {
-    let original = root.join("sessions").join(session);
-    let retained = root
-        .join("sessions")
-        .join(format!("{session}-preserved-fixture"));
+    let original = sessions().join(session);
+    let retained = sessions().join(format!("{session}-preserved-fixture"));
     fs::rename(&original, &retained).unwrap();
     symlink(&retained, &original).unwrap();
-    let endpoint = root.join("rendezvous/recovery.sock");
+    let endpoint = endpoint();
     assert!(matches!(
         complete_at(paths, operator, &format!("approval-{session}"), &endpoint),
         Err(RecoveryError::Installation(_))
@@ -79,12 +84,7 @@ fn assert_broker_storage_failure_is_retryable(root: &Path, paths: &LauncherPaths
     chown(&directory, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o500)).unwrap();
     assert!(matches!(
-        complete_at(
-            paths,
-            operator,
-            "approval",
-            &root.join("rendezvous/recovery.sock")
-        ),
+        complete_at(paths, operator, "approval", &endpoint()),
         Err(RecoveryError::Broker(_))
     ));
     assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
@@ -133,10 +133,12 @@ fn grant(config: &LauncherConfig, name: &str) -> GrantRequest {
 }
 
 fn spawn_broker(root: &Path, initial: bool) -> (BrokerChild, mpsc::Receiver<String>) {
-    for socket in [
-        paths(root).broker_socket,
-        root.join("rendezvous/recovery.sock"),
-    ] {
+    // /run does not survive reboot; recreate only the fixture's fixed rendezvous.
+    for socket in [LauncherPaths::system().broker_socket, endpoint()] {
+        let parent = socket.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        chown(parent, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
         if socket.exists() {
             fs::remove_file(socket).unwrap();
         }
@@ -182,14 +184,18 @@ fn spawn_broker(root: &Path, initial: bool) -> (BrokerChild, mpsc::Receiver<Stri
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One fixture broker preserves the consumed-recovery transaction and exact successor/counter assertions across two boots."
+)]
 fn installed_consumed_recovery_broker_worker() {
     let Some(root) = std::env::var_os("LOUISELM_RECOVERY_FIXTURE") else {
         return;
     };
     let root = PathBuf::from(root);
     assert_eq!(rustix::process::geteuid().as_raw(), BROKER_UID);
-    let broker = InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap();
-    let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
+    let broker = InstalledBroker::bind(&LauncherPaths::system(), &root.join("state")).unwrap();
+    let config = crate::launcher_install::public_runtime_config(&LauncherPaths::system()).unwrap();
     let store =
         AuthorizationStore::open(&root.join("state/authorizations"), config.pool.clone()).unwrap();
     if std::env::var("LOUISELM_RECOVERY_INITIAL").unwrap() == "yes" {
@@ -220,13 +226,21 @@ fn installed_consumed_recovery_broker_worker() {
         assert_eq!(store.session_count_for_run("run").unwrap(), 3);
         println!("REFUSAL_RESERVED");
     }
-    let server = OperatorServer::bind(&root.join("rendezvous/recovery.sock"), 0).unwrap();
+    let server = OperatorServer::bind(&endpoint(), 0).unwrap();
     println!("RECOVERY_READY");
     let mut successor = false;
     loop {
         server
             .serve_recovery_once(|request| {
-                receipted::admit(&root, &broker);
+                if root.join("state/consume-successor").exists() {
+                    store
+                        .consume_for_launcher(&grant(&config, "successor").request, now())
+                        .unwrap();
+                    fs::remove_file(root.join("state/consume-successor")).unwrap();
+                }
+                for subject in ["receipted", "successor"] {
+                    receipted::admit(&root, &broker, subject);
+                }
                 if root.join("state/authorize-successor").exists() && !successor {
                     assert_eq!(
                         broker
@@ -257,6 +271,11 @@ fn installed_consumed_recovery_broker_worker() {
                     fs::remove_file(root.join("state/authorize-receipted-successor")).unwrap();
                 }
                 let result = match request {
+                    Request::Inspect { authorization_id } => broker
+                        .inspect_consumed_recovery(&authorization_id)
+                        .map(|inspection| Response::Inspection {
+                            inspection: Box::new(inspection),
+                        }),
                     Request::Prepare { authorization_id } => broker
                         .consumed_recovery_snapshot(&authorization_id)
                         .map(|snapshot| Response::Snapshot {
@@ -274,7 +293,15 @@ fn installed_consumed_recovery_broker_worker() {
                         })
                     }
                 };
-                result.map_err(|_| InspectError::StatusUnavailable)
+                result.map_err(|error| match error {
+                    BrokerError::UnknownAuthorization => InspectError::UnknownSession,
+                    BrokerError::InvalidGrant
+                    | BrokerError::RequestMismatch
+                    | BrokerError::ReceiptUnauthorized
+                    | BrokerError::ReceiptRefused(_)
+                    | BrokerError::Recovery(_) => InspectError::InvalidRequest,
+                    _ => InspectError::StatusUnavailable,
+                })
             })
             .unwrap();
     }
@@ -282,11 +309,11 @@ fn installed_consumed_recovery_broker_worker() {
 
 #[test]
 fn installed_consumed_recovery_crash_worker() {
-    let Some(root) = std::env::var_os("LOUISELM_RECOVERY_CRASH") else {
+    if std::env::var_os("LOUISELM_RECOVERY_CRASH").is_none() {
         return;
-    };
+    }
     let leases = [1, 2].map(|slot| {
-        crate::launcher_install::acquire_identity(&paths(Path::new(&root)), slot).unwrap()
+        crate::launcher_install::acquire_identity(&LauncherPaths::system(), slot).unwrap()
     });
     println!("LEASE_HELD");
     // The parent kills this actual process. No destructor clears its durable fence.
@@ -311,13 +338,21 @@ fn privileged_consumed_recovery_before_reboot() {
         !Path::new(MARKER).exists(),
         "fresh disposable recovery gate required"
     );
+    assert!(
+        !LauncherPaths::system().release_prefix.exists(),
+        "fresh VM without a system installation required"
+    );
+    assert!(
+        !sessions().exists(),
+        "fresh VM without retained Sessions required"
+    );
     let account = BrokerAccount::create();
     let root = tempfile::Builder::new()
         .prefix("louiselm-consumed-recovery-")
         .tempdir_in("/var/lib")
         .unwrap()
         .keep();
-    let (paths, mut config, registry) = install_fixture_with_slots(&root, 3);
+    let (paths, mut config, registry) = install_fixture_at(&root, 3, LauncherPaths::system());
     config.conformance = crate::conformance::admission::Enforcement::Enforced;
     write_json(&paths.state_root.join("config.json"), &config);
     write_json(&paths.state_root.join("public-config.json"), &config);
@@ -340,8 +375,8 @@ fn privileged_consumed_recovery_before_reboot() {
     let mut platform =
         SystemLaunchPlatform::new(paths.clone(), config.clone(), Duration::from_secs(15)).unwrap();
     platform.registry_root = registry.clone();
-    let sessions = root.join("sessions");
-    fs::create_dir(&sessions).unwrap();
+    let sessions = sessions();
+    fs::create_dir_all(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
     let supervisor = LaunchSupervisor::new(
         connect_control_broker(&config, Duration::from_secs(15)).unwrap(),
@@ -370,7 +405,7 @@ fn privileged_consumed_recovery_before_reboot() {
     );
     marker(&lines, "REFUSAL_RESERVED");
     marker(&lines, "RECOVERY_READY");
-    let retained = root.join("sessions/crashed");
+    let retained = self::sessions().join("crashed");
     fs::create_dir(&retained).unwrap();
     fs::set_permissions(&retained, fs::Permissions::from_mode(0o711)).unwrap();
     fs::write(
@@ -405,7 +440,8 @@ fn privileged_consumed_recovery_before_reboot() {
         accessible.status.success(),
         "fixture models an unsealed crashed workspace"
     );
-    let endpoint = root.join("rendezvous/recovery.sock");
+    let endpoint = endpoint();
+    inspection::before_arm(&paths, &config);
     assert!(matches!(
         complete_at(&paths, config.operator_uid, "approval", &endpoint),
         Err(RecoveryError::NotArmed)
@@ -510,7 +546,7 @@ fn privileged_consumed_recovery_after_reboot() {
     }
     assert!(rustix::process::geteuid().is_root());
     let root: PathBuf = serde_json::from_slice(&fs::read(MARKER).unwrap()).unwrap();
-    let paths = paths(&root);
+    let paths = LauncherPaths::system();
     let config = crate::launcher_install::runtime_config(&paths).unwrap();
     let armed: Arm =
         serde_json::from_slice(&fs::read(root.join("approval-arm.json")).unwrap()).unwrap();
@@ -522,9 +558,10 @@ fn privileged_consumed_recovery_after_reboot() {
     );
     let (broker, lines) = spawn_broker(&root, false);
     marker(&lines, "RECOVERY_READY");
-    let endpoint = root.join("rendezvous/recovery.sock");
-    assert_storage_failure_keeps_reservation(&root, &paths, config.operator_uid, "crashed", 1);
-    assert_storage_failure_keeps_reservation(&root, &paths, config.operator_uid, "receipted", 2);
+    let endpoint = endpoint();
+    inspection::unrecovered(&paths, &config);
+    assert_storage_failure_keeps_reservation(&paths, config.operator_uid, "crashed", 1);
+    assert_storage_failure_keeps_reservation(&paths, config.operator_uid, "receipted", 2);
     assert_broker_storage_failure_is_retryable(&root, &paths, config.operator_uid);
     fs::write(root.join("withhold-ack"), b"test lost response").unwrap();
     assert!(matches!(
@@ -585,7 +622,7 @@ fn privileged_consumed_recovery_after_reboot() {
             "--clear-groups",
             "/usr/bin/cat",
         ])
-        .arg(root.join("sessions/crashed/private-fixture"))
+        .arg(sessions().join("crashed/private-fixture"))
         .env("LC_ALL", "C")
         .output()
         .unwrap();
@@ -599,7 +636,7 @@ fn privileged_consumed_recovery_after_reboot() {
             .contains("Permission denied")
     );
     assert_eq!(
-        fs::read(root.join("sessions/crashed/private-fixture")).unwrap(),
+        fs::read(sessions().join("crashed/private-fixture")).unwrap(),
         b"retained private fixture"
     );
     assert_eq!(
@@ -634,6 +671,13 @@ fn privileged_consumed_recovery_after_reboot() {
             fs::read(root.join(entry.file_name())).unwrap()
         );
     }
+    inspection::recovered(&paths, &config, &receipted);
+    drop(broker);
+    let (broker, lines) = spawn_broker(&root, false);
+    marker(&lines, "RECOVERY_READY");
+    inspection::recovered(&paths, &config, &receipted);
+    inspection::normal_disposal(&root, &paths, &config);
+    inspection::invalid_proof(&root, &paths, &config, &receipted);
     write_json(
         Path::new("/var/tmp/louiselm-consumed-recovery-evidence.json"),
         &serde_json::json!({
@@ -649,7 +693,8 @@ fn privileged_consumed_recovery_after_reboot() {
             "storage_failure_retained_reservation": true,
             "broker_storage_failure_retried_exact_saved_proof": true,
             "retained_bytes_sealed_before_identity_reuse": true,
-            "historical_retry_did_not_touch_successor_lease": true
+            "historical_retry_did_not_touch_successor_lease": true,
+            "installed_inspection_survived_restart_without_supervisor": true
         }),
     );
     fs::set_permissions(

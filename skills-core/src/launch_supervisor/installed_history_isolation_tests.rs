@@ -9,6 +9,10 @@ pub(super) const SUBJECTS: [&str; 4] =
     ["bad-signature", "unknown-identity", "unreadable", "healthy"];
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One restarted broker fixture checks the same history, quarantine and revocation across its real consumers."
+)]
 fn installed_history_inspector() {
     let Some(root) = std::env::var_os("LOUISELM_HISTORY_ROOT") else {
         return;
@@ -85,6 +89,10 @@ fn installed_history_inspector() {
                 assert!(report.observation.is_none());
                 assert!(matches!(
                     broker.consumed_recovery_snapshot(&format!("authorization-{subject}")),
+                    Err(BrokerError::Policy(error)) if error.code == ErrorCode::SigningKeyRevoked
+                ));
+                assert!(matches!(
+                    broker.inspect_consumed_recovery(&format!("authorization-{subject}")),
                     Err(BrokerError::Policy(error)) if error.code == ErrorCode::SigningKeyRevoked
                 ));
             }

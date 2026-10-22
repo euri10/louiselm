@@ -69,6 +69,7 @@ fn main() -> ExitCode {
         Command::Cleanup => cleanup(),
         Command::RecoverArm { authorization_id } => consumed_recovery(&authorization_id, false),
         Command::RecoverComplete { authorization_id } => consumed_recovery(&authorization_id, true),
+        Command::RecoverInspect { authorization_id } => inspect_recovery(&authorization_id),
         Command::SenderGuardObject => {
             use std::io::Write;
             io::stdout()
@@ -119,7 +120,6 @@ fn cleanup() -> Result<i32, &'static str> {
 
 fn consumed_recovery(id: &str, complete: bool) -> Result<i32, &'static str> {
     use louiselm_skills::launcher_install::consumed_recovery::{self, RecoveryError};
-    use std::io::Write;
     let (paths, config) = authority(true)?;
     let result = if complete {
         consumed_recovery::complete(&paths, config.operator_uid, id)
@@ -128,13 +128,37 @@ fn consumed_recovery(id: &str, complete: bool) -> Result<i32, &'static str> {
         consumed_recovery::arm(&paths, config.operator_uid, id)
             .and_then(|arm| serde_json::to_vec(&arm).map_err(|_| RecoveryError::Conflict))
     };
+    recovery_output(result)
+}
+
+fn inspect_recovery(id: &str) -> Result<i32, &'static str> {
+    use louiselm_skills::launcher_install::consumed_recovery::{self, RecoveryError};
+    let (paths, config) = authority(true)?;
+    recovery_output(
+        consumed_recovery::inspect(&paths, config.operator_uid, id).and_then(|inspection| {
+            serde_json::to_vec(&inspection).map_err(|_| RecoveryError::Conflict)
+        }),
+    )
+}
+
+fn recovery_output(
+    result: Result<Vec<u8>, louiselm_skills::launcher_install::consumed_recovery::RecoveryError>,
+) -> Result<i32, &'static str> {
+    use louiselm_skills::{
+        broker::operator::InspectError, launcher_install::consumed_recovery::RecoveryError,
+    };
+    use std::io::Write;
     let bytes = result.map_err(|error| match error {
         RecoveryError::NotArmed => "arm this exact authorization before rebooting",
         RecoveryError::RebootRequired => "reboot required after arming; reservation retained",
         RecoveryError::Conflict => "recovery binding conflict; inspect preserved evidence",
         RecoveryError::Busy => "recovery owner is busy; reservation retained",
         RecoveryError::Installation(_) => "recovery installation or durability unavailable; retain evidence and retry the same authorization",
-        RecoveryError::Broker(_) => "recovery broker unavailable or refused; inspect evidence and retry the same authorization",
+        RecoveryError::Broker(InspectError::UnknownSession) => "unknown consumed authorization; check the authorization ID",
+        RecoveryError::Broker(InspectError::InvalidRequest) => "invalid or conflicting recovery evidence; preserve the original history",
+        RecoveryError::Broker(InspectError::StatusUnavailable) => "recovery history or proof unavailable; inspect preserved evidence",
+        RecoveryError::Broker(InspectError::AuthenticationRefused) => "recovery authentication refused; use the configured operator and broker",
+        RecoveryError::Broker(InspectError::BrokerUnavailable) => "recovery broker unavailable; check the broker service",
     })?;
     io::stdout()
         .lock()

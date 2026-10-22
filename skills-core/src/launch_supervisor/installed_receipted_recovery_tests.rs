@@ -9,19 +9,20 @@ use crate::{
     launcher_install::{LauncherSigner, LauncherVerifier},
 };
 
-pub(super) fn admit(root: &Path, broker: &InstalledBroker) {
-    let source = root.join("receipted-chain.json");
+pub(super) fn admit(root: &Path, broker: &InstalledBroker, subject: &str) {
+    let source = root.join(format!("{subject}-chain.json"));
     if !source.exists() {
         return;
     }
-    let verifier = Arc::new(LauncherVerifier::open(&paths(root), &root.join("state")).unwrap());
+    let verifier =
+        Arc::new(LauncherVerifier::open(&LauncherPaths::system(), &root.join("state")).unwrap());
     let receipts =
         ReceiptStore::installed(&root.join("state/receipts"), Arc::clone(&verifier)).unwrap();
-    if receipts.head("receipted").unwrap().is_some() {
+    if receipts.head(subject).unwrap().is_some() {
         return;
     }
     let authorization = broker
-        .consumed_recovery_snapshot("approval-receipted")
+        .consumed_recovery_snapshot(&format!("approval-{subject}"))
         .unwrap()
         .binding
         .authorization;
@@ -104,7 +105,7 @@ pub(super) fn seed(root: &Path, paths: &LauncherPaths, endpoint: &Path, pid: u32
         &root.join("receipted-chain.json"),
         &vec![launch, start, park],
     );
-    let retained = root.join("sessions/receipted");
+    let retained = sessions().join("receipted");
     fs::create_dir(&retained).unwrap();
     fs::set_permissions(&retained, fs::Permissions::from_mode(0o711)).unwrap();
     let bytes = retained.join("private-fixture");
@@ -170,14 +171,11 @@ pub(super) fn complete(
         })
     );
     assert_eq!(
-        fs::read(root.join("sessions/receipted/private-fixture")).unwrap(),
+        fs::read(sessions().join("receipted/private-fixture")).unwrap(),
         b"receipted private fixture"
     );
     assert_eq!(
-        fs::metadata(root.join("sessions/receipted"))
-            .unwrap()
-            .mode()
-            & 0o7777,
+        fs::metadata(sessions().join("receipted")).unwrap().mode() & 0o7777,
         0o700
     );
     successor.release().unwrap();

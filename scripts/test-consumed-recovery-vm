@@ -35,5 +35,6 @@ phase before_reboot RECOVERY_ARMED_REBOOT_REQUIRED
 "$repo/scripts/launcher-vm" start
 phase after_reboot RECOVERY_PROVED_HISTORY_RETAINED
 rg -q RECOVERY_RECEIPTED_HEAD_PRESERVED "$evidence/after_reboot.log"
+rg -q RECOVERY_INSTALLED_INSPECTION_VERIFIED "$evidence/after_reboot.log"
 "$repo/scripts/launcher-vm" get /var/tmp/louiselm-consumed-recovery-evidence.json "$evidence/proof.json"
 echo "Recovery VM passed across a real kernel reboot: $evidence"

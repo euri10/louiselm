@@ -19,7 +19,9 @@ use crate::{
             consumed_recovery::{self as protocol, Request, Response},
         },
     },
-    launch_recovery::{Acknowledgement, Payload, Proof, SCHEMA, SIGNED_SCHEMA, valid_boot_id},
+    launch_recovery::{
+        Acknowledgement, Inspection, Payload, Proof, SCHEMA, SIGNED_SCHEMA, valid_boot_id,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -88,11 +90,11 @@ impl Drop for Operation {
     }
 }
 
-fn context(
+fn configuration(
     paths: &LauncherPaths,
     operator: u32,
     id: &str,
-) -> Result<(LauncherConfig, Operation), RecoveryError> {
+) -> Result<LauncherConfig, RecoveryError> {
     if !rustix::process::geteuid().is_root() {
         return Err(RecoveryError::Conflict);
     }
@@ -106,6 +108,15 @@ fn context(
     {
         return Err(RecoveryError::Conflict);
     }
+    Ok(config)
+}
+
+fn context(
+    paths: &LauncherPaths,
+    operator: u32,
+    id: &str,
+) -> Result<(LauncherConfig, Operation), RecoveryError> {
+    let config = configuration(paths, operator, id)?;
     let parent = paths.state_root.join("consumed-recovery");
     directory(&parent)?;
     sync_dir(&paths.state_root)?;
@@ -191,11 +202,17 @@ fn snapshot(config: &LauncherConfig, endpoint: &Path, id: &str) -> Result<Snapsh
     let Response::Snapshot { snapshot } = response else {
         return Err(RecoveryError::Conflict);
     };
-    let authorization = &snapshot.binding.authorization;
-    snapshot
-        .binding
-        .validate()
-        .map_err(|_| RecoveryError::Conflict)?;
+    check_binding(config, id, &snapshot.binding)?;
+    Ok(*snapshot)
+}
+
+fn check_binding(
+    config: &LauncherConfig,
+    id: &str,
+    binding: &Binding,
+) -> Result<(), RecoveryError> {
+    let authorization = &binding.authorization;
+    binding.validate().map_err(|_| RecoveryError::Conflict)?;
     let identity = config.pool.identity(authorization.identity_slot)?;
     if authorization.authorization_id != id
         || authorization.controller_uid != config.operator_uid
@@ -204,7 +221,42 @@ fn snapshot(config: &LauncherConfig, endpoint: &Path, id: &str) -> Result<Snapsh
     {
         return Err(RecoveryError::Conflict);
     }
-    Ok(*snapshot)
+    Ok(())
+}
+
+/// Read durable recovery evidence without a live supervisor, fencing or cleanup.
+/// Does not create an arm, operation directory or new recovery proof.
+/// # Errors
+/// Refuses foreign authority, unknown subjects or unverified/conflicting evidence.
+pub fn inspect(
+    paths: &LauncherPaths,
+    operator: u32,
+    id: &str,
+) -> Result<Inspection, RecoveryError> {
+    inspect_at(paths, operator, id, Path::new(protocol::SOCKET))
+}
+
+pub(crate) fn inspect_at(
+    paths: &LauncherPaths,
+    operator: u32,
+    id: &str,
+    endpoint: &Path,
+) -> Result<Inspection, RecoveryError> {
+    let config = configuration(paths, operator, id)?;
+    let response = protocol::exchange(
+        endpoint,
+        config.broker_uid,
+        &Request::Inspect {
+            authorization_id: id.into(),
+        },
+    )
+    .map_err(RecoveryError::Broker)?;
+    let Response::Inspection { inspection } = response else {
+        return Err(RecoveryError::Conflict);
+    };
+    inspection.validate().map_err(|_| RecoveryError::Conflict)?;
+    check_binding(&config, id, &inspection.binding)?;
+    Ok(*inspection)
 }
 
 /// Fence one exact consumed launch and durably arm recovery in the current boot.

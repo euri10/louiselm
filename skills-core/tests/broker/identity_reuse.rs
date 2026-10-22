@@ -3,6 +3,8 @@ use super::*;
 
 #[path = "identity_reuse/receipted.rs"]
 mod receipted;
+#[path = "identity_reuse/recovery_inspection.rs"]
+mod recovery_inspection;
 
 fn broker(root: &Path, socket: &str) -> BrokerService {
     broker_with_slots(root, socket, 1)

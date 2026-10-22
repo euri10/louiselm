@@ -23,6 +23,11 @@ pub(super) enum Command {
     Certify,
     /// Clean expired retained storage; root authority required.
     Cleanup,
+    /// Inspect durable recovery evidence; never infer live supervisor state.
+    RecoverInspect {
+        /// Exact original consumed authorization identity.
+        authorization_id: String,
+    },
     /// Explicitly fence and arm a consumed launch for recovery after reboot.
     RecoverArm {
         /// Exact original consumed authorization identity.
@@ -60,6 +65,12 @@ pub(super) enum Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_inspection_has_an_explicit_read_only_verb() {
+        assert!(Cli::try_parse_from(["louiselm-launch", "recover-inspect", "approval"]).is_ok());
+    }
+
     #[test]
     fn opaque_bootstrap_arguments_keep_separators_and_non_utf8_bytes() {
         use std::os::unix::ffi::OsStringExt;

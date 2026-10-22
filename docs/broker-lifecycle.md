@@ -306,6 +306,7 @@ adopts, resumes or replaces an old process tree.
 Use the exact **authorization ID**, not a process ID or a guessed Session ID:
 
 ```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-launch recover-inspect <authorization-id>
 sudo /usr/local/lib/louiselm/current/bin/louiselm-launch recover-arm <authorization-id>
 # Operator reboots the machine after the arm command succeeds.
 sudo /usr/local/lib/louiselm/current/bin/louiselm-launch recover-complete <authorization-id>
@@ -316,6 +317,20 @@ they are not added to the Agent's fixed launcher sudo rules. The existing
 unprivileged broker serves a separate root-authenticated `recovery.sock` endpoint.
 Ordinary operator and Agent requests cannot reach this protocol. After an
 upgrade, restart the broker as documented above before using the new endpoint.
+
+`recover-inspect` is read-only administrative history, available without the
+original supervisor and after broker restart. Its JSON schema is
+`louiselm.consumed-recovery.inspection/1`: `binding` identifies the exact original
+authorization, consumption digest and receipt head; `receipt_state` preserves
+the last receipt's state (or `null` when no receipt was accepted).
+`outcome.status` distinguishes `unrecovered`, `disposed` (an authenticated normal
+Disposal), and `recovered_after_reboot`. The last includes the independently
+verified separate `outcome.proof`; a Parked receipt remains Parked, not Terminal.
+Unknown subjects or invalid, revoked, conflicting or unreadable evidence refuse
+without printing partial success or sensitive payloads. Inspection does not arm,
+fence, clean up, release a reservation, or report current process liveness.
+Ordinary live operator inspection still requires a live supervisor; it does not
+fall back to this durable history.
 
 Arming verifies the broker's exact consumption and any existing receipt head,
 exclusively fences its assigned identity with the existing durable poison marker,

@@ -4,7 +4,7 @@
 use super::{InspectError, OperatorServer, READY, TIMEOUT, exchange_document, peer_uid, wire};
 use crate::{
     broker::consumed_recovery::Snapshot,
-    launch_recovery::{Acknowledgement, Proof},
+    launch_recovery::{Acknowledgement, Inspection, Proof},
 };
 use serde::{Deserialize, Serialize};
 use std::{io, path::Path, time::Instant};
@@ -16,6 +16,12 @@ pub const SOCKET: &str = "/run/louiselm-operator/recovery.sock";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum Request {
+    /// Read durable history and recovery, never live status or cleanup authority.
+    #[serde(rename = "louiselm.consumed-recovery.inspect/1")]
+    Inspect {
+        /// Exact original consumed authorization identity.
+        authorization_id: String,
+    },
     /// Read exact private consumption metadata without changing its reservation.
     #[serde(rename = "louiselm.consumed-recovery.prepare/1")]
     Prepare {
@@ -34,6 +40,11 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
+    /// Verified historical state and explicitly separate recovery outcome.
+    Inspection {
+        /// Durable evidence, not a current supervisor observation.
+        inspection: Box<Inspection>,
+    },
     /// Original consumption and any already completed recovery.
     Snapshot {
         /// Exact authenticated state.

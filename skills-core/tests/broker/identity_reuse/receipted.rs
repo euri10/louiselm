@@ -1,7 +1,7 @@
 //! Recovery preserves a real nonterminal chain rather than inventing Disposal.
 use super::*;
 
-fn history(
+pub(super) fn history(
     service: &BrokerService,
     authorization: &LaunchAuthorization,
     count: usize,

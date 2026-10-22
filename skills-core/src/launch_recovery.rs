@@ -5,6 +5,9 @@ use crate::{Digest, launch_protocol::LaunchAuthorization, launch_receipt::Receip
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod inspection;
+pub use inspection::{Inspection, InspectionOutcome};
+
 /// Independent SSHSIG namespace and payload schema for root recovery facts.
 pub const SCHEMA: &str = "louiselm.launch.recovery/1";
 /// Schema of an exact payload plus its machine signature.
@@ -39,7 +42,7 @@ pub struct Binding {
     pub authorization: LaunchAuthorization,
     /// Digest of the exact retained consumption record.
     pub consumption_digest: String,
-    /// Exact verified nonterminal head, absent only for receiptless recovery.
+    /// Exact verified receipt head; recovery requires it to be nonterminal.
     /// Omitting absence preserves the canonical bytes of accepted receiptless proofs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_head: Option<ReceiptHead>,
