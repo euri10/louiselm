@@ -137,3 +137,84 @@ fn stock_runtime_rejects_a_wrong_registered_hash() {
         matches!(runtime.measure(), Err(RegistryError::RuntimeChanged { path, .. }) if path == "codex-acp.js")
     );
 }
+
+#[test]
+fn stock_tools_keep_neovim_logs_outside_source() {
+    use crate::launch_supervisor::tool_integration;
+
+    let Some(stock) = std::env::var_os("LOUISELM_STOCK_CODEX_DIR") else {
+        return;
+    };
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "requires the disposable VM"
+    );
+    let stock = fs::canonicalize(stock).unwrap();
+    // Unlike /tmp, this home is not writable inside Codex's workspace sandbox.
+    // Run 6d48a722-a0cb-483e-be16-8448794fd0fd exposed Neovim's cwd fallback.
+    let root = tempfile::Builder::new()
+        .prefix("louiselm-nvim-log-")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    let home = root.path().join("home");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&home).unwrap();
+    fs::create_dir(&workspace).unwrap();
+    let (_, environment) =
+        tool_integration::launch_values(tool_integration::Integration::CodexAcp, &stock, &home);
+    let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
+    let mut arguments = vec!["sandbox".into(), "-P".into(), ":workspace".into()];
+    // Exercise the real shell environment policy, not a pre-injected test env.
+    if let Some(settings) = config["shell_environment_policy"]["set"].as_object() {
+        for (key, value) in settings {
+            arguments.extend([
+                "-c".into(),
+                format!("shell_environment_policy.set.{key}={value}"),
+            ]);
+        }
+    }
+    arguments.extend([
+        "--".into(),
+        "/bin/sh".into(),
+        "-c".into(),
+        concat!(
+            "set -eu\n",
+            "if touch \"$HOME/forbidden\" 2>/dev/null; then exit 10; fi\n",
+            "/usr/lib/louiselm/verifier/bin/nvim --headless --clean ",
+            "-c \"lua local ok, err = pcall(vim.fn.serverstart, '/missing/log-probe.sock'); ",
+            "assert(not ok and type(err) == 'string')\" -c 'qa!'\n",
+            "test ! -e nvim.log && test -s \"$NVIM_LOG_FILE\"\n"
+        )
+        .into(),
+    ]);
+    // Own private /tmp and denied network, without touching the VM's installed
+    // broker or replaying a paid Run. Codex supplies the real inner sandbox.
+    let output = Command::new("/usr/bin/unshare")
+        .args([
+            "--mount",
+            "--net",
+            "--propagation",
+            "private",
+            "--",
+            "/bin/sh",
+            "-c",
+            "mount -t tmpfs -o mode=1777 tmpfs /tmp && exec \"$@\"",
+            "log-probe",
+        ])
+        .arg(stock.join("codex"))
+        .args(arguments)
+        .current_dir(&workspace)
+        .env_clear()
+        .envs(environment)
+        .output()
+        .unwrap();
+    assert!(
+        !workspace.join("nvim.log").exists(),
+        "Neovim leaked its diagnostic log into candidate source"
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

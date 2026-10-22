@@ -56,6 +56,11 @@ pub(crate) fn codex_configuration() -> (String, String) {
         "model": "gpt-5.6-luna",
         "model_provider": CODEX_PROVIDER,
         "model_reasoning_effort": "low",
+        // Native tools cannot write the Agent home. Keep Neovim's fallback log
+        // out of candidate source without disabling diagnostics or widening access.
+        "shell_environment_policy": {
+            "set": { "NVIM_LOG_FILE": "/tmp/louiselm-nvim.log" },
+        },
         "model_providers": {
             CODEX_PROVIDER: {
                 "base_url": CODEX_BASE_URL,

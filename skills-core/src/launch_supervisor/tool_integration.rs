@@ -584,6 +584,10 @@ mod tests {
         assert_eq!(config["mcp_servers"], serde_json::json!({}));
         assert_eq!(config["features"]["code_mode_host"], true);
         assert_eq!(
+            config["shell_environment_policy"]["set"]["NVIM_LOG_FILE"],
+            "/tmp/louiselm-nvim.log"
+        );
+        assert_eq!(
             config["model_providers"][CODEX_PROVIDER]["base_url"],
             CODEX_BASE_URL
         );

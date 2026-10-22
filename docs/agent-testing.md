@@ -49,6 +49,15 @@ and a private home. That offline VM gate is required; a host-side Lua pass does
 not substitute for it. Bump the pinned versions and hashes deliberately when
 updating the verifier toolchain.
 
+The stock Codex configuration also runs
+`stock_tools_keep_neovim_logs_outside_source` with `LOUISELM_STOCK_CODEX_DIR`
+in that offline VM. It exercises the actual runtime's native workspace sandbox
+with private `/tmp` and denied network, proving that a read-only home does not
+make Neovim fall back to a candidate-root log. Diagnostics stay in private
+`/tmp`; no Provider call or widened filesystem permission is needed
+(`louiselm-mmrh3`). The normal host suite without the stock runtime is not this
+acceptance gate.
+
 Contained Bead-executor or launcher-prefix changes also require the installed
 `privileged_installed_lua_bead_executor` gate described in
 [bead-executor](bead-executor.md), inside the disposable launcher VM. CI runs it
