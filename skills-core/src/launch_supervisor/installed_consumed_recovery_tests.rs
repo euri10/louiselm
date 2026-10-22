@@ -1,6 +1,8 @@
 //! Two real kernel boots, actual pre-admission refusal, killed lease owner,
 //! distinct broker UID, installed signer and authenticated recovery transport.
 use super::*;
+#[path = "installed_receipted_recovery_tests.rs"]
+mod receipted;
 use crate::{
     broker::{
         AuthorizationStore, BrokerError,
@@ -33,25 +35,33 @@ fn complete_at(
     )
 }
 
-fn assert_storage_failure_keeps_reservation(root: &Path, paths: &LauncherPaths, operator: u32) {
-    let original = root.join("sessions/crashed");
-    let retained = root.join("sessions/crashed-preserved-fixture");
+fn assert_storage_failure_keeps_reservation(
+    root: &Path,
+    paths: &LauncherPaths,
+    operator: u32,
+    session: &str,
+    slot: u32,
+) {
+    let original = root.join("sessions").join(session);
+    let retained = root
+        .join("sessions")
+        .join(format!("{session}-preserved-fixture"));
     fs::rename(&original, &retained).unwrap();
     symlink(&retained, &original).unwrap();
     let endpoint = root.join("rendezvous/recovery.sock");
     assert!(matches!(
-        complete_at(paths, operator, "approval-crashed", &endpoint),
+        complete_at(paths, operator, &format!("approval-{session}"), &endpoint),
         Err(RecoveryError::Installation(_))
     ));
     assert!(matches!(
-        crate::launcher_install::acquire_identity(paths, 1),
-        Err(crate::launcher_install::LauncherError::Poisoned { slot: 1 })
+        crate::launcher_install::acquire_identity(paths, slot),
+        Err(crate::launcher_install::LauncherError::Poisoned { slot: held }) if held == slot
     ));
     let Response::Snapshot { snapshot } = crate::broker::operator::consumed_recovery::exchange(
         &endpoint,
         BROKER_UID,
         &Request::Prepare {
-            authorization_id: "approval-crashed".into(),
+            authorization_id: format!("approval-{session}"),
         },
     )
     .unwrap() else {
@@ -187,12 +197,17 @@ fn installed_consumed_recovery_broker_worker() {
         let mut envelope = fixture_run_envelope(&first, Digest::of(b"plan").to_string(), now());
         // Later fixture children have fresh, shorter expiries within this Run.
         envelope.expires_at_ms = first.expires_at_ms + 3_600_000;
-        envelope.max_sessions = 3;
+        envelope.max_sessions = 5;
         broker.authorize_run(&envelope).unwrap();
         broker.authorize(&first).unwrap();
         let crashed = grant(&config, "crashed");
         broker.authorize(&crashed).unwrap();
         store.consume_for_launcher(&crashed.request, now()).unwrap();
+        let receipted = grant(&config, "receipted");
+        broker.authorize(&receipted).unwrap();
+        store
+            .consume_for_launcher(&receipted.request, now())
+            .unwrap();
         println!("BROKER_READY");
         assert!(
             broker.serve_launch().is_err(),
@@ -202,7 +217,7 @@ fn installed_consumed_recovery_broker_worker() {
             broker.authorize(&grant(&config, "exhausted")),
             Err(BrokerError::IdentityExhausted(_))
         ));
-        assert_eq!(store.session_count_for_run("run").unwrap(), 2);
+        assert_eq!(store.session_count_for_run("run").unwrap(), 3);
         println!("REFUSAL_RESERVED");
     }
     let server = OperatorServer::bind(&root.join("rendezvous/recovery.sock"), 0).unwrap();
@@ -211,7 +226,8 @@ fn installed_consumed_recovery_broker_worker() {
     loop {
         server
             .serve_recovery_once(|request| {
-                if root.join("authorize-successor").exists() && !successor {
+                receipted::admit(&root, &broker);
+                if root.join("state/authorize-successor").exists() && !successor {
                     assert_eq!(
                         broker
                             .authorize(&grant(&config, "successor"))
@@ -220,12 +236,25 @@ fn installed_consumed_recovery_broker_worker() {
                             .slot,
                         0
                     );
-                    assert_eq!(store.session_count_for_run("run").unwrap(), 3);
+                    assert_eq!(store.session_count_for_run("run").unwrap(), 4);
+                    fs::remove_file(root.join("state/authorize-successor")).unwrap();
+                    successor = true;
+                }
+                if root.join("state/authorize-receipted-successor").exists() {
+                    assert_eq!(
+                        broker
+                            .authorize(&grant(&config, "receipted-successor"))
+                            .unwrap()
+                            .identity
+                            .slot,
+                        2
+                    );
+                    assert_eq!(store.session_count_for_run("run").unwrap(), 5);
                     assert!(matches!(
                         broker.authorize(&grant(&config, "over-ceiling")),
                         Err(BrokerError::InvalidGrant)
                     ));
-                    successor = true;
+                    fs::remove_file(root.join("state/authorize-receipted-successor")).unwrap();
                 }
                 let result = match request {
                     Request::Prepare { authorization_id } => broker
@@ -256,13 +285,15 @@ fn installed_consumed_recovery_crash_worker() {
     let Some(root) = std::env::var_os("LOUISELM_RECOVERY_CRASH") else {
         return;
     };
-    let lease = crate::launcher_install::acquire_identity(&paths(Path::new(&root)), 1).unwrap();
+    let leases = [1, 2].map(|slot| {
+        crate::launcher_install::acquire_identity(&paths(Path::new(&root)), slot).unwrap()
+    });
     println!("LEASE_HELD");
     // The parent kills this actual process. No destructor clears its durable fence.
     std::io::stdout().flush().unwrap();
     loop {
         thread::park();
-        std::hint::black_box(&lease);
+        std::hint::black_box(&leases);
     }
 }
 
@@ -286,7 +317,7 @@ fn privileged_consumed_recovery_before_reboot() {
         .tempdir_in("/var/lib")
         .unwrap()
         .keep();
-    let (paths, mut config, registry) = install_fixture_with_slots(&root, 2);
+    let (paths, mut config, registry) = install_fixture_with_slots(&root, 3);
     config.conformance = crate::conformance::admission::Enforcement::Enforced;
     write_json(&paths.state_root.join("config.json"), &config);
     write_json(&paths.state_root.join("public-config.json"), &config);
@@ -434,13 +465,18 @@ fn privileged_consumed_recovery_before_reboot() {
         .join("receipt-bindings")
         .join(format!("{}.json", Digest::of(b"crashed").hex()));
     fs::copy(&binding_path, root.join("original-root-binding.json")).unwrap();
+    receipted::seed(&root, &paths, &endpoint, crash.0.id());
     assert!(matches!(
         arm_at(&paths, config.operator_uid, "approval-crashed", &endpoint),
         Err(RecoveryError::Busy)
     ));
+    assert!(matches!(
+        arm_at(&paths, config.operator_uid, "approval-receipted", &endpoint),
+        Err(RecoveryError::Busy)
+    ));
     crash.0.kill().unwrap();
     crash.0.wait().unwrap();
-    for id in ["approval", "approval-crashed"] {
+    for id in ["approval", "approval-crashed", "approval-receipted"] {
         let armed = arm_at(&paths, config.operator_uid, id, &endpoint).unwrap();
         assert_eq!(
             arm_at(&paths, config.operator_uid, id, &endpoint).unwrap(),
@@ -487,7 +523,8 @@ fn privileged_consumed_recovery_after_reboot() {
     let (broker, lines) = spawn_broker(&root, false);
     marker(&lines, "RECOVERY_READY");
     let endpoint = root.join("rendezvous/recovery.sock");
-    assert_storage_failure_keeps_reservation(&root, &paths, config.operator_uid);
+    assert_storage_failure_keeps_reservation(&root, &paths, config.operator_uid, "crashed", 1);
+    assert_storage_failure_keeps_reservation(&root, &paths, config.operator_uid, "receipted", 2);
     assert_broker_storage_failure_is_retryable(&root, &paths, config.operator_uid);
     fs::write(root.join("withhold-ack"), b"test lost response").unwrap();
     assert!(matches!(
@@ -498,7 +535,7 @@ fn privileged_consumed_recovery_after_reboot() {
     drop(broker);
     let (broker, lines) = spawn_broker(&root, false);
     marker(&lines, "RECOVERY_READY");
-    fs::write(root.join("authorize-successor"), b"test next Session").unwrap();
+    fs::write(root.join("state/authorize-successor"), b"test next Session").unwrap();
     let successor = crate::launcher_install::acquire_identity(&paths, 0).unwrap();
     let proof = complete_at(&paths, config.operator_uid, "approval", &endpoint).unwrap();
     assert_eq!(proof.payload.schema, crate::launch_recovery::SCHEMA);
@@ -515,6 +552,11 @@ fn privileged_consumed_recovery_after_reboot() {
         Err(crate::launcher_install::LauncherError::Occupied { slot: 0 })
     ));
     successor.release().unwrap();
+    receipted::lose_ack(&root, &paths, config.operator_uid, &endpoint);
+    drop(broker);
+    let (broker, lines) = spawn_broker(&root, false);
+    marker(&lines, "RECOVERY_READY");
+    let receipted = receipted::complete(&root, &paths, config.operator_uid, &endpoint);
     fs::write(
         root.join("withhold-ack"),
         b"test signing-reference ACK boundary",
@@ -597,9 +639,10 @@ fn privileged_consumed_recovery_after_reboot() {
         &serde_json::json!({
             "refused_launch": proof,
             "crashed_owner": crashed,
+            "receipted_owner": receipted,
             "pool": config.pool,
-            "retained_consumed_records": 2,
-            "run_session_count_after_successor": 3,
+            "retained_consumed_records": 3,
+            "run_session_count_after_successor": 5,
             "same_boot_refused": true,
             "live_owner_refused": true,
             "lost_ack_and_broker_restart_retried": true,

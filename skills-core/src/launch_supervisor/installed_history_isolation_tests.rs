@@ -83,6 +83,10 @@ fn installed_history_inspector() {
                 let report = broker.key_revocation(subject).unwrap().unwrap();
                 assert_eq!(report.session_id, *subject);
                 assert!(report.observation.is_none());
+                assert!(matches!(
+                    broker.consumed_recovery_snapshot(&format!("authorization-{subject}")),
+                    Err(BrokerError::Policy(error)) if error.code == ErrorCode::SigningKeyRevoked
+                ));
             }
             let error = broker.inspect(subject).unwrap_err();
             let expected = if phase == "revoked" {

@@ -19,7 +19,7 @@ pub struct Snapshot {
 impl BrokerService {
     /// Inspect one exact consumption under the assignment lock, without mechanics.
     /// # Errors
-    /// Refuses unknown/changed consumption, quarantine or ordinary receipt history.
+    /// Refuses unknown/changed consumption, quarantine or invalid/terminal history.
     pub fn consumed_recovery_snapshot<F>(
         &self,
         id: &str,
@@ -30,13 +30,9 @@ impl BrokerService {
     {
         self.authorizations().with_consumption(id, |held, digest| {
             self.check_history(&held.session_id)?;
-            if !self
+            let binding = self
                 .receipts()
-                .verified_chain(&held.launch_authorization(), &mut verify)?
-                .is_empty()
-            {
-                return Err(BrokerError::InvalidGrant);
-            }
+                .recovery_binding(held, digest, &mut verify)?;
             let recovered = self
                 .receipts()
                 .verified_recovery(held, digest, &mut verify)?;
@@ -46,21 +42,15 @@ impl BrokerService {
                         self.identity_disposed(prior, &mut verify)
                     })?;
             }
-            Ok(Snapshot {
-                binding: Binding {
-                    authorization: held.launch_authorization(),
-                    consumption_digest: digest.into(),
-                },
-                recovered,
-            })
+            Ok(Snapshot { binding, recovered })
         })
     }
 
     /// Durably admit the exact separate signed proof. It cannot replace receipts.
     /// Idempotent retry reestablishes durability without repeating mechanics.
     /// # Errors
-    /// Refuses malformed/forged/foreign proof, changed consumption, ordinary
-    /// history, quarantine, conflicting completion or unavailable storage.
+    /// Refuses malformed/forged/foreign proof, changed consumption/head, invalid
+    /// or terminal history, quarantine, conflicting completion or unavailable storage.
     pub fn accept_consumed_recovery<F>(
         &self,
         proof: &Proof,
@@ -72,11 +62,8 @@ impl BrokerService {
         proof.validate()?;
         let id = &proof.payload.binding.authorization.authorization_id;
         self.authorizations().with_consumption(id, |held, digest| {
-            if proof.payload.binding
-                != (Binding {
-                    authorization: held.launch_authorization(),
-                    consumption_digest: digest.into(),
-                })
+            if proof.payload.binding.authorization != held.launch_authorization()
+                || proof.payload.binding.consumption_digest != digest
             {
                 return Err(BrokerError::RequestMismatch);
             }

@@ -2,11 +2,52 @@
 use super::{ReceiptStore, ReceiptTrust, read_receipt};
 use crate::{
     broker::{BrokerError, PendingAuthorization, lock, record_name, sync_directory},
+    launch_receipt::{ReceiptHead, SessionState},
     launch_recovery::{Acknowledgement, Binding, Proof, ProofError},
 };
 use std::{fs, io::Write as _, path::PathBuf};
 
 impl ReceiptStore {
+    pub(in crate::broker) fn recovery_binding<F>(
+        &self,
+        held: &PendingAuthorization,
+        digest: &str,
+        verify: &mut F,
+    ) -> Result<Binding, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let _appending = lock(&self.appending);
+        self.recovery_binding_locked(held, digest, verify)
+    }
+
+    fn recovery_binding_locked<F>(
+        &self,
+        held: &PendingAuthorization,
+        digest: &str,
+        verify: &mut F,
+    ) -> Result<Binding, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let authorization = held.launch_authorization();
+        let chain = self.verified_chain_locked(&authorization, verify)?;
+        if chain
+            .last()
+            .is_some_and(|receipt| receipt.payload.resulting_state == SessionState::Terminal)
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
+        Ok(Binding {
+            authorization,
+            consumption_digest: digest.into(),
+            receipt_head: chain.last().map(|receipt| ReceiptHead {
+                sequence: receipt.payload.sequence,
+                digest: receipt.digest().to_string(),
+            }),
+        })
+    }
+
     fn recovery_path(&self, id: &str) -> Result<PathBuf, BrokerError> {
         Ok(self.root.join("consumed-recoveries").join(record_name(id)?))
     }
@@ -39,12 +80,9 @@ impl ReceiptStore {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         proof.validate()?;
-        if proof.payload.binding
-            != (Binding {
-                authorization: held.launch_authorization(),
-                consumption_digest: digest.into(),
-            })
-        {
+        // The append lock remains held through this exact-head check, proof
+        // publication and acknowledgement. Later appends refuse recovery_exists.
+        if proof.payload.binding != self.recovery_binding_locked(held, digest, verify)? {
             return Err(BrokerError::RequestMismatch);
         }
         match &self.trust {
@@ -82,9 +120,6 @@ impl ReceiptStore {
         let Some(proof) = self.read_recovery(&held.authorization_id)? else {
             return Ok(None);
         };
-        if !self.chain(&held.session_id)?.is_empty() {
-            return Err(BrokerError::InvalidGrant);
-        }
         self.verify_recovery(&proof, held, digest, &mut verify)?;
         let path = self.recovery_path(&held.authorization_id)?;
         fs::File::open(&path)
@@ -105,9 +140,6 @@ impl ReceiptStore {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         let _appending = lock(&self.appending);
-        if !self.chain(&held.session_id)?.is_empty() {
-            return Err(BrokerError::InvalidGrant);
-        }
         self.verify_recovery(proof, held, digest, &mut verify)?;
         let path = self.recovery_path(&held.authorization_id)?;
         if let Some(stored) = self.read_recovery(&held.authorization_id)? {

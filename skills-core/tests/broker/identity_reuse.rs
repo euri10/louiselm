@@ -1,6 +1,9 @@
 //! A consumed authorization is history, not permanent live identity occupancy.
 use super::*;
 
+#[path = "identity_reuse/receipted.rs"]
+mod receipted;
+
 fn broker(root: &Path, socket: &str) -> BrokerService {
     broker_with_slots(root, socket, 1)
 }
@@ -176,14 +179,17 @@ fn recovery_rejects_forged_same_boot_foreign_or_conflicting_proofs() {
             verify_fixture_signature,
         )
         .unwrap();
-    assert!(matches!(
+    assert_eq!(
         service
-            .consumed_recovery_snapshot(&authorization.authorization_id, verify_fixture_signature),
-        Err(BrokerError::InvalidGrant)
-    ));
+            .consumed_recovery_snapshot(&authorization.authorization_id, verify_fixture_signature)
+            .unwrap()
+            .binding
+            .receipt_head,
+        service.receipts().head(&authorization.session_id).unwrap()
+    );
     assert!(matches!(
         service.accept_consumed_recovery(&proof, verify_fixture_signature),
-        Err(BrokerError::InvalidGrant)
+        Err(BrokerError::RequestMismatch)
     ));
 }
 
@@ -195,6 +201,15 @@ fn recovery_proof_is_canonical_closed_and_separate_from_launcher_receipts() {
     let authorization = consume(&service, "held");
     let proof = recovery_proof(&service, &authorization);
     assert_eq!(Proof::parse(&proof.canonical_bytes()).unwrap(), proof);
+    assert_eq!(
+        serde_json::to_string(&proof.payload.binding).unwrap(),
+        format!(
+            r#"{{"authorization":{},"consumption_digest":"{}"}}"#,
+            serde_json::to_string(&authorization).unwrap(),
+            proof.payload.binding.consumption_digest
+        ),
+        "previously accepted receiptless evidence keeps its exact canonical bytes"
+    );
     assert_eq!(
         SignedReceipt::parse_canonical(&proof.canonical_bytes()),
         Err(

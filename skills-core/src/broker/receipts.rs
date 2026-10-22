@@ -307,6 +307,18 @@ impl ReceiptStore {
         // A concurrent append publishes its filename before completing its
         // bytes. Readers must not quarantine a normally in-progress write.
         let _appending = lock(&self.appending);
+        self.verified_chain_locked(authorization, verify)
+    }
+
+    /// Caller holds appending across verification and its dependent transition.
+    fn verified_chain_locked<F>(
+        &self,
+        authorization: &LaunchAuthorization,
+        verify: &mut F,
+    ) -> Result<Vec<SignedReceipt>, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
         authorization.validate()?;
         let chain = self.chain(&authorization.session_id)?;
         for receipt in &chain {

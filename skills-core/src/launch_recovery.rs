@@ -1,7 +1,7 @@
 //! Separate machine-signed recovery facts. These are not Launcher receipts:
-//! they contain no receipt sequence, Launch measurements or invented history.
+//! they bind existing history without inventing receipts or Launch measurements.
 
-use crate::{Digest, launch_protocol::LaunchAuthorization};
+use crate::{Digest, launch_protocol::LaunchAuthorization, launch_receipt::ReceiptHead};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -31,7 +31,7 @@ pub enum ProofError {
     InvalidSignature,
 }
 
-/// Immutable, non-secret binding to the original private consumption bytes.
+/// Non-secret binding to original consumption bytes and exact retained history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
@@ -39,6 +39,26 @@ pub struct Binding {
     pub authorization: LaunchAuthorization,
     /// Digest of the exact retained consumption record.
     pub consumption_digest: String,
+    /// Exact verified nonterminal head, absent only for receiptless recovery.
+    /// Omitting absence preserves the canonical bytes of accepted receiptless proofs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_head: Option<ReceiptHead>,
+}
+
+impl Binding {
+    pub(crate) fn validate(&self) -> Result<(), ProofError> {
+        self.authorization
+            .validate()
+            .map_err(|_| ProofError::InvalidBinding)?;
+        for digest in std::iter::once(&self.consumption_digest)
+            .chain(self.receipt_head.as_ref().map(|head| &head.digest))
+        {
+            if !Digest::parse(digest).is_ok_and(|value| value.to_string() == *digest) {
+                return Err(ProofError::InvalidBinding);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Retained storage was checked behind the trusted root directory chain.
@@ -62,7 +82,7 @@ pub struct Payload {
     pub binding: Binding,
     /// Digest of the root-owned arming document.
     pub arm_digest: String,
-    /// Exact retained root registration when signed preparation was not delivered.
+    /// Exact root genesis registration, including signed but undelivered preparation.
     pub receipt_binding_digest: Option<String>,
     /// Kernel boot in which the root owner fenced the slot and armed recovery.
     pub armed_boot_id: String,
@@ -96,16 +116,8 @@ impl Payload {
         if self.schema != SCHEMA || self.canonical_bytes().len() > MAX_BYTES {
             return Err(ProofError::Malformed);
         }
-        self.binding
-            .authorization
-            .validate()
-            .map_err(|_| ProofError::InvalidBinding)?;
-        for digest in [
-            &self.binding.consumption_digest,
-            &self.arm_digest,
-            &self.release_id,
-            &self.signing_key_id,
-        ] {
+        self.binding.validate()?;
+        for digest in [&self.arm_digest, &self.release_id, &self.signing_key_id] {
             if !Digest::parse(digest).is_ok_and(|value| value.to_string() == *digest) {
                 return Err(ProofError::InvalidBinding);
             }

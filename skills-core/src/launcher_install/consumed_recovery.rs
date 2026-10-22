@@ -1,4 +1,4 @@
-//! Explicit abort-only recovery of consumed, receiptless launches.
+//! Explicit abort-only recovery of consumed launches and orphaned receipt chains.
 //! Arming fences the assigned slot and records its actual kernel boot. Only a
 //! subsequent boot permits cleanup proof. Exact outcomes survive lost ACKs;
 //! retry never touches an identity after its authenticated recovery is durable.
@@ -192,7 +192,8 @@ fn snapshot(config: &LauncherConfig, endpoint: &Path, id: &str) -> Result<Snapsh
         return Err(RecoveryError::Conflict);
     };
     let authorization = &snapshot.binding.authorization;
-    authorization
+    snapshot
+        .binding
         .validate()
         .map_err(|_| RecoveryError::Conflict)?;
     let identity = config.pool.identity(authorization.identity_slot)?;
@@ -200,8 +201,6 @@ fn snapshot(config: &LauncherConfig, endpoint: &Path, id: &str) -> Result<Snapsh
         || authorization.controller_uid != config.operator_uid
         || identity.uid != authorization.assigned_uid
         || identity.gid != authorization.assigned_gid
-        || !Digest::parse(&snapshot.binding.consumption_digest)
-            .is_ok_and(|digest| digest.to_string() == snapshot.binding.consumption_digest)
     {
         return Err(RecoveryError::Conflict);
     }

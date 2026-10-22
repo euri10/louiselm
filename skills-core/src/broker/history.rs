@@ -27,14 +27,12 @@ impl BrokerService {
                 .receipts()
                 .verified_chain(&held.launch_authorization(), &mut *verify);
             let chain = self.history_result(&held.session_id, chain)?;
-            if chain.is_empty() {
-                let digest = self.authorizations().consumption_digest(held)?;
-                let proof = self
-                    .receipts()
-                    .verified_recovery(held, &digest, &mut *verify);
-                return self
-                    .history_result(&held.session_id, proof)
-                    .map(|proof| proof.is_some());
+            let digest = self.authorizations().consumption_digest(held)?;
+            let proof = self
+                .receipts()
+                .verified_recovery(held, &digest, &mut *verify);
+            if self.history_result(&held.session_id, proof)?.is_some() {
+                return Ok(true);
             }
             Ok(chain
                 .last()
