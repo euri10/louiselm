@@ -190,7 +190,7 @@ string|table
 - `disposal_reason: string?` -- Operator-facing reason retained after explicit disposal.
 - `embedded_context: boolean` -- Whether the Agent accepts embedded resource prompt context.
 - `id: string` -- Local session identifier.
-- `manual_pair: { model: boolean|string, effort: boolean|string }?` -- Whole effective pair protected after an operator option change.
+- `manual_pair: { model: (boolean|string)?, effort: (boolean|string)? }?` -- Whole effective pair protected after an operator option change.
 - `mcp: louiselm.session.McpState` -- Safe snapshot of configured MCP servers and ACP forwarding, never connection health.
 - `name: string` -- User-facing session name.
 - `recording_error: (louiselm.session.RecordingError)?` -- Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
@@ -298,11 +298,11 @@ string|table
 - `cancelled: boolean`
 - `decision: louiselm.session.AdmissionDecisionData` -- Owned pending or final decision.
 - `decision_recorded: boolean` -- Whether its immutable decision has been published.
-- `guard: { definition: louiselm.agent.Definition, revision: integer, expected_options: table<string, boolean|string> }?` -- Owned Auto selection snapshot; never persisted.
+- `guard: { definition: louiselm.agent.Definition, revision: integer?, expected_options: table<string, boolean|string>? }?` -- Owned Auto selection snapshot; never persisted.
 - `id: string`
 - `in_flight: boolean`
 - `origin: "auto"|"helper"|"manual"`
-- `requested: { model: boolean|string, effort: boolean|string }`
+- `requested: { model: (boolean|string)?, effort: (boolean|string)? }`
 - `requests: table<string, string|number>`
 - `settled: boolean`
 - `started_at: integer`
@@ -766,7 +766,7 @@ louiselm.session.EventType:
 - `parent_turn_id: string?`
 - `reason: "baseline"|"current_pair"|"parent_correlation"|"qualified"`
 - `recovery: (louiselm.session.RoutingRecovery)?` -- Failed economical attempt behind this continuation; requested/settlement record its effective pair.
-- `requested: { model: boolean|string, effort: boolean|string }`
+- `requested: { model: (boolean|string)?, effort: (boolean|string)? }`
 - `selection: (louiselm.routing.SelectionDecision)?` -- Exact Auto baseline, workload, approval and separate economic provenance.
 - `turn_id: string`
 
@@ -778,18 +778,18 @@ louiselm.session.EventType:
 ### louiselm.routing.SelectionDecision
 
 - `api_for_quota: (louiselm.routing.ApiForQuotaAllowance)?`
-- `baseline: { model: string, effort: string }`
+- `baseline: { model: string, effort: string? }`
 - `economic_basis: louiselm.routing.ComparisonEconomics[]?` -- Approved figures, not factual usage.
 - `fallback_reason: string?` -- Typed reason a configured candidate was not selected.
-- `qualification: { report_id: string, policy_revision: string, revision: integer, approval_revision: integer }?`
+- `qualification: { report_id: string, policy_revision: string, revision: integer, approval_revision: integer? }?`
 - `reason: "baseline"|"qualified"`
-- `requested: { model: string, effort: string }`
+- `requested: { model: string, effort: string? }`
 - `rule: string?` -- Exact rule/workload key, when resolved.
 - `workload: (louiselm.routing.ComparisonWorkload)?`
 
 ### louiselm.session.AdmissionSettlementEvent
 
-- `data: { turn_id: string, result: "cancelled"|"dispatched"|"not_sent"|"uncertain", requested: { model: boolean|string, effort: boolean|string }, confirmed: { model: boolean|string, effort: boolean|string }, options: table<string, boolean|string>, requests: table<string, string|number>, reason: string, elapsed_ms: integer }` -- Payload-free terminal admission result and complete confirmed option tuple.
+- `data: { turn_id: string, result: "cancelled"|"dispatched"|"not_sent"|"uncertain", requested: { model: boolean|string, effort: boolean|string }, confirmed: { model: boolean|string, effort: boolean|string }, options: table<string, boolean|string>, requests: table<string, string|number>, reason: string?, elapsed_ms: integer }` -- Payload-free terminal admission result and complete confirmed option tuple.
 - `session_id: string` -- Local session identifier.
 - `type: "admission_settled"`
 
@@ -899,7 +899,7 @@ louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louise
 
 ### louiselm.session.ErrorEvent
 
-- `data: { message: string, recovery: louiselm.session.RoutingRecovery, can_continue: boolean }`
+- `data: { message: string, recovery: (louiselm.session.RoutingRecovery)?, can_continue: boolean? }`
 - `session_id: string` -- Local session identifier.
 - `type: "error"`
 
@@ -1018,7 +1018,7 @@ louiselm.permission.Lifetime:
 ### louiselm.agent.Definition
 
 - `args: string[]` -- Arguments passed after the command.
-- `auto: { model: string, effort: string, default: boolean, rules: table<string, louiselm.routing.SelectionRule> }?` -- Baseline pair and qualified rules; new Sessions default to Auto unless default=false. Resumed choices are retained.
+- `auto: { model: string, effort: string?, default: boolean?, rules: table<string, louiselm.routing.SelectionRule>? }?` -- Baseline pair and qualified rules; new Sessions default to Auto unless default=false. Resumed choices are retained.
 - `capabilities: string[]?` -- Declared Agent traits, matched against `needs-capability:*` beads labels by the Agent selecting work and explicit Auto rule constraints by LouiseLM. Never Model-quality evidence; LouiseLM does not read Beads or choose work.
 - `command: string` -- Executable to start.
 - `env: table<string, string>?` -- Environment variables for the process.

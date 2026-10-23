@@ -87,7 +87,23 @@ end
 ---@param field table One doc.json field entry.
 ---@return string
 local function render_field(field)
-  local line = string.format("- `%s: %s`", field.name, field.view)
+  local view = field.view
+  local type_info = type(field.extends) == "table" and field.extends.types
+  local table_type = type(type_info) == "table" and type_info[1] or nil
+  if type(table_type) == "table" and table_type.type == "doc.type.table" and type(table_type.fields) == "table" then
+    local fields = {}
+    for _, nested in ipairs(table_type.fields) do
+      local nested_name = type(nested.name) == "table" and nested.name["[1]"] or nested.name
+      if type(nested_name) == "string" then
+        fields[#fields + 1] = string.format("%s: %s", nested_name, nested.view)
+      end
+    end
+    if #fields > 0 then
+      local suffix = view:sub(-1) == "?" and "?" or ""
+      view = "{ " .. table.concat(fields, ", ") .. " }" .. suffix
+    end
+  end
+  local line = string.format("- `%s: %s`", field.name, view)
   if type(field.desc) == "string" and field.desc ~= "" then
     line = line .. " -- " .. field.desc
   end

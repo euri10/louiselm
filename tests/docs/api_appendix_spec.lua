@@ -53,6 +53,39 @@ T["api_appendix"]["renders class fields grouped by section, excluding unlisted f
   MiniTest.expect.equality(output:find("## Widgets", 1, true) < output:find("## Gadgets", 1, true), true)
 end
 
+T["api_appendix"]["preserves optionality in inline table fields from export metadata"] = function()
+  local output = ApiAppendix.generate({
+    {
+      name = "widgets.Widget",
+      type = "type",
+      defines = { { file = "lua/widgets/init.lua", start = { 1 }, type = "doc.class" } },
+      fields = {
+        {
+          name = "config",
+          view = "{ model: string, effort: string, default: boolean }?",
+          extends = {
+            types = {
+              {
+                type = "doc.type.table",
+                fields = {
+                  { name = { ["[1]"] = "model" }, view = "string" },
+                  { name = { ["[1]"] = "effort" }, view = "string?" },
+                  { name = { ["[1]"] = "default" }, view = "boolean?" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, SECTIONS)
+
+  MiniTest.expect.equality(
+    output:find("- `config: { model: string, effort: string?, default: boolean? }?`", 1, true) ~= nil,
+    true
+  )
+end
+
 T["api_appendix"]["falls back to the alias union description when there are no fields"] = function()
   local entries = {
     {
