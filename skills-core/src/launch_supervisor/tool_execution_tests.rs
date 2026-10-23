@@ -186,9 +186,7 @@ fn privileged_confined_lua_gates_from_clean_snapshot() {
         "./scripts/generate-vimdoc --check",
         "./scripts/generate-plugin-version --check",
     ] {
-        let observed = format!(
-            "{gate} > /tmp/louiselm-verifier-gate.log 2>&1 || {{ status=$?; tail -n 80 /tmp/louiselm-verifier-gate.log; exit \"$status\"; }}"
-        );
+        let observed = observed_lua_gate(gate);
         let output =
             command_with_plan(&backend, &verifier, &observed, Duration::from_mins(3)).unwrap();
         assert_eq!(
@@ -198,6 +196,47 @@ fn privileged_confined_lua_gates_from_clean_snapshot() {
         );
         assert!(!output.timed_out, "{gate} timed out");
     }
+}
+
+fn observed_lua_gate(gate: &str) -> String {
+    // Long progress lines must not fill the collector's prefix before the failure summary.
+    format!(
+        "{gate} > /tmp/louiselm-verifier-gate.log 2>&1 || {{ status=$?; tail -c {MAX_TOOL_OUTPUT_BYTES} /tmp/louiselm-verifier-gate.log; exit \"$status\"; }}"
+    )
+}
+
+#[test]
+fn lua_gate_failure_report_survives_long_progress() {
+    let (_root, executor) = fixture();
+    let failure = "FAIL: tests/fixture_spec.lua:1: expected true, got false";
+    let gate =
+        format!("sh -c 'printf \"%8192s\\n\" progress; printf \"{failure}\\n\" >&2; exit 7'");
+    let output = command(
+        &executor,
+        &observed_lua_gate(&gate),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(output.exit_code, 7);
+    assert!(!output.timed_out);
+    assert!(output.stdout.len() <= MAX_TOOL_OUTPUT_BYTES);
+    assert!(
+        output.stdout.contains(failure),
+        "failure report was clipped"
+    );
+    assert!(!output.truncated);
+    assert_eq!(output.stderr, "");
+
+    let output = command(
+        &executor,
+        &observed_lua_gate("sh -c 'printf success; printf diagnostic >&2'"),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(output.exit_code, 0);
+    assert!(!output.timed_out && !output.truncated);
+    assert_eq!(output.stdout, "");
+    assert_eq!(output.stderr, "");
 }
 
 fn command(
