@@ -45,9 +45,11 @@ or mount a developer's home or `.deps` into the verifier.
 The `sender-guard-vm` CI job prepares those trusted tools before candidate code
 arrives. It then archives the tracked checkout and runs every Lua command above
 through the verifier's actual `ToolExecutor` confinement, with denied network
-and a private home. That offline VM gate is required; a host-side Lua pass does
-not substitute for it. Bump the pinned versions and hashes deliberately when
-updating the verifier toolchain.
+and a private home. It uses umask `077`, matching the installed launcher;
+permission fixtures must establish and assert their actual intended mode rather
+than relying on `mkdir` to bypass umask (louiselm-recording-fixture-umask-69fu8).
+That offline VM gate is required; a host-side Lua pass does not substitute for it.
+Bump the pinned versions and hashes deliberately when updating the verifier toolchain.
 
 The stock Codex configuration also runs
 `stock_tools_keep_neovim_logs_outside_source` with `LOUISELM_STOCK_CODEX_DIR`

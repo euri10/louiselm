@@ -180,6 +180,9 @@ T["missing sqlite and corrupt or unsafe files report typed failures"] = function
   MiniTest.expect.equality(append(corrupt, prepared()).code, "corrupt")
   local unsafe = store()
   assert(nvim.fn.mkdir(unsafe.directory, "p", 493) == 1)
+  -- mkdir applies umask; this fixture must remain unsafe under a private mask.
+  assert(nvim.uv.fs_chmod(unsafe.directory, 493))
+  MiniTest.expect.equality(assert(nvim.uv.fs_stat(unsafe.directory)).mode % 512, 493)
   MiniTest.expect.equality(append(unsafe, prepared()).code, "permissions")
   assert(nvim.uv.fs_chmod(unsafe.directory, 448))
   assert(nvim.uv.fs_symlink(writer.path, unsafe.path))

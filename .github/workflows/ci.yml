@@ -336,7 +336,7 @@ jobs:
               jq -r '\''select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'\'')
             test -x "$library_test"
             sudo -n env LOUISELM_LUA_SOURCE=/var/tmp/louiselm-lua-source timeout 900 \
-              "$library_test" launch_supervisor::tool_execution::tests::privileged_confined_lua_gates_from_clean_snapshot --exact --nocapture
+              /bin/bash -c '\''umask 077; exec "$1" launch_supervisor::tool_execution::tests::privileged_confined_lua_gates_from_clean_snapshot --exact --nocapture'\'' bash "$library_test"
           '
           # The disposable overlay must also reject changed trusted bytes.
           ./scripts/launcher-vm exec sudo -n bash -ceu '
