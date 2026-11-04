@@ -20,6 +20,7 @@ use std::{
 use clap::{Args, FromArgMatches};
 use serde::Serialize;
 
+mod endorser;
 mod grammar;
 use thiserror::Error;
 
@@ -86,6 +87,9 @@ pub enum CliError {
     /// A trust operation failed.
     #[error(transparent)]
     Trust(#[from] TrustError),
+    /// The local endorser layer could not be read or changed.
+    #[error(transparent)]
+    Endorser(#[from] crate::endorsement::local::LocalError),
     /// An Admission or lifecycle step failed.
     #[error(transparent)]
     Admission(#[from] AdmissionError),
@@ -239,6 +243,7 @@ pub fn run() -> Result<i32, CliError> {
         "list" => list(&options),
         "policy" => policy(&options),
         "trust" => trust(&options),
+        "endorser" => endorser::run(&options),
         "generation" => generation(&options),
         "view" => view_command(&options),
         "quarantine" => quarantine_command(&options),
@@ -342,6 +347,16 @@ struct Options {
     assessment_prompt: Option<String>,
     #[arg(long)]
     captured_at: Option<u64>,
+    #[arg(long)]
+    endorser: Option<String>,
+    #[arg(long)]
+    label: Option<String>,
+    #[arg(long = "role")]
+    roles: Vec<String>,
+    #[arg(long)]
+    max_lifetime_days: Option<u64>,
+    #[arg(long)]
+    allow_software_key: bool,
     #[arg(long = "robot-json")]
     robot: bool,
     #[arg(long = "digest")]

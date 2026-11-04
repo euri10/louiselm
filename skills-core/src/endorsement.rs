@@ -24,6 +24,7 @@
 //! compact JSON. Signatures use their own SSHSIG namespace, so an Endorsement
 //! never verifies as an Admission or a release, nor the reverse.
 
+pub mod local;
 mod merkle;
 pub mod trust;
 

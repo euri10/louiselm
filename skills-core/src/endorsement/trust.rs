@@ -13,31 +13,96 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{EndorsementError, EndorserRole, Record, valid_public_key, valid_text};
-use crate::sshsig::SkPolicy;
+use crate::{scan::escape, sshsig::SkPolicy};
 
 /// The longest validity window any endorser entry may accept: 180 days.
 pub const MAX_LIFETIME_MS: u64 = 180 * 24 * 60 * 60 * 1000;
 
+/// Schema of the release-bound default endorser list.
+pub const DEFAULTS_SCHEMA: &str = "louiselm.skills.endorsers/1";
+
+const DEFAULTS: &str = include_str!("../endorsers_default.json");
+
 /// Local trust in one endorser key.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Fields are in alphabetical order so the serialized form is sorted-key
+/// JSON, the same canonical shape as Endorsement records.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EndorserEntry {
+    /// Local display label for human views. Never part of a portable record.
+    pub label: String,
+    /// Longest accepted `expires_at_ms - issued_at_ms`, at most [`MAX_LIFETIME_MS`].
+    pub max_lifetime_ms: u64,
     /// The endorser's `OpenSSH` public key, `<algorithm> <base64>`, no comment.
     pub public_key: String,
     /// Roles this key is trusted to sign as.
     pub roles: Vec<EndorserRole>,
-    /// Local display label for human views. Never part of a portable record.
-    pub label: String,
     /// What the key's signatures must prove about the authenticator.
     pub sk_policy: SkPolicy,
-    /// Longest accepted `expires_at_ms - issued_at_ms`, at most [`MAX_LIFETIME_MS`].
-    pub max_lifetime_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DefaultsDocument {
+    endorsers: Vec<EndorserEntry>,
+    schema: String,
+}
+
+/// Returns the default endorser list compiled into this build, byte for byte.
+///
+/// The release bundle carries the same bytes as `policy/endorsers.json`, so
+/// release verification covers which endorsers a build trusts by default.
+#[must_use]
+pub fn embedded_default_bytes() -> &'static [u8] {
+    DEFAULTS.as_bytes()
+}
+
+/// Parses and validates a default endorser list.
+///
+/// # Errors
+/// Returns [`EndorserError::Malformed`], [`EndorserError::UnsupportedSchema`],
+/// or the entry/duplicate errors [`EndorserSet::effective`] would return.
+pub fn parse_defaults(bytes: &[u8]) -> Result<Vec<EndorserEntry>, EndorserError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| EndorserError::Malformed(escape(&error.to_string())))?;
+    match value.get("schema") {
+        Some(serde_json::Value::String(schema)) if schema == DEFAULTS_SCHEMA => (),
+        Some(serde_json::Value::String(schema)) => {
+            return Err(EndorserError::UnsupportedSchema(escape(schema)));
+        }
+        _ => return Err(EndorserError::Malformed("missing schema".into())),
+    }
+    let document: DefaultsDocument = serde_json::from_value(value)
+        .map_err(|error| EndorserError::Malformed(escape(&error.to_string())))?;
+    if document.schema != DEFAULTS_SCHEMA {
+        return Err(EndorserError::UnsupportedSchema(escape(&document.schema)));
+    }
+    check_layer(&document.endorsers)?;
+    Ok(document.endorsers)
+}
+
+/// Returns the default endorsers compiled into this build.
+///
+/// # Panics
+/// Panics if the trusted, compile-time `endorsers_default.json` is malformed;
+/// caller-supplied bytes never reach this path.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "Only the versioned include_str endorser asset is parsed; tests validate that asset."
+)]
+pub fn embedded_defaults() -> Vec<EndorserEntry> {
+    parse_defaults(embedded_default_bytes())
+        .expect("the embedded endorser list is validated by tests")
 }
 
 /// The effective endorser set after combining layers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EndorserSet {
     entries: Vec<EndorserEntry>,
 }
@@ -78,6 +143,12 @@ pub enum TrustDecision {
 /// Why endorser layers could not be combined.
 #[derive(Debug, Error)]
 pub enum EndorserError {
+    /// A default endorser list is not well-formed JSON of its schema.
+    #[error("malformed endorser list: {0}")]
+    Malformed(String),
+    /// A default endorser list names a schema this build does not read.
+    #[error("unsupported endorser list schema '{0}'")]
+    UnsupportedSchema(String),
     /// An entry holds a value the format forbids.
     #[error("invalid endorser entry field {field}: {reason}")]
     Invalid {
@@ -165,7 +236,7 @@ impl EndorserSet {
     }
 }
 
-fn check_layer(entries: &[EndorserEntry]) -> Result<(), EndorserError> {
+pub(super) fn check_layer(entries: &[EndorserEntry]) -> Result<(), EndorserError> {
     let mut seen = BTreeSet::new();
     for entry in entries {
         validate(entry)?;
@@ -178,7 +249,7 @@ fn check_layer(entries: &[EndorserEntry]) -> Result<(), EndorserError> {
     Ok(())
 }
 
-fn validate(entry: &EndorserEntry) -> Result<(), EndorserError> {
+pub(super) fn validate(entry: &EndorserEntry) -> Result<(), EndorserError> {
     let invalid = |field, reason| Err(EndorserError::Invalid { field, reason });
     if !valid_public_key(&entry.public_key) {
         return invalid(

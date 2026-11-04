@@ -351,6 +351,10 @@ pub fn assemble(
     }
 
     write(&bundle.join("policy/policy.json"), Policy::embedded_bytes())?;
+    write(
+        &bundle.join("policy/endorsers.json"),
+        crate::endorsement::trust::embedded_default_bytes(),
+    )?;
     let schemas = schema_identifiers();
     write(
         &bundle.join("schemas/schemas.json"),
@@ -359,6 +363,7 @@ pub fn assemble(
     )?;
     for extra in [
         ("policy/policy.json", ComponentKind::Data),
+        ("policy/endorsers.json", ComponentKind::Data),
         ("schemas/schemas.json", ComponentKind::Data),
     ] {
         let (sha256, size) = hash(&bundle.join(extra.0))?;
@@ -678,6 +683,13 @@ fn schema_identifiers() -> Vec<String> {
         crate::assessment::ASSESSMENT_SCHEMA,
         crate::generation::GENERATION_SCHEMA,
         crate::generation::RECORD_SCHEMA,
+        crate::endorsement::ENDORSEMENT_NAMESPACE,
+        crate::endorsement::RECORD_SCHEMA,
+        crate::endorsement::trust::DEFAULTS_SCHEMA,
+        crate::endorsement::local::ENDORSER_NAMESPACE,
+        crate::endorsement::local::ADDITION_SCHEMA,
+        crate::endorsement::local::RESTORE_SCHEMA,
+        crate::endorsement::local::LOCAL_SCHEMA,
         crate::trust::TRUST_SCHEMA,
         crate::trust::recovery::RECOVERY_NAMESPACE,
         crate::trust::onboarding::SETUP_NAMESPACE,

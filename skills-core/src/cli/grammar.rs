@@ -26,6 +26,9 @@ fn operation(name: &str, verb: &'static str) -> Command {
     let required: &[&str] = match (name, verb) {
         ("trust", "bootstrap") => &["primary", "release_key"],
         ("trust", "reset") => &["confirm"],
+        ("endorser", "add") => &["endorser", "label", "roles", "key"],
+        ("endorser", "remove") => &["endorser"],
+        ("endorser", "restore") => &["endorser", "key"],
         ("generation", "admit") => &["members", "key"],
         ("generation", "witness") => &["remote"],
         ("view", "materialize") => &["registry"],
@@ -63,6 +66,7 @@ pub(super) fn command() -> Command {
     }
     for (name, verbs) in [
         ("trust", &["bootstrap", "show", "reset"][..]),
+        ("endorser", &["list", "add", "remove", "restore"]),
         (
             "generation",
             &["admit", "witness", "activate", "status", "list"],

@@ -125,6 +125,12 @@ trust bootstrap --primary PUBLIC_KEY --release PUBLIC_KEY [--require-hardware]
 trust show
 trust reset --confirm  # development stores only
 
+endorser list
+endorser add --endorser PUBLIC_KEY --label TEXT --role publisher|reviewer ...
+             --key PRIMARY_PRIVKEY [--max-lifetime-days 1..180] [--allow-software-key]
+endorser remove --endorser PUBLIC_KEY            # unsigned: only ever lowers trust
+endorser restore --endorser PUBLIC_KEY --key PRIMARY_PRIVKEY
+
 recovery setup --store PATH --primary PRIVATE_KEY --release PRIVATE_KEY
 recovery check-paper --store PATH
 recovery status --store PATH

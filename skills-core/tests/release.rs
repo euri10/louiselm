@@ -163,10 +163,16 @@ fn a_bundle_binds_its_source_toolchain_dependencies_policy_and_bytes() {
             .collect::<Vec<_>>(),
         vec![
             "louiselm-skills",
+            "policy/endorsers.json",
             "policy/policy.json",
             "schemas/schemas.json"
         ],
-        "the policy and schemas are components, not decoration",
+        "the policy, default endorsers and schemas are components, not decoration",
+    );
+    assert_eq!(
+        std::fs::read(bundle.join("policy/endorsers.json")).unwrap(),
+        louiselm_skills::endorsement::trust::embedded_default_bytes(),
+        "a build's default endorsers are the bytes its release verifies",
     );
     assert!(manifest.components[0].executable);
     assert!(!manifest.components[1].executable);
