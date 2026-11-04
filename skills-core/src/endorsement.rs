@@ -25,6 +25,7 @@
 //! never verifies as an Admission or a release, nor the reverse.
 
 mod merkle;
+pub mod trust;
 
 use std::collections::BTreeSet;
 
