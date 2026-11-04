@@ -1552,13 +1552,17 @@ Agent-scoped Instruction views (louiselm-d6fv.3), Session launch and containment
 (louiselm-d6fv.4), and portable Endorsements (louiselm-d6fv.8) build on the
 canonical contract, the Generation chain, and the release identity defined here.
 
-`endorsement` defines the portable Endorsement record: sorted-key compact JSON
-over the portable package digest, signed with SSHSIG in its own
-`louiselm.skills.endorsement/1` namespace by a `publisher` or `reviewer` key.
+`endorsement` defines portable Endorsement records. One SSHSIG signature, in
+its own `louiselm.skills.endorsement/1` namespace, by a `publisher` or
+`reviewer` key, covers a batch header. The header binds an RFC 9162 Merkle root
+over leaves for each package, each blinded by a random nonce. Each package
+exports as a standalone record: header, signature, its own leaf and an
+inclusion proof, as sorted-key compact JSON over the portable package digest.
+A record never reveals another subject. A batch either endorses or withdraws.
 Parsing and verification are offline. A verified record proves only which key
-made the claim and that it is within `[issued_at_ms, expires_at_ms)`. Trusting
-an endorser, importing, and Dossier display are not implemented yet
-(louiselm-d6fv.8.2, .8.3), so nothing here touches Skill Admission.
+made the claim and that it is within `[issued_at_ms, expires_at_ms)`. Endorser
+trust, import, and Dossier focus are tracked in louiselm-d6fv.8.6, .8.2 and
+.8.3, so nothing here touches Skill Admission.
 `louiselm-launch` is built into the signed bundle. The control-service binary
 is still owned by louiselm-qbr.5.1; the bundle format already has a slot for it,
 and a release that declares a component it cannot produce is refused rather
