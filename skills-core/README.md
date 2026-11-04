@@ -130,6 +130,9 @@ endorser add --endorser PUBLIC_KEY --label TEXT --role publisher|reviewer ...
              --key PRIMARY_PRIVKEY [--max-lifetime-days 1..180] [--allow-software-key]
 endorser remove --endorser PUBLIC_KEY            # unsigned: only ever lowers trust
 endorser restore --endorser PUBLIC_KEY --key PRIMARY_PRIVKEY
+endorsement import FILE|DIR      # append-only; also automatic from skills/endorsements/ on package
+endorsement list                 # each record with its trust decision, recomputed now
+endorsement prune                # expired Endorsements only; withdrawals are never removed
 
 recovery setup --store PATH --primary PRIVATE_KEY --release PRIVATE_KEY
 recovery check-paper --store PATH

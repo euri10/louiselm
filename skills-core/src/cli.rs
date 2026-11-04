@@ -20,6 +20,7 @@ use std::{
 use clap::{Args, FromArgMatches};
 use serde::Serialize;
 
+mod endorsement;
 mod endorser;
 mod grammar;
 use thiserror::Error;
@@ -90,6 +91,9 @@ pub enum CliError {
     /// The local endorser layer could not be read or changed.
     #[error(transparent)]
     Endorser(#[from] crate::endorsement::local::LocalError),
+    /// Endorsement records could not be imported, read or pruned.
+    #[error(transparent)]
+    Endorsement(#[from] crate::endorsement::import::ImportError),
     /// An Admission or lifecycle step failed.
     #[error(transparent)]
     Admission(#[from] AdmissionError),
@@ -133,6 +137,8 @@ struct PackageResult {
     entry_count: usize,
     total_bytes: u64,
     policy_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    endorsements: Option<endorsement::ImportSummary>,
 }
 
 /// What verifying a package produced.
@@ -210,18 +216,7 @@ pub fn run() -> Result<i32, CliError> {
             "--policy requires --policy-digest".into(),
         ));
     }
-    if matches!(command, "package" | "verify" | "inspect" | "dossier")
-        || (command == "generation"
-            && matches!(
-                options.positional.first().map(String::as_str),
-                Some("witness" | "activate")
-            ))
-        || (command == "quarantine"
-            && options
-                .positional
-                .first()
-                .is_some_and(|verb| verb == "exclude"))
-    {
+    if takes_subjects(command, options.positional.first().map(String::as_str)) {
         let subjects = leaf
             .get_many::<String>("subjects")
             .ok_or_else(|| CliError::Invalid("missing command subject; use --help".into()))?;
@@ -244,6 +239,7 @@ pub fn run() -> Result<i32, CliError> {
         "policy" => policy(&options),
         "trust" => trust(&options),
         "endorser" => endorser::run(&options),
+        "endorsement" => endorsement::run(&options),
         "generation" => generation(&options),
         "view" => view_command(&options),
         "quarantine" => quarantine_command(&options),
@@ -585,6 +581,15 @@ fn package(options: &Options) -> Result<i32, CliError> {
         None => now_ms(),
     };
     let (package, outcome) = store.capture(&source, &policy, captured_at)?;
+    // A skills tree carries its publisher's Endorsements beside the skills;
+    // importing them here means a user who pulls and captures receives every
+    // withdrawal without a second command. Import stores evidence only.
+    let endorsements = match crate::endorsement::import::sibling_directory(&source) {
+        Some(directory) => Some(endorsement::ImportSummary::from(
+            &crate::endorsement::import::import_path(&store, &directory)?,
+        )),
+        None => None,
+    };
     let result = PackageResult {
         schema: "louiselm.skills.package-result/1",
         digest: package.digest.to_string(),
@@ -595,6 +600,7 @@ fn package(options: &Options) -> Result<i32, CliError> {
         entry_count: package.manifest.entries.len(),
         total_bytes: package.manifest.total_size(),
         policy_digest: policy.digest().to_string(),
+        endorsements,
     };
     if options.robot {
         println!("{}", robot::payload(&result)?);
@@ -603,6 +609,9 @@ fn package(options: &Options) -> Result<i32, CliError> {
             "{} {} ({} file(s), {} byte(s))",
             result.outcome, result.digest, result.entry_count, result.total_bytes,
         );
+        if let Some(summary) = &result.endorsements {
+            println!("{}", summary.human());
+        }
     }
     Ok(0)
 }
@@ -1203,6 +1212,17 @@ fn required<'a, T>(value: Option<&'a T>, flag: &str) -> Result<&'a T, CliError> 
 
 fn parse_review_depth(value: &str) -> Result<ReviewDepth, &'static str> {
     ReviewDepth::parse(value).ok_or("use unstated, skimmed, read or reproduced")
+}
+
+/// Commands whose positional subjects follow the verb on the command line.
+fn takes_subjects(command: &str, verb: Option<&str>) -> bool {
+    matches!(
+        (command, verb),
+        ("package" | "verify" | "inspect" | "dossier", _)
+            | ("generation", Some("witness" | "activate"))
+            | ("quarantine", Some("exclude"))
+            | ("endorsement", Some("import"))
+    )
 }
 
 fn default_store_root() -> Result<PathBuf, CliError> {

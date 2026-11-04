@@ -67,6 +67,7 @@ pub(super) fn command() -> Command {
     for (name, verbs) in [
         ("trust", &["bootstrap", "show", "reset"][..]),
         ("endorser", &["list", "add", "remove", "restore"]),
+        ("endorsement", &["import", "list", "prune"]),
         (
             "generation",
             &["admit", "witness", "activate", "status", "list"],
@@ -93,7 +94,9 @@ pub(super) fn command() -> Command {
         let mut group = leaf(name).subcommand_required(true);
         for &verb in verbs {
             let command = operation(name, verb);
-            let command = if name == "generation" && matches!(verb, "witness" | "activate") {
+            let command = if (name == "generation" && matches!(verb, "witness" | "activate"))
+                || (name == "endorsement" && verb == "import")
+            {
                 subject(command, false)
             } else if name == "quarantine" && verb == "exclude" {
                 subject(command, true)
