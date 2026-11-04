@@ -272,3 +272,177 @@ fn listed_endorsements_show_the_trust_decision_recomputed_now() {
     assert_eq!(status, 0, "{stderr}");
     assert_eq!(decision(&fixture)["trusted"], false);
 }
+
+struct Publishing {
+    fixture: Fixture,
+    primary: SshKey,
+    publisher: SshKey,
+    packages: Vec<String>,
+}
+
+impl Publishing {
+    fn new() -> Self {
+        let fixture = Fixture::new();
+        let primary = SshKey::generate(&fixture, "primary");
+        let release = SshKey::generate(&fixture, "release");
+        let publisher = SshKey::generate(&fixture, "publisher");
+        let (status, _, stderr) = run(
+            &fixture,
+            &[
+                "trust",
+                "bootstrap",
+                "--primary",
+                &primary.public_key(),
+                "--release",
+                &release.public_key(),
+            ],
+        );
+        assert_eq!(status, 0, "{stderr}");
+        let packages = ["alpha", "beta"]
+            .iter()
+            .map(|name| {
+                let skill = fixture.candidate(&format!("skills/{name}"));
+                support::write_file(
+                    &skill.join("SKILL.md"),
+                    &format!("---\nname: {name}\ndescription: The {name} skill.\n---\n\nBody.\n"),
+                );
+                let (status, stdout, stderr) = run(
+                    &fixture,
+                    &["package", skill.to_str().unwrap(), "--robot-json"],
+                );
+                assert_eq!(status, 0, "{stderr}");
+                let result: Value = serde_json::from_str(&stdout).unwrap();
+                result["digest"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        Self {
+            fixture,
+            primary,
+            publisher,
+            packages,
+        }
+    }
+
+    fn sign(&self, verb: &str, endorser: &SshKey, output: &str) -> (i32, String, String) {
+        let mut arguments = vec![
+            "endorsement".to_owned(),
+            verb.to_owned(),
+            "--role".to_owned(),
+            "publisher".to_owned(),
+            "--endorser".to_owned(),
+            endorser.public_key(),
+            "--key".to_owned(),
+            path(endorser).to_owned(),
+            "--output".to_owned(),
+            self.fixture.path(output).to_str().unwrap().to_owned(),
+            "--review-depth".to_owned(),
+            "read".to_owned(),
+            "--robot-json".to_owned(),
+        ];
+        for package in &self.packages {
+            arguments.push("--member".to_owned());
+            arguments.push(package.clone());
+        }
+        let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        run(&self.fixture, &arguments)
+    }
+
+    fn written(&self, output: &str) -> Vec<louiselm_skills::endorsement::Record> {
+        let mut records: Vec<_> = std::fs::read_dir(self.fixture.path(output))
+            .unwrap()
+            .map(|entry| {
+                louiselm_skills::endorsement::parse(&std::fs::read(entry.unwrap().path()).unwrap())
+                    .unwrap()
+            })
+            .collect();
+        records.sort_by_key(louiselm_skills::endorsement::Record::digest);
+        records
+    }
+}
+
+#[test]
+fn a_publisher_signs_one_batch_whose_records_import_and_cover_each_package() {
+    use louiselm_skills::{Digest, endorsement::StatementKind};
+
+    let publishing = Publishing::new();
+    let (status, _, stderr) = publishing.sign("sign-batch", &publishing.publisher, "out");
+    assert_eq!(status, 0, "{stderr}");
+
+    let records = publishing.written("out");
+    assert_eq!(records.len(), 2);
+    for package in &publishing.packages {
+        let digest = Digest::parse(package).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.covers(&digest))
+                .count(),
+            1
+        );
+    }
+    let signing = records[0].signing();
+    assert_eq!(
+        signing.expires_at_ms - signing.issued_at_ms,
+        90 * 86_400_000
+    );
+    assert_eq!(records[0].kind(), StatementKind::Endorsement);
+
+    let output = publishing.fixture.path("out");
+    let (status, _, stderr) = run(
+        &publishing.fixture,
+        &["endorsement", "import", output.to_str().unwrap()],
+    );
+    assert_eq!(status, 0, "{stderr}");
+
+    let digest = records[0].digest().to_string();
+    let exported = publishing.fixture.path("exported.json");
+    let (status, _, stderr) = run(
+        &publishing.fixture,
+        &[
+            "endorsement",
+            "export",
+            &digest,
+            "--output",
+            exported.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(status, 0, "{stderr}");
+    assert_eq!(std::fs::read(&exported).unwrap(), records[0].to_bytes());
+
+    let (status, _, _) = run(
+        &publishing.fixture,
+        &[
+            "endorsement",
+            "export",
+            &digest,
+            "--output",
+            exported.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(status, 1, "export never overwrites a file");
+}
+
+#[test]
+fn a_withdrawal_batch_names_each_package() {
+    use louiselm_skills::endorsement::StatementKind;
+
+    let publishing = Publishing::new();
+    let (status, _, stderr) = publishing.sign("withdraw", &publishing.publisher, "withdrawn");
+    assert_eq!(status, 0, "{stderr}");
+    let records = publishing.written("withdrawn");
+    assert_eq!(records.len(), 2);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.kind() == StatementKind::Withdrawal)
+    );
+}
+
+#[test]
+fn local_authority_keys_cannot_sign_endorsements() {
+    let publishing = Publishing::new();
+    let (status, _, stderr) = publishing.sign("sign-batch", &publishing.primary, "out");
+    assert_eq!(status, 1);
+    assert!(stderr.contains("enrolled"), "{stderr}");
+    assert!(!publishing.fixture.path("out").exists());
+}

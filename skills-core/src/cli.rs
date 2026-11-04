@@ -94,6 +94,9 @@ pub enum CliError {
     /// Endorsement records could not be imported, read or pruned.
     #[error(transparent)]
     Endorsement(#[from] crate::endorsement::import::ImportError),
+    /// An Endorsement batch could not be signed.
+    #[error(transparent)]
+    EndorsementRecord(#[from] crate::endorsement::EndorsementError),
     /// An Admission or lifecycle step failed.
     #[error(transparent)]
     Admission(#[from] AdmissionError),
@@ -353,6 +356,10 @@ struct Options {
     max_lifetime_days: Option<u64>,
     #[arg(long)]
     allow_software_key: bool,
+    #[arg(long = "assumption")]
+    assumptions: Vec<String>,
+    #[arg(long)]
+    days: Option<u64>,
     #[arg(long = "robot-json")]
     robot: bool,
     #[arg(long = "digest")]
@@ -1221,7 +1228,7 @@ fn takes_subjects(command: &str, verb: Option<&str>) -> bool {
         ("package" | "verify" | "inspect" | "dossier", _)
             | ("generation", Some("witness" | "activate"))
             | ("quarantine", Some("exclude"))
-            | ("endorsement", Some("import"))
+            | ("endorsement", Some("import" | "export"))
     )
 }
 

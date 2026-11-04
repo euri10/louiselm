@@ -82,7 +82,7 @@ pub(super) fn run(options: &Options) -> Result<i32, CliError> {
     }
 }
 
-fn endorser_key(options: &Options) -> Result<String, CliError> {
+pub(super) fn endorser_key(options: &Options) -> Result<String, CliError> {
     let material = Options::key_material("--endorser", options.endorser.as_deref())?;
     // Keep `<algorithm> <base64>` only; a `.pub` file's comment is local.
     Ok(material

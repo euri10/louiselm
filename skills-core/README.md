@@ -130,6 +130,11 @@ endorser add --endorser PUBLIC_KEY --label TEXT --role publisher|reviewer ...
              --key PRIMARY_PRIVKEY [--max-lifetime-days 1..180] [--allow-software-key]
 endorser remove --endorser PUBLIC_KEY            # unsigned: only ever lowers trust
 endorser restore --endorser PUBLIC_KEY --key PRIMARY_PRIVKEY
+endorsement sign-batch --member DIGEST ... --role publisher|reviewer --endorser PUBLIC_KEY
+                       --key PRIVKEY --output DIR [--review-depth D] [--assumption TEXT ...]
+                       [--days 1..180] [--assessment-model M --assessment-prompt P]
+endorsement withdraw --member DIGEST ... --role R --endorser PUBLIC_KEY --key PRIVKEY --output DIR
+endorsement export RECORD_DIGEST --output FILE   # exactly one record; never overwrites
 endorsement import FILE|DIR      # append-only; also automatic from skills/endorsements/ on package
 endorsement list                 # each record with its trust decision, recomputed now
 endorsement prune                # expired Endorsements only; withdrawals are never removed

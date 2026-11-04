@@ -29,11 +29,14 @@ fn operation(name: &str, verb: &'static str) -> Command {
         ("endorser", "add") => &["endorser", "label", "roles", "key"],
         ("endorser", "remove") => &["endorser"],
         ("endorser", "restore") => &["endorser", "key"],
+        ("endorsement", "sign-batch" | "withdraw") => {
+            &["members", "roles", "endorser", "key", "output"]
+        }
         ("generation", "admit") => &["members", "key"],
         ("generation", "witness") => &["remote"],
         ("view", "materialize") => &["registry"],
         ("quarantine", "all" | "exclude") => &["reason"],
-        ("release", "build") => &["output"],
+        ("release", "build") | ("endorsement", "export") => &["output"],
         ("release", "sign") => &["bundle", "key"],
         ("release", "verify" | "install") => &["bundle"],
         ("launcher", "install") => &[
@@ -67,7 +70,17 @@ pub(super) fn command() -> Command {
     for (name, verbs) in [
         ("trust", &["bootstrap", "show", "reset"][..]),
         ("endorser", &["list", "add", "remove", "restore"]),
-        ("endorsement", &["import", "list", "prune"]),
+        (
+            "endorsement",
+            &[
+                "sign-batch",
+                "withdraw",
+                "export",
+                "import",
+                "list",
+                "prune",
+            ],
+        ),
         (
             "generation",
             &["admit", "witness", "activate", "status", "list"],
@@ -95,7 +108,7 @@ pub(super) fn command() -> Command {
         for &verb in verbs {
             let command = operation(name, verb);
             let command = if (name == "generation" && matches!(verb, "witness" | "activate"))
-                || (name == "endorsement" && verb == "import")
+                || (name == "endorsement" && matches!(verb, "import" | "export"))
             {
                 subject(command, false)
             } else if name == "quarantine" && verb == "exclude" {

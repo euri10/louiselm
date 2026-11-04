@@ -1,19 +1,41 @@
-//! `endorsement import|list|prune`: imported Endorsement evidence.
+//! `endorsement sign-batch|withdraw|export|import|list|prune`.
 //!
-//! Importing stores exact bytes and decides nothing. `list` shows, for every
-//! stored record, the trust decision recomputed now from the effective
-//! endorser set. A trusted record is evidence that may focus review; it never
-//! admits anything. `prune` drops expired Endorsements and never a withdrawal.
+//! Signing recomputes every package's Dossier from the store and signs one
+//! batch with one touch; Agent-supplied digests are never signed. The
+//! endorser key must not be any key enrolled for local authority. Exporting
+//! copies exactly one stored record. Importing stores exact bytes and decides
+//! nothing. `list` shows, for every stored record, the trust decision
+//! recomputed now. A trusted record is evidence that may focus review; it
+//! never admits anything. `prune` drops expired Endorsements and never a
+//! withdrawal.
+
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+};
 
 use serde::Serialize;
 
-use super::{CliError, Options, now_ms, report};
-use crate::endorsement::{
-    EndorserRole, Record, StatementKind, Subject,
-    import::{self, ImportReport, RefusedFile},
-    local,
-    trust::{Distrust, TrustDecision},
+use super::{CliError, Options, endorser::endorser_key, now_ms, report};
+use crate::{
+    canonical::Digest,
+    dossier::{Dossier, DossierRequest},
+    endorsement::{
+        self, Batch, EndorsedPackage, EndorserRole, Record, Signing, StatedAssessment,
+        StatementKind, Subject,
+        import::{self, ImportReport, RefusedFile},
+        local,
+        trust::{Distrust, TrustDecision},
+    },
+    signer::SshKeygenSigner,
+    store::Store,
+    trust::TrustStore,
 };
+
+const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+const DEFAULT_DAYS: u64 = 90;
+const MAX_DAYS: u64 = 180;
 
 #[derive(Serialize)]
 struct Listed {
@@ -118,10 +140,173 @@ pub(super) fn run(options: &Options) -> Result<i32, CliError> {
                 )
             })
         }
+        verb @ ("sign-batch" | "withdraw") => {
+            let signing = signing(options, &store)?;
+            let batch = if verb == "sign-batch" {
+                Batch::Endorsements(packages(options, &store)?)
+            } else {
+                Batch::Withdrawals(members(options)?)
+            };
+            let records = endorsement::sign_batch(
+                &signing,
+                &batch,
+                &SshKeygenSigner::new(&options.signing_key()?),
+            )?;
+            let written = write_records(options, &records)?;
+            report(options, &written, |written| {
+                format!(
+                    "{} record(s) signed with one signature and written; publish them beside the skills",
+                    written.len()
+                )
+            })
+        }
+        "export" => {
+            let digest = Digest::parse(options.positional.get(1).ok_or_else(|| {
+                CliError::Invalid("endorsement export needs a record digest".into())
+            })?)?;
+            let output = options
+                .output
+                .as_deref()
+                .ok_or_else(|| CliError::Invalid("--output is required".into()))?;
+            let record = import::records(&store)?
+                .records
+                .into_iter()
+                .find(|record| record.digest() == digest)
+                .ok_or_else(|| CliError::Invalid(format!("no stored Endorsement {digest}")))?;
+            write_new(output, &record.to_bytes())?;
+            report(options, &digest.to_string(), |digest| {
+                format!("exported {digest}; nothing else about this store is in the file")
+            })
+        }
         other => Err(CliError::Invalid(format!(
             "unknown endorsement verb '{other}'"
         ))),
     }
+}
+
+fn signing(options: &Options, store: &Store) -> Result<Signing, CliError> {
+    let signer_key = endorser_key(options)?;
+    if let Some(trust) = TrustStore::load(store)?
+        && trust.keys.iter().any(|key| {
+            key.public_key
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+                == signer_key
+        })
+    {
+        return Err(CliError::Invalid(
+            "the endorser key is enrolled for local authority; use a separate publisher or reviewer credential".into(),
+        ));
+    }
+    let signer_role = match options.roles.as_slice() {
+        [role] if role == "publisher" => EndorserRole::Publisher,
+        [role] if role == "reviewer" => EndorserRole::Reviewer,
+        _ => {
+            return Err(CliError::Invalid(
+                "give exactly one --role: publisher or reviewer".into(),
+            ));
+        }
+    };
+    let days = options.days.unwrap_or(DEFAULT_DAYS);
+    if !(1..=MAX_DAYS).contains(&days) {
+        return Err(CliError::Invalid("--days must be 1 to 180".into()));
+    }
+    let issued_at_ms = now_ms();
+    Ok(Signing {
+        signer_role,
+        signer_key,
+        issued_at_ms,
+        expires_at_ms: issued_at_ms.saturating_add(days * DAY_MS),
+    })
+}
+
+fn members(options: &Options) -> Result<Vec<Digest>, CliError> {
+    if options.members.is_empty() {
+        return Err(CliError::Invalid(
+            "give at least one --member DIGEST".into(),
+        ));
+    }
+    options
+        .members
+        .iter()
+        .map(|member| Digest::parse(member).map_err(CliError::from))
+        .collect()
+}
+
+fn packages(options: &Options, store: &Store) -> Result<Vec<EndorsedPackage>, CliError> {
+    let policy = options.policy()?;
+    members(options)?
+        .into_iter()
+        .map(|digest| {
+            let mut request = DossierRequest::new(&digest).with_review_depth(options.review_depth);
+            if let (Some(model), Some(prompt)) =
+                (&options.assessment_model, &options.assessment_prompt)
+            {
+                request = request.with_assessment_key(model, prompt);
+            }
+            let dossier = Dossier::build(store, &policy, &request)?;
+            if !dossier.reviewable() {
+                return Err(CliError::Invalid(format!(
+                    "{digest} is not reviewable here; it cannot be endorsed"
+                )));
+            }
+            let assessment = match (&options.assessment_model, dossier.assessment.as_ref()) {
+                (None, _) => None,
+                (Some(_), None) => {
+                    return Err(CliError::Invalid(format!(
+                        "no stored Assessment of {digest} matches the stated model and prompt"
+                    )));
+                }
+                (Some(model), Some(_)) => Some(StatedAssessment {
+                    model: model.clone(),
+                    prompt_version: options.assessment_prompt.clone().unwrap_or_default(),
+                }),
+            };
+            Ok(EndorsedPackage {
+                package_digest: digest.clone(),
+                policy_digest: policy.digest().clone(),
+                dossier_digest: Some(dossier.portable_digest()),
+                assessment,
+                review_depth: options.review_depth,
+                assumptions: options.assumptions.clone(),
+            })
+        })
+        .collect()
+}
+
+fn write_records(options: &Options, records: &[Vec<u8>]) -> Result<Vec<String>, CliError> {
+    let output = options
+        .output
+        .as_deref()
+        .ok_or_else(|| CliError::Invalid("--output is required".into()))?;
+    fs::create_dir_all(output).map_err(|error| {
+        CliError::Invalid(format!("cannot create {}: {error}", output.display()))
+    })?;
+    records
+        .iter()
+        .map(|bytes| {
+            let digest = Digest::of(bytes);
+            write_new(
+                &output.join(format!("{}.json", digest.directory_name())),
+                bytes,
+            )?;
+            Ok(digest.to_string())
+        })
+        .collect()
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .map_err(|error| CliError::Invalid(format!("cannot write {}: {error}", path.display())))
 }
 
 fn listed(record: &Record, decision: &TrustDecision) -> Listed {
