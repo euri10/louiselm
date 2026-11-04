@@ -1551,6 +1551,14 @@ cryptography of its own.
 Agent-scoped Instruction views (louiselm-d6fv.3), Session launch and containment
 (louiselm-d6fv.4), and portable Endorsements (louiselm-d6fv.8) build on the
 canonical contract, the Generation chain, and the release identity defined here.
+
+`endorsement` defines the portable Endorsement record: sorted-key compact JSON
+over the portable package digest, signed with SSHSIG in its own
+`louiselm.skills.endorsement/1` namespace by a `publisher` or `reviewer` key.
+Parsing and verification are offline. A verified record proves only which key
+made the claim and that it is within `[issued_at_ms, expires_at_ms)`. Trusting
+an endorser, importing, and Dossier display are not implemented yet
+(louiselm-d6fv.8.2, .8.3), so nothing here touches Skill Admission.
 `louiselm-launch` is built into the signed bundle. The control-service binary
 is still owned by louiselm-qbr.5.1; the bundle format already has a slot for it,
 and a release that declares a component it cannot produce is refused rather

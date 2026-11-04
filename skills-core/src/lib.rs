@@ -20,6 +20,7 @@ pub mod diff;
 pub mod discovery;
 pub mod discovery_source;
 pub mod dossier;
+pub mod endorsement;
 pub mod generation;
 pub mod inspect;
 pub mod install;
