@@ -24,7 +24,9 @@
 
 mod linked;
 mod transaction;
+mod withdrawals;
 pub use linked::{admit_linked, linked_generation_members, verify_linked};
+pub(crate) use withdrawals::current_withdrawal_alerts;
 
 use std::{fs, io, path::PathBuf};
 

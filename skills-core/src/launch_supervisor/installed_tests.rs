@@ -228,6 +228,7 @@ fn fixture_run_envelope(
         bead_scope: grant.beads_mutations.clone(),
         provider_requests: grant.provider_requests.clone(),
         commands: grant.commands.clone(),
+        skill_requests: grant.skill_requests.clone(),
         verification_plan_digest,
         max_sessions: 2,
         expires_at_ms: now_ms + 120_000,
@@ -424,7 +425,14 @@ fn installed_broker_worker() {
         role: crate::launch_protocol::LaunchRole::Agent,
         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
         dependencies: None,
-        skill_requests: None,
+        skill_requests: (!root.join("skills-off").exists()).then(|| {
+            crate::skill_request::ApprovedSkillRequests {
+                agents: vec!["agent".into()],
+                allow_run: false,
+                allow_supply: true,
+                expires_at_ms: fixture_expiry(&root, now),
+            }
+        }),
         beads_mutations: None,
         provider_requests: root.join("brokered").exists().then(|| {
             let mut approval = guard::approval(now);
@@ -473,9 +481,29 @@ fn installed_broker_worker() {
     };
     let run = fixture_run_envelope(&grant, Digest::of(b"fixture-plan").to_string(), now);
     let approval = broker.authorize_run(&run).unwrap();
+    for field in ["agents", "allow_run", "expires_at_ms"] {
+        let mut widened = grant.clone();
+        let mut permission = crate::skill_request::ApprovedSkillRequests {
+            agents: vec!["agent".into()],
+            allow_run: false,
+            allow_supply: true,
+            expires_at_ms: grant.expires_at_ms,
+        };
+        match field {
+            "agents" => permission.agents = vec!["other".into()],
+            "allow_run" => permission.allow_run = true,
+            _ => permission.expires_at_ms += 1,
+        }
+        widened.skill_requests = Some(permission);
+        assert!(matches!(
+            broker.authorize_child(&widened, &approval.envelope_digest),
+            Err(crate::broker::BrokerError::InvalidGrant)
+        ));
+    }
     if root.join("skills-off").exists() {
         assert!(run.bead_scope.is_none());
         assert!(run.provider_requests.is_none());
+        assert!(run.skill_requests.is_none());
         let mut widened = grant.clone();
         widened.provider_requests = Some(guard::approval(now));
         assert!(matches!(

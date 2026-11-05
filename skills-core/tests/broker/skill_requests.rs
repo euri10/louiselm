@@ -3,7 +3,7 @@ use super::*;
 use louiselm_skills::{
     broker::{
         BrokerSession,
-        attention::{Outbox, ProjectionChange},
+        attention::{AttentionSubject, Outbox, ProjectionChange},
     },
     launch_protocol::{COMMAND_SCHEMA, CommandMessage, CommandOperation, LifecycleAction},
     skill_request::{
@@ -40,13 +40,14 @@ fn fixture_with_run(
     permitted: bool,
     allow_run: bool,
 ) -> (BrokerService, BrokerSession, SeqpacketChannel) {
-    fixture_for(root, permitted, allow_run, CONTROLLER_UID)
+    fixture_for(root, permitted, allow_run, false, CONTROLLER_UID)
 }
 
 fn fixture_for(
     root: &Path,
     permitted: bool,
     allow_run: bool,
+    allow_supply: bool,
     uid: u32,
 ) -> (BrokerService, BrokerSession, SeqpacketChannel) {
     let socket = root.join("broker.sock");
@@ -57,6 +58,7 @@ fn fixture_for(
     approval.skill_requests = permitted.then(|| ApprovedSkillRequests {
         agents: vec!["codex".into()],
         allow_run,
+        allow_supply,
         expires_at_ms: 60000,
     });
     let authorizations = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
@@ -78,14 +80,25 @@ fn fixture_for(
 
 #[test]
 fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
-    assert_verified_admission(&mut |_| {});
+    for subject in [SkillSubject::Session, SkillSubject::Supply] {
+        assert_verified_admission(subject, &mut |_| {});
+    }
 }
 
 #[test]
 #[ignore = "requires scripts/test-skill-requests capture-service and Neovim"]
 fn verified_admission_reaches_neovim() {
     let mut observer = crate::attention_delivery::Observer::new();
-    assert_verified_admission(&mut |outbox| {
+    assert_verified_admission(SkillSubject::Session, &mut |outbox| {
+        observer.drain(outbox);
+    });
+}
+
+#[test]
+#[ignore = "requires scripts/test-skill-requests capture-service and Neovim"]
+fn supply_admission_reaches_neovim() {
+    let mut observer = crate::attention_delivery::Observer::new();
+    assert_verified_admission(SkillSubject::Supply, &mut |outbox| {
         observer.drain(outbox);
     });
 }
@@ -94,7 +107,7 @@ fn verified_admission_reaches_neovim() {
     clippy::too_many_lines,
     reason = "One real-signing scenario follows approval and competing terminal decisions through the same broker owner."
 )]
-fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
+fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Outbox)) {
     use louiselm_skills::{
         Policy, Store,
         admission::{self, AdmissionMember, AdmissionRequest},
@@ -109,7 +122,13 @@ fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
     let root = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let uid = rustix::process::geteuid().as_raw();
-    let (service, mut session, peer) = fixture_for(root.path(), true, false, uid);
+    let (service, mut session, peer) = fixture_for(
+        root.path(),
+        true,
+        false,
+        subject == SkillSubject::Supply,
+        uid,
+    );
     let outbox = Outbox::open(&root.path().join("authorizations/attention-outbox")).unwrap();
     let key_fixture = support::Fixture::new();
     let key = support::SshKey::generate(&key_fixture, "primary");
@@ -145,7 +164,38 @@ fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
         unreachable!()
     };
     request.packages = vec![package.digest.to_string()];
+    request.subject = subject;
     let first = accepted(exchange(&service, &mut session, &peer, &message, true));
+    assert_eq!(first.subject, subject);
+    assert_eq!(first.session_id, session.authorization().session_id);
+    assert_eq!(first.run_id, session.authorization().run_id);
+    let projection = outbox.next().unwrap().unwrap();
+    let encoded_projection = projection.wire().to_string();
+    for private in [
+        package.digest.to_string(),
+        store.root().display().to_string(),
+        "codex".into(),
+    ] {
+        assert!(!encoded_projection.contains(&private));
+    }
+    let ProjectionChange::Upsert(condition) = projection.change else {
+        panic!("pending request projection");
+    };
+    assert_eq!(
+        condition.subject,
+        if subject == SkillSubject::Supply {
+            AttentionSubject::Supply(uid.to_string())
+        } else {
+            AttentionSubject::Session("skill-session".into())
+        }
+    );
+    assert_eq!(condition.operation_id, first.operation_id);
+    for outcome in [None, Some(SkillRequestOutcome::Rejected)] {
+        assert!(matches!(
+            service.skill_request_control(uid + 1, &first.operation_id, outcome),
+            Err(louiselm_skills::broker::BrokerError::ControllerMismatch)
+        ));
+    }
     observe(&outbox);
     let launch_history = service.receipts().stored_bytes("skill-session").unwrap();
     assert!(
@@ -278,6 +328,45 @@ fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
             .unwrap();
         worker.join().unwrap();
     });
+    let after_disposal = service
+        .skill_request_control(uid, &pending.operation_id, None)
+        .unwrap();
+    assert_eq!(
+        after_disposal.outcome,
+        if subject == SkillSubject::Supply {
+            SkillRequestOutcome::Pending
+        } else {
+            SkillRequestOutcome::Cancelled
+        }
+    );
+    observe(&outbox);
+    peer.close();
+    drop(session);
+    drop(service);
+    let service = BrokerService::bind(
+        &root.path().join("restarted.sock"),
+        AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap(),
+        ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap(),
+        AuditLog::open(&root.path().join("audit")).unwrap(),
+        local_pin(),
+    )
+    .unwrap();
+    service
+        .reconcile_skill_requests(None, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(
+        service
+            .skill_request_control(uid, &first.operation_id, None)
+            .unwrap(),
+        approved
+    );
+    assert_eq!(
+        service
+            .skill_request_control(uid, &pending.operation_id, None)
+            .unwrap(),
+        after_disposal
+    );
+    observe(&outbox);
     let late = admission::admit_linked(
         &store,
         &Policy::embedded(),
@@ -293,7 +382,11 @@ fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
             .skill_request_control(uid, &pending.operation_id, None)
             .unwrap()
             .outcome,
-        SkillRequestOutcome::Cancelled
+        if subject == SkillSubject::Supply {
+            SkillRequestOutcome::Approved
+        } else {
+            SkillRequestOutcome::Cancelled
+        }
     );
     assert_eq!(
         admission::load_verified(&store, &late.digest()).unwrap(),
@@ -305,7 +398,6 @@ fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
             .unwrap(),
         approved
     );
-    peer.close();
     observe(&outbox);
 }
 
@@ -350,7 +442,7 @@ fn installed_linked_admission_server() {
         .unwrap();
         (service, fs::read_to_string(root.join("operation")).unwrap())
     } else {
-        let (service, mut session, peer) = fixture_for(&root, true, false, uid);
+        let (service, mut session, peer) = fixture_for(&root, true, false, false, uid);
         let mut message = query(session.authorization());
         let CommandOperation::SkillRequest { request } = &mut message.operation else {
             unreachable!()
@@ -414,9 +506,23 @@ fn cross_service_requests() {
     .unwrap();
     let phase = std::env::var("LOUISELM_REQUEST_PHASE").unwrap();
     let service = if phase == "accept" {
-        let (service, mut session, peer) = fixture_with_run(&root, true, true);
+        let (service, mut session, peer) = fixture_for(&root, true, true, true, CONTROLLER_UID);
         let mut message = query(session.authorization());
         let session_request = accepted(exchange(&service, &mut session, &peer, &message, true));
+        let CommandOperation::SkillRequest { request } = &mut message.operation else {
+            unreachable!()
+        };
+        request.subject = SkillSubject::Supply;
+        request.request_id = "supply-batch".into();
+        request
+            .packages
+            .push(Digest::of(b"second-package").to_string());
+        request.packages.sort();
+        let supply_request = accepted(exchange(&service, &mut session, &peer, &message, true));
+        assert_eq!(
+            accepted(exchange(&service, &mut session, &peer, &message, true)),
+            supply_request
+        );
         let CommandOperation::SkillRequest { request } = &mut message.operation else {
             unreachable!()
         };
@@ -458,6 +564,12 @@ fn cross_service_requests() {
                 .skill_request_control(CONTROLLER_UID, &session_request.operation_id, None)
                 .unwrap(),
             session_request
+        );
+        assert_eq!(
+            service
+                .skill_request_control(CONTROLLER_UID, &supply_request.operation_id, None)
+                .unwrap(),
+            supply_request
         );
         service
     } else {
@@ -535,10 +647,17 @@ fn broker_permission_is_explicit_and_subject_revision_scope_are_not_client_autho
             unreachable!()
         };
         request.subject = SkillSubject::Run;
-        for invalid in [&foreign, &stale, &scope, &run] {
+        let mut supply = original.clone();
+        let CommandOperation::SkillRequest { request } = &mut supply.operation else {
+            unreachable!()
+        };
+        request.subject = SkillSubject::Supply;
+        for invalid in [&foreign, &stale, &scope, &run, &supply] {
             assert!(matches!(
                 exchange(&service, &mut session, &peer, invalid, false),
-                CommandOperation::SkillRequestRefused { .. }
+                CommandOperation::SkillRequestRefused {
+                    error: ErrorCode::InvalidRequest
+                }
             ));
         }
         let result = exchange(&service, &mut session, &peer, &original, permitted);

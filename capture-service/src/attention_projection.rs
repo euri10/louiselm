@@ -157,6 +157,11 @@ fn validate(projection: &BrokerProjection) -> Result<(), AttentionError> {
             subject_kind,
             subject_id,
         } => {
+            if *subject_kind == AttentionSubjectKind::Supply {
+                return Err(AttentionError::Invalid(
+                    "Supply conditions require an exact clear".into(),
+                ));
+            }
             validate_subject_id(subject_id)?;
             if *subject_kind == AttentionSubjectKind::Run {
                 validate_uuid(subject_id, "Run subject_id")?;
@@ -180,6 +185,7 @@ fn apply(items: &mut Vec<AttentionItem>, change: &ProjectionChange) {
                 linked_run_id: attention.linked_run_id.clone(),
                 stage: attention.stage.clone(),
                 code: attention.code,
+                withdrawal: attention.withdrawal.clone(),
             };
             if let Some(previous) = items
                 .iter_mut()

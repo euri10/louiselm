@@ -41,6 +41,9 @@ impl Record {
         match self.request.subject {
             SkillSubject::Session => AttentionSubject::Session(self.binding.session_id.clone()),
             SkillSubject::Run => AttentionSubject::Run(self.binding.run_id.clone()),
+            SkillSubject::Supply => {
+                AttentionSubject::Supply(self.binding.controller_uid.to_string())
+            }
         }
     }
 
@@ -59,6 +62,7 @@ impl Record {
             && self.created_at_ms > 0
             && self.binding.controller_uid != 0
             && super::is_record_identifier(&self.binding.session_id)
+            && super::is_record_identifier(&self.binding.run_id)
             && super::attention::canonical_uuid(&self.operation_id)
             && (self.request.subject != SkillSubject::Run
                 || super::attention::canonical_uuid(&self.binding.run_id))
@@ -112,7 +116,11 @@ impl SkillRequests {
             operation_id: operation_uuid()?,
             created_at_ms: now_ms,
         };
-        if !record.valid() || self.ended(&record.subject())? || self.records()?.len() >= 4096 {
+        if !record.valid()
+            || self.ended(&AttentionSubject::Session(binding.session_id.clone()))?
+            || self.ended(&record.subject())?
+            || self.records()?.len() >= 4096
+        {
             return Err(BrokerError::InvalidGrant);
         }
         if request.subject == SkillSubject::Run {
@@ -232,6 +240,9 @@ impl SkillRequests {
         Ok(SkillRequestStatus {
             request_id: record.request.request_id.clone(),
             operation_id: record.operation_id.clone(),
+            subject: record.request.subject,
+            session_id: record.binding.session_id.clone(),
+            run_id: record.binding.run_id.clone(),
             outcome,
             packages: record.request.packages.clone(),
             agents: record.request.agents.clone(),
@@ -328,6 +339,9 @@ impl SkillRequests {
     }
 
     fn end_locked(&self, subject: &AttentionSubject, outbox: &Outbox) -> Result<(), BrokerError> {
+        if matches!(subject, AttentionSubject::Supply(_)) {
+            return Err(BrokerError::InvalidGrant);
+        }
         let path = self.ended_path(subject);
         match read_record::<AttentionSubject>(&path)? {
             Some(prior) if prior == *subject => sync_file(&path)?,
@@ -348,6 +362,9 @@ impl SkillRequests {
     }
 
     fn ended(&self, subject: &AttentionSubject) -> Result<bool, BrokerError> {
+        if matches!(subject, AttentionSubject::Supply(_)) {
+            return Ok(false);
+        }
         match read_record::<AttentionSubject>(&self.ended_path(subject))? {
             Some(prior) if prior == *subject => Ok(true),
             Some(_) => Err(BrokerError::InvalidGrant),
@@ -425,10 +442,8 @@ impl SkillRequests {
         self.root.join("runs").join(format!("{run}.json"))
     }
     fn ended_path(&self, subject: &AttentionSubject) -> PathBuf {
-        let identity = match subject {
-            AttentionSubject::Session(id) => format!("session:{id}"),
-            AttentionSubject::Run(id) => format!("run:{id}"),
-        };
+        let (kind, id) = subject.parts();
+        let identity = format!("{kind}:{id}");
         self.root
             .join("ended")
             .join(format!("{}.json", Digest::of(identity.as_bytes()).hex()))

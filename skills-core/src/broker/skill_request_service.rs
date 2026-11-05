@@ -174,11 +174,8 @@ impl BrokerService {
                 continue;
             }
             let subject = record.subject();
-            let identity = match &subject {
-                AttentionSubject::Session(id) => (false, id.clone()),
-                AttentionSubject::Run(id) => (true, id.clone()),
-            };
-            if !subjects.insert(identity) {
+            let (kind, id) = subject.parts();
+            if !subjects.insert((kind, id.to_owned())) {
                 continue;
             }
             let result = (|| {
@@ -202,6 +199,7 @@ impl BrokerService {
                     AttentionSubject::Run(id) => {
                         self.refresh_run(endpoint.ok_or(BrokerError::InvalidGrant)?, id)?;
                     }
+                    AttentionSubject::Supply(_) => {}
                 }
                 if let Some(source) = source {
                     for pending in self

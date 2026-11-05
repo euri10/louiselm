@@ -13,6 +13,7 @@ from unittest import mock
 
 FIXTURE = runpy.run_path(str(Path(__file__).with_name("test-broker-admission.py")))
 DIAGNOSTICS = runpy.run_path(str(Path(__file__).with_name("test-broker-attention-diagnostics.py")))
+INSTALLER = runpy.run_path(str(Path(__file__).with_name("install-broker-admission.py")))
 
 
 class AdmissionDiagnostics(DIAGNOSTICS["Diagnostics"]):
@@ -62,6 +63,36 @@ class AdmissionSetup(unittest.TestCase):
             mount.assert_called_once_with(Path(temporary))
             diagnostics.return_value.__enter__.return_value.assert_any_call("mount private /etc")
             forbidden.assert_not_called()
+
+
+class AdmissionEvidencePlan(unittest.TestCase):
+    def setUp(self):
+        # The production plan rejects world-writable ancestors such as /tmp.
+        temporary = self.enterContext(tempfile.TemporaryDirectory(
+            prefix=".admission-plan-", dir=Path.home()))
+        self.store = Path(temporary)
+        for directory in ("packages", "staging", "trust", "generations", "endorsements", "endorsers"):
+            (self.store / directory).mkdir()
+        for name in ("provenance.json", "trust/roles.json", "trust/roles.lock", "endorsers/local.json",
+                     "endorsers/local.lock", "endorsements/sha256-record.json", "quarantine.json", "private-key"):
+            (self.store / name).write_text("fixture")
+
+    def test_withdrawal_evidence_is_shared_but_private_lock_and_keys_are_not(self):
+        targets = dict(INSTALLER["plan"](self.store, os.geteuid()))
+        for name in ("endorsements", "endorsers"):
+            self.assertTrue(targets.get(self.store / name), f"{name} must be shared read-only")
+        for name in ("endorsements/sha256-record.json", "endorsers/local.json", "quarantine.json"):
+            self.assertIn(self.store / name, targets)
+            self.assertFalse(targets[self.store / name])
+        self.assertNotIn(self.store / "endorsers/local.lock", targets)
+        self.assertNotIn(self.store / "private-key", targets)
+
+    def test_withdrawal_evidence_refuses_symlinks(self):
+        record = self.store / "endorsements/sha256-record.json"
+        record.unlink()
+        record.symlink_to(self.store / "private-key")
+        with self.assertRaisesRegex(ValueError, "unexpected evidence inode"):
+            INSTALLER["plan"](self.store, os.geteuid())
 
 
 if __name__ == "__main__":

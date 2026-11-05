@@ -34,6 +34,7 @@ fn envelope(uid: u32) -> RunEnvelope {
             max_effort: ReasoningEffort::High,
             expires_at_ms: 10_000,
         }),
+        skill_requests: None,
         commands: None,
         verification_plan_digest: Digest::of(b"plan").to_string(),
         max_sessions: 2,

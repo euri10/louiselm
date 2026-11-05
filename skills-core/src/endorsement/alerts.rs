@@ -18,13 +18,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Record, StatementKind, focus::FocusError, import, local, trust::EndorserSet};
 use crate::{generation::GenerationRecord, sshsig::SkPolicy, store::Store};
 
 /// How much a withdrawal matters to one admitted member.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Urgency {
     /// The member's review relied on the withdrawn Endorsement.
@@ -59,17 +59,29 @@ pub fn withdrawal_alerts(
     effective: &[String],
 ) -> Result<Vec<WithdrawalAlert>, FocusError> {
     let (endorsers, _) = local::effective(store)?;
-    let records = import::records(store)?.records;
+    let mut records = import::records(store)?.records;
+    records.retain(|record| {
+        record.kind() != StatementKind::Withdrawal
+            || record.verify_signature(SkPolicy::none()).is_ok()
+    });
+    Ok(from_records(generation, effective, &endorsers, &records))
+}
+
+/// Shared relevance rules. Callers have already verified every withdrawal;
+/// strict consumers additionally reject incomplete or invalid stored evidence.
+pub(crate) fn from_records(
+    generation: &GenerationRecord,
+    effective: &[String],
+    endorsers: &EndorserSet,
+    records: &[Record],
+) -> Vec<WithdrawalAlert> {
     let by_digest: BTreeMap<String, &Record> = records
         .iter()
         .map(|record| (record.digest().to_string(), record))
         .collect();
     let withdrawals: Vec<&Record> = records
         .iter()
-        .filter(|record| {
-            record.kind() == StatementKind::Withdrawal
-                && record.verify_signature(SkPolicy::none()).is_ok()
-        })
+        .filter(|record| record.kind() == StatementKind::Withdrawal)
         .collect();
     let mut alerts = Vec::new();
     for member in &generation.payload.members {
@@ -88,7 +100,7 @@ pub fn withdrawal_alerts(
                     && seen.insert(withdrawal.digest())
                 {
                     alerts.push(alert(
-                        &endorsers,
+                        endorsers,
                         &member.package_digest,
                         withdrawal,
                         Urgency::ReliedOn,
@@ -106,7 +118,7 @@ pub fn withdrawal_alerts(
                 && seen.insert(withdrawal.digest())
             {
                 alerts.push(alert(
-                    &endorsers,
+                    endorsers,
                     &member.package_digest,
                     withdrawal,
                     Urgency::SubjectOnly,
@@ -115,7 +127,7 @@ pub fn withdrawal_alerts(
         }
     }
     alerts.sort_by_key(|alert| alert.urgency != Urgency::ReliedOn);
-    Ok(alerts)
+    alerts
 }
 
 fn alert(

@@ -353,6 +353,9 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
                         Ok(SkillRequestStatus {
                             request_id: "request".into(),
                             operation_id: operation.into(),
+                            subject: louiselm_skills::skill_request::SkillSubject::Session,
+                            session_id: "session-1".into(),
+                            run_id: "run-1".into(),
                             outcome: outcome.unwrap_or(SkillRequestOutcome::Pending),
                             packages: vec![louiselm_skills::Digest::of(b"skill").to_string()],
                             agents: vec!["codex".into()],

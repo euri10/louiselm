@@ -463,11 +463,17 @@ impl InstalledBroker {
         }) {
             return Err(BrokerError::ControllerMismatch);
         }
-        self.service.reconcile_skill_admissions(
+        let requests = self.service.reconcile_skill_admissions(
             endpoint,
             source.as_ref(),
             |key, payload, signature| self.verifier.verify(key, payload, signature).is_ok(),
-        )
+        );
+        // A Session/Run evidence failure cannot suppress independent supply state.
+        if let Some(source) = &source {
+            self.service
+                .reconcile_supply_withdrawals(source, now_ms()?)?;
+        }
+        requests
     }
 
     /// Applies emergency quarantine with installed receipt verification.

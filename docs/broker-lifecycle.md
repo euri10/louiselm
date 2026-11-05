@@ -1077,24 +1077,37 @@ Neither endpoint grants lifecycle, signing or capability-policy authority.
 ### Durable Skill Admission requests
 
 `GrantRequest.skill_requests` is an optional, explicit permission on the existing
-broker launch authorization: sorted intended Agent names, `allow_run`, and an
-absolute `expires_at_ms`. Unset grants no request permission. Cold reconstruction
+broker launch authorization: sorted intended Agent names, independent `allow_run`
+and `allow_supply` flags, and an absolute `expires_at_ms`. Unset grants no request
+permission; omitted `allow_supply` defaults to false. Cold reconstruction
 does not inherit this permission into a replacement Session.
 
+For Sessions launched under an approved Run, `RunEnvelope.skill_requests` must
+also explicitly authorize the request permission; missing or null denies it.
+The child grant may narrow the Agent set, disable either scope flag, or shorten
+the request expiry. It cannot enable a scope the Run did not approve, and the
+Run's request permission cannot outlast its envelope.
+
 The authenticated Agent channel accepts `skill_request` with a stable nested
-`request_id`, subject kind (`session` or `run`), sorted unique canonical package
-digests and intended Agent names. The supervisor owns relay correlation; the
-broker derives all subject IDs and the envelope revision from its retained
+`request_id`, subject kind (`session`, `run` or `supply`), sorted unique canonical
+package digests and intended Agent names. The supervisor owns relay correlation;
+the broker derives all subject IDs and the envelope revision from its retained
 authorization and checks current Session mechanics and permission lifetime.
 A new Run request also requires a current authenticated lifecycle observation.
-The Agent supplies neither an approval nor a foreign subject ID.
+Supply requests require explicit `allow_supply`; Run permission does not grant it.
+Their stable local subject is the authenticated operator's UID, encoded as a
+canonical nonzero decimal `u32` within this installed broker's domain. The Agent
+supplies neither an approval nor a foreign subject ID. Operator inspection
+returns the explicit scope and originating Session and Run IDs from the protected
+request record, even after the origin ends.
 
 Before a successful reply, the broker persists exact content, a random stable
 operation UUID and the existing outbox's `skill_approval_pending` intent with
 fixed `admission_required` code. Packages, Agent names and prose never enter that
-projection. Exact retries retain the operation and terminal outcome; changed
-content requires a fresh request ID. Accepted retries need no new receiver
-connection. No discovery scan or standalone Admission creates a request.
+projection. A batch creates one item. Exact retries retain the operation and
+terminal outcome; changed content requires a fresh request ID. Accepted retries
+need no new receiver connection. No discovery scan or standalone Admission
+creates a request.
 
 Use the existing UID-authenticated operator endpoint (no sudo or live editor):
 
@@ -1108,8 +1121,11 @@ Reject/cancel persist an immutable terminal outcome and enqueue an exact clear
 before replying. Contradictory terminal decisions refuse; explicit resubmission
 uses a fresh operation. Signed Session termination cancels only that Session's
 requests. Capture-service's durable `disposed` Run fact cancels only that Run's
-requests; Session termination never substitutes for Run termination. Park retains
-both. The independent delivery worker reconciles terminal subjects after restart
+requests; Session termination never substitutes for Run termination. Supply
+requests survive both terminations, editor exit and broker restart, settling only
+through exact signed Admission or explicit operator rejection/cancellation. New
+requests still require a live authorized origin. Park retains all scopes.
+The independent delivery worker reconciles terminal subjects after restart
 and repairs interrupted projection intent. Unavailable Run facts retain pending
 state and cannot block other subjects' local cleanup.
 
@@ -1117,9 +1133,53 @@ This path grants no Admission, Resume, envelope expansion or Session replacement
 The cross-crate gate
 `python3 scripts/test-skill-requests` exercises the actual broker handler/outbox
 and disposable capture-service through separate processes, including broker and
-receiver restart, Park and Run disposal. Crate tests cover policy/refusal,
-operator decisions, storage crash windows and late relay replies. These gates
-do not certify the maintainer's installed vendor launch path.
+receiver restart, Park, Run disposal, durable supply batches and signed approval
+after the originating Session ends, with fresh headless Neovim views. Crate tests
+cover policy/refusal, operator decisions, storage crash windows and late relay
+replies. These gates do not certify the maintainer's installed vendor launch path.
+
+### Withdrawal Attention from current supply
+
+The existing read-only Admission source also supplies the broker's independent
+Attention worker with protected current-Generation, quarantine, Endorsement and
+local endorser evidence. Reconciliation runs without a Session or editor and
+catches imports made while the broker was unavailable, including imports made
+automatically by packaging. The skills CLI writes evidence; capture-service
+continues owning Attention state and delivery.
+
+Each affected package/withdrawal-record digest pair produces one
+`endorsement_withdrawn` item on the operator's stable supply subject. A member
+whose review relied on the withdrawn evidence has `relied_on` urgency; an exact
+package withdrawal by a currently trusted endorser has `subject_only` urgency.
+The stronger applicable urgency wins. Retries, restarts and unchanged evidence
+retain the item's operation identity and do not send periodic reminders. A
+resolved condition that recurs receives a new operation identity.
+Episode state is bounded to 4,096 conditions and a 16-MiB snapshot; exhausted
+storage or outbox bounds report failure rather than silently dropping conditions.
+
+Neovim shows the package and withdrawal digests, bounded local endorser label
+(or signer fingerprint), urgency and a fixed suggestion to review and consider
+quarantine. Attention carries no candidate/profile prose, Dossier diff, private
+path or executable next-action command. Withdrawal reconciliation does not
+change Admission, the Generation, Verified posture or quarantine.
+
+Current effective supply controls this reconciliation slice. Removing its last
+qualifying current member, withdrawing subject-only trust, or quarantining the
+affected supply clears its exact condition. An acknowledged item stays unresolved
+while its evidence still qualifies. Unreadable, unsettled, malformed or
+unverifiable evidence fails reconciliation and retains prior Attention; it never
+proves that a condition resolved. Disappearance of an active condition's withdrawal
+evidence or a previously observed local endorser layer also fails reconciliation
+after broker restart.
+A source that has never exposed a local layer can still prove recorded reliance
+using the retained signed Endorsement. Retained older Session Instruction views are
+the separate follow-up tracked by `louiselm-d6fv.8.12.3`.
+
+The cross-crate Skill-request gate additionally follows real signed withdrawals
+through broker reconciliation, capture-service and fresh headless Neovim views.
+It covers offline/packaging import, both urgencies, restart and duplicate import,
+failed-read retention, trust changes, recurrence, unrelated Generation changes
+and operator quarantine.
 
 ### Resolving a request through Skill Admission
 

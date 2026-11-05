@@ -38,6 +38,7 @@ impl Observer {
                     let (kind, id) = match subject {
                         AttentionSubject::Session(id) => ("session", id),
                         AttentionSubject::Run(id) => ("run", id),
+                        AttentionSubject::Supply(id) => ("supply", id),
                     };
                     self.expected.retain(|_, draft| {
                         draft["subject_kind"] != kind || draft["subject_id"] != *id

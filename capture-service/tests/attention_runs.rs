@@ -27,6 +27,7 @@ fn park_alert() -> AttentionDraft {
         linked_run_id: None,
         stage: None,
         code: None,
+        withdrawal: None,
     }
 }
 

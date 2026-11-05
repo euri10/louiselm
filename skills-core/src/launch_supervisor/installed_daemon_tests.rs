@@ -91,6 +91,7 @@ fn seed_authorizations() {
             bead_scope: Some(bead_scope),
             provider_requests: Some(guard::approval(now)),
             commands: None,
+            skill_requests: None,
             verification_plan_digest: Digest::of(b"daemon-fixture-plan").to_string(),
             max_sessions: u32::try_from(beads::subjects().len()).unwrap(),
             expires_at_ms: now + 180_000,

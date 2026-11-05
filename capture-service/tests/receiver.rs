@@ -302,6 +302,7 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
             linked_run_id: None,
             stage: None,
             code: Some(AttentionCode::WitnessMissing),
+            withdrawal: None,
         })
         .expect("attention");
     let pairing = Arc::new(PairingRegistry::open(temporary.path().join("state")).expect("pairing"));

@@ -470,10 +470,8 @@ fn hold_condition(session_id: &str, hold: &ProviderHold) -> (String, AttentionCo
     } else {
         AttentionSubject::Session(session_id.to_owned())
     };
-    let subject_key = match &subject {
-        AttentionSubject::Run(id) => format!("run:{id}"),
-        AttentionSubject::Session(id) => format!("session:{id}"),
-    };
+    let (kind, id) = subject.parts();
+    let subject_key = format!("{kind}:{id}");
     let identity = format!(
         "provider-hold:{}:{}:{subject_key}",
         hold.run_id, hold.held_at_ms

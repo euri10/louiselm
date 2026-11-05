@@ -24,8 +24,8 @@ mod transcription;
 
 pub use attention::{
     AttentionCode, AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionKind,
-    AttentionSnapshot, AttentionStore, AttentionSubjectKind, AttentionSummary, BrokerProjection,
-    ProjectionChange, ProjectionResult,
+    AttentionSnapshot, AttentionStore, AttentionSubjectKind, AttentionSummary, AttentionWithdrawal,
+    BrokerProjection, ProjectionChange, ProjectionResult, WithdrawalUrgency,
 };
 pub use attention_socket::{AttentionSocket, AttentionSocketError, AttentionSocketMessage};
 pub use broker_attention::{BrokerAttentionConfig, BrokerAttentionSocket};

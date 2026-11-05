@@ -39,6 +39,39 @@ pub struct AdmissionSource {
 }
 
 impl AdmissionSource {
+    /// Returns the verified current supply's withdrawal conditions, read-only.
+    /// Failed or unsettled evidence is an error, never an empty condition set.
+    pub(super) fn withdrawal_alerts(
+        &self,
+        expected: &[String],
+        local_layer_observed: bool,
+    ) -> Result<(Vec<crate::endorsement::alerts::WithdrawalAlert>, bool), BrokerError> {
+        let before = self.withdrawal_snapshot()?;
+        let local_layer_present = before
+            .iter()
+            .any(|stamp| stamp.path == self.store.join("endorsers/local.json"));
+        if local_layer_observed && !local_layer_present {
+            return Err(BrokerError::AdmissionEvidence(
+                admission::AdmissionError::Chain(
+                    "previously observed local Endorser evidence is missing".into(),
+                ),
+            ));
+        }
+        let store = self.trusted_store()?;
+        let alerts = admission::current_withdrawal_alerts(&store, &self.trust_domain, expected)
+            .map_err(BrokerError::AdmissionEvidence)?;
+        // Endorser, import and quarantine writers do not share the trust lock.
+        // Refuse mixed snapshots instead of turning an unsettled read into Clear.
+        if before != self.withdrawal_snapshot()? {
+            return Err(BrokerError::AdmissionEvidence(
+                admission::AdmissionError::Chain(
+                    "withdrawal evidence changed during observation".into(),
+                ),
+            ));
+        }
+        Ok((alerts, local_layer_present))
+    }
+
     /// Reads fixed root-owned configuration. Absence disables linked Admission.
     /// # Errors
     /// Refuses malformed or writable configuration; does not create a store.
@@ -210,4 +243,70 @@ impl AdmissionSource {
         }
         Ok(())
     }
+
+    fn withdrawal_snapshot(&self) -> Result<Vec<EvidenceStamp>, BrokerError> {
+        let mut paths = vec![self.store.clone(), self.store.join("provenance.json")];
+        for directory in ["trust", "generations", "endorsers", "endorsements"] {
+            let directory = self.store.join(directory);
+            self.check(&directory, true)?;
+            paths.push(directory.clone());
+            for (index, entry) in fs::read_dir(&directory)
+                .map_err(BrokerError::Storage)?
+                .enumerate()
+            {
+                if index >= crate::endorsement::import::MAX_IMPORT_FILES {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                let path = entry.map_err(BrokerError::Storage)?.path();
+                self.check(&path, false)?;
+                paths.push(path);
+            }
+        }
+        for name in ["quarantine.json", "activation.pending.json"] {
+            let path = self.store.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    self.check(&path, false)?;
+                    paths.push(path);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(error) => return Err(BrokerError::Storage(error)),
+            }
+        }
+        paths.sort();
+        let mut remaining = 64 * 1024 * 1024_u64;
+        paths
+            .into_iter()
+            .map(|path| {
+                let metadata = fs::symlink_metadata(&path).map_err(BrokerError::Storage)?;
+                self.check(&path, metadata.is_dir())?;
+                if metadata.is_file() {
+                    if metadata.len() > 1024 * 1024 {
+                        return Err(BrokerError::InvalidGrant);
+                    }
+                    remaining = remaining
+                        .checked_sub(metadata.len())
+                        .ok_or(BrokerError::InvalidGrant)?;
+                }
+                Ok(EvidenceStamp {
+                    path,
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                    size: metadata.len(),
+                    modified: (metadata.mtime(), metadata.mtime_nsec()),
+                    changed: (metadata.ctime(), metadata.ctime_nsec()),
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct EvidenceStamp {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
 }

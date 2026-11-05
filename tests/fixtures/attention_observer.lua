@@ -18,15 +18,33 @@ local ok, err = pcall(function()
     for _, item in ipairs(expected) do
       if
         not text:find(item.source_operation_id, 1, true)
-        or not text:find(item.subject_id, 1, true)
+        or not text:find("  " .. item.subject_kind .. ": " .. item.subject_id, 1, true)
         or (item.code and not text:find(item.code, 1, true))
+        or (item.kind == "skill_approval_pending" and not text:find("Skill approval pending", 1, true))
       then
         return false
+      end
+      if item.withdrawal then
+        for _, field in ipairs({ "package_digest", "withdrawal_digest", "endorser", "urgency" }) do
+          if not text:find(item.withdrawal[field], 1, true) then
+            return false
+          end
+        end
+        if
+          not text:find("Endorsement withdrawn", 1, true)
+          or not text:find("Review the withdrawal; consider quarantine.", 1, true)
+        then
+          return false
+        end
       end
     end
     return true
   end)
-  assert(ready, "durable Attention view did not match trusted broker output")
+  assert(
+    ready,
+    "durable Attention view did not match trusted broker output: "
+      .. table.concat(nvim.api.nvim_buf_get_lines(view.buffer, 0, -1, false), "\n")
+  )
   assert(not nvim.bo[view.buffer].modifiable)
   view:dispose()
 end)

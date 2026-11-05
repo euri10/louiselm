@@ -19,6 +19,7 @@ local labels = {
   session_failed = "Session failed",
   skill_approval_pending = "Skill approval pending",
   skill_unverified = "Posture unverified",
+  endorsement_withdrawn = "Endorsement withdrawn",
 }
 
 local codes = {
@@ -42,6 +43,66 @@ local function identifier(value)
   return type(value) == "string" and #value > 0 and #value <= 256 and value:find("[%s%c]") == nil
 end
 
+local function valid_supply(item)
+  local value = item.subject_id
+  if type(value) ~= "string" or #value > 10 or value:match("^[1-9]%d*$") == nil then
+    return false
+  end
+  local uid = tonumber(value)
+  return uid ~= nil
+    and uid <= 4294967295
+    and (item.kind == "skill_approval_pending" or item.kind == "endorsement_withdrawn")
+    and (item.linked_run_id == nil or item.linked_run_id == nvim.NIL)
+    and (item.stage == nil or item.stage == nvim.NIL)
+end
+
+local function digest(value)
+  return type(value) == "string" and #value == 71 and value:match("^sha256:[0-9a-f]+$") ~= nil
+end
+
+local function endorser_label(value)
+  if type(value) ~= "string" or #value > 256 then
+    return false
+  end
+  local nonempty = false
+  -- Match the trust store's Unicode control and whitespace validation.
+  for _, char in ipairs(nvim.fn.str2list(value)) do
+    if char < 32 or (char >= 127 and char <= 159) then
+      return false
+    end
+    local whitespace = char == 32
+      or char == 160
+      or char == 5760
+      or (char >= 8192 and char <= 8202)
+      or char == 8232
+      or char == 8233
+      or char == 8239
+      or char == 8287
+      or char == 12288
+    nonempty = nonempty or not whitespace
+  end
+  return nonempty
+end
+
+local function valid_withdrawal(item)
+  local value = item.withdrawal
+  if item.kind ~= "endorsement_withdrawn" then
+    return value == nil or value == nvim.NIL
+  end
+  if item.subject_kind ~= "supply" or item.code ~= nil or type(value) ~= "table" then
+    return false
+  end
+  for field in pairs(value) do
+    if field ~= "package_digest" and field ~= "withdrawal_digest" and field ~= "endorser" and field ~= "urgency" then
+      return false
+    end
+  end
+  return digest(value.package_digest)
+    and digest(value.withdrawal_digest)
+    and endorser_label(value.endorser)
+    and (value.urgency == "relied_on" or value.urgency == "subject_only")
+end
+
 local function write(view, lines)
   if view.disposed or not nvim.api.nvim_buf_is_valid(view.buffer) then
     return
@@ -57,12 +118,14 @@ local function render(view, snapshot)
     if
       type(item) ~= "table"
       or labels[item.kind] == nil
-      or (item.subject_kind ~= "session" and item.subject_kind ~= "run")
+      or (item.subject_kind ~= "session" and item.subject_kind ~= "run" and item.subject_kind ~= "supply")
       or not identifier(item.subject_id)
+      or (item.subject_kind == "supply" and not valid_supply(item))
       or not identifier(item.source_operation_id)
       or (item.code ~= nil and codes[item.code] ~= true)
       or (item.kind == "skill_approval_pending" and item.code ~= "admission_required")
       or (item.kind == "skill_unverified" and (item.code == nil or item.code == "admission_required"))
+      or not valid_withdrawal(item)
       or (item.linked_run_id ~= nil and item.linked_run_id ~= nvim.NIL and not identifier(item.linked_run_id))
     then
       write(view, { "Attention unavailable: invalid durable item" })
@@ -73,6 +136,13 @@ local function render(view, snapshot)
     lines[#lines + 1] = "  operation: " .. item.source_operation_id
     if type(item.linked_run_id) == "string" then
       lines[#lines + 1] = "  Run: " .. item.linked_run_id
+    end
+    if item.kind == "endorsement_withdrawn" then
+      lines[#lines + 1] = "  package: " .. item.withdrawal.package_digest
+      lines[#lines + 1] = "  withdrawal: " .. item.withdrawal.withdrawal_digest
+      lines[#lines + 1] = "  endorser: " .. item.withdrawal.endorser
+      lines[#lines + 1] = "  urgency: " .. item.withdrawal.urgency
+      lines[#lines + 1] = "  Review the withdrawal; consider quarantine."
     end
   end
   if #snapshot.items == 0 then

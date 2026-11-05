@@ -197,7 +197,14 @@ fn matching_reply(pending: &PendingStatus, reply: &CommandMessage) -> bool {
         (
             CommandOperation::SkillRequest { request },
             CommandOperation::SkillRequestResult { status },
-        ) => request.request_id == status.request_id,
+        ) => {
+            request.request_id == status.request_id
+                && request.subject == status.subject
+                && request.packages == status.packages
+                && request.agents == status.agents
+                && query.session_id == status.session_id
+                && query.run_id == status.run_id
+        }
         (
             CommandOperation::BeadsMutation { request },
             CommandOperation::BeadsMutationResult { status },

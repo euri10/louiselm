@@ -8,7 +8,7 @@ use louiselm_skills::{
     Digest,
     beads_mutation::{ApprovedBeadsMutations, BeadsEffect, BeadsRole},
     broker::{
-        GrantRequest,
+        BrokerError, GrantRequest,
         run_envelope::{RunEnvelope, RunEnvelopeStore},
     },
     launch::{LaunchRequest, PROTOCOL_VERSION},
@@ -48,6 +48,7 @@ fn envelope() -> RunEnvelope {
             expires_at_ms: 10_000,
         }),
         commands: None,
+        skill_requests: None,
         verification_plan_digest: Digest::of(b"fixed plan").to_string(),
         max_sessions: 3,
         expires_at_ms: 10_000,
@@ -88,6 +89,122 @@ fn grant() -> GrantRequest {
         skill_requests: None,
         beads_mutations: Some(scope),
         provider_requests: envelope().provider_requests,
+    }
+}
+
+#[test]
+fn skill_request_parent_scope_reaches_child_authorization_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let mut wire = serde_json::to_value(envelope()).unwrap();
+    let permission = serde_json::json!({
+        "agents": ["codex"], "allow_run": false, "expires_at_ms": 9_000,
+    });
+    wire["skill_requests"] = permission.clone();
+    let approved: RunEnvelope = serde_json::from_value(wire).unwrap();
+    let store = RunEnvelopeStore::open(root.path()).unwrap();
+    store.approve(&approved, 1_000).unwrap();
+    drop(store);
+    let restarted = RunEnvelopeStore::open(root.path()).unwrap();
+    let mut child = serde_json::to_value(grant()).unwrap();
+    child["skill_requests"] = permission;
+    let child: GrantRequest = serde_json::from_value(child).unwrap();
+    let authorized = restarted.with_child(&child, 1_000, |current| {
+        assert_eq!(current, &approved);
+        Ok(child.request.session_id.clone())
+    });
+    assert_eq!(authorized.unwrap(), "session-1");
+}
+
+#[test]
+fn skill_request_children_cannot_expand_agents_scopes_or_expiry() {
+    for allow_run in [false, true] {
+        for allow_supply in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let store = RunEnvelopeStore::open(root.path()).unwrap();
+            let mut wire = serde_json::to_value(envelope()).unwrap();
+            let permission = serde_json::json!({
+                "agents": ["claude", "codex"], "allow_run": allow_run,
+                "allow_supply": allow_supply, "expires_at_ms": 9_000,
+            });
+            wire["skill_requests"] = permission.clone();
+            let approved: RunEnvelope = serde_json::from_value(wire).unwrap();
+            store.approve(&approved, 1_000).unwrap();
+            for child_run in [false, true] {
+                for child_supply in [false, true] {
+                    let mut child = serde_json::to_value(grant()).unwrap();
+                    child["skill_requests"] = serde_json::json!({
+                        "agents": ["codex"], "allow_run": child_run,
+                        "allow_supply": child_supply, "expires_at_ms": 8_000,
+                    });
+                    let child: GrantRequest = serde_json::from_value(child).unwrap();
+                    let outcome = store.check_child(&child, 1_000);
+                    if (!child_run || allow_run) && (!child_supply || allow_supply) {
+                        assert_eq!(outcome.unwrap(), approved);
+                    } else {
+                        assert!(matches!(outcome, Err(BrokerError::InvalidGrant)));
+                    }
+                }
+            }
+            for (field, value) in [
+                ("agents", serde_json::json!(["other"])),
+                ("agents", serde_json::json!([])),
+                ("expires_at_ms", serde_json::json!(9_001)),
+                ("expires_at_ms", serde_json::json!(1_000)),
+            ] {
+                let mut child = serde_json::to_value(grant()).unwrap();
+                child["skill_requests"] = permission.clone();
+                child["skill_requests"][field] = value;
+                let child: GrantRequest = serde_json::from_value(child).unwrap();
+                assert!(matches!(
+                    store.check_child(&child, 1_000),
+                    Err(BrokerError::InvalidGrant)
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn skill_request_authority_requires_valid_explicit_run_permission() {
+    let permission = serde_json::json!({
+        "agents": ["codex"], "allow_run": false, "allow_supply": true,
+        "expires_at_ms": 9_000,
+    });
+    for omitted in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let store = RunEnvelopeStore::open(root.path()).unwrap();
+        let mut wire = serde_json::to_value(envelope()).unwrap();
+        if omitted {
+            wire.as_object_mut().unwrap().remove("skill_requests");
+        } else {
+            wire["skill_requests"] = serde_json::Value::Null;
+        }
+        let approved: RunEnvelope = serde_json::from_value(wire).unwrap();
+        store.approve(&approved, 1_000).unwrap();
+        assert_eq!(store.check_child(&grant(), 1_000).unwrap(), approved);
+        let mut child = serde_json::to_value(grant()).unwrap();
+        child["skill_requests"] = permission.clone();
+        let child: GrantRequest = serde_json::from_value(child).unwrap();
+        assert!(matches!(
+            store.check_child(&child, 1_000),
+            Err(BrokerError::InvalidGrant)
+        ));
+    }
+    for (field, value) in [
+        ("agents", serde_json::json!([])),
+        ("expires_at_ms", serde_json::json!(10_001)),
+        ("expires_at_ms", serde_json::json!(1_000)),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let store = RunEnvelopeStore::open(root.path()).unwrap();
+        let mut wire = serde_json::to_value(envelope()).unwrap();
+        wire["skill_requests"] = permission.clone();
+        wire["skill_requests"][field] = value;
+        let approved: RunEnvelope = serde_json::from_value(wire).unwrap();
+        assert!(matches!(
+            store.approve(&approved, 1_000),
+            Err(BrokerError::InvalidGrant)
+        ));
     }
 }
 

@@ -76,6 +76,8 @@ mod provider_requests;
 mod skill_quarantine;
 #[path = "broker/skill_requests.rs"]
 mod skill_requests;
+#[path = "broker/supply_withdrawals.rs"]
+mod supply_withdrawals;
 
 #[path = "broker/dependencies.rs"]
 mod dependencies;

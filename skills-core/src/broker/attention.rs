@@ -6,6 +6,7 @@ use super::{
 
 #[path = "attention_transport.rs"]
 mod transport;
+pub use crate::endorsement::alerts::Urgency as WithdrawalUrgency;
 use crate::{Digest, posture::FailureCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,6 +16,31 @@ use std::{
     sync::Mutex,
 };
 pub use transport::{AttentionEndpoint, RunLifecycle, RunState};
+
+/// Bounded withdrawal evidence for display, never a command or authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WithdrawalDetails {
+    /// Affected admitted package, not its mutable path or content.
+    pub package_digest: String,
+    /// Exact signed withdrawal record.
+    pub withdrawal_digest: String,
+    /// Local endorser label, or a bounded public-key fingerprint when untrusted.
+    pub endorser: String,
+    /// Whether the affected review relied on the withdrawn evidence.
+    pub urgency: WithdrawalUrgency,
+}
+
+impl WithdrawalDetails {
+    fn valid(&self) -> bool {
+        [&self.package_digest, &self.withdrawal_digest]
+            .iter()
+            .all(|value| Digest::parse(value).is_ok_and(|digest| digest.to_string() == **value))
+            && !self.endorser.trim().is_empty()
+            && self.endorser.len() <= 256
+            && !self.endorser.chars().any(char::is_control)
+    }
+}
 
 /// Trusted subject of one condition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,13 +55,16 @@ pub enum AttentionSubject {
     Session(String),
     /// One admitted Run, named by its canonical UUID.
     Run(String),
+    /// One operator's local supply, named by its canonical nonzero UID.
+    Supply(String),
 }
 
 impl AttentionSubject {
-    fn parts(&self) -> (&str, &str) {
+    pub(super) fn parts(&self) -> (&'static str, &str) {
         match self {
             Self::Session(id) => ("session", id),
             Self::Run(id) => ("run", id),
+            Self::Supply(id) => ("supply", id),
         }
     }
 
@@ -45,6 +74,10 @@ impl AttentionSubject {
             || id.len() > 256
             || id.chars().any(|c| c.is_whitespace() || c.is_control())
             || (kind == "run" && !canonical_uuid(id))
+            || (kind == "supply"
+                && !id
+                    .parse::<u32>()
+                    .is_ok_and(|uid| uid != 0 && uid.to_string() == id))
         {
             return Err(BrokerError::InvalidGrant);
         }
@@ -71,6 +104,8 @@ pub enum AttentionReason {
     SkillApprovalPending,
     /// One trusted posture dimension failed.
     SkillUnverified(FailureCode),
+    /// Signed review evidence affecting usable supply has been withdrawn.
+    EndorsementWithdrawn(WithdrawalDetails),
 }
 
 impl AttentionReason {
@@ -81,6 +116,7 @@ impl AttentionReason {
             Self::SessionFailed => ("session_failed", None),
             Self::SkillApprovalPending => ("skill_approval_pending", Some("admission_required")),
             Self::SkillUnverified(code) => ("skill_unverified", Some(code.name())),
+            Self::EndorsementWithdrawn(_) => ("endorsement_withdrawn", None),
         }
     }
 }
@@ -91,7 +127,7 @@ impl AttentionReason {
 pub struct AttentionCondition {
     /// Associated canonical Run, when the Session belongs to one.
     pub linked_run_id: Option<String>,
-    /// Authenticated owning Session or Run.
+    /// Authenticated owning Session, Run or operator-local supply.
     pub subject: AttentionSubject,
     /// Stable canonical UUID for this condition's lifetime.
     pub operation_id: String,
@@ -112,6 +148,14 @@ impl AttentionCondition {
         self.subject.validate()?;
         if !canonical_uuid(&self.operation_id)
             || self.created_at_ms == 0
+            || (matches!(self.subject, AttentionSubject::Supply(_))
+                && (!matches!(
+                    self.reason,
+                    AttentionReason::SkillApprovalPending
+                        | AttentionReason::EndorsementWithdrawn(_)
+                ) || self.linked_run_id.is_some()))
+            || matches!(&self.reason, AttentionReason::EndorsementWithdrawn(details)
+                if !matches!(self.subject, AttentionSubject::Supply(_)) || !details.valid())
             || self
                 .linked_run_id
                 .as_ref()
@@ -144,6 +188,7 @@ impl ProjectionChange {
     fn validate(&self) -> Result<(), BrokerError> {
         match self {
             Self::Upsert(condition) | Self::Clear(condition) => condition.validate(),
+            Self::ClearSubject(AttentionSubject::Supply(_)) => Err(BrokerError::InvalidGrant),
             Self::ClearSubject(subject) => subject.validate(),
         }
     }
@@ -157,6 +202,9 @@ impl ProjectionChange {
                 attention["stage"] = Value::Null;
                 if let Some(code) = condition.reason.fields().1 {
                     attention["code"] = json!(code);
+                }
+                if let AttentionReason::EndorsementWithdrawn(details) = &condition.reason {
+                    attention["withdrawal"] = json!(details);
                 }
                 json!({"type": "upsert", "attention": attention})
             }

@@ -17,6 +17,7 @@ use crate::{
     beads_mutation::{ApprovedBeadsMutations, BeadsRole},
     launch_protocol::VerificationRequest,
     provider_request::ApprovedProviderRequests,
+    skill_request::ApprovedSkillRequests,
 };
 
 /// Exact broker-owned authority approved by the operator before child launches.
@@ -39,6 +40,9 @@ pub struct RunEnvelope {
     pub provider_requests: Option<ApprovedProviderRequests>,
     /// One exact privileged command scope, when the Run needs it.
     pub commands: Option<ApprovedCommands>,
+    /// Explicit Admission-request scope; missing or null denies this family.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_requests: Option<ApprovedSkillRequests>,
     /// Digest of the fixed verification plan selected at Run start.
     pub verification_plan_digest: String,
     /// Maximum number of distinct Session launches across this Run.
@@ -74,6 +78,9 @@ impl RunEnvelope {
             || self.provider_requests.as_ref().is_some_and(|scope| {
                 !scope.valid(now_ms) || scope.expires_at_ms > self.expires_at_ms
             })
+            || self.skill_requests.as_ref().is_some_and(|scope| {
+                !scope.valid(now_ms) || scope.expires_at_ms > self.expires_at_ms
+            })
             || self.commands.as_ref().is_some_and(|commands| {
                 commands.expires_at_ms > self.expires_at_ms
                     || commands.policy(&self.envelope_id, now_ms).is_err()
@@ -95,7 +102,6 @@ impl RunEnvelope {
             || grant.controller_uid != self.controller_uid
             || grant.expires_at_ms > self.expires_at_ms
             || grant.dependencies.is_some()
-            || grant.skill_requests.is_some()
         {
             return Err(BrokerError::InvalidGrant);
         }
@@ -112,6 +118,23 @@ impl RunEnvelope {
                         (Some(_), None) => false,
                     } => {}
             _ => return Err(BrokerError::InvalidGrant),
+        }
+        if let Some(child) = &grant.skill_requests {
+            let parent = self
+                .skill_requests
+                .as_ref()
+                .ok_or(BrokerError::InvalidGrant)?;
+            if !child.valid(now_ms)
+                || child.allow_run && !parent.allow_run
+                || child.allow_supply && !parent.allow_supply
+                || child.expires_at_ms > parent.expires_at_ms
+                || !child
+                    .agents
+                    .iter()
+                    .all(|agent| parent.agents.contains(agent))
+            {
+                return Err(BrokerError::InvalidGrant);
+            }
         }
         if let Some(child) = &grant.beads_mutations {
             let parent = self.bead_scope.as_ref().ok_or(BrokerError::InvalidGrant)?;

@@ -90,6 +90,63 @@ fn condition() -> AttentionCondition {
 }
 
 #[test]
+fn withdrawal_projection_is_closed_bounded_supply_metadata() {
+    let mut value = serde_json::to_value(condition()).unwrap();
+    value["subject"] = serde_json::json!({"kind":"supply","id":"1000"});
+    let details = serde_json::json!({
+        "package_digest": Digest::of(b"package").to_string(),
+        "withdrawal_digest": Digest::of(b"withdrawal").to_string(),
+        "endorser": "Local reviewer", "urgency": "relied_on",
+    });
+    value["reason"] = serde_json::json!({"kind":"endorsement_withdrawn","code":details});
+    let parsed: AttentionCondition = serde_json::from_value(value.clone()).unwrap();
+    let root = TempDir::new().unwrap();
+    let outbox = Outbox::open(root.path()).unwrap();
+    let projection = outbox
+        .enqueue("withdrawn", ProjectionChange::Upsert(parsed))
+        .unwrap();
+    let wire = projection.wire();
+    assert_eq!(wire["change"]["attention"]["kind"], "endorsement_withdrawn");
+    assert_eq!(wire["change"]["attention"]["withdrawal"], details);
+    assert!(wire["change"]["attention"].get("code").is_none());
+    for (field, invalid) in [
+        ("endorser", serde_json::json!("\nprivate")),
+        ("endorser", serde_json::json!(" ")),
+        ("endorser", serde_json::json!("x".repeat(257))),
+        ("package_digest", serde_json::json!("not-a-digest")),
+        ("withdrawal_digest", serde_json::json!("sha256:ABC")),
+    ] {
+        let mut wrong = value.clone();
+        wrong["reason"]["code"][field] = invalid;
+        let condition = serde_json::from_value(wrong).unwrap();
+        assert!(matches!(
+            outbox.enqueue("wrong", ProjectionChange::Upsert(condition)),
+            Err(BrokerError::InvalidGrant)
+        ));
+    }
+    for (field, invalid) in [
+        (
+            "subject",
+            serde_json::json!({"kind":"session","id":"origin"}),
+        ),
+        (
+            "linked_run_id",
+            serde_json::json!("12345678-1234-4234-8234-123456789abc"),
+        ),
+    ] {
+        let mut wrong = value.clone();
+        wrong[field] = invalid;
+        let condition = serde_json::from_value(wrong).unwrap();
+        assert!(matches!(
+            outbox.enqueue("wrong", ProjectionChange::Upsert(condition)),
+            Err(BrokerError::InvalidGrant)
+        ));
+    }
+    value["reason"]["code"]["next_action"] = serde_json::json!("private command");
+    assert!(serde_json::from_value::<AttentionCondition>(value).is_err());
+}
+
+#[test]
 fn outbox_restarts_without_reordering_or_reopening_an_acknowledged_change() {
     let root = TempDir::new().unwrap();
     let outbox = Outbox::open(root.path()).unwrap();

@@ -61,10 +61,23 @@ def plan(store, operator_uid):
                 targets.extend((Path(parent) / name, False) for name in files)
     targets.extend((store / "trust" / name, False) for name in ("roles.json", "roles.lock"))
     targets.append((store / "trust", True))
-    generations = store / "generations"
-    if generations.exists():
-        targets.append((generations, True))
-        targets.extend((entry, False) for entry in generations.iterdir())
+    for name in ("generations", "endorsements", "endorsers"):
+        directory = store / name
+        if directory.exists() or directory.is_symlink():
+            if not stat.S_ISDIR(directory.lstat().st_mode):
+                raise ValueError("unexpected evidence inode")
+            targets.append((directory, True))
+            for index, entry in enumerate(directory.iterdir()):
+                if index >= 4096:
+                    raise ValueError("evidence directory bound exceeded")
+                if (name == "generations"
+                        or (name == "endorsements" and entry.name.startswith("sha256-")
+                            and entry.name.endswith(".json"))
+                        or (name == "endorsers" and entry.name == "local.json")):
+                    targets.append((entry, False))
+    quarantine = store / "quarantine.json"
+    if quarantine.exists() or quarantine.is_symlink():
+        targets.append((quarantine, False))
     if len(targets) > 65536:
         raise ValueError("evidence bound exceeded")
     for entry, directory in targets:
@@ -115,12 +128,13 @@ def install():
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        generations = args.store / "generations"
-        if not generations.exists():
+        for name in ("generations", "endorsements", "endorsers"):
+            if (args.store / name).exists():
+                continue
             descriptor = open_evidence(args.store, True, operator_uid)
             try:
-                os.mkdir("generations", mode=0o2750, dir_fd=descriptor)
-                child = os.open("generations", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+                os.mkdir(name, mode=0o2750, dir_fd=descriptor)
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
                 try:
                     os.fchown(child, operator_uid, broker_gid)
                     os.fchmod(child, 0o2750)

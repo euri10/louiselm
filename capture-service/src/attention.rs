@@ -19,6 +19,10 @@ pub use projection::{BrokerProjection, ProjectionChange, ProjectionResult};
 #[path = "attention_runs.rs"]
 mod run_conditions;
 
+#[path = "attention_withdrawal.rs"]
+mod withdrawal;
+pub use withdrawal::{AttentionWithdrawal, WithdrawalUrgency};
+
 use crate::permissions::set_private_permissions;
 use crate::runs::{RunStore, RunStoreError};
 
@@ -34,6 +38,8 @@ pub enum AttentionSubjectKind {
     Session,
     /// A durable workflow Run.
     Run,
+    /// The operator's local supply, independent of Session and Run lifetimes.
+    Supply,
 }
 
 /// The closed v1 Attention taxonomy.
@@ -52,6 +58,8 @@ pub enum AttentionKind {
     SkillApprovalPending,
     /// Trusted posture evidence does not verify Skill supply.
     SkillUnverified,
+    /// An Endorsement covering usable admitted supply was withdrawn.
+    EndorsementWithdrawn,
 }
 
 impl AttentionKind {
@@ -65,6 +73,7 @@ impl AttentionKind {
             Self::SessionFailed => "Session failed",
             Self::SkillApprovalPending => "Skill approval is pending",
             Self::SkillUnverified => "Skill supply is unverified",
+            Self::EndorsementWithdrawn => "Endorsement was withdrawn",
         }
     }
 }
@@ -109,7 +118,7 @@ pub enum AttentionCode {
 pub struct AttentionKey {
     /// Kind of subject carrying the condition.
     pub subject_kind: AttentionSubjectKind,
-    /// Session identifier or canonical Run UUID.
+    /// Session identifier, canonical Run UUID, or canonical nonzero operator UID for Supply.
     pub subject_id: String,
     /// Typed condition.
     pub kind: AttentionKind,
@@ -123,7 +132,7 @@ pub struct AttentionKey {
 pub struct AttentionDraft {
     /// Kind of subject carrying the condition.
     pub subject_kind: AttentionSubjectKind,
-    /// Session identifier or canonical Run UUID.
+    /// Session identifier, canonical Run UUID, or canonical nonzero operator UID for Supply.
     pub subject_id: String,
     /// Typed condition.
     pub kind: AttentionKind,
@@ -138,6 +147,9 @@ pub struct AttentionDraft {
     /// Optional closed detail code; required for Skill conditions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<AttentionCode>,
+    /// Bounded evidence required only for a supply Endorsement withdrawal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withdrawal: Option<AttentionWithdrawal>,
 }
 
 impl AttentionDraft {
@@ -157,7 +169,7 @@ impl AttentionDraft {
 pub struct AttentionItem {
     /// Kind of subject carrying the condition.
     pub subject_kind: AttentionSubjectKind,
-    /// Session identifier or canonical Run UUID.
+    /// Session identifier, canonical Run UUID, or canonical nonzero operator UID for Supply.
     pub subject_id: String,
     /// Typed condition.
     pub kind: AttentionKind,
@@ -176,6 +188,9 @@ pub struct AttentionItem {
     /// Optional closed detail code; required for Skill conditions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<AttentionCode>,
+    /// Bounded evidence required only for a supply Endorsement withdrawal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withdrawal: Option<AttentionWithdrawal>,
 }
 
 impl AttentionItem {
@@ -330,6 +345,7 @@ impl AttentionStore {
                 linked_run_id: draft.linked_run_id,
                 stage: draft.stage,
                 code: draft.code,
+                withdrawal: draft.withdrawal,
             };
             let key = item.key();
             let changed = if let Some(current) =
@@ -565,9 +581,13 @@ fn validate_draft(draft: &AttentionDraft) -> Result<(), AttentionError> {
             "created_at_ms must be positive".to_owned(),
         ));
     }
-    validate_linked_run(draft.linked_run_id.as_deref())?;
-    validate_stage(draft.stage.as_deref())?;
-    validate_code(draft.kind, draft.code, draft.stage.as_deref())
+    validate_context(
+        draft.subject_kind,
+        draft.linked_run_id.as_deref(),
+        draft.stage.as_deref(),
+    )?;
+    validate_code(draft.kind, draft.code, draft.stage.as_deref())?;
+    withdrawal::validate(draft.kind, draft.withdrawal.as_ref())
 }
 
 fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
@@ -582,9 +602,13 @@ fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
             "Attention reason does not match kind".to_owned(),
         ));
     }
-    validate_linked_run(item.linked_run_id.as_deref())?;
-    validate_stage(item.stage.as_deref())?;
-    validate_code(item.kind, item.code, item.stage.as_deref())
+    validate_context(
+        item.subject_kind,
+        item.linked_run_id.as_deref(),
+        item.stage.as_deref(),
+    )?;
+    validate_code(item.kind, item.code, item.stage.as_deref())?;
+    withdrawal::validate(item.kind, item.withdrawal.as_ref())
 }
 
 fn validate_code(
@@ -621,7 +645,48 @@ fn validate_key(key: &AttentionKey) -> Result<(), AttentionError> {
     if key.subject_kind == AttentionSubjectKind::Run {
         validate_uuid(&key.subject_id, "Run subject_id")?;
     }
+    if key.subject_kind == AttentionSubjectKind::Supply {
+        if !key
+            .subject_id
+            .parse::<u32>()
+            .is_ok_and(|uid| uid != 0 && uid.to_string() == key.subject_id)
+        {
+            return Err(AttentionError::Invalid(
+                "Supply subject_id must be a canonical nonzero operator UID".into(),
+            ));
+        }
+        if !matches!(
+            key.kind,
+            AttentionKind::SkillApprovalPending | AttentionKind::EndorsementWithdrawn
+        ) {
+            return Err(AttentionError::Invalid(
+                "Supply condition kind must be skill_approval_pending or endorsement_withdrawn"
+                    .into(),
+            ));
+        }
+    }
+    if key.kind == AttentionKind::EndorsementWithdrawn
+        && key.subject_kind != AttentionSubjectKind::Supply
+    {
+        return Err(AttentionError::Invalid(
+            "Endorsement withdrawal requires a Supply subject".into(),
+        ));
+    }
     validate_uuid(&key.source_operation_id, "source_operation_id")
+}
+
+fn validate_context(
+    subject_kind: AttentionSubjectKind,
+    linked_run: Option<&str>,
+    stage: Option<&str>,
+) -> Result<(), AttentionError> {
+    if subject_kind == AttentionSubjectKind::Supply && (linked_run.is_some() || stage.is_some()) {
+        return Err(AttentionError::Invalid(
+            "Supply conditions cannot carry Run or stage context".into(),
+        ));
+    }
+    validate_linked_run(linked_run)?;
+    validate_stage(stage)
 }
 
 fn validate_subject_id(subject_id: &str) -> Result<(), AttentionError> {
@@ -692,6 +757,7 @@ fn same_content(left: &AttentionItem, right: &AttentionItem) -> bool {
         && left.linked_run_id == right.linked_run_id
         && left.stage == right.stage
         && left.code == right.code
+        && left.withdrawal == right.withdrawal
 }
 
 fn advance_generation(state: &mut PersistedAttention) -> Result<(), AttentionError> {

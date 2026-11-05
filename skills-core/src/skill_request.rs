@@ -11,6 +11,8 @@ pub enum SkillSubject {
     Session,
     /// The Run already bound to this Session.
     Run,
+    /// The authenticated operator's local supply, independent of origin lifetime.
+    Supply,
 }
 
 /// Immutable request content. No paths, prose or caller-selected subject IDs.
@@ -51,6 +53,9 @@ pub struct ApprovedSkillRequests {
     pub agents: Vec<String>,
     /// Whether this approval includes the authenticated Session's owning Run.
     pub allow_run: bool,
+    /// Whether this approval includes durable operator-local supply requests.
+    #[serde(default)]
+    pub allow_supply: bool,
     /// Exclusive absolute expiry; retries never renew it.
     pub expires_at_ms: u64,
 }
@@ -67,7 +72,11 @@ impl ApprovedSkillRequests {
     pub fn permits(&self, request: &SkillRequest, now_ms: u64) -> bool {
         self.valid(now_ms)
             && request.valid()
-            && (request.subject == SkillSubject::Session || self.allow_run)
+            && match request.subject {
+                SkillSubject::Session => true,
+                SkillSubject::Run => self.allow_run,
+                SkillSubject::Supply => self.allow_supply,
+            }
             && request
                 .agents
                 .iter()
@@ -97,6 +106,12 @@ pub struct SkillRequestStatus {
     pub request_id: String,
     /// Broker-created stable Attention operation UUID.
     pub operation_id: String,
+    /// Requested lifecycle scope, retained after the origin terminates.
+    pub subject: SkillSubject,
+    /// Authenticated originating Session, retained for operator inspection.
+    pub session_id: String,
+    /// Authenticated originating Run, retained for operator inspection.
+    pub run_id: String,
     /// Latest durable result; a terminal result never becomes pending again.
     pub outcome: SkillRequestOutcome,
     /// Exact package set, also used by the trusted Admission CLI before signing.
@@ -112,6 +127,9 @@ impl SkillRequestStatus {
     #[must_use]
     pub fn valid(&self) -> bool {
         identifier(&self.request_id)
+            && identifier(&self.session_id)
+            && identifier(&self.run_id)
+            && (self.subject != SkillSubject::Run || canonical_uuid(&self.run_id))
             && names(&self.agents)
             && !self.packages.is_empty()
             && self.packages.len() <= 32
@@ -127,15 +145,19 @@ impl SkillRequestStatus {
                 (SkillRequestOutcome::Approved, None) | (_, Some(_)) => false,
                 (_, None) => true,
             }
-            && self.operation_id.len() == 36
-            && self.operation_id.bytes().enumerate().all(|(index, byte)| {
-                if matches!(index, 8 | 13 | 18 | 23) {
-                    byte == b'-'
-                } else {
-                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-                }
-            })
+            && canonical_uuid(&self.operation_id)
     }
+}
+
+fn canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
 }
 
 fn names(values: &[String]) -> bool {

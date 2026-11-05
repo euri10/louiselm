@@ -784,8 +784,11 @@ fn skill_relay_preserves_retry_identity_and_drops_late_or_wrong_kind_replies() {
         status: SkillRequestStatus {
             request_id: "durable-id".into(),
             operation_id: "12345678-1234-4234-8234-123456789abc".into(),
+            subject: SkillSubject::Session,
+            session_id: query.session_id.clone(),
+            run_id: query.run_id.clone(),
             outcome: SkillRequestOutcome::Pending,
-            packages: vec![crate::Digest::of(b"skill").to_string()],
+            packages: vec![crate::Digest::of(b"package").to_string()],
             agents: vec!["codex".into()],
             admission: None,
         },
@@ -793,6 +796,25 @@ fn skill_relay_preserves_retry_identity_and_drops_late_or_wrong_kind_replies() {
     assert!(harness.owner.handle_status_reply(&forwarded));
     assert!(harness.owner.commands.status.is_some());
     forwarded.request_id = next.request_id;
+    for field in ["subject", "session_id", "run_id", "packages", "agents"] {
+        let mut wrong = forwarded.clone();
+        let CommandOperation::SkillRequestResult { status } = &mut wrong.operation else {
+            panic!("expected request result");
+        };
+        match field {
+            "subject" => status.subject = SkillSubject::Supply,
+            "session_id" => status.session_id = "other-session".into(),
+            "run_id" => status.run_id = "other-run".into(),
+            "packages" => status.packages = vec![crate::Digest::of(b"other").to_string()],
+            "agents" => status.agents = vec!["other".into()],
+            _ => unreachable!(),
+        }
+        assert!(harness.owner.handle_status_reply(&wrong));
+        assert!(
+            harness.owner.commands.status.is_some(),
+            "accepted {field} mismatch"
+        );
+    }
     settle(|complete| harness.broker.send(forwarded.canonical_bytes(), complete));
     while harness.owner.commands.status.is_some() {
         harness.tick();

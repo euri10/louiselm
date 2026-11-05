@@ -153,7 +153,8 @@ async fn cross_crate_requests_survive_restart_park_and_disposal() {
     );
     let broker = root.path().join("broker");
     fs::create_dir(&broker).unwrap();
-    for (phase, expected) in [("accept", 2), ("park", 2), ("disposed", 1)] {
+    let mut supply_operation = None;
+    for (phase, expected) in [("accept", 3), ("park", 3), ("disposed", 2)] {
         if phase == "park" {
             runs.park_cold(
                 RunDraft {
@@ -188,6 +189,17 @@ async fn cross_crate_requests_survive_restart_park_and_disposal() {
                 .iter()
                 .all(|item| item.kind == louiselm_capture::AttentionKind::SkillApprovalPending)
         );
+        let supply: Vec<_> = items
+            .iter()
+            .filter(|item| item.subject_kind == louiselm_capture::AttentionSubjectKind::Supply)
+            .collect();
+        assert_eq!(
+            supply.len(),
+            1,
+            "one durable item for the retried supply batch"
+        );
+        let operation = &supply[0].source_operation_id;
+        assert_eq!(supply_operation.get_or_insert(operation.clone()), operation);
     }
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
@@ -225,6 +237,8 @@ async fn cross_crate_posture_reaches_neovim() {
         "conformance::status::current::posture_waiver_reaches_neovim",
         "conformance::status::current::posture_revocation_reaches_neovim",
         "skill_requests::verified_admission_reaches_neovim",
+        "skill_requests::supply_admission_reaches_neovim",
+        "supply_withdrawals::withdrawals_reach_neovim",
     ] {
         let root = tempfile::tempdir().unwrap();
         let runtime = root.path().join("runtime");

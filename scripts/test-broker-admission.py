@@ -77,7 +77,7 @@ class LinkedAdmission(unittest.TestCase):
                     return json.loads(as_user(operator, root / "skills", *args, "--store", store, "--robot-json").stdout)
 
                 self.phase("generate fixture signing keys")
-                for name in ("primary", "release"):
+                for name in ("primary", "release", "publisher"):
                     as_user(operator, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", private / name)
                 self.phase("bootstrap fixture trust")
                 cli("trust", "bootstrap", "--primary", private / "primary.pub", "--release", private / "release.pub")
@@ -155,6 +155,64 @@ class LinkedAdmission(unittest.TestCase):
                 as_user(broker, "test", "-r", store / "trust/roles.json")
                 as_user(broker, "test", "!", "-w", store / "generations")
                 self.assertFalse((store / "pins.jsonl").exists(), "approval never activates supply")
+
+                self.phase("prepare separately activated withdrawal supply")
+                store = root / "withdrawal-store"
+                store.mkdir(mode=0o700)
+                os.chown(store, operator.pw_uid, operator.pw_gid)
+                cli("trust", "bootstrap", "--primary", private / "primary.pub", "--release", private / "release.pub")
+                cli("endorser", "add", "--endorser", private / "publisher.pub", "--label", "Fixture publisher",
+                    "--role", "publisher", "--allow-software-key", "--key", private / "primary")
+                package = cli("package", candidate)["digest"]
+                positive = private / "positive"
+                cli("endorsement", "sign-batch", "--member", package, "--role", "publisher",
+                    "--endorser", private / "publisher.pub", "--key", private / "publisher", "--output", positive)
+                cli("endorsement", "import", positive)
+                admitted = cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "primary")
+                self.assertEqual(len(admitted["payload"]["members"][0]["relied_on"]), 1)
+                remote = private / "witness.git"
+                as_user(operator, "git", "init", "--bare", "--quiet", remote)
+                cli("generation", "witness", admitted["generation"], "--remote", remote)
+                cli("generation", "activate", admitted["generation"])
+                pins = (store / "pins.jsonl").read_bytes()
+                provenance = store / "provenance.json"
+                value = json.loads(provenance.read_bytes())
+                value.update(trusted=True, created_by_release="software-key-fixture")
+                provenance.write_text(json.dumps(value))  # Only this disposable fixture is promoted.
+                source_config.unlink()  # Isolated fixture switches to the separately activated store.
+                self.phase("provision withdrawal evidence for distinct reader UID")
+                command(sys.executable, str(installer), "--store", str(store))
+                for evidence in [store / "endorsers/local.json", *sorted((store / "endorsements").glob("*.json"))]:
+                    as_user(broker, "test", "-r", evidence)
+                    as_user(broker, "test", "!", "-w", evidence)
+                as_user(broker, "test", "!", "-r", store / "endorsers/local.lock")
+                as_user(broker, "test", "!", "-r", private / "publisher")
+
+                self.phase("import withdrawal after provisioning")
+                withdrawals = private / "withdrawals"
+                cli("endorsement", "withdraw", "--member", package, "--role", "publisher",
+                    "--endorser", private / "publisher.pub", "--key", private / "publisher", "--output", withdrawals)
+                cli("endorsement", "import", withdrawals)
+                for evidence in (store / "endorsements").glob("*.json"):
+                    as_user(broker, "test", "-r", evidence)
+                    as_user(broker, "test", "!", "-w", evidence)
+                withdrawal_state = root / "withdrawal-state"
+                withdrawal_state.mkdir(mode=0o700)
+                os.chown(withdrawal_state, broker.pw_uid, broker.pw_gid)
+
+                def reconcile_withdrawal(expected):
+                    as_user(broker, "env", f"LOUISELM_ADMISSION_STATE={withdrawal_state}",
+                            f"LOUISELM_ADMISSION_WITHDRAWAL_EXPECT={expected}", root / "broker-test",
+                            "--ignored", "--exact", "supply_withdrawals::installed_supply_withdrawal_source", "--nocapture")
+
+                self.phase("raise withdrawal Attention without a Session")
+                reconcile_withdrawal("raise")
+                self.phase("clear withdrawal Attention after operator quarantine")
+                cli("quarantine", "exclude", package, "--reason", "fixture withdrawal")
+                as_user(broker, "test", "-r", store / "quarantine.json")
+                as_user(broker, "test", "!", "-w", store / "quarantine.json")
+                reconcile_withdrawal("clear")
+                self.assertEqual((store / "pins.jsonl").read_bytes(), pins, "read-only projection never activates supply")
             finally:
                 self.phase("cleanup broker")
                 if server is not None and server.poll() is None:

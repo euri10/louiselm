@@ -201,6 +201,7 @@ pub enum LaunchObservation {
 /// The Control broker's local-only rendezvous service.
 pub struct BrokerService {
     pub(super) posture_attention: super::posture_attention::PostureAttention,
+    pub(super) withdrawal_attention: super::withdrawal_attention::WithdrawalAttention,
     pub(super) waivers: super::waiver::Waivers,
     pub(super) dependencies: super::dependencies::Dependencies,
     listener: SeqpacketListener,
@@ -301,6 +302,10 @@ impl BrokerService {
             &authorizations.root.join("posture-attention"),
         )?;
         posture_attention.reconcile(&attention)?;
+        let withdrawal_attention = super::withdrawal_attention::WithdrawalAttention::open(
+            &authorizations.root.join("withdrawal-attention"),
+        )?;
+        withdrawal_attention.replay(&attention)?;
         let beads_mutations = super::beads_mutation::BeadsMutations::open(
             &authorizations.root.join("beads-mutations"),
         )?;
@@ -309,6 +314,7 @@ impl BrokerService {
         )?;
         Ok(Self {
             posture_attention,
+            withdrawal_attention,
             waivers: super::waiver::Waivers::open(
                 &authorizations.root.join("conformance-waivers"),
             )?,

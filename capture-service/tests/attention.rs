@@ -165,6 +165,7 @@ fn draft() -> AttentionDraft {
         linked_run_id: Some(RUN_ID.to_owned()),
         stage: Some("review/turn-1".to_owned()),
         code: None,
+        withdrawal: None,
     }
 }
 
@@ -185,6 +186,7 @@ fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
         linked_run_id: None,
         stage: None,
         code: Some(AttentionCode::AdmissionRequired),
+        withdrawal: None,
     };
     let approval_snapshot = store.upsert(approval.clone()).expect("approval pending");
     assert_eq!(
@@ -205,6 +207,7 @@ fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
         linked_run_id: Some(RUN_ID.to_owned()),
         stage: None,
         code: Some(AttentionCode::WitnessMissing),
+        withdrawal: None,
     };
     let snapshot = store.upsert(unverified.clone()).expect("unverified skill");
     assert_eq!(snapshot.items[1].reason, "Skill supply is unverified");
