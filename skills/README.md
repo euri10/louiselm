@@ -15,6 +15,10 @@ these packages. Packaging a skill from this tree imports them automatically.
 They can focus your review; they never admit anything. See
 `skills-core/README.md`.
 
+`louiselm-grill-me` is an owned fork of Matt Pocock's `grilling` skill
+(<https://github.com/mattpocock/skills>, MIT); its notice ships inside the skill
+as `LICENSE.upstream`, with ancestry in `UPSTREAM.md`.
+
 `louiselm-caveman-commit` is derived from
 [caveman](https://github.com/JuliusBrussee/caveman) by Julius Brussee, under the
 MIT License. The full notice is in `LICENSES/caveman-MIT.txt`. It is kept outside
