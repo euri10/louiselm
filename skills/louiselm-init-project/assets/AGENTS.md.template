@@ -1,0 +1,80 @@
+# {{project_name}} Development Contract
+
+## Project Scope
+
+{{project_purpose_boundaries_and_current_maturity}}
+
+{{confirmed_compatibility_expectations}}
+
+Priority: correctness (including safety and security), clarity, simplicity,
+then performance. Fix root causes at the narrowest shared boundary. Prefer
+existing code, standard facilities and plain functions. Add abstractions and
+dependencies for demonstrated needs.
+
+## Required references
+
+This is the always-loaded contract. Read the applicable reference before that
+work, once per session. A complete current copy already in context needs no
+second read; recover missing sections and re-read changed documents.
+
+| Before doing this | Read |
+| --- | --- |
+| Tracker mutation, task selection, claims or session attribution | [Agent workflow](docs/agent-workflow.md) |
+| Executable changes, testing/reliability design, gates or CI | [Testing and acceptance](docs/agent-testing.md) |
+{{selected_language_reference_rows}}
+
+Keep detailed procedures in these references. Update the contract and its
+routing when project decisions change.
+
+## Work tracking and triage
+
+Beads (`br`) is the shared durable work record. Use `br` and
+`bvr --robot-*`; never parse or hand-edit issue JSONL or initialize a tracker
+implicitly. A specific user request takes precedence over automatic selection.
+
+Every mutation has an attributable current-session actor. Claim atomically,
+finish your own claims first, and respect other agents' work. Recommendation
+requests produce recommendations; implementation requires a request to proceed.
+Follow the workflow reference for bounded queries, vocabulary and close evidence.
+
+## Architecture and lifecycle
+
+{{confirmed_architecture_boundaries_or_first_task_design_constraints}}
+
+Separate transformations, validation and state transitions from external I/O.
+Mutable state, background work and acquired resources have explicit owners and
+cleanup. Imports define APIs; construction/start/disposal own side effects.
+Split responsibilities when they diverge, without speculative extension points.
+
+## Errors and validation
+
+Validate external inputs before changing state. Preserve useful causes
+internally and sanitize them at presentation boundaries. Expected failures
+follow the selected language's explicit error conventions. Never silently
+swallow errors or turn failed validation into success with a fallback.
+
+{{project_specific_input_and_error_boundaries}}
+
+## Security
+
+Keep credentials and sensitive payloads out of code, logs, tests and commits.
+Use explicit trust boundaries for files, processes, network peers and external
+input where applicable. A new dependency needs a concrete gap and a review of
+its maintenance and security implications.
+
+{{project_specific_security_constraints}}
+
+## Editing and completion
+
+Inspect Git status first and preserve unrelated changes. Make focused edits;
+never stash another person's work or run destructive Git/filesystem operations
+without explicit authorization.
+
+Follow the testing reference for meaningful behavior changes and refactors.
+Update affected public documentation and contracts with the implementation.
+Change generated artifacts through their source and verify their consumers.
+Do not treat syntax checks as runtime evidence or planned checks as passing.
+
+Record unfinished work and completion evidence in Beads. Flush explicitly
+before handoff or an authorized commit. Commit/push only when authorized, staging
+named task-owned paths and relevant issue records.

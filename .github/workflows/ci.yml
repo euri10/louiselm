@@ -110,6 +110,14 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./scripts/check-agent-instructions
 
+  public-skills:
+    name: Published skills carry no private details
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./scripts/test-public-skills.sh
+      - run: ./scripts/check-public-skills
+
   beads-records:
     name: Beads records sorted and unique
     runs-on: ubuntu-latest

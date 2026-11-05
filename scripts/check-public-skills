@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Refuses private details in published skills (default: skills/).
+#
+# Published skills must be generic: personal defaults such as a home path, a
+# private host or an account belong in the user's private agent instructions.
+# Rules are shapes, not a list of private names, so this file itself reveals
+# nothing. An unlisted URL host fails until it is reviewed and added below.
+set -euo pipefail
+
+root=${1:-"$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/skills"}
+[ -d "$root" ] || { echo "usage: $(basename "$0") [skills-directory]" >&2; exit 1; }
+
+allowed_hosts='^(louiselm\.dev|github\.com|cli\.github\.com|docs\.astral\.sh|docs\.pytest\.org|docs\.npmjs\.com|www\.typescriptlang\.org|vitest\.dev|biomejs\.dev)$'
+failed=0
+
+reject() {
+	echo "public skills rejected: $1: $2" >&2
+	failed=1
+}
+
+while IFS= read -r -d '' link; do
+	reject symlink "${link#"$root"/}"
+done < <(find "$root" -type l -print0)
+
+scan() {
+	local rule=$1 pattern=$2 match
+	while IFS= read -r match; do
+		reject "$rule" "${match#"$root"/}"
+	done < <(grep -rnIE "$pattern" "$root" || true)
+}
+
+scan home_path '/(home|Users)/[^/[:space:]]+/'
+scan email '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+scan ssh_remote 'git@[A-Za-z0-9.-]+:'
+scan session_id '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+# Hosts appear in URLs and bare ("the usual host is example.net"); both count.
+tlds='com|net|org|io|dev|app|cloud|fr|de|be|ch|nl|eu|uk|co|me|xyz|lan|local|internal|home|corp'
+while IFS= read -r host; do
+	if ! grep -qE "$allowed_hosts" <<<"$host"; then
+		reject unlisted_host "$host (review it, then add it to allowed_hosts)"
+	fi
+done < <(
+	{
+		grep -rhoIE 'https?://[A-Za-z0-9.-]+' "$root" | sed 's|^[a-z]*://||'
+		grep -rhoIE "\b([A-Za-z0-9-]+\.)+($tlds)\b" "$root"
+	} | sort -u || true
+)
+
+exit "$failed"
