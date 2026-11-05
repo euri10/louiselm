@@ -9,7 +9,7 @@ use crate::{
     diff::{Change, LineKind, PackageDiff},
     dossier::{AssessmentState, Dossier},
     endorsement::focus::{Basis, Focus},
-    inspect::FindingKind,
+    inspect::{FindingKind, PackageKind},
     posture::Posture,
 };
 
@@ -24,6 +24,12 @@ pub fn human(dossier: &Dossier) -> String {
     let package = &dossier.package;
 
     push(&mut out, &format!("Dossier {}", package.digest));
+    if dossier.inspection.package_kind == PackageKind::OperatorProfile {
+        push(
+            &mut out,
+            "  Operator profile: always loaded into every Agent; private, never published",
+        );
+    }
     push(
         &mut out,
         &format!(

@@ -22,10 +22,34 @@ use crate::{
 };
 
 /// The Inspection schema this build produces.
-pub const INSPECTION_SCHEMA: &str = "louiselm.skills.inspection/1";
+pub const INSPECTION_SCHEMA: &str = "louiselm.skills.inspection/2";
 
 /// The path every Skill candidate must define its skill in.
 pub const SKILL_FILE: &str = "SKILL.md";
+
+/// The one file an Operator profile package holds.
+pub const PROFILE_FILE: &str = "PROFILE.md";
+
+/// The frontmatter `type` an Operator profile must declare.
+pub const PROFILE_TYPE: &str = "louiselm/operator-profile";
+
+/// Largest Operator profile accepted. It is loaded into every Agent on every
+/// turn, so it holds defaults, not knowledge.
+pub const MAX_PROFILE_BYTES: usize = 8 * 1024;
+
+/// What a package is, decided from its bytes alone.
+///
+/// Any package with a root `PROFILE.md` is an Operator profile, valid or not,
+/// so a malformed profile cannot pass as a skill and escape the refusals that
+/// keep a profile private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageKind {
+    /// An on-demand skill defined by `SKILL.md`.
+    Skill,
+    /// The private, always-on Operator profile defined by `PROFILE.md`.
+    OperatorProfile,
+}
 
 /// Number of located occurrences shown per finding.
 pub const MAX_SAMPLES: usize = 5;
@@ -41,6 +65,16 @@ pub enum FatalKind {
     /// A file that is not binary is also not valid UTF-8, so its bytes render
     /// differently depending on who reads them.
     TextNotUtf8,
+    /// `PROFILE.md` does not declare `type: louiselm/operator-profile`.
+    ProfileType,
+    /// The Operator profile exceeds its size cap.
+    ProfileTooLarge,
+    /// An Operator profile package holds a file other than `PROFILE.md`.
+    ProfileExtraFile,
+    /// A package defines both a skill and an Operator profile.
+    PackageKindAmbiguous,
+    /// An always-on profile references a credential or credential store.
+    ProfileCredential,
 }
 
 /// A reason the package is not reviewable.
@@ -219,6 +253,8 @@ pub struct Inspection {
     pub schema: String,
     /// Package the Inspection describes.
     pub package_digest: String,
+    /// Whether the package is a skill or the Operator profile.
+    pub package_kind: PackageKind,
     /// Version of the policy applied.
     pub policy_version: String,
     /// Content address of the exact policy bytes applied.
@@ -243,9 +279,15 @@ impl Inspection {
     /// # Errors
     /// Returns a package-read error if a manifest entry cannot be inspected. Detected policy violations are findings in the returned Inspection.
     pub fn run(package: &Package, policy: &Policy) -> Result<Self, StoreError> {
+        let package_kind = if package.manifest.entry(PROFILE_FILE).is_some() {
+            PackageKind::OperatorProfile
+        } else {
+            PackageKind::Skill
+        };
         let mut inspection = Self {
             schema: INSPECTION_SCHEMA.to_owned(),
             package_digest: package.digest.to_string(),
+            package_kind,
             policy_version: policy.document().version.clone(),
             policy_digest: policy.digest().to_string(),
             unicode_profile_version: policy.document().unicode.profile_version.clone(),
@@ -256,7 +298,9 @@ impl Inspection {
             files: Vec::new(),
         };
 
-        if package.manifest.entry(SKILL_FILE).is_none() {
+        if package_kind == PackageKind::OperatorProfile {
+            inspection.fatal.extend(profile_shape(package));
+        } else if package.manifest.entry(SKILL_FILE).is_none() {
             inspection.fatal.push(FatalFinding {
                 kind: FatalKind::SkillFileMissing,
                 path: None,
@@ -282,19 +326,7 @@ impl Inspection {
                     Ok(text) => {
                         let is_svg = facts.kind == ContentKind::Svg;
                         scan_text(text, policy, is_svg, &mut collector);
-                        if entry.path == SKILL_FILE {
-                            match frontmatter(text) {
-                                Ok((name, description)) => {
-                                    inspection.skill_name = Some(scan::escape(&name));
-                                    inspection.skill_description = Some(scan::escape(&description));
-                                }
-                                Err(reason) => inspection.fatal.push(FatalFinding {
-                                    kind: FatalKind::SkillFileFrontmatter,
-                                    path: Some(entry.path.clone()),
-                                    message: reason,
-                                }),
-                            }
-                        }
+                        inspection.definition_file(&entry.path, Some(text));
                     }
                     Err(error) => inspection.fatal.push(FatalFinding {
                         kind: FatalKind::TextNotUtf8,
@@ -306,13 +338,7 @@ impl Inspection {
                     }),
                 },
                 ContentKind::Image | ContentKind::Binary => {
-                    if entry.path == SKILL_FILE {
-                        inspection.fatal.push(FatalFinding {
-                            kind: FatalKind::SkillFileFrontmatter,
-                            path: Some(entry.path.clone()),
-                            message: format!("{SKILL_FILE} is not text"),
-                        });
-                    }
+                    inspection.definition_file(&entry.path, None);
                 }
             }
 
@@ -323,7 +349,50 @@ impl Inspection {
         inspection
             .findings
             .sort_by(|left, right| (&left.path, left.kind).cmp(&(&right.path, right.kind)));
+        if package_kind == PackageKind::OperatorProfile
+            && let Some(finding) = inspection
+                .findings
+                .iter()
+                .find(|finding| finding.kind == FindingKind::CredentialReference)
+        {
+            inspection.fatal.push(FatalFinding {
+                kind: FatalKind::ProfileCredential,
+                path: Some(finding.path.clone()),
+                message: "an always-on Operator profile may not reference credentials or credential stores".to_owned(),
+            });
+        }
         Ok(inspection)
+    }
+
+    /// Checks `SKILL.md` or `PROFILE.md`, given its text or `None` when the
+    /// file is not text. Any other path is ignored.
+    fn definition_file(&mut self, path: &str, text: Option<&str>) {
+        let (kind, result) = match path {
+            PROFILE_FILE => (
+                FatalKind::ProfileType,
+                text.map_or_else(|| Err(format!("{PROFILE_FILE} is not text")), profile_type),
+            ),
+            SKILL_FILE => (
+                FatalKind::SkillFileFrontmatter,
+                text.map_or_else(
+                    || Err(format!("{SKILL_FILE} is not text")),
+                    |text| {
+                        frontmatter(text).map(|(name, description)| {
+                            self.skill_name = Some(scan::escape(&name));
+                            self.skill_description = Some(scan::escape(&description));
+                        })
+                    },
+                ),
+            ),
+            _ => return,
+        };
+        if let Err(message) = result {
+            self.fatal.push(FatalFinding {
+                kind,
+                path: Some(path.to_owned()),
+                message,
+            });
+        }
     }
 
     /// Reports whether the package is reviewable at all.
@@ -636,15 +705,15 @@ struct SkillMetadata {
     description: Option<serde_json::Value>,
 }
 
-fn frontmatter(text: &str) -> Result<(String, String), String> {
+fn frontmatter_block<'a>(text: &'a str, file: &str) -> Result<&'a str, String> {
     let Some((opening, body)) = text.split_once('\n') else {
         return Err(format!(
-            "{SKILL_FILE} does not open with a `---` frontmatter block"
+            "{file} does not open with a `---` frontmatter block"
         ));
     };
     if opening.trim_end_matches('\r') != "---" {
         return Err(format!(
-            "{SKILL_FILE} does not open with a `---` frontmatter block"
+            "{file} does not open with a `---` frontmatter block"
         ));
     }
     let end: usize = body
@@ -653,18 +722,79 @@ fn frontmatter(text: &str) -> Result<(String, String), String> {
         .map(str::len)
         .sum();
     if end == body.len() {
-        return Err(format!("{SKILL_FILE} frontmatter is never closed"));
+        return Err(format!("{file} frontmatter is never closed"));
     }
+    Ok(&body[..end])
+}
+
+fn parse_frontmatter<T: serde::de::DeserializeOwned>(block: &str, file: &str) -> Result<T, String> {
     // Default budgets bound nesting and alias replay; duplicate keys are errors.
     // Includes and property interpolation are not compiled into this dependency.
     let options = serde_saphyr::options! { strict_booleans: true, with_snippet: false };
-    let fields: SkillMetadata = serde_saphyr::from_str_with_options(&body[..end], options)
-        .map_err(|error| {
-            format!(
-                "{SKILL_FILE} frontmatter is invalid YAML: {}",
-                scan::escape(&error.to_string())
-            )
-        })?;
+    serde_saphyr::from_str_with_options(block, options).map_err(|error| {
+        format!(
+            "{file} frontmatter is invalid YAML: {}",
+            scan::escape(&error.to_string())
+        )
+    })
+}
+
+// Profile frontmatter is extensible (OKF-style title, description, tags):
+// only `type` affects Inspection.
+#[derive(Deserialize)]
+struct ProfileMetadata {
+    #[serde(rename = "type")]
+    kind: Option<serde_json::Value>,
+}
+
+fn profile_type(text: &str) -> Result<(), String> {
+    let fields: ProfileMetadata =
+        parse_frontmatter(frontmatter_block(text, PROFILE_FILE)?, PROFILE_FILE)?;
+    match fields.kind.as_ref().and_then(serde_json::Value::as_str) {
+        Some(PROFILE_TYPE) => Ok(()),
+        _ => Err(format!(
+            "{PROFILE_FILE} frontmatter must declare type: {PROFILE_TYPE}"
+        )),
+    }
+}
+
+/// Shape rules for an Operator profile package: one small `PROFILE.md` only.
+fn profile_shape(package: &Package) -> Vec<FatalFinding> {
+    let mut fatal = Vec::new();
+    for entry in &package.manifest.entries {
+        if entry.path == PROFILE_FILE {
+            if usize::try_from(entry.size).map_or(true, |size| size > MAX_PROFILE_BYTES) {
+                fatal.push(FatalFinding {
+                    kind: FatalKind::ProfileTooLarge,
+                    path: Some(entry.path.clone()),
+                    message: format!(
+                        "{PROFILE_FILE} is {} bytes; an always-on profile may hold at most {MAX_PROFILE_BYTES}",
+                        entry.size
+                    ),
+                });
+            }
+        } else if entry.path == SKILL_FILE {
+            fatal.push(FatalFinding {
+                kind: FatalKind::PackageKindAmbiguous,
+                path: Some(entry.path.clone()),
+                message: format!(
+                    "a package defines either a skill ({SKILL_FILE}) or the Operator profile ({PROFILE_FILE}), never both"
+                ),
+            });
+        } else {
+            fatal.push(FatalFinding {
+                kind: FatalKind::ProfileExtraFile,
+                path: Some(entry.path.clone()),
+                message: format!("an Operator profile package holds only {PROFILE_FILE}"),
+            });
+        }
+    }
+    fatal
+}
+
+fn frontmatter(text: &str) -> Result<(String, String), String> {
+    let fields: SkillMetadata =
+        parse_frontmatter(frontmatter_block(text, SKILL_FILE)?, SKILL_FILE)?;
     let name = fields
         .name
         .as_ref()
