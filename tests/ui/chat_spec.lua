@@ -8460,9 +8460,17 @@ T["chat"]["aligns Session picker columns with missing names and different option
   for _, session in ipairs(sessions) do
     assert(chat:attach(session))
   end
-  local rows, choose
+  local rows, choose, choices
   nvim.ui.select = function(items, options, callback)
-    MiniTest.expect.equality(items, sessions)
+    MiniTest.expect.equality(options.kind, "louiselm_session")
+    MiniTest.expect.equality(
+      nvim.tbl_map(function(item)
+        return item.id
+      end, items),
+      { "session-1", "session-22", "session-3" }
+    )
+    MiniTest.expect.equality(items[1].inspect, nil)
+    choices = items
     rows = nvim.tbl_map(options.format_item, items)
     choose = callback
   end
@@ -8524,7 +8532,7 @@ T["chat"]["aligns Session picker columns with missing names and different option
   assert(chat:switch_session())
   MiniTest.expect.equality(rows[1]:find("A much longer name", 1, true) ~= nil, true)
   MiniTest.expect.equality(nvim.trim(nvim.split(rows[3], " · ", { plain = true })[2]), "")
-  choose(sessions[2])
+  choose(choices[2])
   MiniTest.expect.equality(chat.current_id, "session-22")
   chat:dispose()
 end
@@ -8545,9 +8553,10 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   assert(chat:attach(first))
   assert(chat:attach(second))
   local original_select = nvim.ui.select
-  local prompts = {}
+  local prompts, choices = {}, {}
   nvim.ui.select = function(items, options, callback)
     prompts[#prompts + 1] = options
+    choices[#choices + 1] = items
     callback(items[1])
   end
   nvim.fn.confirm = function(prompt)
@@ -8561,17 +8570,114 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   assert(chat:close_session())
 
   MiniTest.expect.equality(prompts[1].prompt, "louiselm session: ")
-  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · ready     · one · one/one-acp")
+  MiniTest.expect.equality(prompts[1].format_item(choices[1][1]), "session-1 · ready     · one · one/one-acp")
   first.state.name = "First"
-  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · ready     · one · one/one-acp")
+  MiniTest.expect.equality(prompts[1].format_item(choices[1][1]), "session-1 · ready     · one · one/one-acp")
   assert(chat:switch_session())
-  MiniTest.expect.equality(prompts[3].format_item(first), "session-1 · First · ready · one · one/one-acp")
+  MiniTest.expect.equality(prompts[3].format_item(choices[2][1]), "session-1 · First · ready · one · one/one-acp")
   nvim.ui.select = original_select
   MiniTest.expect.equality(prompts[2].prompt, "close active louiselm session? ")
   MiniTest.expect.equality(second.disposed, true)
   MiniTest.expect.equality(first.disposed, false)
   MiniTest.expect.equality(chat:buffer("session-2"), nil)
   chat:dispose()
+end
+
+T["chat"]["bulk close preserves the unselected cursor Session and confirms the exact group once"] = function()
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  local sessions, buffers, ids = {}, {}, {}
+  for index = 2, 7 do
+    local id = "session-" .. index
+    sessions[index] = fake_session(id, "codex")
+    sessions[index].state.name = "Task " .. index
+    assert(chat:attach(sessions[index]))
+    buffers[index] = assert(chat:buffer(id))
+    if index > 2 then
+      ids[#ids + 1] = id
+    end
+  end
+  sessions[3].state.status = "prompting"
+  chat.views["session-4"].draft:queue("follow-up")
+  assert(chat:switch("session-2"))
+  local confirmations = {}
+  nvim.fn.confirm = function(prompt, choices, default)
+    confirmations[#confirmations + 1] = prompt
+    MiniTest.expect.equality({ choices, default }, { "&Close\n&Keep", 2 })
+    return 1
+  end
+
+  assert(chat:close_session(ids))
+
+  MiniTest.expect.equality(#confirmations, 1)
+  MiniTest.expect.equality(confirmations[1]:find("5 Sessions", 1, true) ~= nil, true)
+  MiniTest.expect.equality(confirmations[1]:find("session-2", 1, true), nil)
+  MiniTest.expect.equality(confirmations[1]:find("active", 1, true) ~= nil, true)
+  MiniTest.expect.equality(confirmations[1]:find("queued prompt", 1, true) ~= nil, true)
+  for index = 3, 7 do
+    MiniTest.expect.equality(confirmations[1]:find("session-" .. index .. " · Task " .. index, 1, true) ~= nil, true)
+    MiniTest.expect.equality(sessions[index].disposed, true)
+    MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffers[index]), false)
+  end
+  MiniTest.expect.equality(sessions[2].disposed, false)
+  MiniTest.expect.equality(chat.current_id, "session-2")
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffers[2])
+end
+
+T["chat"]["bulk close validates every ID and keeps the group on cancellation"] = function()
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  local first, second = fake_session("first", "codex"), fake_session("second", "codex")
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local confirmations, choice = 0, 2
+  nvim.fn.confirm = function()
+    confirmations = confirmations + 1
+    return choice
+  end
+  MiniTest.expect.equality(
+    { chat:close_session({ "first", "missing" }) },
+    { false, "session is not attached: missing" }
+  )
+  MiniTest.expect.equality({ chat:close_session({}) }, { false, "session IDs must be a non-empty list of strings" })
+  MiniTest.expect.equality(
+    { chat:close_session({ [1] = "first", [3] = "second" }) },
+    { false, "session IDs must be a non-empty list of strings" }
+  )
+  MiniTest.expect.equality(confirmations, 0)
+  assert(chat:close_session({ "first", "second" }))
+  choice = 0 -- Escape from native confirm.
+  assert(chat:close_session({ "first", "second" }))
+  MiniTest.expect.equality({ first.disposed, second.disposed, chat.current_id }, { false, false, "second" })
+  choice = 1
+  assert(chat:close_session({ "second", "first", "second" }))
+  MiniTest.expect.equality(confirmations, 3)
+  MiniTest.expect.equality({ first.disposed, second.disposed }, { true, true })
+  MiniTest.expect.equality(chat.current_id, nil)
+end
+
+T["chat"]["bulk close refuses a selection changed while confirmation was open"] = function()
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  local first, second = fake_session("first", "codex"), fake_session("second", "codex")
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  nvim.fn.confirm = function()
+    assert(chat:close_session()) -- The current, idle Session disappears during confirmation.
+    return 1
+  end
+  MiniTest.expect.equality(
+    { chat:close_session({ "first", "second" }) },
+    { false, "session selection changed; select the Sessions again" }
+  )
+  MiniTest.expect.equality({ first.disposed, second.disposed }, { false, true })
+  MiniTest.expect.equality(chat.current_id, "first")
 end
 
 T["chat"]["restores prompt input after switching sessions"] = function()

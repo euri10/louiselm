@@ -142,6 +142,53 @@ Close the current Session when you are done:
 Active Sessions use a native Close/Keep confirmation, even while a permission
 picker is open. Press `c` to close; `k`, Enter, or Escape keeps the Session open.
 
+To close a group, pass its local IDs (Tab completes attached Sessions):
+
+```vim
+:LouiselmSessionClose session-3 session-4 session-5
+```
+
+Explicit IDs always produce one confirmation listing the selected Sessions.
+Active Sessions and queued prompts are flagged. Closing stops their Agent
+processes and discards their chat buffers and drafts; resuming a saved
+conversation depends on the Agent's support. An unknown ID refuses the whole
+group. Duplicate IDs close once. Keep or Escape closes nothing.
+
+With Snacks, add this entry to `picker.sources.select.kinds` in your Snacks
+configuration. Tab marks a row and advances; Ctrl-d closes the marked group,
+or the cursor's Session when no rows are marked. Enter continues switching.
+The picker closes before the native confirmation opens. Other picker providers
+can use the same `louiselm_session` kind and each item's `id` and `label` fields;
+plain Neovim supports the command above without any picker plugin.
+
+```lua
+louiselm_session = {
+  actions = {
+    close_sessions = function(picker)
+      local ids = {}
+      for _, item in ipairs(picker:selected({ fallback = true })) do
+        ids[#ids + 1] = item.item.id
+      end
+      if #ids == 0 then
+        return
+      end
+      picker:close()
+      vim.schedule(function()
+        vim.api.nvim_cmd({ cmd = "LouiselmSessionClose", args = ids }, {})
+      end)
+    end,
+  },
+  win = {
+    input = {
+      keys = { ["<C-d>"] = { "close_sessions", mode = { "n", "i" }, desc = "Close selected Sessions" } },
+    },
+    list = {
+      keys = { ["<C-d>"] = { "close_sessions", desc = "Close selected Sessions" } },
+    },
+  },
+},
+```
+
 Default shortcuts:
 
 - `<leader>lsn` creates a Session.

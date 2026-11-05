@@ -225,6 +225,7 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmHandOff ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionRename ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionClose ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmSessionClose.nargs, "*")
   MiniTest.expect.equality(commands.LouiselmSessionId ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInspectBead ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInspectProvenance ~= nil, true)
@@ -838,6 +839,46 @@ T["command"]["routes a window bar click through its clicked window"] = function(
   MiniTest.expect.equality(nvim.api.nvim_get_current_win(), clicked_window)
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), first_buffer)
   nvim.api.nvim_win_close(other_window, true)
+end
+
+T["command"]["closes explicit Session IDs without a picker provider"] = function()
+  local process, original_system = fake_process()
+  local original_confirm = nvim.fn.confirm
+  MiniTest.finally(function()
+    Command.register()
+    rawset(nvim, "system", original_system)
+    nvim.fn.confirm = original_confirm
+    Command.configure(nil)
+  end)
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent" } } })
+  Command.register()
+  nvim.cmd("LouiselmChat")
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "first-acp" })
+  local first_buffer = nvim.api.nvim_get_current_buf()
+  nvim.cmd("LouiselmSessionNew")
+  respond(process, 3, { sessionId = "second-acp" })
+  local second_buffer = nvim.api.nvim_get_current_buf()
+  local first_id = nvim.api.nvim_buf_get_name(first_buffer):match("louiselm://(.+)")
+  local second_id = nvim.api.nvim_buf_get_name(second_buffer):match("louiselm://(.+)")
+  nvim.cmd("LouiselmSessionNew")
+  respond(process, 4, { sessionId = "third-acp" })
+  local third_buffer = nvim.api.nvim_get_current_buf()
+  local third_id = nvim.api.nvim_buf_get_name(third_buffer):match("louiselm://(.+)")
+  local confirmations = 0
+  nvim.fn.confirm = function()
+    confirmations = confirmations + 1
+    return 1
+  end
+  MiniTest.expect.equality(nvim.fn.getcompletion("LouiselmSessionClose ", "cmdline"), { first_id, second_id, third_id })
+  nvim.api.nvim_cmd({ cmd = "LouiselmSessionClose", args = { first_id, second_id } }, {})
+  MiniTest.expect.equality(confirmations, 1)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(first_buffer), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(second_buffer), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), third_buffer)
+  nvim.cmd("LouiselmSessionClose")
+  MiniTest.expect.equality(confirmations, 1) -- No-argument idle close is unchanged.
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(third_buffer), false)
 end
 
 T["command"]["reports when no session id is available"] = function()

@@ -337,6 +337,16 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Use :LouiselmSessionClose with no arguments to close the current Session, confirming when active or holding a queued prompt. Supply local IDs, for example :LouiselmSessionClose session-3 session-4, to confirm the whole group once. Tab completes attached IDs. The confirmation lists names and flags active work or queued prompts; Keep is the default. Unknown IDs refuse the whole group; duplicate IDs close once. Closing stops those Agent processes and discards their chat buffers and drafts.",
+        context
+      )
+      append_prose(
+        lines,
+        "The Session picker uses vim.ui.select with kind louiselm_session and plain id/label items. Snacks is optional: its select.kinds configuration can bind Ctrl-d to close marked Sessions, falling back to the cursor row only when nothing is marked. Enter still switches. See docs/tutorial.md for the configuration recipe; plain Neovim supports the same bulk-close command without a picker plugin.",
+        context
+      )
+      append_prose(
+        lines,
         "Hover the Agent name (for example, codex) in a chat window's winbar to display its full Agent-scoped Session ID without changing keyboard focus. The tooltip identifies the hovered window's Session and disappears when the pointer leaves the name or you type. Use :LouiselmSessionId to copy the focused Session's ID.",
         context
       )

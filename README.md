@@ -315,6 +315,14 @@ Effort aligns by its ACP category; model settings such as Fast mode align by
 label. Ambiguous matches retain separate columns so no option disappears.
 Rows are a snapshot; reopen the picker to refresh their values and column widths.
 
+Close several attached Sessions with `:LouiselmSessionClose session-3 session-4`.
+Tab completes local Session IDs. Explicit IDs use one Close/Keep confirmation
+listing the group and flagging active work or queued prompts; Keep is the default.
+Without arguments, the command closes the current Session as before.
+Snacks users can bind Ctrl-d to the marked group through the optional
+`louiselm_session` picker kind; see the recipe in `docs/tutorial.md`.
+Snacks remains optional, and Enter still switches Sessions.
+
 `:LouiselmSessionRename` changes the human-readable name (`Review` above).
 `session-7` is an internal handle and the initial default name; it stays stable
 after renaming. `codex/<uuid>` identifies the Agent conversation and can be

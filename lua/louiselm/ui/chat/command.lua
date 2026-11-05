@@ -1003,11 +1003,27 @@ function M.register()
     { desc = "Inspect the current Session's MCP configuration", force = true }
   )
 
-  nvim.api.nvim_create_user_command(
-    "LouiselmSessionClose",
-    chat_command("close_session"),
-    { desc = "Close the current louiselm session", force = true }
-  )
+  nvim.api.nvim_create_user_command("LouiselmSessionClose", function(arguments)
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, close_error = chat:close_session(#arguments.fargs > 0 and arguments.fargs or nil)
+    report_error(close_error)
+  end, {
+    nargs = "*",
+    complete = function(prefix)
+      local ids = {}
+      for _, id in ipairs(chat and chat.view_order or {}) do
+        if id:sub(1, #prefix) == prefix then
+          ids[#ids + 1] = id
+        end
+      end
+      return ids
+    end,
+    desc = "Close the current Session, or confirm closing the supplied Session IDs",
+    force = true,
+  })
 
   nvim.api.nvim_create_user_command("LouiselmCancel", function()
     local buffer = nvim.api.nvim_get_current_buf()

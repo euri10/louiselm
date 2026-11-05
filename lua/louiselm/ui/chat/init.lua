@@ -48,6 +48,10 @@ local nvim = vim
 ---@class louiselm.ui.AttachOptions
 ---@field background? boolean Keep the current buffer and skip the initial options picker; explicit focus and options remain available.
 
+---@class louiselm.ui.SessionChoice
+---@field id string Local Session ID, accepted by :LouiselmSessionClose.
+---@field label string Display snapshot for this picker opening.
+
 ---@class louiselm.ui.ChatView
 ---@field renderer louiselm.ui.ChatBuffer Buffer lifecycle and presentation coordinates.
 ---@field session louiselm.session.Session Attached session.
@@ -119,7 +123,7 @@ local nvim = vim
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
 ---@field winbar_click fun(self: louiselm.ui.Chat, target: integer, clicked_window?: integer): boolean, string? Follow a winbar click target.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
----@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
+---@field close_session fun(self: louiselm.ui.Chat, session_ids?: string[]): boolean, string? Close the current Session, or confirm and close an explicit group.
 ---@field staged_context fun(self: louiselm.ui.Chat): table<louiselm.session.Session, louiselm.ui.StagedContext> Report Staged context by attached Session.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
@@ -2285,33 +2289,33 @@ function Chat:switch_session()
   if self.decisions:is_active() then
     return false, DECISION_OPEN_ERROR
   end
-  local sessions = {}
+  local states = {}
   for _, id in ipairs(self.api:list_sessions()) do
     local view = self.views[id]
     if view ~= nil then
-      sessions[#sessions + 1] = view.session
+      states[#states + 1] = view.session:inspect()
     end
   end
-  if #sessions == 0 then
+  if #states == 0 then
     return false, "no chat sessions are attached"
   end
-  local states = {}
-  for index, session in ipairs(sessions) do
-    states[index] = session:inspect()
-  end
   local rows = Status.session_labels(states)
-  local labels = {}
-  for index, session in ipairs(sessions) do
-    labels[session] = rows[index]
+  local choices = {}
+  for index, state in ipairs(states) do
+    choices[index] = { id = state.id, label = rows[index] }
   end
-  Picker.select(sessions, {
+  Picker.select(choices, {
     prompt = "louiselm session: ",
-    format_item = function(session)
-      return labels[session]
+    kind = "louiselm_session",
+    format_item = function(choice)
+      return choice.label
     end,
-  }, function(session)
-    if session ~= nil then
-      self:switch(session:inspect().id)
+  }, function(choice)
+    if choice ~= nil and not self.disposed then
+      local _, switch_error = self:switch(choice.id)
+      if switch_error ~= nil then
+        nvim.notify("louiselm: " .. switch_error, nvim.log.levels.ERROR)
+      end
     end
   end)
   return true
@@ -2570,13 +2574,82 @@ local function close_view(self, view, replacement)
   self.decisions:present_next()
 end
 
----Dispose the current session and remove only its chat buffer.
+---@param status string
+---@return boolean
+local function session_is_active(status)
+  return status == "admitting"
+    or status == "configuring"
+    or status == "preparing"
+    or status == "prompting"
+    or status == "running"
+    or status == "waiting_permission"
+    or status == "cancelling"
+end
+
+---Dispose Sessions and remove their chat buffers. Explicit IDs always use one
+---Close/Keep confirmation; without IDs, only an active or queued Session prompts.
 ---@param self louiselm.ui.Chat
----@return boolean started
----@return string? error_message Lifecycle error.
-function Chat:close_session()
+---@param session_ids? string[] Non-empty list of attached local IDs; duplicates close once.
+---@return boolean started True also when the operator keeps the Sessions.
+---@return string? error_message Invalid IDs, changed selection, or lifecycle error. Invalid groups close nothing.
+function Chat:close_session(session_ids)
   if self.disposed then
     return false, "chat UI is disposed"
+  end
+  if session_ids ~= nil then
+    if type(session_ids) ~= "table" or not nvim.islist(session_ids) or #session_ids == 0 then
+      return false, "session IDs must be a non-empty list of strings"
+    end
+    local selected, seen, labels = {}, {}, {}
+    for _, id in ipairs(session_ids) do
+      if type(id) ~= "string" or id == "" or id:find("%c") then
+        return false, "session IDs must be a non-empty list of strings"
+      end
+      local view = self.views[id]
+      if view == nil then
+        return false, "session is not attached: " .. id
+      end
+      if not seen[id] then
+        seen[id] = true
+        selected[#selected + 1] = { id = id, view = view }
+        local state = view.session:inspect()
+        local label = id
+        if state.name ~= nil and state.name ~= "" and state.name ~= id then
+          label = label .. " · " .. state.name:gsub("%c", " ")
+        end
+        if session_is_active(state.status) then
+          label = label .. " [active: " .. state.status .. "]"
+        end
+        if view.draft.queued_prompt ~= nil then
+          label = label .. " [queued prompt]"
+        end
+        labels[#labels + 1] = label
+      end
+    end
+    local prompt = string.format("Close %d %s?\n\n", #selected, #selected == 1 and "Session" or "Sessions")
+      .. table.concat(labels, "\n")
+      .. "\n\nClosing stops active work and discards drafts and queued prompts."
+    nvim.cmd.stopinsert()
+    if nvim.fn.confirm(prompt, "&Close\n&Keep", 2) ~= 1 then
+      return true
+    end
+    -- Native confirmation can process editor events; never act on a stale group.
+    for _, entry in ipairs(selected) do
+      if self.disposed or self.views[entry.id] ~= entry.view then
+        return false, "session selection changed; select the Sessions again"
+      end
+    end
+    local current_id = self.current_id
+    for _, entry in ipairs(selected) do
+      if entry.id ~= current_id and self.views[entry.id] == entry.view then
+        close_view(self, entry.view)
+      end
+    end
+    -- Close the focused member last so focus moves straight to a survivor.
+    if current_id ~= nil and seen[current_id] and self.views[current_id] ~= nil then
+      close_view(self, self.views[current_id])
+    end
+    return true
   end
   local view = self.current_id and self.views[self.current_id]
   if view == nil then
@@ -2584,16 +2657,7 @@ function Chat:close_session()
   end
   local status = view.session:inspect().status
   local has_queued_prompt = view.draft.queued_prompt ~= nil
-  if
-    has_queued_prompt
-    or status == "admitting"
-    or status == "configuring"
-    or status == "preparing"
-    or status == "prompting"
-    or status == "running"
-    or status == "waiting_permission"
-    or status == "cancelling"
-  then
+  if has_queued_prompt or session_is_active(status) then
     local prompt = has_queued_prompt and "close active louiselm session and discard queued prompt? "
       or "close active louiselm session? "
     -- A second ui.select can toggle away the permission picker without opening
