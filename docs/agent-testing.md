@@ -200,6 +200,16 @@ validation against offline fixtures; it does not certify external project
 claims or make Agent research immune to hostile source text. CI runs the same
 gate without network access from the test command.
 
+Beads staging changes run `python3 scripts/test-stage-beads-records.py` and
+`scripts/stage-beads-records --check` after staging. CI runs the suite and checks
+the committed issue/history pair. The v1 companion contract is qualified against
+br main `5830c1e4`; changes to that contract additionally run the native
+fresh-clone replay fixture with `LOUISELM_TEST_BR` naming the qualified executable
+and `LOUISELM_TEST_BR_ACTOR` set to the verified Session actor. That fixture uses
+only disposable trackers, checks audit/gate/closure replay and excludes the
+unselected Session's edits. Without those variables it is explicitly skipped,
+not native acceptance. No production tracker is initialized or rebuilt.
+
 The curated qualification preview uses the Python standard-library gate
 `python3 scripts/test-qualification-preview.py`. It checks manifest refusal,
 pinned synthetic snapshots, disclosure selection and read-only preview behavior.

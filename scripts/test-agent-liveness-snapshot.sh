@@ -85,8 +85,11 @@ else
 	if [ "$(printf '%s' "$row" | jq -r '.exclusive')" != "true" ]; then
 		fail "reservation row must be exclusive"
 	fi
-	if [ "$(printf '%s' "$row" | jq -r 'has("path_pattern")')" != "true" ]; then
-		fail "reservation row is missing the required path_pattern field"
+	if [ "$(printf '%s' "$row" | jq -r '.path_pattern')" != "$home/.local/state/acp-llm-adapter/proxy/sessions/820e1ab6-83e2-45fd-92f3-79263d4d7141/log.jsonl" ]; then
+		fail "reservation must name the actual heartbeat transcript"
+	fi
+	if [ "$(printf '%s' "$row" | jq -r '.last_active_ts')" != "$(date -u -d "@$((now - 3 * 60))" +%Y-%m-%dT%H:%M:%SZ)" ]; then
+		fail "reservation must preserve the heartbeat time for the agent snapshot"
 	fi
 fi
 
@@ -150,6 +153,9 @@ row=$(row_for "codex/01a07753-51de-7733-bfeb-8a3f26fa907e")
 expires_epoch=$(date -u -d "$(printf '%s' "$row" | jq -r '.expires_ts')" +%s)
 if [ "$expires_epoch" -le "$now" ]; then
 	fail "a session with one stale and one fresh heartbeat must count as live"
+fi
+if [ "$(printf '%s' "$row" | jq -r '.path_pattern')" != "$home/.local/state/acp-llm-adapter/proxy/sessions/01a07753-51de-7733-bfeb-8a3f26fa907e/log.jsonl" ]; then
+	fail "reservation path must identify the freshest source"
 fi
 
 # --- an unknown assignee is announced, never silently dropped ----------------
@@ -249,16 +255,17 @@ cat >"$work_dir/bin/br" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-"list --status in_progress --json")
+"list --json")
 	printf 'list\n' >>"$LIVENESS_TEST_CALLS"
 	if [ "${LIVENESS_TEST_LIST_FAIL:-0}" -ne 0 ]; then exit 42; fi
 	cat "$LIVENESS_TEST_ISSUES"
 	;;
 "coordination status --reservations "*)
 	printf 'status\n' >>"$LIVENESS_TEST_CALLS"
-	[ "$#" -eq 5 ] && [ "$5" = --json ] || exit 64
+	[ "$#" -eq 9 ] && [ "$5" = --agents ] && [ "$7" = --owner-kind ] && [ "$8" = unknown ] && [ "$9" = --json ] || exit 64
 	printf '%s' "$4" >"$LIVENESS_TEST_SNAPSHOT_PATH"
 	cp "$4" "$LIVENESS_TEST_RESERVATIONS"
+	cp "$6" "$LIVENESS_TEST_AGENTS"
 	[ -s "$4" ] || exit 65
 	exit "${LIVENESS_TEST_STATUS_EXIT:-0}"
 	;;
@@ -271,7 +278,8 @@ export LIVENESS_TEST_CALLS="$work_dir/calls.txt"
 export LIVENESS_TEST_ISSUES="$work_dir/issues.json"
 export LIVENESS_TEST_SNAPSHOT_PATH="$work_dir/snapshot-path.txt"
 export LIVENESS_TEST_RESERVATIONS="$work_dir/reservations.jsonl"
-printf '%s\n' '{"issues":[{"assignee":"claude/820e1ab6-83e2-45fd-92f3-79263d4d7141"},{"assignee":null}]}' >"$LIVENESS_TEST_ISSUES"
+export LIVENESS_TEST_AGENTS="$work_dir/agents.jsonl"
+printf '%s\n' '{"issues":[{"status":"in_progress","assignee":"claude/820e1ab6-83e2-45fd-92f3-79263d4d7141"},{"status":"blocked","assignee":"codex/01a056ef-03ae-7203-885d-c73b4ba00d1b"},{"status":"pinned","assignee":"codex/pinned"},{"status":"deferred","assignee":"codex/deferred"},{"assignee":null}]}' >"$LIVENESS_TEST_ISSUES"
 
 for input in empty whitespace; do
 	printf '' >"$work_dir/in.txt"
@@ -288,15 +296,47 @@ for input in empty whitespace; do
 		fi
 		if [ "$mode" = status ]; then
 			cp "$LIVENESS_TEST_RESERVATIONS" "$work_dir/out.jsonl"
-			if [ -e "$(cat "$LIVENESS_TEST_SNAPSHOT_PATH")" ]; then
-				fail "successful status left its temporary snapshot behind"
+			if [ ! -s "$(cat "$LIVENESS_TEST_SNAPSHOT_PATH")" ]; then
+				fail "successful status must retain evidence for guarded reclaim"
+			fi
+			if ! jq -e 'select(.name == "claude/820e1ab6-83e2-45fd-92f3-79263d4d7141") | .last_active_ts and .task_description and .contact_policy' "$LIVENESS_TEST_AGENTS" >/dev/null; then
+				fail "status must supply the actual owner heartbeat to br"
 			fi
 		fi
 		if [ -z "$(row_for "claude/820e1ab6-83e2-45fd-92f3-79263d4d7141")" ]; then
 			fail "$mode with $input stdin lost the live holder"
 		fi
+		if [ -z "$(row_for "codex/01a056ef-03ae-7203-885d-c73b4ba00d1b")" ]; then
+			fail "$mode with $input stdin lost a blocked claim's holder"
+		fi
+		if grep -qE 'codex/(pinned|deferred)' "$work_dir/err.txt"; then
+			fail "$mode discovered non-claim pinned/deferred holders"
+		fi
 	done
 done
+
+# Each status regenerates private evidence; never overwrite another caller's
+# snapshot or retain old heartbeat times after a Session resumes.
+first_snapshot=$(cat "$LIVENESS_TEST_SNAPSHOT_PATH")
+proxy_heartbeat "$work_dir/shape" "01a056ef-03ae-7203-885d-c73b4ba00d1b" 1
+run_snapshot "$work_dir/shape" "$work_dir/in.txt" --status --json
+if [ "$(cat "$LIVENESS_TEST_SNAPSHOT_PATH")" = "$first_snapshot" ]; then
+	fail "status must not overwrite evidence referenced by earlier advice"
+fi
+if [ "$(stat -c %a "$(dirname -- "$(cat "$LIVENESS_TEST_SNAPSHOT_PATH")")")" != 700 ]; then
+	fail "retained evidence directory must be private"
+fi
+if ! jq -e --arg now "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)" 'select(.holder == "codex/01a056ef-03ae-7203-885d-c73b4ba00d1b") | .expires_ts > $now' "$LIVENESS_TEST_RESERVATIONS" >/dev/null; then
+	fail "status reused an expired heartbeat after its Session resumed"
+fi
+
+# An omitted/unresolved holder is unknown, never assumed to be a swarm agent.
+printf '%s\n' 'claude/820e1ab6-83e2-45fd-92f3-79263d4d7141' 'opencode/unknown-session' >"$work_dir/in.txt"
+run_snapshot "$work_dir/shape" "$work_dir/in.txt" --status --json
+if ! grep -q 'opencode/unknown-session' "$work_dir/err.txt"; then fail "partial evidence lost the unresolved warning"; fi
+if jq -e 'select(.name == "opencode/unknown-session")' "$LIVENESS_TEST_AGENTS" >/dev/null; then
+	fail "unresolved holder must not acquire fabricated agent evidence"
+fi
 
 # Explicit assignee input keeps working and must not trigger discovery.
 printf '%s\n' 'codex/01a056ef-03ae-7203-885d-c73b4ba00d1b' >"$work_dir/in.txt"

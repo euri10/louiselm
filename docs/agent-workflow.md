@@ -97,6 +97,10 @@ maintainer rather than falling back to one.
   busy. A session counts as gone after 45 minutes of transcript silence
   (`LOUISELM_LIVENESS_WINDOW_MINUTES`). An assignee the script reports as
   unresolved on stderr has no transcript to judge, so treat its claim as live.
+  The helper supplies both reservations and agent heartbeats, with unknown
+  ownership as the fallback: unresolved or omitted holders cannot become
+  reclaimable just because their issue is old. It includes assigned open and
+  blocked issues, not only `in_progress` claims.
   A live claim belongs to its holder: pick something else. A claim is eligible
   for takeover only when its classification is `abandoned_likely` and
   `reclaim_allowed_by_policy` is true. That flag alone is not enough — br also
@@ -104,11 +108,27 @@ maintainer rather than falling back to one.
   eight-hour `abandoned_likely` bar as well, so that a takeover needs both a
   silent transcript and a silent issue. Age alone is not permission either:
   `no_mail_snapshot`, `ambiguous`, `fresh`, and
-  `blocked_by_active_reservation` remain protected regardless of age. Record
-  the command's evidence summary in a comment, then have the maintainer requeue
-  the issue with `br update <id> --status open --assignee "" --actor "<session id>" --json`;
-  the next Agent claims it normally with `--claim`, which refuses to overwrite
-  an intervening holder. `br scheduler` already excludes claimed work and
+  `blocked_by_active_reservation` remain protected regardless of age.
+  Reclaim uses the guarded `br coordination reclaim` command (upstream
+  `5830c1e4`, not release 0.7.6). The qualified build includes the digest
+  compilation fix recorded in `louiselm-0rm1a`. Its runtime tables are not
+  readable by release 0.7.6 (`louiselm-p66pj`): all shared-tracker callers must
+  use the coordinated build. Never roll back only the executable; reconcile
+  any later writes before restoring a paired tracker/binary backup.
+  Immediately before an authorized takeover,
+  regenerate `./scripts/agent-liveness-snapshot --status --json`, check both
+  eligibility fields, and use that issue's `reclaim_issue` suggested command.
+  Bind its `AGENT_NAME` to your verified Session identity, not a fallback.
+  The helper retains private snapshot files at the path printed on stderr so
+  reclaim can reread them; remove that directory after the operation. Never
+  reuse old advice or snapshots after a pause: br rereads snapshot files, not
+  the transcripts they describe. Preserve the expected-assignee, updated-at,
+  workspace and database guards. Do not add a separate audit comment or clear
+  the assignee first: reclaim audits and transfers ownership atomically, and
+  any intervening issue change must reject the handoff. A conflict means
+  regenerate evidence, not remove a guard. Reclaim changes status to
+  `in_progress`; do not reclaim a blocked issue merely to clear its stale
+  holder. `br scheduler` already excludes claimed work and
   explains its ranking, so prefer it over hand-scanning
   `br list --status in_progress`. With br 0.5.12, scheduler labels are populated (verified against `br show`,
   louiselm-scheduler-labels-xw1i). Use `br ready --label-any
@@ -176,12 +196,21 @@ maintainer rather than falling back to one.
   `git status --short` before staging and account for every path you did not
   write.
 - Stage Beads records with `scripts/stage-beads-records <id>...`, never with
-  `git add .beads/issues.jsonl` or hand-picked hunks. The working file holds
-  every live session's flushed records, so staging it whole commits theirs.
+  `git add .beads/issues*.jsonl` or hand-picked hunks. The working exports hold
+  every live session's flushed records and workflow evidence, so staging them
+  whole commits theirs.
   Hand-editing hunks committed unsorted and hand-trimmed records, and each
   later diff then showed fake moves that the next session staged half of
   (louiselm-ha7ic, `fb0c41f`). The script stages the index's file plus only the
-  named records, sorted by id as `br` exports them; CI runs its `--check`.
+  named records, sorted by id as `br` exports them. It stages their matching
+  `issues.history.jsonl` evidence in the same index transaction, preserving
+  indexed evidence for all other records. Checksums, format versions and
+  nanosecond issue anchors must agree; a refusal means flush/review, not
+  blanket-stage the companion. Initial enrollment keeps unselected legacy
+  rows as bare committed anchors with an explicit missing-history warning,
+  never fabricated events or other Sessions' uncommitted evidence
+  (`louiselm-t7new`). Neither working export is rewritten. CI runs `--check`
+  on both staged/committed files.
 
 ### Live-instance introspection
 

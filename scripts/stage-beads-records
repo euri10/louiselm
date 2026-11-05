@@ -4,22 +4,177 @@
 The working .beads/issues.jsonl holds every live session's flushed changes.
 Hand-picked git hunks against it committed unsorted and hand-trimmed records
 (louiselm-ha7ic). This builds the staged file from the index plus the named
-records' working-file lines, sorted by id as br exports them.
+records' working-file lines, sorted by id as br exports them. The v1 portable
+history companion travels with those records, with evidence selected from the
+same source as each issue. Neither working export is rewritten.
 
     stage-beads-records ID...      stage these records; no ID only re-sorts
     stage-beads-records --check [REV]  validate REV's file (default: index)
 """
 
+from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 JSONL = ".beads/issues.jsonl"
+HISTORY = ".beads/issues.history.jsonl"
+# beads_rust main@5830c1e, storage/portable_history.rs: v1 table order/schema.
+COLUMNS = {
+    "events": "id issue_id event_type actor old_value new_value comment created_at agent_name harness model",
+    "gate_result_history": "id issue_id from_status to_status status_revision gate provider passed note recorded_by recorded_at",
+    "capacity_exemption_history": "id issue_id capacity_kind capacity_name action provider reason actor expires_at recorded_at",
+    "gate_results": "issue_id gate provider passed note recorded_by recorded_at",
+    "close_metadata": "issue_id closed_by_agent_name closed_by_harness closed_by_model bypassed_policy bypass_reason policy_gates_fired recorded_at",
+    "capacity_occupancy": "issue_id actor agent_name harness session recorded_at",
+    "capacity_exemptions": "issue_id capacity_kind capacity_name provider reason granted_by granted_at expires_at ended_at ended_action ended_by",
+}
+MISSING_HISTORY = ("Missing committed workflow history for unselected legacy issues. "
+                   "Only their committed anchors were enrolled; evidence was not fabricated.")
 
 
 def git(*args, stdin=None):
     return subprocess.run(["git", *args], input=stdin, capture_output=True, text=True, check=True).stdout
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key}")
+        result[key] = value
+    return result
+
+
+def encoded(value):
+    # serde_json's compact UTF-8 encoding; v1 rows contain no floats or objects.
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def digest(value):
+    return hashlib.sha256(encoded(value).encode()).hexdigest()
+
+
+def canonical_time(value):
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)?", value)
+    if not match:
+        raise ValueError("invalid anchor timestamp")
+    base, fraction, zone = match.groups()
+    instant = datetime.fromisoformat(base + ("+00:00" if zone in (None, "Z") else zone))
+    nanos = int((fraction or "0").ljust(9, "0"))
+    suffix = ""
+    if nanos:
+        # chrono SecondsFormat::AutoSi preserves 3, 6 or 9 fractional digits.
+        digits = 3 if nanos % 1_000_000 == 0 else 6 if nanos % 1000 == 0 else 9
+        suffix = "." + f"{nanos:09d}"[:digits]
+    return instant.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + suffix + "Z"
+
+
+def anchor(issue):
+    status = issue.get("status", "open")
+    if not isinstance(status, str):
+        raise ValueError("invalid anchor status")
+    return {"status": status, "created_at": canonical_time(issue["created_at"]),
+            "updated_at": canonical_time(issue["updated_at"])}
+
+
+def checkpoint(history, warnings):
+    anchor_sha = digest(history["issues"])
+    return {"version": 1, "anchor_sha256": anchor_sha,
+            "history_sha256": digest([1, anchor_sha, history, warnings]),
+            "history": history, "warnings": warnings}
+
+
+def fields(value, expected):
+    if not isinstance(value, dict) or set(value) != set(expected):
+        raise ValueError(f"expected fields: {', '.join(expected)}")
+
+
+def checkpoints(text, source):
+    result = []
+    seen = set()
+    try:
+        for raw in text.splitlines():
+            if not raw.strip():
+                continue
+            cp = json.loads(raw, object_pairs_hook=unique_object)
+            fields(cp, ("version", "anchor_sha256", "history_sha256", "history", "warnings"))
+            if type(cp["version"]) is not int or cp["version"] != 1:
+                raise ValueError("unsupported history version")
+            fields(cp["history"], ("issues", "tables"))
+            issues = {}
+            for issue_id, value in sorted(cp["history"]["issues"].items()):
+                fields(value, ("status", "created_at", "updated_at"))
+                if not issue_id or anchor(value) != value:
+                    raise ValueError("noncanonical history anchor")
+                issues[issue_id] = anchor(value)
+            tables = cp["history"]["tables"]
+            if not isinstance(tables, list) or len(tables) != len(COLUMNS):
+                raise ValueError("expected seven history tables")
+            canonical_tables = []
+            for (name, columns), table in zip(COLUMNS.items(), tables):
+                fields(table, ("table", "columns", "rows"))
+                if table["table"] != name or table["columns"] != columns.split():
+                    raise ValueError(f"unsupported history table schema: {name}")
+                owner = table["columns"].index("issue_id")
+                if not isinstance(table["rows"], list):
+                    raise ValueError("history rows must be a list")
+                for row in table["rows"]:
+                    if not isinstance(row, list) or len(row) != len(table["columns"]):
+                        raise ValueError("wrong history column count")
+                    if any(type(value) not in (str, int, type(None)) for value in row):
+                        raise ValueError("unsupported history value")
+                    if row[owner] not in issues:
+                        raise ValueError("history references unknown issue")
+                canonical_tables.append({key: table[key] for key in ("table", "columns", "rows")})
+            warnings = cp["warnings"]
+            if not isinstance(warnings, list) or any(not isinstance(w, str) for w in warnings):
+                raise ValueError("invalid history warnings")
+            canonical = checkpoint({"issues": issues, "tables": canonical_tables}, warnings)
+            if any(cp[key] != canonical[key] for key in ("anchor_sha256", "history_sha256")):
+                raise ValueError("history checksum mismatch")
+            if cp["anchor_sha256"] in seen:
+                raise ValueError("duplicate history generation")
+            seen.add(cp["anchor_sha256"])
+            result.append(canonical)
+        if not 1 <= len(result) <= 2:
+            raise ValueError("expected one or two history generations")
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise SystemExit(f"{source}: {error}") from error
+    return result
+
+
+def select_history(sources, rows, label):
+    history = {"issues": {}, "tables": [{"table": name, "columns": columns.split(), "rows": []}
+                                        for name, columns in COLUMNS.items()]}
+    selected = [set() for _ in sources]
+    for issue_id, raw in sorted(rows.items()):
+        try:
+            value = anchor(json.loads(raw))
+        except (ValueError, KeyError, TypeError) as error:
+            raise SystemExit(f"{label}: invalid anchor for {issue_id}: {error}") from error
+        history["issues"][issue_id] = value
+        for index in reversed(range(len(sources))):
+            if sources[index]["history"]["issues"].get(issue_id) == value:
+                selected[index].add(issue_id)
+                break
+        else:
+            if sources:
+                raise SystemExit(f"{label}: no matching history anchor for {issue_id}; flush br first")
+    warnings = set()
+    for cp, ids in zip(sources, selected):
+        if not ids:
+            continue
+        warnings.update(cp["warnings"])
+        for target, table in zip(history["tables"], cp["history"]["tables"]):
+            owner = table["columns"].index("issue_id")
+            target["rows"].extend(row for row in table["rows"] if row[owner] in ids)
+    if rows and not sources:
+        warnings.add(MISSING_HISTORY)
+    return history, warnings
 
 
 def records(text, source):
@@ -28,7 +183,9 @@ def records(text, source):
     order = []
     for number, raw in enumerate(text.splitlines(), 1):
         try:
-            issue_id = json.loads(raw)["id"]
+            issue_id = json.loads(raw, object_pairs_hook=unique_object)["id"]
+            if not isinstance(issue_id, str) or not issue_id:
+                raise ValueError("id must be a nonempty string")
         except (ValueError, TypeError, KeyError) as error:
             raise SystemExit(f"{source} line {number}: not a Beads record ({error})") from error
         if issue_id in found:
@@ -40,12 +197,15 @@ def records(text, source):
 
 def check(revision):
     source = f"{revision}:{JSONL}"
-    _, order = records(git("show", source), source)
+    rows, order = records(git("show", source), source)
     for previous, current in zip(order, order[1:]):
         if current < previous:
             raise SystemExit(f"{source}: not sorted by id ({previous} before {current}); "
                              "run scripts/stage-beads-records with no id to re-sort")
-    print(f"{source}: {len(order)} records, sorted and unique")
+    history_source = f"{revision}:{HISTORY}"
+    history = checkpoints(git("show", history_source), history_source)
+    select_history(history, rows, history_source)
+    print(f"{source}: {len(order)} records, sorted and unique; history checksums and anchors valid")
 
 
 def stage(ids):
@@ -55,11 +215,32 @@ def stage(ids):
     missing = [issue_id for issue_id in ids if issue_id not in working]
     if missing:
         raise SystemExit(f"{JSONL}: no record for {', '.join(missing)}; run br sync --flush-only first?")
+    history_path = root / HISTORY
+    if history_path.is_symlink() or not history_path.is_file():
+        raise SystemExit(f"{HISTORY}: expected a regular history companion; run br sync --flush-only")
+    working_history = checkpoints(history_path.read_text(), HISTORY)
+    indexed_history = (checkpoints(git("show", f":{HISTORY}"), f"index:{HISTORY}")
+                       if git("ls-files", "--", HISTORY).strip() else [])
+    selected_ids = set(ids)
+    old, warnings = select_history(indexed_history, {key: value for key, value in staged.items()
+                                                    if key not in selected_ids}, f"index:{HISTORY}")
+    new, new_warnings = select_history(working_history, {key: working[key] for key in selected_ids}, HISTORY)
+    old["issues"] = dict(sorted((old["issues"] | new["issues"]).items()))
+    for target, table in zip(old["tables"], new["tables"]):
+        target["rows"].extend(table["rows"])
+        owner = target["columns"].index("issue_id")
+        # Stable owner sort preserves each source's per-issue sequences/keys.
+        target["rows"].sort(key=lambda row: row[owner])
+    history_text = encoded(checkpoint(old, sorted(warnings | new_warnings))) + "\n"
     for issue_id in ids:
         staged[issue_id] = working[issue_id]
     text = "".join(staged[issue_id] + "\n" for issue_id in sorted(staged))
-    blob = git("hash-object", "-w", "--stdin", stdin=text).strip()
-    git("update-index", "--cacheinfo", f"100644,{blob},{JSONL}")
+    updates = []
+    for name, content in ((JSONL, text), (HISTORY, history_text)):
+        blob = git("hash-object", "-w", "--stdin", stdin=content).strip()
+        updates.append(f"100644 {blob}\t{name}\n")
+    # One Git index transaction: refusal cannot stage only half of the pair.
+    git("update-index", "--index-info", stdin="".join(updates))
     check("")
 
 
