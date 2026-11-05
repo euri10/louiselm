@@ -1581,7 +1581,11 @@ the exact bytes, or the diff since the newest earlier capture from the same
 source that is admitted here or endorsed by a trusted endorser. Lineage only
 chooses among trusted bases. A withdrawal cancels its own signer's focus
 permanently, even after it expires. Focus changes what a reviewer is shown,
-never what Skill Admission accepts.
+never what Skill Admission accepts. Admission signs each member's `relied_on`
+(the Endorsement records that framed its review, `generation/3`). When a
+withdrawal touches an admitted member, `generation status` and `endorsement
+import` report it under `withdrawn_endorsements`. A member whose review relied
+on the withdrawn evidence comes first. Nothing is quarantined automatically.
 `louiselm-launch` is built into the signed bundle. The control-service binary
 is still owned by louiselm-qbr.5.1; the bundle format already has a slot for it,
 and a release that declares a component it cannot produce is refused rather

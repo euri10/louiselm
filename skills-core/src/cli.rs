@@ -851,10 +851,19 @@ fn generation(options: &Options) -> Result<i32, CliError> {
         "status" => {
             let status = admission::status(&store)?;
             let admissible = status.state == Some(crate::generation::GenerationState::Current);
+            let alerts = endorsement::current_alerts(&store)?;
             if options.robot {
-                println!("{}", robot::payload(&status)?);
+                let mut value = serde_json::to_value(&status)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "withdrawn_endorsements".to_owned(),
+                        serde_json::to_value(&alerts)?,
+                    );
+                }
+                println!("{}", robot::payload(&value)?);
             } else {
                 println!("{}", render::generation_status(&status));
+                print!("{}", endorsement::human_alerts(&alerts));
             }
             Ok(if admissible { 0 } else { EXIT_NOT_ADMISSIBLE })
         }

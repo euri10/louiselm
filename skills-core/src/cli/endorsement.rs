@@ -19,11 +19,13 @@ use serde::Serialize;
 
 use super::{CliError, Options, endorser::endorser_key, now_ms, report};
 use crate::{
+    admission,
     canonical::Digest,
     dossier::{Dossier, DossierRequest},
     endorsement::{
         self, Batch, EndorsedPackage, EndorserRole, Record, Signing, StatedAssessment,
         StatementKind, Subject,
+        alerts::{self, Urgency, WithdrawalAlert},
         import::{self, ImportReport, RefusedFile},
         local,
         trust::TrustDecision,
@@ -94,25 +96,7 @@ impl From<&ImportReport> for ImportSummary {
 pub(super) fn run(options: &Options) -> Result<i32, CliError> {
     let store = options.store()?;
     match options.subject("endorsement")? {
-        "import" => {
-            let path = options.positional.get(1).ok_or_else(|| {
-                CliError::Invalid("endorsement import needs a file or directory".into())
-            })?;
-            let report_value = import::import_path(&store, std::path::Path::new(path))?;
-            let refused = !report_value.refused.is_empty();
-            report(options, &report_value, |report| {
-                let mut lines = vec![format!(
-                    "{} imported, {} already present; trust is decided at use, never here",
-                    report.newly_imported(),
-                    report.imported.len() - report.newly_imported()
-                )];
-                for file in &report.refused {
-                    lines.push(format!("refused {}: {}", file.path, file.reason));
-                }
-                lines.join("\n")
-            })?;
-            Ok(i32::from(refused))
-        }
+        "import" => import_verb(options, &store),
         "list" => {
             let stored = import::records(&store)?;
             let (endorsers, _) = local::effective(&store)?;
@@ -140,47 +124,120 @@ pub(super) fn run(options: &Options) -> Result<i32, CliError> {
                 )
             })
         }
-        verb @ ("sign-batch" | "withdraw") => {
-            let signing = signing(options, &store)?;
-            let batch = if verb == "sign-batch" {
-                Batch::Endorsements(packages(options, &store)?)
-            } else {
-                Batch::Withdrawals(members(options)?)
-            };
-            let records = endorsement::sign_batch(
-                &signing,
-                &batch,
-                &SshKeygenSigner::new(&options.signing_key()?),
-            )?;
-            let written = write_records(options, &records)?;
-            report(options, &written, |written| {
-                format!(
-                    "{} record(s) signed with one signature and written; publish them beside the skills",
-                    written.len()
-                )
-            })
-        }
-        "export" => {
-            let digest = Digest::parse(options.positional.get(1).ok_or_else(|| {
-                CliError::Invalid("endorsement export needs a record digest".into())
-            })?)?;
-            let output = options
-                .output
-                .as_deref()
-                .ok_or_else(|| CliError::Invalid("--output is required".into()))?;
-            let record = import::records(&store)?
-                .records
-                .into_iter()
-                .find(|record| record.digest() == digest)
-                .ok_or_else(|| CliError::Invalid(format!("no stored Endorsement {digest}")))?;
-            write_new(output, &record.to_bytes())?;
-            report(options, &digest.to_string(), |digest| {
-                format!("exported {digest}; nothing else about this store is in the file")
-            })
-        }
+        verb @ ("sign-batch" | "withdraw") => sign_verb(options, &store, verb == "withdraw"),
+        "export" => export_verb(options, &store),
         other => Err(CliError::Invalid(format!(
             "unknown endorsement verb '{other}'"
         ))),
+    }
+}
+
+fn import_verb(options: &Options, store: &Store) -> Result<i32, CliError> {
+    let path = options
+        .positional
+        .get(1)
+        .ok_or_else(|| CliError::Invalid("endorsement import needs a file or directory".into()))?;
+    let imported = import::import_path(store, Path::new(path))?;
+    let refused = !imported.refused.is_empty();
+    let alerts = current_alerts(store)?;
+    if options.robot {
+        let mut value = serde_json::to_value(&imported)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "withdrawn_endorsements".to_owned(),
+                serde_json::to_value(&alerts)?,
+            );
+        }
+        println!("{}", crate::robot::payload(&value)?);
+        return Ok(i32::from(refused));
+    }
+    let mut lines = vec![format!(
+        "{} imported, {} already present; trust is decided at use, never here",
+        imported.newly_imported(),
+        imported.imported.len() - imported.newly_imported()
+    )];
+    for file in &imported.refused {
+        lines.push(format!("refused {}: {}", file.path, file.reason));
+    }
+    println!("{}", lines.join("\n"));
+    print!("{}", human_alerts(&alerts));
+    Ok(i32::from(refused))
+}
+
+fn sign_verb(options: &Options, store: &Store, withdraw: bool) -> Result<i32, CliError> {
+    let signing = signing(options, store)?;
+    let batch = if withdraw {
+        Batch::Withdrawals(members(options)?)
+    } else {
+        Batch::Endorsements(packages(options, store)?)
+    };
+    let records = endorsement::sign_batch(
+        &signing,
+        &batch,
+        &SshKeygenSigner::new(&options.signing_key()?),
+    )?;
+    let written = write_records(options, &records)?;
+    report(options, &written, |written| {
+        format!(
+            "{} record(s) signed with one signature and written; publish them beside the skills",
+            written.len()
+        )
+    })
+}
+
+fn export_verb(options: &Options, store: &Store) -> Result<i32, CliError> {
+    let digest =
+        Digest::parse(options.positional.get(1).ok_or_else(|| {
+            CliError::Invalid("endorsement export needs a record digest".into())
+        })?)?;
+    let output = options
+        .output
+        .as_deref()
+        .ok_or_else(|| CliError::Invalid("--output is required".into()))?;
+    let record = import::records(store)?
+        .records
+        .into_iter()
+        .find(|record| record.digest() == digest)
+        .ok_or_else(|| CliError::Invalid(format!("no stored Endorsement {digest}")))?;
+    write_new(output, &record.to_bytes())?;
+    report(options, &digest.to_string(), |digest| {
+        format!("exported {digest}; nothing else about this store is in the file")
+    })
+}
+
+/// Withdrawal alerts for the Generation in force, most urgent first.
+pub(super) fn current_alerts(store: &Store) -> Result<Vec<WithdrawalAlert>, CliError> {
+    let status = admission::status(store)?;
+    let Some(generation) = &status.generation else {
+        return Ok(Vec::new());
+    };
+    let record = admission::load(store, &Digest::parse(generation)?)?;
+    Ok(alerts::withdrawal_alerts(
+        store,
+        &record,
+        &status.effective_members,
+    )?)
+}
+
+/// Human lines for withdrawal alerts; empty when there are none.
+pub(super) fn human_alerts(alerts: &[WithdrawalAlert]) -> String {
+    let lines: Vec<String> = alerts
+        .iter()
+        .map(|alert| {
+            let urgency = match alert.urgency {
+                Urgency::ReliedOn => "WITHDRAWN EVIDENCE its review relied on",
+                Urgency::SubjectOnly => "withdrawn evidence it did not rely on",
+            };
+            format!(
+                "member {}: {urgency}, withdrawn by {} ({}). Nothing was changed. {}",
+                alert.member, alert.endorser, alert.withdrawal, alert.next_action
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
     }
 }
 
