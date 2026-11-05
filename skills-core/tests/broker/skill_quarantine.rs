@@ -82,6 +82,7 @@ fn supply() -> Supply {
             }],
             signer: &signer,
             admitted_at_ms: 4000,
+            configured_agents: None,
         },
     )
     .unwrap();

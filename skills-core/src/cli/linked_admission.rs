@@ -86,6 +86,7 @@ pub(super) fn run(
             members,
             signer: &signer,
             admitted_at_ms: now_ms(),
+            configured_agents: None,
         },
         operation,
     )?;

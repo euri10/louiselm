@@ -185,6 +185,7 @@ impl Supply {
                 members,
                 signer: &SshKeygenSigner::new(self.primary.private_key_path()),
                 admitted_at_ms: 2,
+                configured_agents: None,
             },
         )
         .unwrap()

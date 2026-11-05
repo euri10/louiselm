@@ -121,6 +121,7 @@ impl World {
                 }],
                 signer: &SshKeygenSigner::new(self.primary.private_key_path()),
                 admitted_at_ms: NOW,
+                configured_agents: None,
             },
         )
         .unwrap()

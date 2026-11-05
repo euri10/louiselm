@@ -800,6 +800,54 @@ fn trust(options: &Options) -> Result<i32, CliError> {
     }
 }
 
+fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> {
+    let status = admission::status(store)?;
+    let admissible = status.state == Some(crate::generation::GenerationState::Current);
+    let alerts = endorsement::current_alerts(store)?;
+    // Delivery needs the configured Agents, so it is reported only
+    // when --registry names them.
+    let delivery = match (&status.generation, options.registry.is_some()) {
+        (Some(generation), true) => Some(admission::profile_delivery(
+            store,
+            &admission::load(store, &Digest::parse(generation)?)?,
+            &options.registered_agents()?,
+        )?),
+        _ => None,
+    };
+    if options.robot {
+        let mut value = serde_json::to_value(&status)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "withdrawn_endorsements".to_owned(),
+                serde_json::to_value(&alerts)?,
+            );
+            if let Some(delivery) = &delivery {
+                object.insert(
+                    "operator_profile".to_owned(),
+                    serde_json::to_value(delivery)?,
+                );
+            }
+        }
+        println!("{}", robot::payload(&value)?);
+    } else {
+        println!("{}", render::generation_status(&status));
+        if let Some(delivery) = &delivery {
+            match &delivery.profile {
+                Some(profile) if delivery.undelivered.is_empty() => {
+                    println!("operator profile {profile} reaches every configured Agent");
+                }
+                Some(profile) => println!(
+                    "operator profile {profile} does not reach: {}",
+                    delivery.undelivered.join(", ")
+                ),
+                None => println!("no operator profile in force"),
+            }
+        }
+        print!("{}", endorsement::human_alerts(&alerts));
+    }
+    Ok(if admissible { 0 } else { EXIT_NOT_ADMISSIBLE })
+}
+
 fn generation(options: &Options) -> Result<i32, CliError> {
     let store = options.store()?;
     let policy = options.policy()?;
@@ -816,6 +864,11 @@ fn generation(options: &Options) -> Result<i32, CliError> {
                     members: options.admission_members()?,
                     signer: &SshKeygenSigner::new(&key),
                     admitted_at_ms: now_ms(),
+                    configured_agents: options
+                        .registry
+                        .is_some()
+                        .then(|| options.registered_agents())
+                        .transpose()?,
                 },
             )?;
             report(options, &record, |record| {
@@ -848,25 +901,7 @@ fn generation(options: &Options) -> Result<i32, CliError> {
                 )
             })
         }
-        "status" => {
-            let status = admission::status(&store)?;
-            let admissible = status.state == Some(crate::generation::GenerationState::Current);
-            let alerts = endorsement::current_alerts(&store)?;
-            if options.robot {
-                let mut value = serde_json::to_value(&status)?;
-                if let Some(object) = value.as_object_mut() {
-                    object.insert(
-                        "withdrawn_endorsements".to_owned(),
-                        serde_json::to_value(&alerts)?,
-                    );
-                }
-                println!("{}", robot::payload(&value)?);
-            } else {
-                println!("{}", render::generation_status(&status));
-                print!("{}", endorsement::human_alerts(&alerts));
-            }
-            Ok(if admissible { 0 } else { EXIT_NOT_ADMISSIBLE })
-        }
+        "status" => generation_status(options, &store),
         "list" => {
             let records = admission::list(&store)?;
             if options.robot {

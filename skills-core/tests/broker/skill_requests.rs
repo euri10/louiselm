@@ -166,6 +166,7 @@ fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
         }],
         signer: &signer,
         admitted_at_ms: 4000,
+        configured_agents: None,
     };
     let record =
         admission::admit_linked(&store, &Policy::embedded(), &ceremony, &first.operation_id)

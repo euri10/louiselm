@@ -246,6 +246,19 @@ pub struct FileFacts {
     pub magic: Option<String>,
 }
 
+impl PackageKind {
+    /// Decides a package's kind from its manifest: a root `PROFILE.md` makes
+    /// it the Operator profile, valid or not.
+    #[must_use]
+    pub fn of(manifest: &crate::manifest::Manifest) -> Self {
+        if manifest.entry(PROFILE_FILE).is_some() {
+            Self::OperatorProfile
+        } else {
+            Self::Skill
+        }
+    }
+}
+
 /// The complete deterministic examination of one package.
 #[derive(Clone, Debug, Serialize)]
 pub struct Inspection {
@@ -279,11 +292,7 @@ impl Inspection {
     /// # Errors
     /// Returns a package-read error if a manifest entry cannot be inspected. Detected policy violations are findings in the returned Inspection.
     pub fn run(package: &Package, policy: &Policy) -> Result<Self, StoreError> {
-        let package_kind = if package.manifest.entry(PROFILE_FILE).is_some() {
-            PackageKind::OperatorProfile
-        } else {
-            PackageKind::Skill
-        };
+        let package_kind = PackageKind::of(&package.manifest);
         let mut inspection = Self {
             schema: INSPECTION_SCHEMA.to_owned(),
             package_digest: package.digest.to_string(),

@@ -39,6 +39,7 @@ use crate::{
         GENERATION_SCHEMA, GenerationPayload, GenerationRecord, GenerationState, Member,
         RECORD_SCHEMA,
     },
+    inspect::PackageKind,
     policy::Policy,
     quarantine::{self, QuarantineError},
     signer::{Signer, SignerError},
@@ -70,6 +71,19 @@ pub struct AdmissionRequest<'a> {
     pub signer: &'a dyn Signer,
     /// When the ceremony ran.
     pub admitted_at_ms: u64,
+    /// Every Agent configured on this host. Required to admit an Operator
+    /// profile, which must reach all of them; skills do not need it.
+    pub configured_agents: Option<Vec<String>>,
+}
+
+/// Which Operator profile a Generation carries, and which configured Agents
+/// it does not reach.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProfileDelivery {
+    /// The profile member's package digest, when the Generation has one.
+    pub profile: Option<String>,
+    /// Configured Agents the profile is not scoped to, sorted.
+    pub undelivered: Vec<String>,
 }
 
 /// An Admission or lifecycle step that was refused.
@@ -125,6 +139,25 @@ pub enum AdmissionError {
     /// Endorsement focus could not be computed for a member.
     #[error(transparent)]
     Focus(#[from] crate::endorsement::focus::FocusError),
+    /// A Generation may carry at most one Operator profile.
+    #[error("a Generation holds at most one Operator profile")]
+    ProfileTwice,
+    /// An Operator profile was offered without the configured Agent list.
+    #[error(
+        "Operator profile {package} needs the configured Agent list to prove it reaches every Agent"
+    )]
+    ProfileScopeUnknown {
+        /// The profile package.
+        package: String,
+    },
+    /// An Operator profile does not reach every configured Agent.
+    #[error("Operator profile {package} does not reach configured Agents: {}", missing.join(", "))]
+    ProfileScope {
+        /// The profile package.
+        package: String,
+        /// Configured Agents missing from its scope.
+        missing: Vec<String>,
+    },
     /// The witness could not be reached or refused.
     #[error(transparent)]
     Witness(#[from] WitnessError),
@@ -242,6 +275,7 @@ fn admit_inner(
     let admitted = admitted_unlocked(store)?;
     let focus = FocusContext::load_with(store, Some(&trust), &admitted, request.admitted_at_ms)?;
     let mut members = Vec::with_capacity(request.members.len());
+    let mut has_profile = false;
     for AdmissionMember {
         package: digest,
         depth,
@@ -260,26 +294,15 @@ fn admit_inner(
             policy,
             &DossierRequest::new(digest).with_review_depth(*depth),
         )?;
-        if !dossier.verification.intact {
-            return Err(AdmissionError::NotReviewable {
-                package: digest.to_string(),
-                reason: format!(
-                    "stored bytes do not verify: {}",
-                    dossier.verification.failures.join("; ")
-                ),
-            });
-        }
-        if dossier.inspection.is_fatal() {
-            return Err(AdmissionError::NotReviewable {
-                package: digest.to_string(),
-                reason: dossier
-                    .inspection
-                    .fatal
-                    .iter()
-                    .map(|fatal| fatal.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            });
+        refuse_unreviewable(digest, &dossier)?;
+        if dossier.inspection.package_kind == PackageKind::OperatorProfile {
+            check_profile(
+                digest,
+                agents,
+                request.configured_agents.as_deref(),
+                has_profile,
+            )?;
+            has_profile = true;
         }
         members.push(Member {
             package_digest: digest.to_string(),
@@ -546,6 +569,99 @@ pub(crate) fn locked_current(
         verify_record(store, record, &trust)?;
     }
     Ok((locked, current))
+}
+
+/// Refuses a member whose stored bytes do not verify or whose Inspection is fatal.
+fn refuse_unreviewable(digest: &Digest, dossier: &Dossier) -> Result<(), AdmissionError> {
+    if !dossier.verification.intact {
+        return Err(AdmissionError::NotReviewable {
+            package: digest.to_string(),
+            reason: format!(
+                "stored bytes do not verify: {}",
+                dossier.verification.failures.join("; ")
+            ),
+        });
+    }
+    if dossier.inspection.is_fatal() {
+        return Err(AdmissionError::NotReviewable {
+            package: digest.to_string(),
+            reason: dossier
+                .inspection
+                .fatal
+                .iter()
+                .map(|fatal| fatal.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        });
+    }
+    Ok(())
+}
+
+/// One Operator profile per Generation, scoped to every configured Agent.
+fn check_profile(
+    digest: &Digest,
+    agents: &[String],
+    configured: Option<&[String]>,
+    already_has_profile: bool,
+) -> Result<(), AdmissionError> {
+    if already_has_profile {
+        return Err(AdmissionError::ProfileTwice);
+    }
+    let configured = configured.ok_or_else(|| AdmissionError::ProfileScopeUnknown {
+        package: digest.to_string(),
+    })?;
+    let mut missing: Vec<String> = configured
+        .iter()
+        .filter(|agent| !agents.contains(agent))
+        .cloned()
+        .collect();
+    missing.sort();
+    missing.dedup();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(AdmissionError::ProfileScope {
+            package: digest.to_string(),
+            missing,
+        })
+    }
+}
+
+/// Reports which member of `generation` is the Operator profile and which of
+/// `configured` Agents it does not reach.
+///
+/// # Errors
+/// Returns store errors opening a member package.
+pub fn profile_delivery(
+    store: &Store,
+    generation: &GenerationRecord,
+    configured: &[String],
+) -> Result<ProfileDelivery, AdmissionError> {
+    let policy = Policy::embedded();
+    for member in &generation.payload.members {
+        let digest = Digest::parse(&member.package_digest)?;
+        let package = store.open_package(&digest, &policy)?;
+        if PackageKind::of(&package.manifest) == PackageKind::OperatorProfile {
+            let mut undelivered: Vec<String> = configured
+                .iter()
+                .filter(|agent| !member.agents.contains(agent))
+                .cloned()
+                .collect();
+            undelivered.sort();
+            undelivered.dedup();
+            return Ok(ProfileDelivery {
+                profile: Some(member.package_digest.clone()),
+                undelivered,
+            });
+        }
+    }
+    let mut undelivered = configured.to_vec();
+    undelivered.sort();
+    undelivered.dedup();
+    Ok(ProfileDelivery {
+        profile: None,
+        undelivered,
+    })
 }
 
 /// Members of the Generation in force that no quarantine excludes, read

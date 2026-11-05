@@ -48,6 +48,7 @@ fn linked_admission_is_signed_replayable_and_read_only_verifiable() {
         }],
         signer: &SshKeygenSigner::new(ceremony.primary.private_key_path()),
         admitted_at_ms: 1_756_800_000_000,
+        configured_agents: None,
     };
     let record = admission::admit_linked(&store, &Policy::embedded(), &request, operation).unwrap();
     assert_eq!(record.state, GenerationState::PendingWitness);
@@ -185,6 +186,7 @@ fn linked_partial_registration_stays_pending_until_tool_recovery_without_signing
         members,
         signer: &signer,
         admitted_at_ms: 1000,
+        configured_agents: None,
     };
     let record = admission::admit_linked(&store, &Policy::embedded(), &request, operation).unwrap();
     let verify = || {
@@ -300,6 +302,7 @@ impl Ceremony {
                     .collect(),
                 signer: &SshKeygenSigner::new(key.private_key_path()),
                 admitted_at_ms: 1_756_800_000_000,
+                configured_agents: None,
             },
         )
     }
@@ -1141,6 +1144,7 @@ fn key_retirement_cannot_overtake_an_admission_waiting_for_hardware() {
                     members: vec![],
                     signer: &signer,
                     admitted_at_ms: 2,
+                    configured_agents: None,
                 },
             )
         });
@@ -1195,6 +1199,7 @@ fn failed_approval_registration_never_becomes_retired_key_history() {
             members: vec![],
             signer: &signer,
             admitted_at_ms: 2,
+            configured_agents: None,
         },
     );
     assert!(matches!(

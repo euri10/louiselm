@@ -563,6 +563,7 @@ fn paper_recovery_preserves_history_but_old_keys_cannot_make_new_admissions() {
         members: vec![],
         signer: &signer,
         admitted_at_ms: 3,
+        configured_agents: None,
     };
     let record = admission::admit(&fixture.store(), &Policy::embedded(), &request).unwrap();
     let trust = TrustStore::load(&fixture.store()).unwrap().unwrap();
