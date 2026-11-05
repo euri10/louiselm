@@ -2,7 +2,8 @@
 //!
 //! A Generation is the whole supply or it is nothing. It binds every admitted
 //! package, the Dossier each was approved from, the claimed review depth, the
-//! Agents whose Instruction view the package enters, the governing policy, and
+//! Agents whose Instruction view the package enters, the Endorsements that
+//! framed its review, the governing policy, and
 //! its place in the chain — sequence and predecessor — so that additions,
 //! deletions, replacements, re-scoping, policy changes, and rollback are all
 //! visible as changes to a signed record rather than as edits to a directory.
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::{canonical::Digest, witness::WitnessEvidence};
 
 /// The Generation payload schema this build signs and reads.
-pub const GENERATION_SCHEMA: &str = "louiselm.skills.generation/2";
+pub const GENERATION_SCHEMA: &str = "louiselm.skills.generation/3";
 
 /// The stored record schema.
 pub const RECORD_SCHEMA: &str = "louiselm.skills.generation-record/1";
@@ -37,6 +38,12 @@ pub struct Member {
     /// Literal names only. An Agent this host does not run is valid: the same
     /// Generation is meant to be readable on another machine.
     pub agents: Vec<String>,
+    /// Digests of the trusted Endorsement records whose focus framed this
+    /// member's review, sorted and unique. Recomputed by the trusted tool at
+    /// Admission, never supplied by an Agent; empty when nothing framed it.
+    /// The records are portable, so the list verifies on any machine; which
+    /// endorsers were trusted stays a local fact.
+    pub relied_on: Vec<String>,
 }
 
 /// The bytes a hardware key signs to admit a Generation.
@@ -83,6 +90,8 @@ impl GenerationPayload {
         for member in &mut members {
             member.agents.sort();
             member.agents.dedup();
+            member.relied_on.sort();
+            member.relied_on.dedup();
         }
         let member_root = member_root(&members).to_string();
         Self {

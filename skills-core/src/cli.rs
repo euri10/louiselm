@@ -819,8 +819,14 @@ fn generation(options: &Options) -> Result<i32, CliError> {
                 },
             )?;
             report(options, &record, |record| {
+                let relied: usize = record
+                    .payload
+                    .members
+                    .iter()
+                    .map(|member| member.relied_on.len())
+                    .sum();
                 format!(
-                    "generation {} signed at sequence {}; witness it before it governs anything",
+                    "generation {} signed at sequence {}; {relied} trusted Endorsement record(s) framed the review; witness it before it governs anything",
                     record.generation, record.payload.sequence
                 )
             })

@@ -34,6 +34,7 @@ use thiserror::Error;
 use crate::{
     canonical::{Digest, DigestError},
     dossier::{Dossier, DossierError, DossierRequest, NextAction, ReviewDepth},
+    endorsement::focus::FocusContext,
     generation::{
         GENERATION_SCHEMA, GenerationPayload, GenerationRecord, GenerationState, Member,
         RECORD_SCHEMA,
@@ -121,6 +122,9 @@ pub enum AdmissionError {
     /// A digest argument is malformed.
     #[error(transparent)]
     Digest(#[from] DigestError),
+    /// Endorsement focus could not be computed for a member.
+    #[error(transparent)]
+    Focus(#[from] crate::endorsement::focus::FocusError),
     /// The witness could not be reached or refused.
     #[error(transparent)]
     Witness(#[from] WitnessError),
@@ -233,6 +237,10 @@ fn admit_inner(
     let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
     let signing_key = trust.admission_key()?.clone();
 
+    // Focus is recomputed here from local evidence, exactly as the Dossier
+    // view shows it; what it relied on is signed with the member.
+    let admitted = admitted_unlocked(store)?;
+    let focus = FocusContext::load_with(store, Some(&trust), &admitted, request.admitted_at_ms)?;
     let mut members = Vec::with_capacity(request.members.len());
     for AdmissionMember {
         package: digest,
@@ -278,6 +286,7 @@ fn admit_inner(
             dossier_digest: dossier.portable_digest().to_string(),
             review_depth: depth.name().to_owned(),
             agents: agents.clone(),
+            relied_on: focus.evaluate(store, policy, digest, None)?.relied_on,
         });
     }
 
@@ -537,6 +546,24 @@ pub(crate) fn locked_current(
         verify_record(store, record, &trust)?;
     }
     Ok((locked, current))
+}
+
+/// Members of the Generation in force that no quarantine excludes, read
+/// under the Admission lock the caller already holds.
+fn admitted_unlocked(store: &Store) -> Result<Vec<Digest>, AdmissionError> {
+    let Some(record) = current_unlocked(store)? else {
+        return Ok(Vec::new());
+    };
+    let quarantine = quarantine::load(store)?;
+    let (effective, _) = quarantine::partition(
+        quarantine.as_ref(),
+        &record.generation,
+        &record.payload.member_digests(),
+    );
+    effective
+        .iter()
+        .map(|member| Digest::parse(member).map_err(AdmissionError::from))
+        .collect()
 }
 
 fn current_unlocked(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError> {

@@ -34,6 +34,7 @@ use crate::{
     policy::Policy,
     sshsig::SkPolicy,
     store::{Store, StoreError},
+    trust::TrustStore,
 };
 
 /// Everything focus needs, loaded once and reused across packages.
@@ -145,6 +146,31 @@ impl FocusContext {
     /// Returns endorser-layer and stored-record read errors.
     pub fn load(store: &Store, admitted: &[Digest], now_ms: u64) -> Result<Self, FocusError> {
         let (endorsers, _) = local::effective(store)?;
+        Self::with_endorsers(store, endorsers, admitted, now_ms)
+    }
+
+    /// As [`Self::load`], using an already-loaded trust store. Skill
+    /// Admission holds the trust lock while it builds members, so it passes
+    /// the store it holds rather than reading it again.
+    ///
+    /// # Errors
+    /// Returns endorser-layer and stored-record read errors.
+    pub fn load_with(
+        store: &Store,
+        trust: Option<&TrustStore>,
+        admitted: &[Digest],
+        now_ms: u64,
+    ) -> Result<Self, FocusError> {
+        let (endorsers, _) = local::effective_with(store, trust)?;
+        Self::with_endorsers(store, endorsers, admitted, now_ms)
+    }
+
+    fn with_endorsers(
+        store: &Store,
+        endorsers: EndorserSet,
+        admitted: &[Digest],
+        now_ms: u64,
+    ) -> Result<Self, FocusError> {
         Ok(Self {
             endorsers,
             records: import::records(store)?.records,

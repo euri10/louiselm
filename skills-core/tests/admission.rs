@@ -1234,6 +1234,7 @@ fn the_member_root_covers_the_agent_list() {
         dossier_digest: "sha256:bb".to_owned(),
         review_depth: "read".to_owned(),
         agents: agents.iter().map(|name| (*name).to_owned()).collect(),
+        relied_on: Vec::new(),
     };
     let payload = |agents: &[&str]| {
         louiselm_skills::generation::GenerationPayload::new(
@@ -1264,6 +1265,7 @@ fn the_agent_list_is_sorted_and_deduplicated() {
             dossier_digest: "sha256:bb".to_owned(),
             review_depth: "read".to_owned(),
             agents: vec!["codex".to_owned(), "claude".to_owned(), "codex".to_owned()],
+            relied_on: Vec::new(),
         }],
     );
 

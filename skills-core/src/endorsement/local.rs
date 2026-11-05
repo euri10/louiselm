@@ -160,7 +160,20 @@ impl Default for LocalDocument {
 /// Returns state read/format errors and trust-store read errors. Additions
 /// that fail verification are reported in [`LocalLayer::dropped`], not errors.
 pub fn effective(store: &Store) -> Result<(EndorserSet, LocalLayer), LocalError> {
-    let layer = load(store)?;
+    effective_with(store, TrustStore::load(store)?.as_ref())
+}
+
+/// As [`effective`], verifying additions against an already-loaded trust
+/// store. For callers that hold the trust lock, where reading it again would
+/// report it busy.
+///
+/// # Errors
+/// Returns state read/format errors.
+pub fn effective_with(
+    store: &Store,
+    trust: Option<&TrustStore>,
+) -> Result<(EndorserSet, LocalLayer), LocalError> {
+    let layer = load_with(store, trust)?;
     let set = EndorserSet::effective(
         &trust::embedded_defaults(),
         &layer.additions,
@@ -174,14 +187,17 @@ pub fn effective(store: &Store) -> Result<(EndorserSet, LocalLayer), LocalError>
 /// # Errors
 /// Returns state read/format errors and trust-store read errors.
 pub fn load(store: &Store) -> Result<LocalLayer, LocalError> {
+    load_with(store, TrustStore::load(store)?.as_ref())
+}
+
+fn load_with(store: &Store, trust: Option<&TrustStore>) -> Result<LocalLayer, LocalError> {
     let document = read(&state_path(store))?;
-    let trust = TrustStore::load(store)?;
     let mut layer = LocalLayer {
         removals: document.removals,
         ..LocalLayer::default()
     };
     for addition in document.additions {
-        match verify_addition(trust.as_ref(), &addition) {
+        match verify_addition(trust, &addition) {
             Ok(()) => layer.additions.push(addition.payload.entry),
             Err(reason) => layer.dropped.push(DroppedAddition {
                 public_key: addition.payload.entry.public_key,
