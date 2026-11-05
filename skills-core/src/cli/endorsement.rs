@@ -26,7 +26,7 @@ use crate::{
         StatementKind, Subject,
         import::{self, ImportReport, RefusedFile},
         local,
-        trust::{Distrust, TrustDecision},
+        trust::TrustDecision,
     },
     signer::SshKeygenSigner,
     store::Store,
@@ -331,15 +331,7 @@ fn listed(record: &Record, decision: &TrustDecision) -> Listed {
 fn describe(decision: &TrustDecision) -> String {
     match decision {
         TrustDecision::Trusted { label } => format!("trusted endorser {label}"),
-        TrustDecision::Untrusted(Distrust::UnknownSigner) => "untrusted: unknown signer".into(),
-        TrustDecision::Untrusted(Distrust::RoleNotAllowed { role }) => {
-            format!("untrusted: key not trusted as {role:?}").to_lowercase()
-        }
-        TrustDecision::Untrusted(Distrust::LifetimeExceedsCap {
-            lifetime_ms,
-            cap_ms,
-        }) => format!("untrusted: lifetime {lifetime_ms} ms exceeds cap {cap_ms} ms"),
-        TrustDecision::Untrusted(Distrust::Refused(error)) => format!("untrusted: {error}"),
+        TrustDecision::Untrusted(reason) => format!("untrusted: {reason}"),
     }
 }
 

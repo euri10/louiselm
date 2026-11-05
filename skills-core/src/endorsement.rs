@@ -24,6 +24,7 @@
 //! compact JSON. Signatures use their own SSHSIG namespace, so an Endorsement
 //! never verifies as an Admission or a release, nor the reverse.
 
+pub mod focus;
 pub mod import;
 pub mod local;
 mod merkle;
@@ -395,6 +396,31 @@ impl Record {
     /// `sk_policy` violations, then [`EndorsementError::NotYetValid`] or
     /// [`EndorsementError::Expired`].
     pub fn verify(&self, now_ms: u64, sk_policy: SkPolicy) -> Result<&Subject, EndorsementError> {
+        self.verify_signature(sk_policy)?;
+        if now_ms < self.signing.issued_at_ms {
+            return Err(EndorsementError::NotYetValid {
+                issued_at_ms: self.signing.issued_at_ms,
+            });
+        }
+        if now_ms >= self.signing.expires_at_ms {
+            return Err(EndorsementError::Expired {
+                expires_at_ms: self.signing.expires_at_ms,
+            });
+        }
+        Ok(&self.subject)
+    }
+
+    /// Verifies the inclusion proof and the signature by the stated key,
+    /// ignoring the validity window.
+    ///
+    /// Only for statements whose effect must outlive their window — a
+    /// withdrawal keeps cancelling focus after it expires. Anything that may
+    /// raise trust uses [`Self::verify`].
+    ///
+    /// # Errors
+    /// Returns [`EndorsementError::ProofMismatch`] or
+    /// [`EndorsementError::Signature`].
+    pub fn verify_signature(&self, sk_policy: SkPolicy) -> Result<(), EndorsementError> {
         if !merkle::verify(
             &self.leaf,
             self.leaf_index,
@@ -411,17 +437,7 @@ impl Record {
             &self.signing.signer_key,
             sk_policy,
         )?;
-        if now_ms < self.signing.issued_at_ms {
-            return Err(EndorsementError::NotYetValid {
-                issued_at_ms: self.signing.issued_at_ms,
-            });
-        }
-        if now_ms >= self.signing.expires_at_ms {
-            return Err(EndorsementError::Expired {
-                expires_at_ms: self.signing.expires_at_ms,
-            });
-        }
-        Ok(&self.subject)
+        Ok(())
     }
 
     /// Who signed, in which role, and the validity window.

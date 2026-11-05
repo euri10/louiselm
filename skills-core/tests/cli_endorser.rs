@@ -446,3 +446,54 @@ fn local_authority_keys_cannot_sign_endorsements() {
     assert!(stderr.contains("enrolled"), "{stderr}");
     assert!(!publishing.fixture.path("out").exists());
 }
+
+#[test]
+fn the_dossier_shows_trusted_focus_beside_the_unchanged_review() {
+    let publishing = Publishing::new();
+    let (status, _, stderr) = run(
+        &publishing.fixture,
+        &[
+            "endorser",
+            "add",
+            "--endorser",
+            &publishing.publisher.public_key(),
+            "--label",
+            "Test publisher",
+            "--role",
+            "publisher",
+            "--allow-software-key",
+            "--key",
+            path(&publishing.primary),
+        ],
+    );
+    assert_eq!(status, 0, "{stderr}");
+    let package = publishing.packages[0].clone();
+    let before: Value = {
+        let (_, stdout, _) = run(&publishing.fixture, &["dossier", &package, "--robot-json"]);
+        serde_json::from_str(&stdout).unwrap()
+    };
+    assert_eq!(before["focus"]["exact"], serde_json::json!([]));
+
+    let (status, _, stderr) = publishing.sign("sign-batch", &publishing.publisher, "out");
+    assert_eq!(status, 0, "{stderr}");
+    let out = publishing.fixture.path("out");
+    let (status, _, stderr) = run(
+        &publishing.fixture,
+        &["endorsement", "import", out.to_str().unwrap()],
+    );
+    assert_eq!(status, 0, "{stderr}");
+
+    let (status, stdout, stderr) = run(&publishing.fixture, &["dossier", &package, "--robot-json"]);
+    assert_eq!(status, 0, "{stderr}");
+    let after: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(after["focus"]["exact"][0]["endorser"], "Test publisher");
+    assert_eq!(after["schema"], before["schema"]);
+    assert_eq!(after["review_depth"], before["review_depth"]);
+
+    let (_, human, _) = run(&publishing.fixture, &["dossier", &package]);
+    assert!(
+        human.contains("ENDORSED: Test publisher endorsed these exact bytes"),
+        "{human}"
+    );
+    assert!(human.contains("never authority"), "{human}");
+}

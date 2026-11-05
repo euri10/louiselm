@@ -1574,9 +1574,14 @@ exports as a standalone record: header, signature, its own leaf and an
 inclusion proof, as sorted-key compact JSON over the portable package digest.
 A record never reveals another subject. A batch either endorses or withdraws.
 Parsing and verification are offline. A verified record proves only which key
-made the claim and that it is within `[issued_at_ms, expires_at_ms)`. Endorser
-trust, import, and Dossier focus are tracked in louiselm-d6fv.8.6, .8.2 and
-.8.3, so nothing here touches Skill Admission.
+made the claim and that it is within `[issued_at_ms, expires_at_ms)`. `dossier`
+prints an Endorsement focus section beside the unchanged portable Dossier
+(`focus` in `--robot-json`). It shows a trusted, unwithdrawn Endorsement of
+the exact bytes, or the diff since the newest earlier capture from the same
+source that is admitted here or endorsed by a trusted endorser. Lineage only
+chooses among trusted bases. A withdrawal cancels its own signer's focus
+permanently, even after it expires. Focus changes what a reviewer is shown,
+never what Skill Admission accepts.
 `louiselm-launch` is built into the signed bundle. The control-service binary
 is still owned by louiselm-qbr.5.1; the bundle format already has a slot for it,
 and a release that declares a component it cannot produce is refused rather

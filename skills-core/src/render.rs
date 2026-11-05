@@ -6,8 +6,9 @@
 //! robot view, which is read by an Agent that will act on them.
 
 use crate::{
-    diff::{Change, LineKind},
+    diff::{Change, LineKind, PackageDiff},
     dossier::{AssessmentState, Dossier},
+    endorsement::focus::{Basis, Focus},
     inspect::FindingKind,
     posture::Posture,
 };
@@ -128,31 +129,7 @@ pub fn human(dossier: &Dossier) -> String {
 
     if let Some(diff) = &dossier.diff {
         push(&mut out, "");
-        push(
-            &mut out,
-            &format!(
-                "Update from {}: {} added, {} removed, {} changed, {} mode-only",
-                diff.base_digest,
-                diff.count(Change::Added),
-                diff.count(Change::Removed),
-                diff.count(Change::ContentChanged),
-                diff.count(Change::ModeChanged),
-            ),
-        );
-        for entry in &diff.entries {
-            push(&mut out, &format!("  {:?} {}", entry.change, entry.path));
-            if let Some(note) = &entry.note {
-                push(&mut out, &format!("    ({note})"));
-            }
-            for line in &entry.lines {
-                let marker = match line.kind {
-                    LineKind::Added => '+',
-                    LineKind::Removed => '-',
-                    LineKind::Context => ' ',
-                };
-                push(&mut out, &format!("    {marker}{}", line.text));
-            }
-        }
+        push_diff(&mut out, "Update", diff);
     }
 
     push(&mut out, "");
@@ -229,6 +206,94 @@ pub fn summary_line(dossier: &Dossier) -> String {
             " NOT REVIEWABLE"
         },
     )
+}
+
+/// Renders how trusted Endorsements frame this review.
+///
+/// Printed after the Dossier and labelled as evidence: a trusted Endorsement
+/// focuses attention, it never stands in for review or Admission.
+#[must_use]
+pub fn focus(focus: &Focus) -> String {
+    let mut out = String::new();
+    push(&mut out, "");
+    push(
+        &mut out,
+        "Endorsement focus (local trust, evidence only, never authority):",
+    );
+    for exact in &focus.exact {
+        push(
+            &mut out,
+            &format!(
+                "  ENDORSED: {} endorsed these exact bytes ({})",
+                exact.endorser, exact.record
+            ),
+        );
+    }
+    if let Some(base) = &focus.base {
+        let why = match &base.basis {
+            Basis::Admitted {} => "admitted here".to_owned(),
+            Basis::Endorsed { endorser, .. } => format!("endorsed by {endorser}"),
+        };
+        push(
+            &mut out,
+            &format!(
+                "  FOCUS: review what changed since {} ({why})",
+                base.package_digest
+            ),
+        );
+        push_diff(&mut out, "  Focus diff", &base.diff);
+    }
+    if !focus.is_focused() {
+        push(
+            &mut out,
+            "  No trusted Endorsement frames this review; review the full Dossier.",
+        );
+    }
+    for evidence in &focus.evidence {
+        push(
+            &mut out,
+            &format!(
+                "  {:?} {}{}: {}",
+                evidence.kind,
+                evidence.record,
+                if evidence.withdrawn {
+                    " (withdrawn)"
+                } else {
+                    ""
+                },
+                evidence.trust
+            ),
+        );
+    }
+    out
+}
+
+fn push_diff(out: &mut String, heading: &str, diff: &PackageDiff) {
+    push(
+        out,
+        &format!(
+            "{heading} from {}: {} added, {} removed, {} changed, {} mode-only",
+            diff.base_digest,
+            diff.count(Change::Added),
+            diff.count(Change::Removed),
+            diff.count(Change::ContentChanged),
+            diff.count(Change::ModeChanged),
+        ),
+    );
+    for entry in &diff.entries {
+        push(out, &format!("  {:?} {}", entry.change, entry.path));
+        if let Some(note) = &entry.note {
+            push(out, &format!("    ({note})"));
+        }
+        for line in &entry.lines {
+            let marker = match line.kind {
+                LineKind::Added => '+',
+                LineKind::Removed => '-',
+                LineKind::Context => ' ',
+            };
+            push(out, &format!("    {marker}{}", line.text));
+        }
+    }
 }
 
 fn push(out: &mut String, line: &str) {

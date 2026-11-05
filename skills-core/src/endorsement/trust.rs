@@ -128,6 +128,29 @@ pub enum Distrust {
     Refused(EndorsementError),
 }
 
+impl std::fmt::Display for Distrust {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownSigner => formatter.write_str("unknown signer"),
+            Self::RoleNotAllowed { role } => {
+                let role = match role {
+                    EndorserRole::Publisher => "publisher",
+                    EndorserRole::Reviewer => "reviewer",
+                };
+                write!(formatter, "key not trusted as {role}")
+            }
+            Self::LifetimeExceedsCap {
+                lifetime_ms,
+                cap_ms,
+            } => write!(
+                formatter,
+                "lifetime {lifetime_ms} ms exceeds cap {cap_ms} ms"
+            ),
+            Self::Refused(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
 /// The local trust decision for one record at one time.
 #[derive(Debug)]
 pub enum TrustDecision {

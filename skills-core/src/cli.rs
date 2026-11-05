@@ -97,6 +97,9 @@ pub enum CliError {
     /// An Endorsement batch could not be signed.
     #[error(transparent)]
     EndorsementRecord(#[from] crate::endorsement::EndorsementError),
+    /// Endorsement focus could not be computed.
+    #[error(transparent)]
+    Focus(#[from] crate::endorsement::focus::FocusError),
     /// An Admission or lifecycle step failed.
     #[error(transparent)]
     Admission(#[from] AdmissionError),
@@ -688,10 +691,24 @@ fn dossier(options: &Options) -> Result<i32, CliError> {
         &policy,
         &options.dossier_request(&digest, base.as_ref()),
     )?;
+    // Focus sits beside the portable Dossier, never inside it: what this
+    // machine trusts must not change the bytes a reviewer approves from.
+    let admitted = admission::status(&store)?
+        .effective_members
+        .iter()
+        .map(|member| Digest::parse(member))
+        .collect::<Result<Vec<_>, _>>()?;
+    let focus = crate::endorsement::focus::FocusContext::load(&store, &admitted, now_ms())?
+        .evaluate(&store, &policy, &digest, base.as_ref())?;
     if options.robot {
-        println!("{}", robot::json(&dossier)?);
+        let mut value = serde_json::to_value(&dossier)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("focus".to_owned(), serde_json::to_value(&focus)?);
+        }
+        println!("{}", robot::payload(&value)?);
     } else {
         print!("{}", render::human(&dossier));
+        print!("{}", render::focus(&focus));
     }
     Ok(if dossier.reviewable() {
         0
