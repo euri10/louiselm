@@ -806,28 +806,39 @@ fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> 
     let alerts = endorsement::current_alerts(store)?;
     // Delivery needs the configured Agents, so it is reported only
     // when --registry names them.
-    let delivery = match (&status.generation, &options.registry) {
-        (Some(generation), Some(root)) => {
+    let (delivery, native) = match &options.registry {
+        Some(root) => {
             let registry = crate::registry::Registry::open(root)?;
-            Some(if admissible {
-                crate::instruction_view::profile_status(
-                    store,
-                    &options.policy()?,
-                    &registry,
-                    generation,
-                )?
+            if let Some(generation) = &status.generation {
+                let (delivery, native) = if admissible {
+                    crate::instruction_view::profile_status(
+                        store,
+                        &options.policy()?,
+                        &registry,
+                        generation,
+                    )?
+                } else {
+                    let mut delivery = admission::profile_delivery(
+                        store,
+                        &admission::load(store, &Digest::parse(generation)?)?,
+                        &registry.agent_ids(),
+                    )?;
+                    delivery.undelivered = registry.agent_ids();
+                    delivery.undelivered.sort();
+                    (
+                        delivery,
+                        crate::instruction_view::native::status(&registry, None)?,
+                    )
+                };
+                (Some(delivery), Some(native))
             } else {
-                let mut delivery = admission::profile_delivery(
-                    store,
-                    &admission::load(store, &Digest::parse(generation)?)?,
-                    &registry.agent_ids(),
-                )?;
-                delivery.undelivered = registry.agent_ids();
-                delivery.undelivered.sort();
-                delivery
-            })
+                (
+                    None,
+                    Some(crate::instruction_view::native::status(&registry, None)?),
+                )
+            }
         }
-        _ => None,
+        None => (None, None),
     };
     if options.robot {
         let mut value = serde_json::to_value(&status)?;
@@ -840,6 +851,12 @@ fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> 
                 object.insert(
                     "operator_profile".to_owned(),
                     serde_json::to_value(delivery)?,
+                );
+            }
+            if let Some(native) = &native {
+                object.insert(
+                    "native_instructions".to_owned(),
+                    serde_json::to_value(native)?,
                 );
             }
         }
@@ -857,6 +874,9 @@ fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> 
                 ),
                 None => println!("no operator profile in force"),
             }
+        }
+        if let Some(native) = &native {
+            print!("{}", crate::instruction_view::native::human_status(native));
         }
         print!("{}", endorsement::human_alerts(&alerts));
     }

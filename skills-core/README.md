@@ -452,6 +452,46 @@ profile, existing instruction files remain untouched. `generation status
 undeclared or out-of-scope destinations as undelivered. Registering a new Agent
 does not extend an existing signed scope; delivery to it needs a new Admission.
 
+An Agent can also declare `native_instruction_paths`, an optional list of up to
+128 distinct absolute local files or directory roots for read-only drift checks.
+Paths are literal: no tilde/environment/glob expansion or URL fetching. Declare
+only instruction/memory sources, not whole configuration or transcript trees.
+Directories are scanned recursively; `always_on_path` is checked automatically
+as a file only. A directory substituted at that slot is not traversed unless
+also explicitly declared in `native_instruction_paths`.
+For example, register the resolved Claude `rules` and exact
+`projects/<project>/memory` directories, not the whole `projects` directory.
+This reports presence outside the profile, not proof a running Agent consumes it.
+
+`generation status --registry DIR --robot-json` adds `native_instructions`:
+
+```json
+{
+  "drift": [{"agent": "claude", "path": "/private/memory/topic.md",
+             "sha256": "sha256:<file-digest>", "reason": "outside_profile"}],
+  "undeclared": ["codex"],
+  "complete": true
+}
+```
+
+Readable files containing only the current verified profile bytes are omitted
+for Agents in its signed scope. With no profile, no current Generation, or
+quarantined supply, no native bytes are treated as managed. Missing paths are
+absent, not drift; delivery still reports a missing always-on slot as undelivered.
+`undeclared` lists Agents without extra native-source declarations even if their
+always-on slot is declared. An absent `--registry` performs no native scan and
+omits this field. No native file is created, changed or deleted by status.
+
+The scan never follows symlinks (including ancestors) or opens special files for
+I/O. It pins regular inodes and reports changed-during-read files without a
+digest. Limits are 8 MiB per file, 32 MiB total, 4096 visited entries and 32 nested
+directory levels per invocation. Unsafe/unreadable paths and exceeded limits
+produce diagnostics with `sha256: null` and `complete: false`; available files
+remain visible. `complete` covers only declared locations, not undeclared Agents
+or an atomic filesystem snapshot. Both human and robot output show paths and
+digests, never instruction/memory contents. Drift does not change the command's
+Generation-admissibility exit status or disable native memory.
+
 `view empty --store DIR --robot-json` produces the canonical empty mask for
 `skills=off`, without requiring a Generation or trust enrollment. Its
 `skills_root` exists and contains nothing. A failure produces no usable view.

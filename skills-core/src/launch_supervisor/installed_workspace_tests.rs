@@ -41,6 +41,7 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
         arguments: vec![],
         environment: std::collections::BTreeMap::new(),
         always_on_path: None,
+        native_instruction_paths: vec![],
         tool_integration: Some(
             if codex.is_some() {
                 super::super::super::tool_integration::CODEX_CONTRACT

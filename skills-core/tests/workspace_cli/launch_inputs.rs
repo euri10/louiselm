@@ -24,6 +24,7 @@ fn inputs(temp: &TempDir) -> SessionInputManifest {
             environment: std::collections::BTreeMap::new(),
             tool_integration: None,
             always_on_path: None,
+            native_instruction_paths: vec![],
         }),
         runtime: Some(RuntimeMeasurement {
             runtime_id: "runtime".into(),

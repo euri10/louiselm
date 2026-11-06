@@ -401,6 +401,7 @@ mod tests {
             environment: BTreeMap::new(),
             tool_integration: contract.map(str::to_owned),
             always_on_path: None,
+            native_instruction_paths: vec![],
         }
     }
 

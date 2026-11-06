@@ -86,7 +86,7 @@ const DIRECTORY: OFlags = OFlags::RDONLY
 
 // Pin every ancestor with no-follow opens so a renamed or swapped directory
 // cannot redirect a later publication. Only explicitly declared paths reach here.
-fn parent(path: &Path, create: bool) -> Result<File, ViewError> {
+pub(super) fn parent(path: &Path, create: bool) -> Result<File, ViewError> {
     let parent = path
         .parent()
         .ok_or(ViewError::Refused("profile_destination_missing_parent"))?;

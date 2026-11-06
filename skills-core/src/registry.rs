@@ -33,6 +33,7 @@ pub const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_REGISTRY_ENTRIES: usize = 4_096;
 const MAX_IDENTIFIER_BYTES: usize = 128;
+const MAX_NATIVE_INSTRUCTION_PATHS: usize = 128;
 
 /// A file bound to the digest it had when it was registered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +146,11 @@ pub struct AgentRegistration {
     /// Contained launch preparation never writes this host destination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub always_on_path: Option<PathBuf>,
+    /// Explicit absolute native instruction files or recursively scanned
+    /// directories. Paths are literal, without environment, tilde or glob
+    /// expansion; an empty list declares no additional native sources.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_instruction_paths: Vec<PathBuf>,
 }
 
 impl AgentRegistration {
@@ -427,18 +433,27 @@ impl Registry {
             validate_identifier("agent", &agent.id)?;
             validate_identifier("runtime", &agent.runtime_id)?;
             agent.provider.validate()?;
-            if let Some(path) = &agent.always_on_path
-                && (validate_absolute_path("agent", path).is_err()
-                    || path.file_name().is_none()
-                    || path.as_os_str().as_encoded_bytes().ends_with(b"/")
-                    || path.as_os_str().as_encoded_bytes().ends_with(b"/.")
-                    || path.to_string_lossy().chars().any(char::is_control))
-            {
+            if let Some(path) = &agent.always_on_path {
+                validate_instruction_path("always_on_path", path)?;
+            }
+            if agent.native_instruction_paths.len() > MAX_NATIVE_INSTRUCTION_PATHS {
                 return Err(RegistryError::Malformed {
+                    kind: "agent".to_owned(),
+                    reason: format!(
+                        "native_instruction_paths must contain at most {MAX_NATIVE_INSTRUCTION_PATHS} paths"
+                    ),
+                });
+            }
+            let mut native_paths = HashSet::new();
+            for path in &agent.native_instruction_paths {
+                validate_instruction_path("native_instruction_paths", path)?;
+                if !native_paths.insert(path) {
+                    return Err(RegistryError::Malformed {
                         kind: "agent".to_owned(),
-                        reason: "always_on_path must name an absolute, normalized file without control characters"
+                        reason: "native_instruction_paths must not contain duplicate paths"
                             .to_owned(),
                     });
+                }
             }
         }
         for envelope in &self.envelopes {
@@ -642,6 +657,23 @@ fn validate_digest(kind: &'static str, value: &str) -> Result<(), RegistryError>
         return Err(RegistryError::Malformed {
             kind: kind.to_owned(),
             reason: "digests must be bare lowercase sha256 hex".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_instruction_path(field: &str, path: &Path) -> Result<(), RegistryError> {
+    if validate_absolute_path("agent", path).is_err()
+        || path.file_name().is_none()
+        || path.as_os_str().as_encoded_bytes().ends_with(b"/")
+        || path.as_os_str().as_encoded_bytes().ends_with(b"/.")
+        || path.to_string_lossy().chars().any(char::is_control)
+    {
+        return Err(RegistryError::Malformed {
+            kind: "agent".to_owned(),
+            reason: format!(
+                "{field} must name an absolute, normalized path without control characters"
+            ),
         });
     }
     Ok(())

@@ -35,6 +35,7 @@ use crate::{
     registry::Registry,
 };
 
+pub(crate) mod native;
 mod profile;
 
 /// A materialized artifact; only this module constructs its identity and path.
@@ -176,14 +177,24 @@ pub(crate) fn profile_status(
     policy: &Policy,
     registry: &Registry,
     generation: &str,
-) -> Result<admission::ProfileDelivery, ViewError> {
+) -> Result<(admission::ProfileDelivery, native::Status), ViewError> {
     let (_locked, current) = admission::locked_current(store)?;
     let record = current.ok_or(ViewError::Refused("no_current_generation"))?;
     if record.generation != generation {
         return Err(ViewError::Refused("generation_changed_during_status"));
     }
     let packages = checked_packages(store, policy, &record)?;
-    profile::delivery(&record, &packages, registry, false)
+    let delivery = profile::delivery(&record, &packages, registry, false)?;
+    let expected = record.payload.members.iter().find_map(|member| {
+        if delivery.profile.as_deref() != Some(member.package_digest.as_str()) {
+            return None;
+        }
+        packages[member.package_digest.as_str()]
+            .manifest
+            .entry(crate::inspect::PROFILE_FILE)
+            .map(|entry| (entry.sha256.as_str(), member.agents.as_slice()))
+    });
+    Ok((delivery, native::status(registry, expected)?))
 }
 
 fn checked_packages<'a>(

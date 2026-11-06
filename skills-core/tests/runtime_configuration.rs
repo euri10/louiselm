@@ -19,6 +19,7 @@ fn agent() -> AgentRegistration {
         environment: BTreeMap::new(),
         tool_integration: Some("louiselm.codex-acp-integration/1".into()),
         always_on_path: None,
+        native_instruction_paths: vec![],
     }
 }
 

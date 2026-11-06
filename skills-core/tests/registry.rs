@@ -120,6 +120,91 @@ fn always_on_path_rejects_nonabsolute_or_unsafe_file_destinations() {
     }
 }
 
+#[test]
+fn native_instruction_paths_are_optional_bounded_literal_declarations() {
+    let fixture = tempfile::tempdir().unwrap();
+    for paths in [
+        None,
+        Some(Vec::<String>::new()),
+        Some(vec![
+            "/home/operator/.agent/instructions.md".to_owned(),
+            "/home/operator/$AGENT/~/memory".to_owned(),
+        ]),
+        Some(
+            (0..128)
+                .map(|index| format!("/native/path-{index}"))
+                .collect(),
+        ),
+    ] {
+        let mut agent = serde_json::json!({
+            "id": "demo", "provider": "fixture", "runtime_id": "demo-runtime",
+            "arguments": [], "environment": {}
+        });
+        if let Some(paths) = &paths {
+            agent["native_instruction_paths"] = serde_json::json!(paths);
+        }
+        let document = serde_json::json!({
+            "schema": "louiselm.launch.registry/1", "entries": [&agent]
+        });
+        fs::write(fixture.path().join("agents.json"), document.to_string()).unwrap();
+        let loaded = Registry::open(fixture.path())
+            .expect("at most 128 explicit native paths or their absence are valid")
+            .agent("demo")
+            .unwrap();
+        if paths.as_ref().is_some_and(Vec::is_empty) {
+            agent
+                .as_object_mut()
+                .unwrap()
+                .remove("native_instruction_paths");
+        }
+        assert_eq!(serde_json::to_value(loaded).unwrap(), agent);
+    }
+}
+
+#[test]
+fn native_instruction_paths_refuse_unsafe_duplicates_and_unbounded_lists() {
+    let fixture = tempfile::tempdir().unwrap();
+    let mut cases: Vec<(Vec<String>, &str)> = [
+        "",
+        "/",
+        "memory",
+        "~/memory",
+        "$HOME/memory",
+        "/home/operator/../memory",
+        "/home/operator/memory/",
+        "/home/operator/memory/.",
+        "/home/operator/mem\nory",
+        "/home/operator/mem\0ory",
+    ]
+    .into_iter()
+    .map(|path| (vec![path.to_owned()], "absolute, normalized"))
+    .collect();
+    cases.push((vec!["/native/memory".to_owned(); 2], "duplicate"));
+    cases.push((
+        (0..129)
+            .map(|index| format!("/native/path-{index}"))
+            .collect(),
+        "at most 128",
+    ));
+    for (paths, expected_reason) in cases {
+        let document = serde_json::json!({
+            "schema": "louiselm.launch.registry/1",
+            "entries": [{"id": "demo", "provider": "fixture", "runtime_id": "demo-runtime",
+                "arguments": [], "environment": {}, "native_instruction_paths": paths}]
+        });
+        fs::write(fixture.path().join("agents.json"), document.to_string()).unwrap();
+        assert!(
+            matches!(
+                Registry::open(fixture.path()),
+                Err(RegistryError::Malformed { kind, reason })
+                    if kind == "agent" && reason.contains("native_instruction_paths")
+                        && reason.contains(expected_reason)
+            ),
+            "native paths {paths:?} must be refused for {expected_reason}"
+        );
+    }
+}
+
 fn root_fixture() -> Option<tempfile::TempDir> {
     if !rustix::process::geteuid().is_root() {
         assert!(

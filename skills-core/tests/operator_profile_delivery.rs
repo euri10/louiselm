@@ -121,6 +121,19 @@ impl World {
             .unwrap()
     }
 
+    fn native_paths(&self, agent: &str, paths: &[std::path::PathBuf]) {
+        let path = self.fixture.path("registry/agents.json");
+        let mut registry: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let entry = registry["entries"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["id"] == agent)
+            .unwrap();
+        entry["native_instruction_paths"] = json!(paths);
+        write_file(&path, &registry.to_string());
+    }
+
     fn json(&self, verb: &str, action: &str) -> Value {
         let output = self.run(verb, action);
         assert!(
@@ -308,4 +321,279 @@ fn quarantined_profile_is_refused_before_any_instruction_is_replaced() {
         "existing instructions"
     );
     assert!(!world.slot("codex").exists());
+}
+
+#[test]
+fn native_drift_reports_edited_slot_without_contents_and_omits_rendered_slots() {
+    let world = World::new(true);
+    world.json("view", "materialize");
+    assert_eq!(
+        world.json("generation", "status")["native_instructions"]["drift"],
+        json!([])
+    );
+    fs::write(world.slot("codex"), "private hand edit").unwrap();
+    let output = world.json("generation", "status");
+    let drift = output["native_instructions"]["drift"].as_array().unwrap();
+    assert_eq!(drift.len(), 1);
+    assert_eq!(drift[0]["agent"], "codex");
+    assert_eq!(drift[0]["path"], json!(world.slot("codex")));
+    assert_eq!(
+        drift[0]["sha256"],
+        Digest::of(b"private hand edit").to_string()
+    );
+    assert!(!output.to_string().contains("private hand edit"));
+    assert_eq!(fs::read(world.slot("codex")).unwrap(), b"private hand edit");
+    assert_eq!(output["native_instructions"]["undeclared"], json!(AGENTS));
+}
+
+#[test]
+fn native_drift_scans_only_declared_trees_and_deduplicates_overlapping_roots() {
+    let world = World::new(true);
+    world.json("view", "materialize");
+    let memory = world.fixture.path("memory/topics/private.md");
+    write_file(&memory, "private memory fact");
+    write_file(&world.fixture.path("memory/index.md"), PROFILE);
+    write_file(
+        &world.fixture.path("not-declared/transcript.jsonl"),
+        "private transcript",
+    );
+    world.native_paths(
+        "claude",
+        &[
+            world.fixture.path("memory"),
+            memory.clone(),
+            world.slot("claude"),
+            world.fixture.path("missing-memory"),
+        ],
+    );
+    let output = world.json("generation", "status");
+    let drift = output["native_instructions"]["drift"].as_array().unwrap();
+    assert_eq!(drift.len(), 1);
+    assert_eq!(drift[0]["path"], json!(memory));
+    assert_eq!(
+        drift[0]["sha256"],
+        Digest::of(b"private memory fact").to_string()
+    );
+    assert_eq!(
+        output["native_instructions"]["undeclared"],
+        json!(["codex", "opencode", "undeclared"])
+    );
+    assert!(!output.to_string().contains("private memory fact"));
+    assert!(!output.to_string().contains("private transcript"));
+}
+
+#[test]
+fn native_drift_without_a_profile_reports_all_declared_content() {
+    let world = World::new(false);
+    write_file(&world.slot("claude"), PROFILE);
+    let output = world.json("generation", "status");
+    assert_eq!(
+        output["native_instructions"]["drift"][0]["sha256"],
+        Digest::of(PROFILE.as_bytes()).to_string()
+    );
+    assert!(
+        !world.slot("codex").exists(),
+        "status must not create paths"
+    );
+}
+
+#[test]
+fn native_drift_does_not_follow_links_or_block_on_fifos_or_oversize_files() {
+    let world = World::new(true);
+    world.json("view", "materialize");
+    let root = world.fixture.path("memory");
+    fs::create_dir(&root).unwrap();
+    let outside = world.fixture.path("outside/secret.md");
+    write_file(&outside, "not authorized to read");
+    std::os::unix::fs::symlink(&outside, root.join("linked.md")).unwrap();
+    std::os::unix::fs::symlink(outside.parent().unwrap(), root.join("linked-directory")).unwrap();
+    rustix::fs::mkfifoat(rustix::fs::CWD, root.join("pipe"), rustix::fs::Mode::RUSR).unwrap();
+    fs::File::create(root.join("oversize.md"))
+        .unwrap()
+        .set_len(8 * 1024 * 1024 + 1)
+        .unwrap();
+    let alias = world.fixture.path("aliased");
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    world.native_paths("claude", &[root.clone(), alias.join("linked.md")]);
+    let output = world.json("generation", "status");
+    let drift = output["native_instructions"]["drift"].as_array().unwrap();
+    assert_eq!(drift.len(), 5);
+    assert!(drift.iter().all(|entry| entry["sha256"].is_null()));
+    assert!(drift.iter().any(|entry| entry["reason"] == "file_limit"));
+    assert!(drift.iter().any(|entry| entry["reason"] == "not_regular"));
+    assert!(
+        !output
+            .to_string()
+            .contains(&Digest::of(b"not authorized to read").to_string())
+    );
+    assert!(!output.to_string().contains("not authorized to read"));
+    assert_eq!(output["native_instructions"]["complete"], false);
+}
+
+#[test]
+fn native_drift_does_not_trust_quarantined_or_out_of_scope_profile_bytes() {
+    let world = World::new(true);
+    world.json("view", "materialize");
+    world.registry(&["claude", "codex", "opencode", "undeclared", "new-agent"]);
+    write_file(&world.slot("new-agent"), PROFILE);
+    let output = world.json("generation", "status");
+    let drift = output["native_instructions"]["drift"].as_array().unwrap();
+    assert_eq!(drift.len(), 1);
+    assert_eq!(drift[0]["agent"], "new-agent");
+    louiselm_skills::quarantine::exclude(
+        &world.fixture.store(),
+        &[world.profile.as_ref().unwrap().to_string()],
+        "test quarantine",
+        5,
+    )
+    .unwrap();
+    let output = world.run("generation", "status");
+    assert_eq!(
+        output.status.code(),
+        Some(louiselm_skills::cli::EXIT_NOT_ADMISSIBLE)
+    );
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        output["native_instructions"]["drift"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn native_drift_before_admission_and_without_registry_are_explicit() {
+    let fixture = Fixture::new();
+    let file = fixture.path("memory.md");
+    write_file(&file, "private native default");
+    write_file(&fixture.path("registry/agents.json"), &json!({
+        "schema":"louiselm.launch.registry/1", "entries":[{
+            "id":"test", "provider":"test", "runtime_id":"test", "arguments":[], "environment":{},
+            "native_instruction_paths":[file]
+        }]
+    }).to_string());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_louiselm-skills"));
+    command
+        .args(["generation", "status", "--robot-json"])
+        .env("LOUISELM_SKILLS_STORE", fixture.store_root());
+    let output = command.output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(louiselm_skills::cli::EXIT_NOT_ADMISSIBLE)
+    );
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(output.get("native_instructions").is_none());
+    let output = command
+        .arg("--registry")
+        .arg(fixture.path("registry"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(louiselm_skills::cli::EXIT_NOT_ADMISSIBLE)
+    );
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        output["native_instructions"]["drift"][0]["sha256"],
+        Digest::of(b"private native default").to_string()
+    );
+    assert_eq!(output["native_instructions"]["complete"], true);
+    assert!(!output.to_string().contains("private native default"));
+}
+
+#[test]
+fn native_drift_bounds_directory_depth_and_total_entries() {
+    let world = World::new(false);
+    let root = world.fixture.path("memory");
+    let deep = root.join("deep/".repeat(34));
+    write_file(&deep.join("unreachable.md"), "unreachable");
+    world.native_paths("claude", std::slice::from_ref(&root));
+    let output = world.json("generation", "status");
+    assert_eq!(output["native_instructions"]["complete"], false);
+    assert_eq!(
+        output["native_instructions"]["drift"][0]["reason"],
+        "depth_limit"
+    );
+    let many = world.fixture.path("many");
+    fs::create_dir(&many).unwrap();
+    for index in 0..4100 {
+        fs::File::create(many.join(format!("{index}.md"))).unwrap();
+    }
+    world.native_paths("claude", &[many]);
+    let output = world.json("generation", "status");
+    assert_eq!(output["native_instructions"]["complete"], false);
+    let drift = output["native_instructions"]["drift"].as_array().unwrap();
+    assert!(drift.len() < 4100);
+    assert!(drift.iter().any(|entry| entry["reason"] == "scan_limit"));
+}
+
+#[test]
+fn native_drift_never_expands_a_file_only_slot_into_a_directory_scan() {
+    let world = World::new(true);
+    let slot = world.slot("claude");
+    let child = slot.join("not-declared.md");
+    write_file(&child, "outside declared file authority");
+    let output = world.json("generation", "status");
+    let drift = output["native_instructions"]["drift"].as_array().unwrap();
+    assert_eq!(drift.len(), 1);
+    assert_eq!(drift[0]["path"], json!(slot));
+    assert_eq!(drift[0]["reason"], "not_regular");
+    assert!(drift[0]["sha256"].is_null());
+    assert!(
+        !output
+            .to_string()
+            .contains(&Digest::of(b"outside declared file authority").to_string())
+    );
+    world.native_paths("claude", &[slot]);
+    let output = world.json("generation", "status");
+    assert_eq!(
+        output["native_instructions"]["drift"][0]["path"],
+        json!(child)
+    );
+    assert_eq!(
+        output["native_instructions"]["drift"][0]["sha256"],
+        Digest::of(b"outside declared file authority").to_string()
+    );
+}
+
+#[test]
+fn native_drift_bounds_total_bytes_and_escapes_human_paths() {
+    let world = World::new(false);
+    let root = world.fixture.path("memory");
+    let odd = root.join("line\nname.md");
+    write_file(&odd, "private fact never printed");
+    world.native_paths("claude", std::slice::from_ref(&root));
+    let output = Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
+        .args(["generation", "status", "--registry"])
+        .arg(world.fixture.path("registry"))
+        .env("LOUISELM_SKILLS_STORE", world.fixture.store_root())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(output.contains("line\\nname.md"));
+    assert!(!output.contains("line\nname.md"));
+    assert!(!output.contains("private fact never printed"));
+    for index in 0..5 {
+        fs::File::create(root.join(format!("{index}.md")))
+            .unwrap()
+            .set_len(8 * 1024 * 1024)
+            .unwrap();
+    }
+    let output = world.json("generation", "status");
+    assert_eq!(output["native_instructions"]["complete"], false);
+    let drift = output["native_instructions"]["drift"].as_array().unwrap();
+    assert!(
+        drift
+            .iter()
+            .any(|entry| entry["reason"] == "scan_limit" && entry["sha256"].is_null())
+    );
+    assert!(
+        drift
+            .iter()
+            .filter(|entry| entry["sha256"].is_string())
+            .count()
+            <= 4
+    );
 }

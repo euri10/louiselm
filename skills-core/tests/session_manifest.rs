@@ -32,6 +32,7 @@ fn agent() -> AgentRegistration {
         environment: BTreeMap::from([("CODEX_HOME".to_owned(), "/opt/codex-home".to_owned())]),
         tool_integration: None,
         always_on_path: None,
+        native_instruction_paths: vec![],
     }
 }
 

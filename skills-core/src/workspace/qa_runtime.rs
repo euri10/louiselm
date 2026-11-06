@@ -82,6 +82,7 @@ pub(crate) fn prepare(bundle: &Path, output: &Path) -> Result<Proposal, Workspac
             environment: BTreeMap::new(),
             tool_integration: Some(crate::runtime_configuration::CONTRACT.into()),
             always_on_path: None,
+            native_instruction_paths: vec![],
         },
         runtime: RuntimePackage {
             id: identity,
