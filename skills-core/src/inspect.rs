@@ -767,6 +767,22 @@ fn profile_type(text: &str) -> Result<(), String> {
     }
 }
 
+/// Publication refuses profile declarations even when the file is misnamed.
+pub(crate) fn contains_operator_profile(package: &Package) -> Result<bool, StoreError> {
+    for entry in &package.manifest.entries {
+        if entry.path.rsplit('/').next() == Some(PROFILE_FILE) {
+            return Ok(true);
+        }
+        let bytes = package.read(&entry.path)?;
+        if let Ok(text) = std::str::from_utf8(&bytes)
+            && profile_type(text).is_ok()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Shape rules for an Operator profile package: one small `PROFILE.md` only.
 fn profile_shape(package: &Package) -> Vec<FatalFinding> {
     let mut fatal = Vec::new();

@@ -497,3 +497,217 @@ fn the_dossier_shows_trusted_focus_beside_the_unchanged_review() {
     );
     assert!(human.contains("never authority"), "{human}");
 }
+
+#[test]
+fn an_operator_profile_can_never_be_endorsed_withdrawn_or_exported() {
+    use louiselm_skills::{
+        Digest, Policy, ReviewDepth, SshKeygenSigner,
+        endorsement::{self, Batch, EndorsedPackage, EndorserRole, Signing},
+    };
+
+    let publishing = Publishing::new();
+    let candidate = publishing.fixture.candidate("private/profile");
+    support::write_file(
+        &candidate.join("PROFILE.md"),
+        "---\ntype: louiselm/operator-profile\n---\n\nUse plain English.\n",
+    );
+    let (status, stdout, stderr) = run(
+        &publishing.fixture,
+        &["package", candidate.to_str().unwrap(), "--robot-json"],
+    );
+    assert_eq!(status, 0, "{stderr}");
+    let profile = serde_json::from_str::<Value>(&stdout).unwrap()["digest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    for verb in ["sign-batch", "withdraw"] {
+        let output = publishing.fixture.path(&format!("refused-{verb}"));
+        let (status, _, stderr) = run(
+            &publishing.fixture,
+            &[
+                "endorsement",
+                verb,
+                "--member",
+                &publishing.packages[0],
+                "--member",
+                &profile,
+                "--role",
+                "publisher",
+                "--endorser",
+                &publishing.publisher.public_key(),
+                "--key",
+                path(&publishing.publisher),
+                "--output",
+                output.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(status, 1, "{verb} must refuse a profile");
+        assert!(stderr.contains("Operator profile"), "{verb}: {stderr}");
+        assert!(!output.exists(), "{verb} wrote nothing");
+    }
+
+    // A record about the profile crafted outside the CLI is still never exported.
+    let signing = Signing {
+        signer_role: EndorserRole::Publisher,
+        signer_key: publishing.publisher.public_key(),
+        issued_at_ms: 1,
+        expires_at_ms: u64::MAX,
+    };
+    for batch in [
+        Batch::Endorsements(vec![EndorsedPackage {
+            package_digest: Digest::parse(&profile).unwrap(),
+            policy_digest: Policy::embedded().digest().clone(),
+            dossier_digest: None,
+            assessment: None,
+            review_depth: ReviewDepth::Read,
+            assumptions: Vec::new(),
+        }]),
+        Batch::Withdrawals(vec![Digest::parse(&profile).unwrap()]),
+    ] {
+        let bytes = endorsement::sign_batch(
+            &signing,
+            &batch,
+            &SshKeygenSigner::new(publishing.publisher.private_key_path()),
+        )
+        .unwrap()
+        .remove(0);
+        assert_profile_record_not_exported(&publishing, &bytes);
+    }
+}
+
+fn assert_profile_record_not_exported(publishing: &Publishing, bytes: &[u8]) {
+    use louiselm_skills::Digest;
+
+    let record = publishing.fixture.path("crafted.json");
+    std::fs::write(&record, bytes).unwrap();
+    let (status, _, stderr) = run(
+        &publishing.fixture,
+        &["endorsement", "import", record.to_str().unwrap()],
+    );
+    assert_eq!(status, 0, "{stderr}");
+    let exported = publishing.fixture.path("leak.json");
+    let (status, _, stderr) = run(
+        &publishing.fixture,
+        &[
+            "endorsement",
+            "export",
+            &Digest::of(bytes).to_string(),
+            "--output",
+            exported.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(status, 1);
+    assert!(stderr.contains("Operator profile"), "{stderr}");
+    assert!(!exported.exists());
+}
+
+#[test]
+fn renamed_and_malformed_profiles_cannot_enter_publication_batches() {
+    for (name, contents) in [
+        ("PROFILE.md", "missing frontmatter"),
+        (
+            "SKILL.md",
+            "---\nname: renamed\ndescription: Renamed profile.\ntype: \"louiselm\\u002foperator-profile\"\n---\nPrivate defaults.\n",
+        ),
+        (
+            "notes.md",
+            "---\ntype: louiselm/operator-profile\n---\nPrivate defaults.\n",
+        ),
+    ] {
+        let mut publishing = Publishing::new();
+        let candidate = publishing.fixture.candidate("renamed");
+        support::write_file(&candidate.join(name), contents);
+        let (status, stdout, stderr) = run(
+            &publishing.fixture,
+            &["package", candidate.to_str().unwrap(), "--robot-json"],
+        );
+        assert_eq!(status, 0, "{stderr}");
+        publishing.packages.push(
+            serde_json::from_str::<Value>(&stdout).unwrap()["digest"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+        for verb in ["sign-batch", "withdraw"] {
+            let (status, _, stderr) = publishing.sign(verb, &publishing.publisher, "refused");
+            assert_eq!(status, 1, "{name}: {verb}: {stderr}");
+            assert!(
+                stderr.contains("Operator profile"),
+                "{name}: {verb}: {stderr}"
+            );
+            assert!(!publishing.fixture.path("refused").exists());
+        }
+    }
+}
+
+#[test]
+fn publication_requires_known_intact_subject_packages() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use louiselm_skills::Digest;
+
+    for missing in [true, false] {
+        let publishing = Publishing::new();
+        let (status, _, stderr) = publishing.sign("withdraw", &publishing.publisher, "out");
+        assert_eq!(status, 0, "{stderr}");
+        let record = publishing.written("out").remove(0);
+        let subject = record.subject().package_digest();
+        let manifest = publishing
+            .fixture
+            .store_root()
+            .join("packages")
+            .join(subject.directory_name())
+            .join("manifest.json");
+        let expected = if missing {
+            std::fs::remove_file(&manifest).unwrap();
+            "is not in the store"
+        } else {
+            let replacement = publishing
+                .packages
+                .iter()
+                .map(|digest| Digest::parse(digest).unwrap())
+                .find(|digest| digest != subject)
+                .unwrap();
+            let replacement_manifest = publishing
+                .fixture
+                .store_root()
+                .join("packages")
+                .join(replacement.directory_name())
+                .join("manifest.json");
+            std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::copy(replacement_manifest, &manifest).unwrap();
+            "not intact"
+        };
+        for verb in ["sign-batch", "withdraw"] {
+            let (status, _, stderr) = publishing.sign(verb, &publishing.publisher, "refused");
+            assert_eq!(status, 1, "{stderr}");
+            assert!(stderr.contains(expected), "{stderr}");
+            assert!(!publishing.fixture.path("refused").exists());
+        }
+        let exported = publishing.fixture.path("refused-export.json");
+        // Import is independent of the local subject and retains external evidence.
+        let (status, _, stderr) = run(
+            &publishing.fixture,
+            &[
+                "endorsement",
+                "import",
+                publishing.fixture.path("out").to_str().unwrap(),
+            ],
+        );
+        assert_eq!(status, 0, "{stderr}");
+        let (status, _, stderr) = run(
+            &publishing.fixture,
+            &[
+                "endorsement",
+                "export",
+                &record.digest().to_string(),
+                "--output",
+                exported.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(status, 1, "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!exported.exists());
+    }
+}

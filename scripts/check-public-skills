@@ -22,6 +22,11 @@ while IFS= read -r -d '' link; do
 	reject symlink "${link#"$root"/}"
 done < <(find "$root" -type l -print0)
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if ! nvim --headless --noplugin -u NONE -l "$script_dir/check_public_profiles.lua" "$root"; then
+	failed=1
+fi
+
 scan() {
 	local rule=$1 pattern=$2 match
 	while IFS= read -r match; do

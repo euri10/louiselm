@@ -161,6 +161,14 @@ quarantine all --reason TEXT
 quarantine show
 ```
 
+Operator profiles are private: `endorsement sign-batch`, `withdraw`, and `export`
+refuse them, including imported records about a profile. These commands require
+each subject package to be present and intact in the local store so its kind can
+be checked before signing or writing output. The public-skills check also refuses
+`PROFILE.md` files and the `louiselm/operator-profile` marker, including YAML-encoded
+declarations in renamed files. That check uses the existing Neovim and `lyaml`
+runtime and reports paths without printing profile content.
+
 `quarantine all` binds the Generation that is current when the command runs.
 Sessions pinned to that Generation remain quarantined, while a newly witnessed
 and activated higher-sequence Generation may supply clean new Sessions. Package

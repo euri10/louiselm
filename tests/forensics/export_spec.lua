@@ -160,6 +160,31 @@ T["exports only selected redacted evidence without mutating inputs"] = function(
   MiniTest.expect.equality(nvim.uv.fs_stat(path).mode % 512, 384)
 end
 
+T["excludes Operator profile bytes from selected ACP and native transcripts"] = function()
+  local profile = "---\ntype: louiselm/operator-profile\n---\n\nPRIVATE_OPERATOR_DEFAULTS\n"
+  local record = fixture({
+    nvim.json.encode({
+      jsonrpc = "2.0",
+      method = "session/update",
+      params = {
+        update = { sessionUpdate = "user_message_chunk", content = { type = "text", text = profile } },
+      },
+    }),
+  })
+  assert(nvim.fn.writefile({
+    nvim.json.encode({ role = "system", content = { { type = "text", text = profile } } }),
+  }, root .. "/missing") == 0)
+  local path = assert(export(record, { "source:1:1:1", "source:2:1:1" }))
+  local bytes = table.concat(nvim.fn.readfile(path), "\n")
+  local items = nvim.json.decode(bytes).items
+  MiniTest.expect.equality({ items[1].state, items[2].state }, { "exported", "exported" })
+  MiniTest.expect.equality(items[1].lines[1].value.params.update.content.text, "[redacted]")
+  MiniTest.expect.equality(items[2].lines[1].value.content[1].text, "[redacted]")
+  for _, private in ipairs({ "louiselm/operator-profile", "PRIVATE_OPERATOR_DEFAULTS" }) do
+    MiniTest.expect.equality(bytes:find(private, 1, true), nil)
+  end
+end
+
 T["reports unavailable and malformed selections without exporting their content"] = function()
   local record = fixture({ "NOT JSON SECRET" })
   local path = assert(export(record, { "source:2:1:1", "source:3:1:1", "source:1:1:1", "observation:agent_version" }))

@@ -75,8 +75,10 @@ selected line numbers. All other scalar values become `[redacted]`; unknown
 object keys are replaced with a count. This removes free-form messages, prompts,
 tool arguments, secrets, numeric identifiers, host paths, and Session identities
 without relying on secret-pattern matching. Version/model/branch strings are
-also redacted. It is useful for event shape and ordering, not verbatim content
-or request-ID correlation. Protocol-shaped fields remain untrusted observations,
+also redacted. Operator profile bytes embedded in selected ACP or native
+transcript content are excluded by this same projection. It is useful for event
+shape and ordering, not verbatim content or request-ID correlation.
+Protocol-shaped fields remain untrusted observations,
 not claims that a valid ACP exchange occurred.
 
 Bounds are fixed: 16 selections, 200 selected lines total, line numbers at most

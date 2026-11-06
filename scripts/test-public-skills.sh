@@ -36,6 +36,38 @@ expect_refusal ssh_remote 'Push to git@git.private.example:team/repo.git.'
 expect_refusal session_id 'Refs claude/12345678-1234-1234-1234-123456789abc'
 expect_refusal unlisted_host 'Docs at https://intranet.example.net/page.'
 expect_refusal unlisted_host 'The usual host is code.private.example.fr, namespace team.'
+expect_refusal operator_profile 'type: louiselm/operator-profile'
+expect_refusal operator_profile '"type": "louiselm/operator-profile"'
+expect_refusal operator_profile "type: 'louiselm/operator-profile'"
+
+clean
+printf '%s\n' '---' 'type: "louiselm\u002foperator-profile"' '---' 'Private defaults.' \
+	>"$work_dir/skills/demo/renamed.md"
+if output=$("$check" "$work_dir/skills" 2>&1); then
+	echo "FAIL: encoded profile declaration not refused" >&2
+	exit 1
+fi
+grep -q operator_profile <<<"$output" || { echo "FAIL: expected operator_profile, got: $output" >&2; exit 1; }
+if grep -q 'Private defaults' <<<"$output"; then
+	echo "FAIL: profile diagnostic exposed content" >&2
+	exit 1
+fi
+
+clean
+printf '%s\n' '---' 'type: [' '---' >"$work_dir/skills/demo/invalid.md"
+if output=$("$check" "$work_dir/skills" 2>&1); then
+	echo "FAIL: malformed declaration not refused" >&2
+	exit 1
+fi
+grep -q invalid_frontmatter <<<"$output" || { echo "FAIL: expected invalid_frontmatter, got: $output" >&2; exit 1; }
+
+clean
+printf 'anything\n' >"$work_dir/skills/demo/PROFILE.md"
+if output=$("$check" "$work_dir/skills" 2>&1); then
+	echo "FAIL: PROFILE.md not refused" >&2
+	exit 1
+fi
+grep -q operator_profile <<<"$output" || { echo "FAIL: expected operator_profile, got: $output" >&2; exit 1; }
 
 clean
 ln -s /etc/hostname "$work_dir/skills/demo/link"

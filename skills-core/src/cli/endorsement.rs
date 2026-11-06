@@ -30,6 +30,8 @@ use crate::{
         local,
         trust::TrustDecision,
     },
+    inspect::contains_operator_profile,
+    policy::Policy,
     signer::SshKeygenSigner,
     store::Store,
     trust::TrustStore,
@@ -167,7 +169,7 @@ fn import_verb(options: &Options, store: &Store) -> Result<i32, CliError> {
 fn sign_verb(options: &Options, store: &Store, withdraw: bool) -> Result<i32, CliError> {
     let signing = signing(options, store)?;
     let batch = if withdraw {
-        Batch::Withdrawals(members(options)?)
+        Batch::Withdrawals(members(options, store)?)
     } else {
         Batch::Endorsements(packages(options, store)?)
     };
@@ -199,6 +201,7 @@ fn export_verb(options: &Options, store: &Store) -> Result<i32, CliError> {
         .into_iter()
         .find(|record| record.digest() == digest)
         .ok_or_else(|| CliError::Invalid(format!("no stored Endorsement {digest}")))?;
+    ensure_public_package(store, &options.policy()?, record.subject().package_digest())?;
     write_new(output, &record.to_bytes())?;
     report(options, &digest.to_string(), |digest| {
         format!("exported {digest}; nothing else about this store is in the file")
@@ -279,22 +282,42 @@ fn signing(options: &Options, store: &Store) -> Result<Signing, CliError> {
     })
 }
 
-fn members(options: &Options) -> Result<Vec<Digest>, CliError> {
+fn ensure_public_package(store: &Store, policy: &Policy, digest: &Digest) -> Result<(), CliError> {
+    let package = store.open_package(digest, policy)?;
+    if !store.verify(digest, policy)?.is_intact() {
+        return Err(CliError::Invalid(format!(
+            "{digest} is not intact; cannot verify its package kind for publication"
+        )));
+    }
+    if contains_operator_profile(&package)? {
+        return Err(CliError::Invalid(
+            "an Operator profile cannot be endorsed, withdrawn or exported".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn members(options: &Options, store: &Store) -> Result<Vec<Digest>, CliError> {
     if options.members.is_empty() {
         return Err(CliError::Invalid(
             "give at least one --member DIGEST".into(),
         ));
     }
+    let policy = options.policy()?;
     options
         .members
         .iter()
-        .map(|member| Digest::parse(member).map_err(CliError::from))
+        .map(|member| {
+            let digest = Digest::parse(member)?;
+            ensure_public_package(store, &policy, &digest)?;
+            Ok(digest)
+        })
         .collect()
 }
 
 fn packages(options: &Options, store: &Store) -> Result<Vec<EndorsedPackage>, CliError> {
     let policy = options.policy()?;
-    members(options)?
+    members(options, store)?
         .into_iter()
         .map(|digest| {
             let mut request = DossierRequest::new(&digest).with_review_depth(options.review_depth);
