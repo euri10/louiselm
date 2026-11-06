@@ -1670,6 +1670,13 @@ never what Skill Admission accepts. Admission signs each member's `relied_on`
 withdrawal touches an admitted member, `generation status` and `endorsement
 import` report it under `withdrawn_endorsements`. A member whose review relied
 on the withdrawn evidence comes first. Nothing is quarantined automatically.
+
+The release-bound default endorser is `LouiseLM publisher`, trusted only for the
+`publisher` role, with a hardware key, user presence and user verification
+required. Signing defaults to 90 days; the accepted lifetime cap is 180 days.
+The exact public key and policy are in `src/endorsers_default.json`, embedded in
+the build and included as `policy/endorsers.json` in the release bundle.
+
 `louiselm-launch` is built into the signed bundle. The control-service binary
 is still owned by louiselm-qbr.5.1; the bundle format already has a slot for it,
 and a release that declares a component it cannot produce is refused rather

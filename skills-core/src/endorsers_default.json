@@ -1,4 +1,16 @@
 {
-  "endorsers": [],
+  "endorsers": [
+    {
+      "label": "LouiseLM publisher",
+      "max_lifetime_ms": 15552000000,
+      "public_key": "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIOIQYUGXsQeLgJJ15D0I14Z1SthIv/vsztEBCQVqsjG8AAAABHNzaDo=",
+      "roles": ["publisher"],
+      "sk_policy": {
+        "require_hardware": true,
+        "require_user_presence": true,
+        "require_user_verification": true
+      }
+    }
+  ],
   "schema": "louiselm.skills.endorsers/1"
 }

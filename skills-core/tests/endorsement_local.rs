@@ -103,9 +103,20 @@ fn trusted(operator: &Operator, key: &SshKey) -> bool {
 #[test]
 fn the_embedded_default_list_is_valid_and_matches_the_release_asset() {
     let defaults = trust::embedded_defaults();
-    assert!(
-        defaults.is_empty(),
-        "no default endorser until the publisher credential is enrolled (louiselm-d6fv.8.11)"
+    assert_eq!(
+        defaults,
+        vec![EndorserEntry {
+            label: "LouiseLM publisher".into(),
+            max_lifetime_ms: MAX_LIFETIME_MS,
+            public_key: concat!(
+                "sk-ssh-ed25519@openssh.com ",
+                "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t",
+                "AAAAIOIQYUGXsQeLgJJ15D0I14Z1SthIv/vsztEBCQVqsjG8AAAABHNzaDo="
+            )
+            .into(),
+            roles: vec![EndorserRole::Publisher],
+            sk_policy: SkPolicy::require_presence_and_verification(),
+        }]
     );
     assert_eq!(
         trust::parse_defaults(trust::embedded_default_bytes()).unwrap(),

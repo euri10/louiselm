@@ -12,6 +12,7 @@ mod support;
 
 use std::process::Command;
 
+use louiselm_skills::endorsement::trust;
 use serde_json::Value;
 use support::{Fixture, SshKey};
 
@@ -58,7 +59,8 @@ fn an_operator_adds_removes_and_restores_an_endorser() {
         ],
     );
     assert_eq!(status, 0, "{stderr}");
-    assert_eq!(listing(&fixture)["effective"], serde_json::json!([]));
+    let defaults = serde_json::to_value(trust::embedded_defaults()).unwrap();
+    assert_eq!(listing(&fixture)["effective"], defaults);
 
     let publisher_key = format!("{} publisher@laptop", publisher.public_key());
     let (status, _, stderr) = run(
@@ -79,11 +81,20 @@ fn an_operator_adds_removes_and_restores_an_endorser() {
         ],
     );
     assert_eq!(status, 0, "{stderr}");
-    let effective = &listing(&fixture)["effective"];
-    assert_eq!(effective[0]["public_key"], publisher.public_key().as_str());
-    assert_eq!(effective[0]["roles"], serde_json::json!(["publisher"]));
+    let effective = listing(&fixture)["effective"].clone();
     assert_eq!(
-        effective[0]["sk_policy"]["require_hardware"], true,
+        effective.as_array().unwrap().len(),
+        defaults.as_array().unwrap().len() + 1
+    );
+    let added = effective
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["public_key"] == publisher.public_key().as_str())
+        .unwrap();
+    assert_eq!(added["roles"], serde_json::json!(["publisher"]));
+    assert_eq!(
+        added["sk_policy"]["require_hardware"], true,
         "a local endorser requires hardware unless the signed addition opts out"
     );
 
@@ -92,7 +103,7 @@ fn an_operator_adds_removes_and_restores_an_endorser() {
         &["endorser", "remove", "--endorser", &publisher.public_key()],
     );
     assert_eq!(status, 0, "{stderr}");
-    assert_eq!(listing(&fixture)["effective"], serde_json::json!([]));
+    assert_eq!(listing(&fixture)["effective"], defaults);
 
     let (status, _, _) = run(
         &fixture,
@@ -106,7 +117,7 @@ fn an_operator_adds_removes_and_restores_an_endorser() {
         ],
     );
     assert_eq!(status, 1, "a restore not signed by Primary is refused");
-    assert_eq!(listing(&fixture)["effective"], serde_json::json!([]));
+    assert_eq!(listing(&fixture)["effective"], defaults);
 
     let (status, _, stderr) = run(
         &fixture,
@@ -120,10 +131,7 @@ fn an_operator_adds_removes_and_restores_an_endorser() {
         ],
     );
     assert_eq!(status, 0, "{stderr}");
-    assert_eq!(
-        listing(&fixture)["effective"][0]["public_key"],
-        publisher.public_key().as_str()
-    );
+    assert_eq!(listing(&fixture)["effective"], effective);
 }
 
 #[test]
