@@ -68,10 +68,12 @@ the ACP peer and capture admission/attachment are explicit offline doubles.
 A skipped unprivileged Rust fixture is not installed acceptance.
 
 Usage benchmark harness changes also run `python3 scripts/test-usage-benchmark.py`.
-It injects SQLite exits, signals and timeout into disposable synthetic captures,
-checks redacted failure artifacts and retained timings, and runs the successful
-small-data measurement path. CI runs it with the Lua gates. It does not diagnose
-the original large-history capture failure (louiselm-tetp1).
+It injects SQLite exits, signals and timeout into disposable synthetic captures
+and measurements, plus malformed results and missing/damaged checkpoints. It
+checks redacted failure artifacts, completed and partial timings, and the
+successful small-data measurement path. CI runs it with the Lua gates. These
+diagnostics do not diagnose the original large-history capture or measurement
+failures (louiselm-tetp1, louiselm-95k9o).
 
 Plugin release automation also runs `python3 scripts/check-release-commits.py`,
 `python3 scripts/test-plugin-release.py`, and the pinned Release Please API

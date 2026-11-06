@@ -33,16 +33,31 @@ def run(args, **kwargs):
 
 
 def nvim(directory, mode, env=None):
+    progress = directory / (mode + "-progress.json")
+    progress.unlink(missing_ok=True)
     try:
         run(["nvim", "--headless", "--noplugin", "-u", "NONE", "-l",
              str(HERE / "benchmark.lua"), str(directory), mode], cwd=ROOT, env=env, timeout=300)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         evidence = {"phase": mode, "nvim": process_status(error)}
-        progress = directory / "capture-progress.json"
-        if mode == "capture" and progress.exists():
-            evidence.update(json.loads(progress.read_text()))
+        if mode in ("capture", "measure"):
+            try:
+                saved = json.loads(progress.read_text())
+                if not isinstance(saved, dict):
+                    raise ValueError("invalid progress")
+            except FileNotFoundError:
+                evidence["progress"] = "missing"
+            except (OSError, ValueError):
+                evidence["progress"] = "unreadable"
+            else:
+                evidence.update(saved)
+        if mode == "capture" and "case" in evidence:
             status = directory / (evidence["case"] + ".status.json")
             evidence["sqlite"] = json.loads(status.read_text()) if status.exists() else {"state": "not_observed"}
+        if mode == "measure" and "category" not in evidence:
+            status = evidence["nvim"]
+            evidence["category"] = ("process_timeout" if status["timeout"] else
+                                    "process_signal" if status["signal"] else "process_exit")
         raise BenchmarkFailure(evidence) from None
 
 
