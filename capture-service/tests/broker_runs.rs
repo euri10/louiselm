@@ -239,6 +239,7 @@ async fn cross_crate_posture_reaches_neovim() {
         "skill_requests::verified_admission_reaches_neovim",
         "skill_requests::supply_admission_reaches_neovim",
         "supply_withdrawals::withdrawals_reach_neovim",
+        "supply_withdrawals::retained::retained_withdrawals_reach_neovim",
     ] {
         let root = tempfile::tempdir().unwrap();
         let runtime = root.path().join("runtime");

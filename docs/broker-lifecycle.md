@@ -1138,7 +1138,7 @@ after the originating Session ends, with fresh headless Neovim views. Crate test
 cover policy/refusal, operator decisions, storage crash windows and late relay
 replies. These gates do not certify the maintainer's installed vendor launch path.
 
-### Withdrawal Attention from current supply
+### Withdrawal Attention from current and retained supply
 
 The existing read-only Admission source also supplies the broker's independent
 Attention worker with protected current-Generation, quarantine, Endorsement and
@@ -1163,23 +1163,37 @@ quarantine. Attention carries no candidate/profile prose, Dossier diff, private
 path or executable next-action command. Withdrawal reconciliation does not
 change Admission, the Generation, Verified posture or quarantine.
 
-Current effective supply controls this reconciliation slice. Removing its last
-qualifying current member, withdrawing subject-only trust, or quarantining the
-affected supply clears its exact condition. An acknowledged item stays unresolved
+Current effective supply and retained Sessions' actual Agent-scoped Instruction
+views contribute to the same condition. The broker binds each retained view to
+its consumed launch authorization and verified receipt chain; skills-off and
+other Agents' members do not contribute. Park preserves the pin. Replacing the
+current Generation cannot clear an item while a qualifying retained view remains
+usable. Verified Disposal or consumed-launch recovery, Session quarantine, and
+package/Generation quarantine remove the corresponding uses. Removing the last
+relied-on use can downgrade urgency without replacing the continuous condition.
+Removing every qualifying use, or withdrawing its only subject-only trust,
+clears the exact condition. An acknowledged item stays unresolved
 while its evidence still qualifies. Unreadable, unsettled, malformed or
 unverifiable evidence fails reconciliation and retains prior Attention; it never
 proves that a condition resolved. Disappearance of an active condition's withdrawal
 evidence or a previously observed local endorser layer also fails reconciliation
-after broker restart.
+after broker restart. A missing previously observed Session or an orphaned receipt
+chain is also a failure, never proof of disposal. Bounded Session inventory stays
+serialized with launch consumption through the supply observation, preventing a
+new pin from being missed during a Generation replacement.
 A source that has never exposed a local layer can still prove recorded reliance
-using the retained signed Endorsement. Retained older Session Instruction views are
-the separate follow-up tracked by `louiselm-d6fv.8.12.3`.
+using the retained signed Endorsement.
 
 The cross-crate Skill-request gate additionally follows real signed withdrawals
 through broker reconciliation, capture-service and fresh headless Neovim views.
 It covers offline/packaging import, both urgencies, restart and duplicate import,
 failed-read retention, trust changes, recurrence, unrelated Generation changes
-and operator quarantine.
+and operator quarantine. Its retained-pin scenario covers parked duplicate pins,
+restart, urgency downgrade with continuous identity, unrelated current supply,
+and last-reference Disposal. Offline broker fixtures additionally cover Agent and
+operator scope, withdrawn-base reliance, consumed recovery, missing or forged
+evidence and concurrent launch consumption. Installed human acceptance remains
+on `louiselm-d6fv.8.12`.
 
 ### Resolving a request through Skill Admission
 

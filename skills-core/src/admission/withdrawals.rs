@@ -1,4 +1,4 @@
-//! Non-mutating current-supply evidence for the broker's withdrawal projection.
+//! Non-mutating current and retained supply evidence for withdrawal projection.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -22,10 +22,11 @@ use crate::{
     trust::{TrustError, persistence::LockedTrust},
 };
 
-pub(crate) fn current_withdrawal_alerts(
+pub(crate) fn supply_withdrawal_alerts(
     store: &Store,
     domain: &str,
     expected: &[String],
+    retained: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<Vec<WithdrawalAlert>, AdmissionError> {
     let locked = LockedTrust::read_only(store)?;
     if store
@@ -58,39 +59,60 @@ pub(crate) fn current_withdrawal_alerts(
         }
     }
     let quarantine = quarantine::load(store)?;
-    let Some(record) = current(store, &trust.approved_admissions)? else {
-        locked.confirm()?;
-        return Ok(Vec::new());
-    };
-    verify_record(store, &record, &trust)?;
-    if record.schema != crate::generation::RECORD_SCHEMA
-        || record.witness.is_none()
-        || !trust.approved_admissions.contains(&record.generation)
-        || record.payload.policy_digest != Policy::embedded().digest().to_string()
-    {
-        return Err(AdmissionError::Chain(
-            "current Admission is not usable".into(),
-        ));
+    let current = current(store, &trust.approved_admissions)?;
+    let mut generations = BTreeMap::new();
+    for generation in retained.keys() {
+        let record = super::load_unlocked(store, &Digest::parse(generation)?)?;
+        generations.insert(generation.clone(), record);
     }
-    let (effective, _) = quarantine::partition(
-        quarantine.as_ref(),
-        &record.generation,
-        &record.payload.member_digests(),
-    );
-    for member in &record.payload.members {
-        for relied in &member.relied_on {
-            if records
-                .get(relied)
-                .is_none_or(|record| record.kind() != StatementKind::Endorsement)
-            {
-                return Err(AdmissionError::Chain(
-                    "relied-on Endorsement evidence is missing".into(),
-                ));
+    let current_id = current.as_ref().map(|record| record.generation.clone());
+    if let Some(record) = current {
+        generations.insert(record.generation.clone(), record);
+    }
+    let mut observed = BTreeMap::new();
+    for record in generations.values() {
+        verify_usable(store, record, &trust)?;
+        let members = record
+            .payload
+            .members
+            .iter()
+            .filter(|member| {
+                current_id.as_ref() == Some(&record.generation)
+                    || retained.get(&record.generation).is_some_and(|agents| {
+                        member.agents.iter().any(|agent| agents.contains(agent))
+                    })
+            })
+            .map(|member| member.package_digest.clone())
+            .collect::<Vec<_>>();
+        let (effective, _) =
+            quarantine::partition(quarantine.as_ref(), &record.generation, &members);
+        for member in record
+            .payload
+            .members
+            .iter()
+            .filter(|member| effective.contains(&member.package_digest))
+        {
+            for relied in &member.relied_on {
+                if records
+                    .get(relied)
+                    .is_none_or(|record| record.kind() != StatementKind::Endorsement)
+                {
+                    return Err(AdmissionError::Chain(
+                        "relied-on Endorsement evidence is missing".into(),
+                    ));
+                }
+            }
+        }
+        for alert in alerts::from_records(record, &effective, &endorsers, &evidence) {
+            let previous = observed
+                .entry((alert.member.clone(), alert.withdrawal.clone()))
+                .or_insert_with(|| alert.clone());
+            if alert.urgency == alerts::Urgency::ReliedOn {
+                *previous = alert;
             }
         }
     }
-    let mut alerts = alerts::from_records(&record, &effective, &endorsers, &evidence);
-    for alert in &mut alerts {
+    for alert in observed.values_mut() {
         // CLI retains the public key fallback; broker metadata uses a bounded
         // fingerprint when that key no longer has a trusted local label.
         let withdrawal = records
@@ -107,7 +129,27 @@ pub(crate) fn current_withdrawal_alerts(
             );
     }
     locked.confirm()?;
-    Ok(alerts)
+    Ok(observed.into_values().collect())
+}
+
+fn verify_usable(
+    store: &Store,
+    record: &GenerationRecord,
+    trust: &TrustStore,
+) -> Result<(), AdmissionError> {
+    verify_record(store, record, trust)?;
+    if record.schema != crate::generation::RECORD_SCHEMA
+        || record.witness.is_none()
+        || !trust.approved_admissions.contains(&record.generation)
+        || record.payload.policy_digest != Policy::embedded().digest().to_string()
+        || !matches!(
+            record.state,
+            GenerationState::Current | GenerationState::Superseded
+        )
+    {
+        return Err(AdmissionError::Chain("Admission is not usable".into()));
+    }
+    Ok(())
 }
 
 fn verified_endorsements(

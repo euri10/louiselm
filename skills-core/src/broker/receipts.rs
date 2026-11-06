@@ -71,6 +71,33 @@ enum ReceiptTrust {
 }
 
 impl ReceiptStore {
+    /// Enumerates protected chain identities without inferring usable supply.
+    /// Callers must match every chain to a consumed launch authorization.
+    pub(super) fn session_ids(&self) -> Result<std::collections::BTreeSet<String>, BrokerError> {
+        let _appending = lock(&self.appending);
+        let mut sessions = std::collections::BTreeSet::new();
+        for (index, entry) in fs::read_dir(self.root.join(SESSIONS_DIRECTORY))
+            .map_err(BrokerError::Storage)?
+            .enumerate()
+        {
+            if index >= 4096 {
+                return Err(corrupt("Session receipt inventory exceeds its bound"));
+            }
+            let entry = entry.map_err(BrokerError::Storage)?;
+            let id = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| corrupt("invalid stored Session identity"))?;
+            if !entry.file_type().map_err(BrokerError::Storage)?.is_dir()
+                || !is_record_identifier(&id)
+            {
+                return Err(corrupt("invalid stored Session identity"));
+            }
+            sessions.insert(id);
+        }
+        Ok(sessions)
+    }
+
     pub(super) fn key_revocation(
         &self,
         session_id: &str,

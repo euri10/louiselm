@@ -657,6 +657,40 @@ impl AuthorizationStore {
         Self::read_consumed_for_session(&self.root, session_id)
     }
 
+    /// Bounded, complete inventory for read-only supply reconciliation.
+    /// Consumption stays serialized through the dependent supply observation.
+    pub(super) fn with_consumed<T>(
+        &self,
+        observe: impl FnOnce(Vec<PendingAuthorization>) -> Result<T, BrokerError>,
+    ) -> Result<T, BrokerError> {
+        let _assignment = lock(&self.assignment);
+        let mut records = Vec::new();
+        let mut sessions = std::collections::BTreeSet::new();
+        for (index, entry) in fs::read_dir(self.root.join(CONSUMED_DIRECTORY))
+            .map_err(BrokerError::Storage)?
+            .enumerate()
+        {
+            if index >= 4096 {
+                return Err(super::corrupt(
+                    "consumed authorization scan exceeds its bound",
+                ));
+            }
+            let path = entry.map_err(BrokerError::Storage)?.path();
+            let record: ConsumedAuthorization = read_record(&path)?
+                .ok_or_else(|| super::corrupt("consumed authorization is missing"))?;
+            let held = record.authorization;
+            held.launch_authorization().validate()?;
+            if path != self.consumed_path(&record_name(&held.authorization_id)?)
+                || !super::is_record_identifier(&held.agent_id)
+                || !sessions.insert(held.session_id.clone())
+            {
+                return Err(super::corrupt("consumed authorization identity mismatch"));
+            }
+            records.push(held);
+        }
+        observe(records)
+    }
+
     // Read-only owner access: QA inspection must not initialize approval stores.
     pub(crate) fn read_consumed_for_session(
         root: &Path,

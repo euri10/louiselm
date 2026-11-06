@@ -32,7 +32,7 @@ fn stable_pair_updates_without_renotifying_and_resolved_recurrence_is_new() {
     let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
     let state = WithdrawalAttention::open(&path).unwrap();
     state
-        .observe(1000, &[alert()], 100, &outbox, false)
+        .observe(1000, &[alert()], 100, &outbox, false, BTreeSet::new())
         .unwrap();
     let first = drain(&outbox).remove(0).wire();
     let original = &first["change"]["attention"];
@@ -41,7 +41,14 @@ fn stable_pair_updates_without_renotifying_and_resolved_recurrence_is_new() {
     stronger.urgency = WithdrawalUrgency::ReliedOn;
     stronger.endorser = "New local label".into();
     assert!(matches!(
-        state.observe(1000, &[stronger.clone(), alert()], 200, &outbox, false),
+        state.observe(
+            1000,
+            &[stronger.clone(), alert()],
+            200,
+            &outbox,
+            false,
+            BTreeSet::new()
+        ),
         Err(BrokerError::RequestMismatch)
     ));
     assert!(
@@ -51,7 +58,14 @@ fn stable_pair_updates_without_renotifying_and_resolved_recurrence_is_new() {
     let mut weaker = stronger.clone();
     weaker.urgency = WithdrawalUrgency::SubjectOnly;
     state
-        .observe(1000, &[stronger.clone(), weaker], 200, &outbox, false)
+        .observe(
+            1000,
+            &[stronger.clone(), weaker],
+            200,
+            &outbox,
+            false,
+            BTreeSet::new(),
+        )
         .unwrap();
     let updated = drain(&outbox).remove(0).wire();
     let updated = &updated["change"]["attention"];
@@ -65,17 +79,26 @@ fn stable_pair_updates_without_renotifying_and_resolved_recurrence_is_new() {
     let state = WithdrawalAttention::open(&path).unwrap();
     state.replay(&outbox).unwrap();
     state
-        .observe(1000, &[stronger.clone()], 300, &outbox, false)
+        .observe(
+            1000,
+            &[stronger.clone()],
+            300,
+            &outbox,
+            false,
+            BTreeSet::new(),
+        )
         .unwrap();
     assert!(outbox.next().unwrap().is_none());
-    state.observe(1000, &[], 400, &outbox, false).unwrap();
+    state
+        .observe(1000, &[], 400, &outbox, false, BTreeSet::new())
+        .unwrap();
     let clear = drain(&outbox).remove(0).wire();
     assert_eq!(
         clear["change"]["key"]["source_operation_id"],
         original["source_operation_id"]
     );
     state
-        .observe(1000, &[stronger], 500, &outbox, false)
+        .observe(1000, &[stronger], 500, &outbox, false, BTreeSet::new())
         .unwrap();
     let recurrence = drain(&outbox).remove(0).wire();
     assert_ne!(
@@ -96,7 +119,7 @@ fn intent_replays_after_outbox_storage_failure_without_duplicate_projection() {
     fs::remove_dir(&entries).unwrap();
     fs::write(&entries, b"simulate unavailable outbox storage").unwrap();
     assert!(matches!(
-        state.observe(1000, &[alert()], 100, &outbox, false),
+        state.observe(1000, &[alert()], 100, &outbox, false, BTreeSet::new()),
         Err(BrokerError::Storage(_))
     ));
     let intent: Record = read_record(&path.join("1000.json")).unwrap().unwrap();
@@ -119,13 +142,13 @@ fn malformed_observation_cannot_clear_an_existing_condition() {
     let state = WithdrawalAttention::open(&root.path().join("withdrawals")).unwrap();
     let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
     state
-        .observe(1000, &[alert()], 100, &outbox, false)
+        .observe(1000, &[alert()], 100, &outbox, false, BTreeSet::new())
         .unwrap();
     drain(&outbox);
     let mut invalid = alert();
     invalid.member = "private/path".into();
     assert!(matches!(
-        state.observe(1000, &[invalid], 200, &outbox, false),
+        state.observe(1000, &[invalid], 200, &outbox, false, BTreeSet::new()),
         Err(BrokerError::InvalidGrant)
     ));
     assert!(outbox.next().unwrap().is_none());
@@ -142,7 +165,14 @@ fn separate_withdrawals_of_one_member_have_separate_stable_conditions() {
     let mut second = first.clone();
     second.withdrawal = crate::Digest::of(b"second withdrawal").to_string();
     state
-        .observe(1000, &[first.clone(), second.clone()], 100, &outbox, false)
+        .observe(
+            1000,
+            &[first.clone(), second.clone()],
+            100,
+            &outbox,
+            false,
+            BTreeSet::new(),
+        )
         .unwrap();
     let conditions = drain(&outbox);
     assert_eq!(conditions.len(), 2);
@@ -150,10 +180,19 @@ fn separate_withdrawals_of_one_member_have_separate_stable_conditions() {
     let second_id = &conditions[1].wire()["change"]["attention"]["source_operation_id"];
     assert_ne!(first_id, second_id);
     state
-        .observe(1000, &[second.clone(), first], 200, &outbox, false)
+        .observe(
+            1000,
+            &[second.clone(), first],
+            200,
+            &outbox,
+            false,
+            BTreeSet::new(),
+        )
         .unwrap();
     assert!(outbox.next().unwrap().is_none());
-    state.observe(1000, &[second], 300, &outbox, false).unwrap();
+    state
+        .observe(1000, &[second], 300, &outbox, false, BTreeSet::new())
+        .unwrap();
     assert_eq!(drain(&outbox).len(), 1);
     let record: Record = read_record(&state.path(1000)).unwrap().unwrap();
     assert_eq!(record.conditions.len(), 1);
@@ -166,7 +205,7 @@ fn interrupted_staging_files_never_replace_or_block_committed_state() {
     let state = WithdrawalAttention::open(&path).unwrap();
     let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
     state
-        .observe(1000, &[alert()], 100, &outbox, false)
+        .observe(1000, &[alert()], 100, &outbox, false, BTreeSet::new())
         .unwrap();
     drain(&outbox);
     fs::write(path.join(".withdrawal-incomplete"), b"{interrupted").unwrap();
@@ -179,7 +218,7 @@ fn interrupted_staging_files_never_replace_or_block_committed_state() {
     let state = WithdrawalAttention::open(&path).unwrap();
     state.replay(&outbox).unwrap();
     state
-        .observe(1000, &[alert()], 200, &outbox, false)
+        .observe(1000, &[alert()], 200, &outbox, false, BTreeSet::new())
         .unwrap();
     assert!(outbox.next().unwrap().is_none());
     fs::write(state.path(1000), b"{corrupt committed record").unwrap();
@@ -201,19 +240,27 @@ fn aggregate_snapshot_supports_one_hundred_pairs_updates_and_clears() {
             ..alert()
         })
         .collect();
-    state.observe(1000, &alerts, 100, &outbox, false).unwrap();
+    state
+        .observe(1000, &alerts, 100, &outbox, false, BTreeSet::new())
+        .unwrap();
     assert_eq!(drain(&outbox).len(), 100);
     drop(state);
     let state = WithdrawalAttention::open(&path).unwrap();
     state.replay(&outbox).unwrap();
-    state.observe(1000, &alerts, 200, &outbox, false).unwrap();
+    state
+        .observe(1000, &alerts, 200, &outbox, false, BTreeSet::new())
+        .unwrap();
     assert!(outbox.next().unwrap().is_none());
     for alert in &mut alerts {
         alert.urgency = WithdrawalUrgency::ReliedOn;
     }
-    state.observe(1000, &alerts, 300, &outbox, false).unwrap();
+    state
+        .observe(1000, &alerts, 300, &outbox, false, BTreeSet::new())
+        .unwrap();
     assert_eq!(drain(&outbox).len(), 100);
-    state.observe(1000, &[], 400, &outbox, false).unwrap();
+    state
+        .observe(1000, &[], 400, &outbox, false, BTreeSet::new())
+        .unwrap();
     assert_eq!(drain(&outbox).len(), 100);
 }
 
@@ -223,15 +270,21 @@ fn observed_local_layer_survives_empty_state_and_restart() {
     let path = root.path().join("withdrawals");
     let state = WithdrawalAttention::open(&path).unwrap();
     let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
-    state.observe(1000, &[], 100, &outbox, false).unwrap();
+    state
+        .observe(1000, &[], 100, &outbox, false, BTreeSet::new())
+        .unwrap();
     assert!(!state.load(1000).unwrap().local_layer_observed);
-    state.observe(1000, &[], 200, &outbox, true).unwrap();
+    state
+        .observe(1000, &[], 200, &outbox, true, BTreeSet::new())
+        .unwrap();
     assert!(outbox.next().unwrap().is_none());
     drop(state);
     let state = WithdrawalAttention::open(&path).unwrap();
     state.replay(&outbox).unwrap();
     assert!(state.load(1000).unwrap().local_layer_observed);
-    state.observe(1000, &[], 300, &outbox, false).unwrap();
+    state
+        .observe(1000, &[], 300, &outbox, false, BTreeSet::new())
+        .unwrap();
     assert!(state.load(1000).unwrap().local_layer_observed);
     assert!(outbox.next().unwrap().is_none());
 }

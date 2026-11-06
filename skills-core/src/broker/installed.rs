@@ -470,8 +470,11 @@ impl InstalledBroker {
         );
         // A Session/Run evidence failure cannot suppress independent supply state.
         if let Some(source) = &source {
-            self.service
-                .reconcile_supply_withdrawals(source, now_ms()?)?;
+            self.service.reconcile_supply_withdrawals(
+                source,
+                now_ms()?,
+                |key, payload, signature| self.verifier.verify(key, payload, signature).is_ok(),
+            )?;
         }
         requests
     }

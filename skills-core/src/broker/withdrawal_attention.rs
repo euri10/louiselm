@@ -1,4 +1,4 @@
-//! Current-supply withdrawal episodes and crash-recoverable projection intent.
+//! Current and retained supply withdrawal episodes and durable projection intent.
 
 use super::{
     BrokerError, BrokerService,
@@ -7,9 +7,12 @@ use super::{
         AttentionCondition, AttentionReason, AttentionSubject, Outbox, ProjectionChange,
         WithdrawalDetails, WithdrawalUrgency, condition_id,
     },
-    corrupt, lock, sync_directory,
+    corrupt, is_record_identifier, lock, sync_directory,
 };
-use crate::endorsement::alerts::WithdrawalAlert;
+use crate::{
+    endorsement::alerts::WithdrawalAlert,
+    launch_receipt::{ReceiptOutcome, SessionState},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -31,6 +34,7 @@ struct Record {
     operator_uid: u32,
     revision: u64,
     local_layer_observed: bool,
+    retained_sessions: BTreeSet<String>,
     conditions: Vec<AttentionCondition>,
     pending: Vec<ProjectionChange>,
 }
@@ -42,17 +46,27 @@ pub(super) struct WithdrawalAttention {
     writing: Mutex<()>,
 }
 
+#[derive(Default)]
+struct RetainedPins {
+    views: BTreeMap<String, BTreeSet<String>>,
+    sessions: BTreeSet<String>,
+}
+
 impl BrokerService {
-    /// Reconciles protected current supply without requiring a live Session.
+    /// Reconciles protected current supply and verified retained Session pins.
     /// Runs on the broker's blocking evidence worker. Failed or unsettled reads
     /// retain existing conditions; only verified absence can resolve them.
     /// # Errors
     /// Returns source verification, bounded-state or durable projection failures.
-    pub fn reconcile_supply_withdrawals(
+    pub fn reconcile_supply_withdrawals<F>(
         &self,
         source: &AdmissionSource,
         now_ms: u64,
-    ) -> Result<(), BrokerError> {
+        mut verify: F,
+    ) -> Result<(), BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
         let _guard = lock(&self.withdrawal_attention.writing);
         let previous = self.withdrawal_attention.load(source.operator_uid)?;
         let expected: Vec<String> = previous
@@ -63,15 +77,86 @@ impl BrokerService {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let (alerts, local_layer_present) =
-            source.withdrawal_alerts(&expected, previous.local_layer_observed)?;
-        self.withdrawal_attention.observe(
-            source.operator_uid,
-            &alerts,
-            now_ms,
-            &self.attention,
-            local_layer_present,
-        )
+        // Lock order: withdrawal state -> consumption -> receipt appends.
+        // A new pin cannot arrive between this inventory and replacement supply.
+        self.authorizations().with_consumed(|held| {
+            let pins = self.withdrawal_pins(
+                held,
+                source.operator_uid,
+                &previous.retained_sessions,
+                &mut verify,
+            )?;
+            let (alerts, local_layer_present) =
+                source.withdrawal_alerts(&expected, previous.local_layer_observed, &pins.views)?;
+            self.withdrawal_attention.observe(
+                source.operator_uid,
+                &alerts,
+                now_ms,
+                &self.attention,
+                local_layer_present,
+                pins.sessions,
+            )
+        })
+    }
+
+    fn withdrawal_pins<F>(
+        &self,
+        held: Vec<super::PendingAuthorization>,
+        operator_uid: u32,
+        expected: &BTreeSet<String>,
+        verify: &mut F,
+    ) -> Result<RetainedPins, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        self.receipts().check_authority()?;
+        let known = held.iter().map(|held| held.session_id.clone()).collect();
+        if !self.receipts().session_ids()?.is_subset(&known) {
+            return Err(corrupt("stored Session launch authorization is missing"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut pins = RetainedPins::default();
+        for held in held {
+            if held.controller_uid != operator_uid {
+                continue;
+            }
+            seen.insert(held.session_id.clone());
+            // Only an existing authoritative quarantine removes this source.
+            // Verification failures below never quarantine or mutate Admission.
+            if self.lifecycle.is_quarantined(&held.session_id)? {
+                continue;
+            }
+            let chain = self
+                .receipts()
+                .verified_chain(&held.launch_authorization(), verify)?;
+            let digest = self.authorizations().consumption_digest(&held)?;
+            if self
+                .receipts()
+                .verified_recovery(&held, &digest, &mut *verify)?
+                .is_some()
+                || chain.last().is_some_and(|receipt| {
+                    receipt.payload.resulting_state == SessionState::Terminal
+                })
+            {
+                continue;
+            }
+            let Some(ReceiptOutcome::Launch { evidence, .. }) =
+                chain.first().map(|receipt| &receipt.payload.outcome)
+            else {
+                return Err(corrupt("retained Session launch evidence is missing"));
+            };
+            if let Some(generation) = evidence.skills.generation_digest() {
+                pins.sessions.insert(held.session_id);
+                pins.views
+                    .entry(generation.into())
+                    .or_default()
+                    .insert(held.agent_id);
+            }
+        }
+        if !expected.is_subset(&seen) {
+            return Err(corrupt("previously observed retained Session is missing"));
+        }
+        Ok(pins)
     }
 }
 
@@ -123,6 +208,7 @@ impl WithdrawalAttention {
         now_ms: u64,
         outbox: &Outbox,
         local_layer_present: bool,
+        retained_sessions: BTreeSet<String>,
     ) -> Result<(), BrokerError> {
         if operator_uid == 0 || now_ms == 0 || alerts.len() > MAX_CONDITIONS {
             return Err(BrokerError::InvalidGrant);
@@ -131,6 +217,8 @@ impl WithdrawalAttention {
         self.flush(&mut record, outbox)?;
         let newly_observed_layer = local_layer_present && !record.local_layer_observed;
         record.local_layer_observed |= local_layer_present;
+        let pins_changed = record.retained_sessions != retained_sessions;
+        record.retained_sessions = retained_sessions;
         let revision = record
             .revision
             .checked_add(1)
@@ -196,7 +284,7 @@ impl WithdrawalAttention {
             }
         }
         if record.pending.is_empty() {
-            if newly_observed_layer {
+            if newly_observed_layer || pins_changed {
                 self.save(&record)?;
             }
             return Ok(());
@@ -295,6 +383,11 @@ impl Record {
         if self.operator_uid == 0
             || self.conditions.len() > MAX_CONDITIONS
             || self.pending.len() > MAX_CONDITIONS * 2
+            || self.retained_sessions.len() > 4096
+            || self
+                .retained_sessions
+                .iter()
+                .any(|id| !is_record_identifier(id))
             || (self.revision == 0 && (!self.conditions.is_empty() || !self.pending.is_empty()))
         {
             return Err(BrokerError::InvalidGrant);

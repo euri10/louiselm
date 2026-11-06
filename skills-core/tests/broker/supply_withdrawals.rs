@@ -22,6 +22,9 @@ use louiselm_skills::{
 
 const NOW: u64 = 1_800_000_000_000;
 
+#[path = "retained_withdrawals.rs"]
+mod retained;
+
 struct Supply {
     root: TempDir,
     keys: support::Fixture,
@@ -213,7 +216,7 @@ fn unproven_current_generation_cannot_clear_a_pending_withdrawal() {
     let broker = supply.broker("broker.sock");
     let outbox = Outbox::open(&supply.root.path().join("authorizations/attention-outbox")).unwrap();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 20)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 20, verify_fixture_signature)
         .unwrap();
     let pending = outbox.next().unwrap().unwrap();
     assert!(matches!(pending.change, ProjectionChange::Upsert(_)));
@@ -228,7 +231,7 @@ fn unproven_current_generation_cannot_clear_a_pending_withdrawal() {
     current.state = louiselm_skills::generation::GenerationState::PendingWitness;
     fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
     let failure = broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 21)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 21, verify_fixture_signature)
         .unwrap_err();
     assert!(
         matches!(
@@ -243,7 +246,7 @@ fn unproven_current_generation_cannot_clear_a_pending_withdrawal() {
     );
     fs::write(path, original).unwrap();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 22)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 22, verify_fixture_signature)
         .unwrap();
     assert!(outbox.next().unwrap().is_none());
 }
@@ -260,7 +263,7 @@ fn missing_imported_withdrawal_cannot_resolve_pending_attention() {
     let broker = supply.broker("broker.sock");
     let outbox = Outbox::open(&supply.root.path().join("authorizations/attention-outbox")).unwrap();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 20)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 20, verify_fixture_signature)
         .unwrap();
     let pending = outbox.next().unwrap().unwrap();
     assert!(matches!(pending.change, ProjectionChange::Upsert(_)));
@@ -277,7 +280,7 @@ fn missing_imported_withdrawal_cannot_resolve_pending_attention() {
         .join(format!("{}.json", imported.digest.directory_name()));
     fs::remove_file(&path).unwrap();
     let failure = broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 21)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 21, verify_fixture_signature)
         .unwrap_err();
     assert!(
         matches!(
@@ -293,7 +296,7 @@ fn missing_imported_withdrawal_cannot_resolve_pending_attention() {
     fs::write(path, bytes).unwrap();
     supply.protect();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 22)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 22, verify_fixture_signature)
         .unwrap();
     assert!(outbox.next().unwrap().is_none());
 }
@@ -310,7 +313,7 @@ fn missing_local_endorser_layer_cannot_resolve_subject_only_attention() {
     let broker = supply.broker("broker.sock");
     let outbox = Outbox::open(&supply.root.path().join("authorizations/attention-outbox")).unwrap();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 20)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 20, verify_fixture_signature)
         .unwrap();
     let pending = outbox.next().unwrap().unwrap();
     let ProjectionChange::Upsert(condition) = &pending.change else {
@@ -327,7 +330,7 @@ fn missing_local_endorser_layer_cannot_resolve_subject_only_attention() {
     let original = fs::read(&path).unwrap();
     fs::remove_file(&path).unwrap();
     let failure = broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 21)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 21, verify_fixture_signature)
         .unwrap_err();
     assert!(
         matches!(
@@ -343,7 +346,7 @@ fn missing_local_endorser_layer_cannot_resolve_subject_only_attention() {
     fs::write(path, original).unwrap();
     supply.protect();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 22)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 22, verify_fixture_signature)
         .unwrap();
     assert!(outbox.next().unwrap().is_none());
 }
@@ -361,7 +364,7 @@ fn never_observed_local_endorser_layer_preserves_verified_reliance() {
     let broker = supply.broker("broker.sock");
     let outbox = Outbox::open(&supply.root.path().join("authorizations/attention-outbox")).unwrap();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 20)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 20, verify_fixture_signature)
         .unwrap();
     let pending = outbox.next().unwrap().unwrap();
     let ProjectionChange::Upsert(condition) = &pending.change else {
@@ -379,7 +382,7 @@ fn never_observed_local_endorser_layer_preserves_verified_reliance() {
     drop(broker);
     let broker = supply.broker("restarted.sock");
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 21)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 21, verify_fixture_signature)
         .unwrap();
     assert!(outbox.next().unwrap().is_none());
 }
@@ -396,7 +399,7 @@ fn unsettled_or_incomplete_evidence_cannot_resolve_withdrawals() {
     let broker = supply.broker("broker.sock");
     let outbox = Outbox::open(&supply.root.path().join("authorizations/attention-outbox")).unwrap();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 20)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 20, verify_fixture_signature)
         .unwrap();
     let pending = outbox.next().unwrap().unwrap();
     outbox
@@ -444,7 +447,7 @@ fn unsettled_or_incomplete_evidence_cannot_resolve_withdrawals() {
         }
         supply.protect();
         let failure = broker
-            .reconcile_supply_withdrawals(&supply.source, NOW + 21)
+            .reconcile_supply_withdrawals(&supply.source, NOW + 21, verify_fixture_signature)
             .unwrap_err();
         assert!(
             matches!(&failure, BrokerError::AdmissionEvidence(admission::AdmissionError::Chain(message)) if message == reason),
@@ -457,7 +460,7 @@ fn unsettled_or_incomplete_evidence_cannot_resolve_withdrawals() {
         }
         supply.protect();
         broker
-            .reconcile_supply_withdrawals(&supply.source, NOW + 22)
+            .reconcile_supply_withdrawals(&supply.source, NOW + 22, verify_fixture_signature)
             .unwrap();
         assert!(outbox.next().unwrap().is_none());
     }
@@ -489,7 +492,9 @@ fn installed_supply_withdrawal_source() {
         local_pin(),
     )
     .unwrap();
-    broker.reconcile_supply_withdrawals(&source, NOW).unwrap();
+    broker
+        .reconcile_supply_withdrawals(&source, NOW, verify_fixture_signature)
+        .unwrap();
     let outbox = Outbox::open(&root.join("authorizations/attention-outbox")).unwrap();
     let mut observed = 0;
     while let Some(item) = outbox.next().unwrap() {
@@ -544,7 +549,7 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
     let broker = supply.broker("broker.sock");
     let outbox = Outbox::open(&supply.root.path().join("authorizations/attention-outbox")).unwrap();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 20)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 20, verify_fixture_signature)
         .unwrap();
     let encoded = outbox.next().unwrap().unwrap().wire().to_string();
     for private in [
@@ -587,13 +592,13 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
         first.digest
     );
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 21)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 21, verify_fixture_signature)
         .unwrap();
     assert_eq!(observe(&outbox), [] as [ProjectionChange; 0]);
     drop(broker);
     let broker = supply.broker("restarted.sock");
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 22)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 22, verify_fixture_signature)
         .unwrap();
     assert_eq!(observe(&outbox), [] as [ProjectionChange; 0]);
 
@@ -604,7 +609,7 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
         .join(format!("{}.json", first.digest.directory_name()));
     fs::write(&record, b"malformed evidence").unwrap();
     let failure = broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 23)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 23, verify_fixture_signature)
         .unwrap_err();
     assert!(
         matches!(&failure, BrokerError::AdmissionEvidence(admission::AdmissionError::Chain(reason))
@@ -618,7 +623,7 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
     local::remove(&supply.store, &supply.publisher.public_key()).unwrap();
     supply.protect();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 24)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 24, verify_fixture_signature)
         .unwrap();
     let changed = observe(&outbox);
     assert_eq!(
@@ -645,7 +650,7 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
     .unwrap();
     supply.protect();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 26)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 26, verify_fixture_signature)
         .unwrap();
     let restored = upserts(observe(&outbox));
     assert_eq!(restored.len(), 2);
@@ -676,7 +681,7 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
     supply.activate(&next_members, NOW + 27);
     supply.protect();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 30)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 30, verify_fixture_signature)
         .unwrap();
     let updated = observe(&outbox);
     assert_eq!(
@@ -702,7 +707,7 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
     .unwrap();
     supply.protect();
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 32)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 32, verify_fixture_signature)
         .unwrap();
     let cleared = observe(&outbox);
     assert_eq!(cleared.len(), 2);
@@ -712,7 +717,7 @@ fn assert_withdrawals(observe: &mut dyn FnMut(&Outbox) -> Vec<ProjectionChange>)
             .all(|change| matches!(change, ProjectionChange::Clear(_)))
     );
     broker
-        .reconcile_supply_withdrawals(&supply.source, NOW + 33)
+        .reconcile_supply_withdrawals(&supply.source, NOW + 33, verify_fixture_signature)
         .unwrap();
     assert_eq!(observe(&outbox), [] as [ProjectionChange; 0]);
 }

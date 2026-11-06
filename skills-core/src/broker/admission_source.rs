@@ -4,6 +4,7 @@ use super::BrokerError;
 use crate::{Digest, Policy, Store, admission, quarantine, skill_request::SkillRequest};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -39,12 +40,13 @@ pub struct AdmissionSource {
 }
 
 impl AdmissionSource {
-    /// Returns the verified current supply's withdrawal conditions, read-only.
+    /// Returns verified current and retained supply withdrawal conditions, read-only.
     /// Failed or unsettled evidence is an error, never an empty condition set.
     pub(super) fn withdrawal_alerts(
         &self,
         expected: &[String],
         local_layer_observed: bool,
+        retained: &BTreeMap<String, BTreeSet<String>>,
     ) -> Result<(Vec<crate::endorsement::alerts::WithdrawalAlert>, bool), BrokerError> {
         let before = self.withdrawal_snapshot()?;
         let local_layer_present = before
@@ -58,8 +60,9 @@ impl AdmissionSource {
             ));
         }
         let store = self.trusted_store()?;
-        let alerts = admission::current_withdrawal_alerts(&store, &self.trust_domain, expected)
-            .map_err(BrokerError::AdmissionEvidence)?;
+        let alerts =
+            admission::supply_withdrawal_alerts(&store, &self.trust_domain, expected, retained)
+                .map_err(BrokerError::AdmissionEvidence)?;
         // Endorser, import and quarantine writers do not share the trust lock.
         // Refuse mixed snapshots instead of turning an unsettled read into Clear.
         if before != self.withdrawal_snapshot()? {
