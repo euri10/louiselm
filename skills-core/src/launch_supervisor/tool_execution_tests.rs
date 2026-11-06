@@ -267,6 +267,75 @@ fn command_with_plan(
 }
 
 #[test]
+fn tools_and_verifier_resolve_only_sandbox_localhost() {
+    let (root, executor) = fixture();
+    fs::write(
+        root.path().join("workspace/localhost.py"),
+        r"
+import errno, os, pathlib, socket
+
+assert {item[4][0] for item in socket.getaddrinfo('localhost', 80, socket.AF_INET)} == {'127.0.0.1'}
+assert {item[4][0] for item in socket.getaddrinfo('localhost', 80, socket.AF_INET6)} == {'::1'}
+for name, expected in [('/etc/hosts', '127.0.0.1 localhost\n::1 localhost\n'),
+                       ('/etc/nsswitch.conf', 'hosts: files\n')]:
+    assert pathlib.Path(name).read_text() == expected
+    try:
+        with open(name, 'w'):
+            raise AssertionError('local resolver configuration is writable')
+    except OSError as error:
+        assert error.errno == errno.EROFS, error
+    try:
+        os.unlink(name)
+    except OSError as error:
+        assert error.errno == errno.EBUSY, error
+    else:
+        raise AssertionError('local resolver mount can be removed')
+assert not pathlib.Path('/etc/resolv.conf').exists()
+try:
+    socket.getaddrinfo('not-localhost.invalid', 80)
+except socket.gaierror as error:
+    assert error.errno == socket.EAI_NONAME, error
+else:
+    raise AssertionError('non-local hostname resolved')
+assert [name for _, name in socket.if_nameindex()] == ['lo']
+assert len(pathlib.Path('/proc/net/route').read_text().splitlines()) == 1
+fds = os.listdir('/proc/self/fd')
+assert {fd for fd in fds if os.path.exists('/proc/self/fd/' + fd)} == {'0', '1', '2'}
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    with socket.create_connection(('localhost', listener.getsockname()[1]), timeout=1) as client:
+        with listener.accept()[0] as peer:
+            client.sendall(b'local')
+            assert peer.recv(5) == b'local'
+with socket.socket() as external:
+    external.settimeout(1)
+    try:
+        external.connect(('192.0.2.1', 9))
+    except OSError as error:
+        assert error.errno == errno.ENETUNREACH, error
+    else:
+        raise AssertionError('external network is reachable')
+print('local-only')
+",
+    )
+    .unwrap();
+    let (backend, verifier) = executor.verification_context();
+    for plan in [&executor.plan, &verifier] {
+        let output = command_with_plan(
+            &backend,
+            plan,
+            "exec python3 localhost.py",
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(output.exit_code, 0, "{}", output.stderr);
+        assert!(!output.timed_out);
+        assert_eq!(output.stdout, "local-only\n");
+    }
+}
+
+#[test]
 fn tool_tracker_environment_comes_only_from_the_launcher_replica() {
     let (root, executor) = fixture();
     assert!(!executor.plan.environment.contains_key("BEADS_DIR"));

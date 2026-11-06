@@ -4,6 +4,7 @@
 //! blocked process to its cgroup, then transfers the three declared channels.
 //! This process never forks: its only execution transition replaces itself
 //! with Bubblewrap after the transfer is complete.
+//! Fixed localhost-only resolver data is created here, not read from host `/etc`.
 
 use std::{
     ffi::OsString,
@@ -139,7 +140,28 @@ fn receive_and_exec(
         .arg("--json-status-fd")
         .arg(status.as_raw_fd().to_string())
         .arg("--block-fd")
-        .arg(block.as_raw_fd().to_string())
+        .arg(block.as_raw_fd().to_string());
+
+    // Resolve only namespace-local loopback, without exposing host resolver
+    // configuration or enabling DNS. The production plan mounts only
+    // /etc/alternatives beneath /etc, so it does not shadow these files.
+    // The tiny pipes follow the ambient-FD check; Bubblewrap consumes and closes
+    // them before the workload.
+    let mut local_files = Vec::new();
+    for (path, contents) in [
+        ("/etc/hosts", "127.0.0.1 localhost\n::1 localhost\n"),
+        ("/etc/nsswitch.conf", "hosts: files\n"),
+    ] {
+        let (reader, mut writer) = io::pipe()?;
+        writer.write_all(contents.as_bytes())?;
+        drop(writer);
+        command
+            .args(["--perms", "0444", "--ro-bind-data"])
+            .arg(reader.as_raw_fd().to_string())
+            .arg(path);
+        local_files.push(reader);
+    }
+    command
         .args(arguments)
         .env_clear()
         .stdin(Stdio::from(input))
@@ -147,12 +169,15 @@ fn receive_and_exec(
         .stderr(Stdio::inherit());
 
     // Unlike the multithreaded parent, this fresh process cannot race another
-    // spawn. Both owned descriptors remain open until exec succeeds or returns.
+    // spawn. Owned descriptors remain open until exec succeeds or returns.
     fcntl_setfd(&status, FdFlags::empty()).map_err(io::Error::from)?;
     fcntl_setfd(&block, FdFlags::empty()).map_err(io::Error::from)?;
+    for reader in &local_files {
+        fcntl_setfd(reader, FdFlags::empty()).map_err(io::Error::from)?;
+    }
     write_all(channel, &[READY], deadline)?;
     let error = command.exec();
-    drop((status, block));
+    drop((status, block, local_files));
     Err(error)
 }
 
