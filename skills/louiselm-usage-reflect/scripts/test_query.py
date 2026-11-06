@@ -135,6 +135,8 @@ class QueryTest(unittest.TestCase):
         result = self.query({}, missing)
         self.assertFalse(result["store_present"])
         self.assertFalse(missing.exists())
+        invalid_directory = self.query({}, directory="relative-usage", expected=1)
+        self.assertEqual(invalid_directory["error"]["code"], "invalid")
         for query in ['{"sensitive-invalid-json":', {"limit": 101}, {"raw_logs": True}]:
             result = self.query(query, expected=1)
             self.assertEqual(result["error"]["code"], "invalid")

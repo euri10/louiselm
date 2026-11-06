@@ -3,8 +3,8 @@
 ---@diagnostic disable-next-line: undefined-global -- Standalone Neovim entrypoint, as in the repository's query harness.
 local nvim = vim
 local function fail(code, message)
-  io.stdout:write(nvim.json.encode { error = { code = code, message = message } } .. "\n")
-  nvim.cmd "cquit 1"
+  io.stdout:write(nvim.json.encode({ error = { code = code, message = message } }) .. "\n")
+  nvim.cmd("cquit 1")
 end
 
 if #arg ~= 3 or arg[1]:sub(1, 1) ~= "/" then
@@ -25,7 +25,11 @@ end
 local directory = arg[2] == "-" and nvim.fs.joinpath(require("louiselm.paths").state(), "usage") or arg[2]
 local store, err = recording.new(directory, function() end)
 if not store then
-  fail(err.code, err.message)
+  if err then
+    fail(err.code, err.message)
+  else
+    fail("unavailable", "recording API returned no store or error")
+  end
   return
 end
 local present = nvim.uv.fs_stat(store.path) ~= nil
@@ -45,10 +49,10 @@ if failure then
   fail(failure.code, failure.message)
   return
 end
-io.stdout:write(nvim.json.encode {
+io.stdout:write(nvim.json.encode({
   query = query,
   directory = directory,
   store_present = present,
-  read_at = os.date "!%Y-%m-%dT%H:%M:%SZ",
+  read_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
   page = page,
-} .. "\n")
+}) .. "\n")
