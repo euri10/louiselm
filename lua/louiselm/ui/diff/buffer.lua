@@ -25,10 +25,11 @@ local function diff_lines(value)
   return lines
 end
 
----@param preview louiselm.ui.DiffPreview|{path: string, diff: string}
----@param instruction? string
----@return string[] lines
-local function render_lines(preview, instruction)
+---Render a validated preview without creating editor resources.
+---@param preview louiselm.ui.DiffPreview|{path: string, diff: string} Validated file preview.
+---@param instruction? string Optional review instructions.
+---@return string[] lines Diff content and headings; no I/O is performed.
+function M.render_lines(preview, instruction)
   local lines = {
     "louiselm diff: " .. preview.path,
     "",
@@ -70,7 +71,7 @@ function M.open(preview, options)
     nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
     nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
     nvim.api.nvim_set_option_value("modifiable", true, { buf = buffer })
-    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, render_lines(preview, instruction))
+    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, M.render_lines(preview, instruction))
     nvim.api.nvim_set_option_value("filetype", "diff", { buf = buffer })
     nvim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
   end)

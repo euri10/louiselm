@@ -90,6 +90,7 @@ local nvim = vim
 ---@field attention? louiselm.ui.Attention Shared durable Attention controller when enabled.
 ---@field decisions louiselm.ui.Decisions Permission presentation and responder lifecycle.
 ---@field owns_decisions boolean Whether Disposal owns the permission controller.
+---@field session_picker_suspension? table Navigation hold owned by the pending Session picker.
 ---@field usage louiselm.routing.Usage Persistent measured usage ledger.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
@@ -1220,13 +1221,6 @@ end
 ---@param completed_state? louiselm.session.State Immutable completion snapshot captured before queued UI work.
 local function handle_event(self, view, event, completed_state)
   if self.disposed or self.views[event.session_id] ~= view or not nvim.api.nvim_buf_is_valid(view.renderer.buffer) then
-    if event.type == "permission_requested" and type(event.respond) == "function" then
-      -- Scheduled before teardown, delivered after it: no view is left to host the choice,
-      -- and no other consumer will answer. The result has nowhere left to be reported.
-      self.decisions:request(view.session, nil, event.respond)
-    elseif event.type == "interaction_requested" then
-      self.decisions:request_interaction(view.session, event.data, event.respond)
-    end
     return
   end
 
@@ -1357,9 +1351,6 @@ local function handle_event(self, view, event, completed_state)
       view.renderer:append({ "Proposed plan:" })
       view.renderer:append(nvim.split(event.data.plan_content, "\n", { plain = true }))
     end
-    self.decisions:request_interaction(view.session, event.data, event.respond)
-  elseif event.type == "interaction_cancelled" then
-    self.decisions:cancel(view.session, event.data.request_ids)
   elseif event.type == "permission_requested" then
     local data = event.data
     local state = view.session:inspect()
@@ -1371,13 +1362,11 @@ local function handle_event(self, view, event, completed_state)
     elseif type(data) == "table" and data.remembered_decision ~= nil then
       view.renderer:append({ "Warning: remembered decision requires a compatible once-only option" })
     end
-    self.decisions:request(view.session, data, event.respond)
   elseif event.type == "permission_cancelled" then
     local state = view.session:inspect()
     if self.attention ~= nil and state.acp_session_id ~= nil and type(event.data) == "table" then
       self.attention:permission_cancelled(state.acp_session_id, event.data.request_ids)
     end
-    self.decisions:cancel(view.session, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
     view.renderer:finish_turn()
     local state = completed_state or view.session:inspect()
@@ -1425,6 +1414,10 @@ local function observe_view_event(self, view, event)
       return
     end
   end
+  if event.type == "permission_cancelled" or event.type == "interaction_cancelled" then
+    -- Revoke authority before deferred presentation or teardown can answer it again.
+    self.decisions:cancel(view.session, type(event.data) == "table" and event.data.request_ids or nil)
+  end
   if event.type == "prompt_dispatched" then
     local pending = view.pending_admission
     if pending ~= nil and (pending.turn_id == nil or pending.turn_id == event.data.turn_id) then
@@ -1468,6 +1461,12 @@ local function observe_view_event(self, view, event)
       handle_event(self, view, event, state)
     end
   end)
+  -- Queue authority synchronously, including requests cancelled before their first presentation.
+  if event.type == "permission_requested" then
+    self.decisions:request(view.session, event.data, event.respond, true)
+  elseif event.type == "interaction_requested" then
+    self.decisions:request_interaction(view.session, event.data, event.respond, true)
+  end
 end
 
 ---@param self louiselm.ui.Chat
@@ -1724,8 +1723,25 @@ function M.new(api, options)
       nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
     end,
   })
+  local limits_unsubscribe, limits_error = api:on_agent_limits(function(state)
+    -- ACP notifications can arrive in a fast event; UI work belongs on the main loop.
+    nvim.schedule(function()
+      handle_limits_state(chat, state)
+    end)
+  end)
+  if limits_unsubscribe == nil then
+    return nil, limits_error or "could not observe Agent account limits"
+  end
+  chat.limits_unsubscribe = limits_unsubscribe
   chat.decisions = options and options.decisions
     or Decisions.new({
+      is_visible = function(session)
+        local view = chat.views[session:inspect().id]
+        return not chat.disposed
+          and view ~= nil
+          and view.session == session
+          and nvim.api.nvim_get_current_buf() == view.renderer.buffer
+      end,
       is_live = function(session)
         local view = chat.views[session:inspect().id]
         return not chat.disposed
@@ -1746,16 +1762,6 @@ function M.new(api, options)
         end
       end,
     })
-  local limits_unsubscribe, limits_error = api:on_agent_limits(function(state)
-    -- ACP notifications can arrive in a fast event; UI work belongs on the main loop.
-    nvim.schedule(function()
-      handle_limits_state(chat, state)
-    end)
-  end)
-  if limits_unsubscribe == nil then
-    return nil, limits_error or "could not observe Agent account limits"
-  end
-  chat.limits_unsubscribe = limits_unsubscribe
   chat.winbar_resize_autocmd = nvim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
     callback = function()
       nvim.schedule(function()
@@ -2206,6 +2212,8 @@ function Chat:switch(session_id)
   if not nvim.api.nvim_buf_is_valid(view.renderer.buffer) then
     return false, "session buffer is invalid"
   end
+  self.session_picker_suspension = nil
+  local suspension = self.decisions:suspend()
   enter_view(self, view)
   local window = nvim.api.nvim_get_current_win()
   if nvim.api.nvim_win_get_config(window).relative ~= "" then
@@ -2223,6 +2231,7 @@ function Chat:switch(session_id)
   restore_winbars(self)
   view.renderer:show(window, self.start_insert_on_switch)
   render_winbars(self)
+  self.decisions:present_next(suspension)
   return true
 end
 
@@ -2286,8 +2295,8 @@ function Chat:switch_session()
   if self.disposed then
     return false, "chat UI is disposed"
   end
-  if self.decisions:is_active() then
-    return false, DECISION_OPEN_ERROR
+  if self.session_picker_suspension ~= nil then
+    return false, "a Session picker is already open"
   end
   local states = {}
   for _, id in ipairs(self.api:list_sessions()) do
@@ -2304,20 +2313,34 @@ function Chat:switch_session()
   for index, state in ipairs(states) do
     choices[index] = { id = state.id, label = rows[index] }
   end
-  Picker.select(choices, {
+  local suspension = self.decisions:suspend()
+  self.session_picker_suspension = suspension
+  local opened, picker_error = pcall(Picker.select, choices, {
     prompt = "louiselm session: ",
     kind = "louiselm_session",
     format_item = function(choice)
       return choice.label
     end,
   }, function(choice)
-    if choice ~= nil and not self.disposed then
+    if self.disposed or self.session_picker_suspension ~= suspension then
+      return
+    end
+    self.session_picker_suspension = nil
+    if choice ~= nil then
       local _, switch_error = self:switch(choice.id)
       if switch_error ~= nil then
         nvim.notify("louiselm: " .. switch_error, nvim.log.levels.ERROR)
       end
     end
+    self.decisions:present_next(suspension)
   end)
+  if not opened then
+    if self.session_picker_suspension == suspension then
+      self.session_picker_suspension = nil
+      self.decisions:present_next(suspension)
+    end
+    return false, type(picker_error) == "string" and "Session picker failed" or "Session picker raised an error"
+  end
   return true
 end
 
@@ -3503,8 +3526,9 @@ function Chat:dispose()
     for _, view in pairs(self.views) do
       self.decisions:retire(view.session)
     end
-    self.decisions:present_next()
+    self.decisions:present_next(self.session_picker_suspension)
   end
+  self.session_picker_suspension = nil
   for window in pairs(self.tool_inspect_windows) do
     if nvim.api.nvim_win_is_valid(window) then
       nvim.api.nvim_win_close(window, true)

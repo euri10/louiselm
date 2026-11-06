@@ -1,28 +1,31 @@
 local Diff = require("louiselm.ui.diff")
+local DecisionPrompt = require("louiselm.ui.decision_prompt")
 local Gates = require("louiselm.permission.gates")
-local Inspector = require("louiselm.ui.chat.inspector")
 local Interactions = require("louiselm.ui.chat.interactions")
-local Picker = require("louiselm.ui.picker")
 
 ---@diagnostic disable-next-line: undefined-global -- Neovim injects its runtime API.
 local nvim = vim
 
 ---@class louiselm.ui.DecisionsOptions
 ---@field is_live fun(session: louiselm.session.Session): boolean Whether this Session has a usable attached view.
+---@field is_visible fun(session: louiselm.session.Session): boolean Whether the current host buffer belongs to this Session.
 ---@field report_error fun(session: louiselm.session.Session, message: string) Append an error to its transcript.
 ---@field resolved fun(session: louiselm.session.Session, request_id: unknown) Resolve its Attention item after a sent response.
 
 ---@class louiselm.ui.Decisions: louiselm.ui.DecisionsOptions
----@field package diff louiselm.ui.Diff Owned file-edit review controller.
----@field package active? louiselm.ui.ChatDecision Current authority, distinct from a pending picker callback.
----@field package picker? louiselm.ui.ChatDecision Provider-owned picker awaiting its callback after retirement.
----@field package queue louiselm.ui.ChatDecision[] Pending decisions across attached Sessions.
+---@field package active? louiselm.ui.ChatDecision Currently presented request.
+---@field package queue louiselm.ui.ChatDecision[] All pending decisions, including the active request.
 ---@field package disposed boolean Whether this owner has been disposed.
----@field request fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: unknown, respond?: fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?) Queue one request.
----@field request_interaction fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: louiselm.session.InteractionData, respond: fun(result: louiselm.session.InteractionResponse): boolean, string?) Queue a validated vendor interaction in the same slot.
+---@field package presenting boolean Prevent recursive presentation during synchronous cancellation.
+---@field package scheduled boolean Whether a focus check is already queued.
+---@field package suspended? table Opaque navigation hold; only its matching completion releases it.
+---@field package observer? integer Owned focus observer.
+---@field request fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: unknown, respond?: (fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?), defer?: boolean) Queue one request, optionally deferring presentation.
+---@field request_interaction fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: louiselm.session.InteractionData, respond: (fun(result: louiselm.session.InteractionResponse): boolean, string?), defer?: boolean) Queue a validated vendor interaction in the same slot.
 ---@field cancel fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, request_ids: unknown) Retire Session-cancelled requests.
 ---@field retire fun(self: louiselm.ui.Decisions, session: louiselm.session.Session) Retire a closing Session before selecting the survivor.
----@field present_next fun(self: louiselm.ui.Decisions) Present pending work after host changes finish.
+---@field present_next fun(self: louiselm.ui.Decisions, suspension?: table) Reconcile pending work, releasing a matching navigation hold.
+---@field suspend fun(self: louiselm.ui.Decisions): table Hide decisions until this navigation hold is released.
 ---@field is_active fun(self: louiselm.ui.Decisions): boolean Report active decision authority.
 ---@field active_session fun(self: louiselm.ui.Decisions): louiselm.session.Session? Session owning the currently displayed decision.
 ---@field dispose fun(self: louiselm.ui.Decisions): boolean Dispose owned resources.
@@ -31,7 +34,19 @@ local M = {}
 local Decisions = {}
 Decisions.__index = Decisions
 
+---@param session louiselm.session.Session
+---@return string label Single-line identity of the requester, independent of focus.
+local function session_label(session)
+  local state = session:inspect()
+  local label = "[" .. state.agent .. " " .. state.id .. "]"
+  if state.name ~= nil and state.name ~= state.id then
+    label = label .. " " .. state.name
+  end
+  return (label:gsub("%c", " "))
+end
+
 ---@param value unknown
+---@param name string
 ---@return string? text
 local function field(value, name)
   if type(value) == "table" and type(value[name]) == "string" and value[name] ~= "" then
@@ -110,64 +125,144 @@ local function permission_prompt(data)
   return "louiselm permission (" .. kind .. ", details unavailable): "
 end
 
+---@class louiselm.ui.ChatDecision
+---@field session louiselm.session.Session Session that asked for a decision.
+---@field data table ACP permission or interaction request data.
+---@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? ACP responder.
+---@field answered boolean Whether this decision was already answered or cancelled.
+---@field ui? louiselm.ui.DecisionPrompt|louiselm.ui.Diff Presentation retained while its Session is hidden.
+---@field interaction? louiselm.session.InteractionData Validated question or plan request.
+---@field cancel_interaction? fun() Retire interaction state without responding.
+
+---@type fun(self: louiselm.ui.Decisions)
+local pump_decisions
+
 ---@param self louiselm.ui.Decisions
----@param session louiselm.session.Session
----@return boolean hosted Whether this session can still host a permission decision.
-local function hosts_view(self, session)
-  return not self.disposed and self.is_live(session)
+---@param defer? boolean
+local function present_pending(self, defer)
+  if not defer and not nvim.in_fast_event() then
+    pump_decisions(self)
+    return
+  end
+  if self.scheduled then
+    return
+  end
+  self.scheduled = true
+  nvim.schedule(function()
+    self.scheduled = false
+    pump_decisions(self)
+  end)
 end
 
 ---@param self louiselm.ui.Decisions
----@param session louiselm.session.Session
----@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
----@param result table
----@return boolean sent
-local function send_permission_response(self, session, respond, result)
-  if not hosts_view(self, session) then
-    -- A choice made after the session is gone must grant nothing, but the request still
-    -- has to be answered or the agent blocks on it for the rest of the session.
-    local closed_ok, closed = pcall(respond, { outcome = { outcome = "cancelled" } })
-    return closed_ok and closed == true
+---@param decision louiselm.ui.ChatDecision
+---@return boolean visible
+local function is_visible(self, decision)
+  return not decision.answered
+    and not self.disposed
+    and self.is_live(decision.session)
+    and (self.is_visible(decision.session) or (decision.ui ~= nil and decision.ui:contains_current()))
+end
+
+---@param decision louiselm.ui.ChatDecision
+---@return table result
+local function cancellation(decision)
+  if decision.interaction ~= nil then
+    return { outcome = "cancelled" }
   end
-  local call_ok, sent, send_error = pcall(respond, result)
-  if not call_ok or not sent then
-    local message = call_ok and (send_error or "permission response could not be sent") or tostring(sent)
-    self.report_error(session, message)
-    return false
+  return { outcome = { outcome = "cancelled" } }
+end
+
+---@param decision louiselm.ui.ChatDecision
+local function close_ui(decision)
+  if decision.cancel_interaction ~= nil then
+    decision.cancel_interaction()
+    decision.cancel_interaction = nil
+  end
+  if decision.ui ~= nil then
+    decision.ui:dispose()
+    decision.ui = nil
+  end
+end
+
+---Release authority before responding so cancellation, errors and reentrant events settle once.
+---@param self louiselm.ui.Decisions
+---@param decision louiselm.ui.ChatDecision
+---@param result table
+---@param rpc_error? louiselm.acp.JsonRpcError
+---@return boolean sent
+---@return string? error_message Sanitized response failure.
+local function settle(self, decision, result, rpc_error)
+  if decision.answered then
+    return false, "decision was already answered"
+  end
+  decision.answered = true
+  if self.active == decision then
+    self.active = nil
+  end
+  close_ui(decision)
+  local call_ok, sent, send_error = pcall(decision.respond, result, rpc_error)
+  if not call_ok or sent ~= true then
+    -- Responders can throw or return payload-bearing errors; preserve only failure kind in the UI.
+    local message = not call_ok and "decision response raised an error"
+      or (send_error ~= nil and "decision response failed" or "decision response could not be sent")
+    self.report_error(decision.session, message)
+    return false, message
+  end
+  if decision.interaction == nil then
+    self.resolved(decision.session, decision.data.request_id)
   end
   return true
 end
 
 ---@param self louiselm.ui.Decisions
----@param session louiselm.session.Session
----@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
----@return boolean sent
-local function cancel_permission(self, session, respond)
-  if type(respond) ~= "function" then
-    self.report_error(session, "permission request has no response callback")
-    return false
+---@param decision louiselm.ui.ChatDecision
+---@return fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? respond
+local function decision_responder(self, decision)
+  return function(result, rpc_error)
+    if decision.answered then
+      return false, "decision was already answered"
+    end
+    if self.active ~= decision or not is_visible(self, decision) then
+      return false, "decision is not visible"
+    end
+    local sent, err = settle(self, decision, result, rpc_error)
+    pump_decisions(self)
+    return sent, err
   end
-  return send_permission_response(self, session, respond, { outcome = { outcome = "cancelled" } })
 end
 
 ---@param self louiselm.ui.Decisions
----@param session louiselm.session.Session
----@param data table
----@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? Decision responder.
-local function prompt_permission(self, session, data, respond)
-  local options = permission_options(data.options)
-  if options == nil or #options == 0 then
-    cancel_permission(self, session, respond)
+---@param decision louiselm.ui.ChatDecision
+local function presentation_failed(self, decision)
+  if decision.answered then
     return
   end
-  local decision = self.active
+  self.report_error(decision.session, decision.interaction ~= nil and "interaction UI failed" or "permission UI failed")
+  settle(self, decision, cancellation(decision))
+  pump_decisions(self)
+end
+
+---@param self louiselm.ui.Decisions
+---@param decision louiselm.ui.ChatDecision
+---@param prompt louiselm.ui.DecisionPrompt
+---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
+---@return boolean opened
+---@return string? error_message
+local function prompt_permission(self, decision, prompt, respond)
+  local data = decision.data
+  local options = permission_options(data.options)
+  if options == nil or #options == 0 then
+    respond(cancellation(decision))
+    return true
+  end
   local tool_call = data.toolCall or data.tool_call
   local details = {}
   if type(tool_call) == "table" then
     options[#options + 1] = details
   end
-  Picker.select(options, {
-    prompt = permission_prompt(data),
+  return prompt:select(options, {
+    prompt = session_label(decision.session) .. " · " .. permission_prompt(data),
     format_item = function(option)
       if option == details then
         return "View request details"
@@ -176,177 +271,112 @@ local function prompt_permission(self, session, data, respond)
       return label
     end,
   }, function(choice)
-    if choice == details and decision ~= nil then
-      if decision.answered or not hosts_view(self, session) then
-        cancel_permission(self, session, respond)
-        return
+    if decision.answered or self.active ~= decision or not is_visible(self, decision) then
+      return
+    end
+    if choice == details then
+      local opened, err = prompt:inspect(
+        nvim.split(nvim.inspect(tool_call), "\n", { plain = true }),
+        session_label(decision.session) .. " · Request details · q/Esc: back to choices",
+        function()
+          if decision.answered or self.active ~= decision or not is_visible(self, decision) then
+            return
+          end
+          local restored, restore_error = prompt_permission(self, decision, prompt, respond)
+          if not restored then
+            presentation_failed(self, decision)
+          end
+        end
+      )
+      if not opened then
+        presentation_failed(self, decision)
       end
-      decision.details_window = Inspector.open(nvim.split(nvim.inspect(tool_call), "\n", { plain = true }), function()
-        nvim.schedule(function()
-          decision.details_window = nil
-          if decision.answered then
-            -- Release the picker slot after retirement without reporting a stale answer as an error.
-            respond({ outcome = { outcome = "cancelled" } })
-            return
-          end
-          if self.active ~= decision or not hosts_view(self, session) then
-            cancel_permission(self, session, respond)
-            return
-          end
-          local ok, err = pcall(prompt_permission, self, session, data, respond)
-          if not ok then
-            self.report_error(session, "permission picker failed: " .. tostring(err))
-            cancel_permission(self, session, respond)
-          end
-        end)
-      end, "Request details · q/Esc: back to choices")
       return
     end
-    if choice == nil then
-      cancel_permission(self, session, respond)
-      return
-    end
-    local result = Gates.select_response(choice)
-    if result == nil then
-      cancel_permission(self, session, respond)
-      return
-    end
-    send_permission_response(self, session, respond, result)
+    respond(Gates.select_response(choice) or cancellation(decision))
   end)
 end
 
----@class louiselm.ui.ChatDecision
----@field session louiselm.session.Session Session that asked for a decision.
----@field data table ACP permission request data.
----@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? ACP responder.
----@field answered boolean Whether this decision was already answered or cancelled.
----@field details_window? integer Scrollable request inspector, if open.
----@field interaction? louiselm.session.InteractionData Validated question or plan request; absent for permissions.
----@field cancel_interaction? fun() Retire owned interaction UI without writing another response.
-
+---@param self louiselm.ui.Decisions
 ---@param decision louiselm.ui.ChatDecision
-local function close_permission_details(decision)
-  if decision.cancel_interaction ~= nil then
-    decision.cancel_interaction()
-    decision.cancel_interaction = nil
-  end
-  local window = decision.details_window
-  decision.details_window = nil
-  if window ~= nil and nvim.api.nvim_win_is_valid(window) then
-    nvim.api.nvim_win_close(window, true)
-  end
-end
-
----@type fun(self: louiselm.ui.Decisions)
-local pump_decisions
-
----Wrap one ACP responder so the decision slot is released exactly once, after the answer.
----The slot is compared by identity: a stale picker answering late must not release the
----decision that replaced it.
----@param self louiselm.ui.Decisions
----@param decision louiselm.ui.ChatDecision Decision being opened.
----@return fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? respond
-local function decision_responder(self, decision)
-  return function(result, rpc_error)
-    if decision.answered then
-      return false, "permission decision was already answered"
-    end
-    decision.answered = true
-    local sent, send_error = decision.respond(result, rpc_error)
-    if sent and decision.interaction == nil then
-      self.resolved(decision.session, decision.data.request_id)
-    end
-    if self.active == decision then
-      self.active = nil
-      pump_decisions(self)
-    end
-    return sent, send_error
-  end
-end
-
----Open one decision: a diff review for file edits, a picker for everything else.
----@param self louiselm.ui.Decisions
----@param decision louiselm.ui.ChatDecision Decision to present.
+---@return boolean opened
+---@return string? error_message
 local function open_decision(self, decision)
-  local session = decision.session
-  local data = decision.data
+  if decision.ui ~= nil then
+    return decision.ui:show()
+  end
   local respond = decision_responder(self, decision)
-  if not hosts_view(self, session) then
-    if decision.interaction ~= nil then
-      respond({ outcome = "cancelled" })
-    else
-      cancel_permission(self, session, respond)
-    end
-    return
-  end
+  local data = decision.data
   if decision.interaction == nil and type(data.operation) == "table" and data.operation.kind == "file_edit" then
-    local opened, open_error = self.diff:open(data, respond)
-    if not opened then
-      self.report_error(session, (open_error or "could not open diff review"))
-      cancel_permission(self, session, respond)
-    end
-    return
-  end
-  -- A select provider that throws would otherwise strand every later decision behind it.
-  self.picker = decision
-  local function picker_respond(result, rpc_error)
-    if self.picker == decision then
-      self.picker = nil
-    end
-    local sent, send_error = respond(result, rpc_error)
-    pump_decisions(self)
-    return sent, send_error
-  end
-  local call_ok, prompt_error
-  if decision.interaction ~= nil then
-    call_ok, prompt_error = pcall(function()
-      decision.cancel_interaction = Interactions.open(decision.interaction, picker_respond, function(message)
-        self.report_error(session, message)
-      end)
+    local diff = Diff.new(function()
+      return is_visible(self, decision)
     end)
-  else
-    call_ok, prompt_error = pcall(prompt_permission, self, session, data, picker_respond)
+    decision.ui = diff
+    return diff:open(data, respond, session_label(decision.session))
   end
-  if not call_ok then
-    if decision.interaction ~= nil then
-      self.report_error(session, "interaction picker failed")
-      picker_respond({ outcome = "cancelled" })
+  local prompt = DecisionPrompt.new(function()
+    return is_visible(self, decision)
+  end)
+  decision.ui = prompt
+  if decision.interaction ~= nil then
+    local cancel = Interactions.open(decision.interaction, respond, function(message)
+      self.report_error(decision.session, message)
+    end, session_label(decision.session), prompt)
+    if decision.answered then
+      cancel()
     else
-      self.report_error(session, "permission picker failed: " .. tostring(prompt_error))
-      cancel_permission(self, session, picker_respond)
+      decision.cancel_interaction = cancel
     end
+    return true
   end
+  return prompt_permission(self, decision, prompt, respond)
 end
 
----Present the next queued decision while none is open.
----One picker or review hosts one decision at a time across every attached session,
----because an async select provider closes the picker a new one replaces, which answers
----that request without the user choosing and can leave the replacement unanswered.
+---Keep hidden requests pending and present only the currently focused Session's oldest request.
 ---@param self louiselm.ui.Decisions
 pump_decisions = function(self)
-  while self.active == nil and (self.picker == nil or self.disposed) do
-    local decision = table.remove(self.queue, 1)
-    if decision == nil then
-      return
+  if self.presenting then
+    return
+  end
+  self.presenting = true
+  local active = self.active
+  if active ~= nil and (self.suspended ~= nil or not is_visible(self, active)) then
+    self.active = nil
+    if active.ui ~= nil then
+      active.ui:hide()
     end
-    if decision.answered then
-      -- Its turn was cancelled while it waited; the session already answered it.
-    elseif self.disposed then
-      -- Disposal answers what it can no longer host: an unanswered request blocks its agent.
-      decision.answered = true
-      if decision.interaction ~= nil then
-        decision.respond({ outcome = "cancelled" })
-      else
-        cancel_permission(self, decision.session, decision.respond)
-      end
-    else
-      self.active = decision
-      open_decision(self, decision)
+  elseif active ~= nil and active.ui ~= nil then
+    -- Closing a float externally leaves the request pending in its owning host.
+    local call_ok, shown = pcall(active.ui.show, active.ui)
+    if not call_ok or not shown then
+      presentation_failed(self, active)
     end
   end
+  local index = 1
+  while index <= #self.queue do
+    local decision = self.queue[index]
+    if not decision.answered and (self.disposed or not self.is_live(decision.session)) then
+      settle(self, decision, cancellation(decision))
+    end
+    if not decision.answered and self.active == nil and self.suspended == nil and self.is_visible(decision.session) then
+      self.active = decision
+      local call_ok, opened, open_error = pcall(open_decision, self, decision)
+      if not call_ok or not opened then
+        presentation_failed(self, decision)
+      end
+    end
+    if decision.answered then
+      close_ui(decision)
+      table.remove(self.queue, index)
+    else
+      index = index + 1
+    end
+  end
+  self.presenting = false
 end
 
----Retire requests already answered by Session cancellation; malformed ID lists do nothing.
+---Revoke cancelled authority immediately, scheduling editor cleanup when called from a fast event.
+---Malformed ID lists do nothing.
 ---@param self louiselm.ui.Decisions
 ---@param session louiselm.session.Session Session whose requests were cancelled.
 ---@param request_ids unknown Identifiers reported by the session.
@@ -361,109 +391,125 @@ function Decisions:cancel(session, request_ids)
   for _, decision in ipairs(self.queue) do
     if decision.session == session and cancelled[decision.data.request_id] then
       decision.answered = true
+      if self.active == decision then
+        self.active = nil
+      end
     end
   end
-  local active = self.active
-  if active == nil or active.session ~= session or not cancelled[active.data.request_id] then
-    return
-  end
-  active.answered = true
-  self.active = nil
-  close_permission_details(active)
-  -- A review is ours to close; an open picker is not, and answering it later reports
-  -- that the decision was already answered.
-  if active.interaction == nil then
-    self.diff:close()
-  end
-  pump_decisions(self)
+  present_pending(self)
 end
 
----Queue a request or cancel malformed data; report missing responders through the error callback.
+---Queue a request for its visible Session; malformed requests are cancelled immediately.
 ---@param self louiselm.ui.Decisions
 ---@param session louiselm.session.Session Session that asked for a decision.
 ---@param data unknown ACP permission request data.
 ---@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? ACP responder.
-function Decisions:request(session, data, respond)
+---@param defer? boolean Record the request now but schedule presentation after its event observer returns.
+function Decisions:request(session, data, respond, defer)
   if type(respond) ~= "function" then
-    self.report_error(session, "permission request has no response callback")
+    local function report()
+      self.report_error(session, "permission request has no response callback")
+    end
+    if defer or nvim.in_fast_event() then
+      nvim.schedule(report)
+    else
+      report()
+    end
     return
   end
+  local decision = {
+    session = session,
+    data = type(data) == "table" and data or {},
+    respond = respond,
+    answered = false,
+  }
   if type(data) ~= "table" then
-    cancel_permission(self, session, respond)
+    local function cancel()
+      settle(self, decision, cancellation(decision))
+    end
+    if defer or nvim.in_fast_event() then
+      nvim.schedule(cancel)
+    else
+      cancel()
+    end
     return
   end
-  self.queue[#self.queue + 1] = { session = session, data = data, respond = respond, answered = false }
-  pump_decisions(self)
+  self.queue[#self.queue + 1] = decision
+  present_pending(self, defer)
 end
 
----Queue a validated interaction; headless/retired hosts cancel without approving a plan.
+---Queue a validated interaction; retired hosts cancel without approving a plan.
 ---@param self louiselm.ui.Decisions
 ---@param session louiselm.session.Session
 ---@param data louiselm.session.InteractionData Validated event data.
 ---@param respond fun(result: louiselm.session.InteractionResponse): boolean, string? Consumer-owned answer.
-function Decisions:request_interaction(session, data, respond)
+---@param defer? boolean Record the request now but schedule presentation after its event observer returns.
+function Decisions:request_interaction(session, data, respond, defer)
   self.queue[#self.queue + 1] =
     { session = session, data = data, interaction = data, respond = respond, answered = false }
-  pump_decisions(self)
+  present_pending(self, defer)
 end
 
----Retire a detached Session before disposing it; call present_next after selecting the survivor.
+---Retire a detached Session; call present_next after selecting its surviving host.
 ---@param self louiselm.ui.Decisions
 ---@param session louiselm.session.Session
 function Decisions:retire(session)
-  -- Retire authority now; a provider-owned picker may return much later. Keep
-  -- other Sessions queued until that callback, so a new selector cannot toggle it.
+  local retired = {}
   for index = #self.queue, 1, -1 do
     local decision = self.queue[index]
     if decision.session == session then
       table.remove(self.queue, index)
-      if not decision.answered then
-        decision.answered = true
-        if decision.interaction ~= nil then
-          decision.respond({ outcome = "cancelled" })
-        else
-          cancel_permission(self, session, decision.respond)
-        end
-      end
+      retired[#retired + 1] = decision
     end
   end
-  local active = self.active
-  if active ~= nil and active.session == session then
-    self.active = nil
-    active.answered = true
-    close_permission_details(active)
-    if active.interaction ~= nil then
-      active.respond({ outcome = "cancelled" })
+  for _, decision in ipairs(retired) do
+    if not decision.answered then
+      settle(self, decision, cancellation(decision))
     else
-      cancel_permission(self, session, active.respond)
-    end
-    if active.interaction == nil then
-      self.diff:close()
+      close_ui(decision)
     end
   end
 end
 
----Present queued work after the caller finishes changing the host view.
+---Hide without answering and hold presentation until this navigation finishes.
 ---@param self louiselm.ui.Decisions
-function Decisions:present_next()
+---@return table suspension Opaque identity; pass it to present_next when navigation finishes.
+function Decisions:suspend()
+  local suspension = {}
+  self.suspended = suspension
+  local active = self.active
+  self.active = nil
+  if active ~= nil and active.ui ~= nil then
+    active.ui:hide()
+  end
+  return suspension
+end
+
+---Reconcile queued work; only the matching navigation completion releases its hold.
+---@param self louiselm.ui.Decisions
+---@param suspension? table Hold returned by suspend; omission preserves a pending navigation.
+function Decisions:present_next(suspension)
+  if self.suspended == suspension then
+    self.suspended = nil
+  end
   pump_decisions(self)
 end
 
----Report whether a decision owns authority, for competing command-picker refusal.
+---Report whether the current Session owns a visible decision.
 ---@param self louiselm.ui.Decisions
 ---@return boolean active
 function Decisions:is_active()
-  return self.active ~= nil
+  return self.active ~= nil and is_visible(self, self.active)
 end
 
----Return the Session whose permission UI currently owns the operator's decision.
+---Return the currently visible decision's Session, never a hidden request's owner.
 ---@param self louiselm.ui.Decisions
----@return louiselm.session.Session? session Nil when no decision is active.
+---@return louiselm.session.Session? session Nil when no decision is visible.
 function Decisions:active_session()
-  return self.active and self.active.session or nil
+  return self:is_active() and self.active.session or nil
 end
 
----Dispose owned reviews/details and cancel queued requests; late picker choices grant nothing.
+---Dispose all owned presentations and cancel pending requests exactly once.
 ---@param self louiselm.ui.Decisions
 ---@return boolean disposed Always true.
 function Decisions:dispose()
@@ -471,31 +517,37 @@ function Decisions:dispose()
     return true
   end
   self.disposed = true
-  self.diff:dispose()
-  if self.active ~= nil then
-    if self.active.interaction ~= nil and not self.active.answered then
-      self.active.answered = true
-      self.active.respond({ outcome = "cancelled" })
-    end
-    close_permission_details(self.active)
+  if self.observer ~= nil then
+    nvim.api.nvim_del_autocmd(self.observer)
+    self.observer = nil
   end
-  self.active = nil
   pump_decisions(self)
   return true
 end
 
----Construct a decision owner with explicit host callbacks; creates no editor resources.
+---Construct a decision owner and its scheduled focus observer; dispose to release both.
 ---@param options louiselm.ui.DecisionsOptions
 ---@return louiselm.ui.Decisions decisions
 function M.new(options)
-  return setmetatable({
+  ---@type louiselm.ui.Decisions
+  local owner = setmetatable({
     is_live = options.is_live,
+    is_visible = options.is_visible,
     report_error = options.report_error,
     resolved = options.resolved,
-    diff = Diff.new(),
     queue = {},
     disposed = false,
+    presenting = false,
+    scheduled = false,
   }, Decisions)
+  owner.observer = nvim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "TabEnter", "WinClosed" }, {
+    callback = function()
+      if not owner.disposed then
+        present_pending(owner, true)
+      end
+    end,
+  })
+  return owner
 end
 
 return M

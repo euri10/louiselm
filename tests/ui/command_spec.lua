@@ -87,6 +87,20 @@ local function wait_for_prompt(process, session)
   }))
 end
 
+local function current_decision_title()
+  local config = nvim.api.nvim_win_get_config(0)
+  return config.relative ~= "" and config.title and config.title[1][1] or ""
+end
+
+local function decision_mapping(key)
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(0, "n")) do
+    if mapping.lhs == key then
+      return assert(mapping.callback)
+    end
+  end
+  error("missing decision key: " .. key)
+end
+
 local LIMITS_READ_METHOD = "_io.github.euri10.louiselm/account_limits/read"
 
 local function limits_capabilities()
@@ -1958,18 +1972,12 @@ T["command"]["inline permission controls"]["answer the request without an open C
   sqlite_delay_ms
 )
   local process, original_system = fake_process(sqlite_delay_ms)
-  local original_select = nvim.ui.select
-  local picker
-  nvim.ui.select = function(items, _, callback)
-    picker = { items = items, callback = callback }
-  end
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "old" })
   nvim.api.nvim_set_current_buf(buffer)
   MiniTest.finally(function()
     Command.register()
     Command.configure(nil)
-    nvim.ui.select = original_select
     rawset(nvim, "system", original_system)
     if nvim.api.nvim_buf_is_valid(buffer) then
       nvim.api.nvim_buf_delete(buffer, { force = true })
@@ -2001,7 +2009,7 @@ T["command"]["inline permission controls"]["answer the request without an open C
   end)
   assert(
     nvim.wait(1000, function()
-      return picker ~= nil
+      return current_decision_title():find("louiselm permission", 1, true) ~= nil
     end, 1),
     "inline did not present its permission request"
   )
@@ -2009,14 +2017,11 @@ T["command"]["inline permission controls"]["answer the request without an open C
   if choice == "cancel" then
     nvim.cmd.LouiselmCancel()
   elseif choice == "dismiss" then
-    picker.callback(nil)
+    decision_mapping("<Esc>")()
   else
-    for _, item in ipairs(picker.items) do
-      if item.optionId == choice then
-        picker.callback(item)
-        break
-      end
-    end
+    MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 2, false), { "reject_once", "allow_once" })
+    nvim.api.nvim_win_set_cursor(0, { choice == "deny" and 1 or 2, 0 })
+    decision_mapping("<CR>")()
   end
   local outcomes, cancels = {}, 0
   for _, encoded in ipairs(process.writes) do
@@ -2038,20 +2043,79 @@ T["command"]["inline permission controls"]["answer the request without an open C
   end, 1))
 end
 
+T["command"]["inline cancellation followed by immediate disposal"] =
+  MiniTest.new_set({ parametrize = { { true }, { false } } })
+T["command"]["inline cancellation followed by immediate disposal"]["reports no stale response error"] = function(
+  presented
+)
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local errors = {}
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "old" })
+  nvim.api.nvim_set_current_buf(buffer)
+  MiniTest.finally(function()
+    Command.register()
+    Command.configure(nil)
+    rawset(nvim, "system", original_system)
+    rawset(nvim, "notify", original_notify)
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end)
+  assert(Command.configure({ agents = { mock = { provider = "test-service", command = "mock-agent" } } }))
+  Command.register()
+  nvim.api.nvim_feedkeys(":LouiselmInline\rrewrite\r", "xt", false)
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "inline-acp" })
+  local session = Session.exit_verdict()[1].session
+  wait_for_prompt(process, session)
+  process.options.stdout(nil, assert(Protocol.encode(assert(Protocol.request(9, "session/request_permission", {
+    sessionId = "inline-acp",
+    toolCall = { toolCallId = "tool", kind = "execute", title = "Test command" },
+    options = { { optionId = "deny", kind = "reject_once" } },
+  })))) .. "\n")
+  if presented then
+    assert(nvim.wait(1000, function()
+      return current_decision_title():find("louiselm permission", 1, true) ~= nil
+    end, 1))
+  end
+  rawset(nvim, "notify", function(message, level)
+    if level == nvim.log.levels.ERROR then
+      errors[#errors + 1] = message
+    end
+  end)
+
+  nvim.cmd.LouiselmCancel()
+  -- Re-registration disposes the owner before its scheduled permission_cancelled event runs.
+  Command.register()
+  local drained = false
+  nvim.schedule(function()
+    drained = true
+  end)
+  assert(nvim.wait(1000, function()
+    return drained
+  end, 1))
+  local outcomes = {}
+  for _, encoded in ipairs(process.writes) do
+    local message = assert(Protocol.decode(encoded:sub(1, -2)))
+    if message.id == 9 then
+      outcomes[#outcomes + 1] = message.result.outcome
+    end
+  end
+  MiniTest.expect.equality(outcomes, { { outcome = "cancelled" } })
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+end
+
 T["command"]["inline and Chat share permission ownership while cancellation follows focus"] = function()
   local chat_process, original_system = fake_process()
-  local original_select = nvim.ui.select
-  local picks = {}
-  nvim.ui.select = function(items, _, callback)
-    picks[#picks + 1] = { items = items, callback = callback }
-  end
   local source = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_buf_set_lines(source, 0, -1, false, { "source" })
   nvim.api.nvim_set_current_buf(source)
   MiniTest.finally(function()
     Command.register()
     Command.configure(nil)
-    nvim.ui.select = original_select
     rawset(nvim, "system", original_system)
     if nvim.api.nvim_buf_is_valid(source) then
       nvim.api.nvim_buf_delete(source, { force = true })
@@ -2079,6 +2143,7 @@ T["command"]["inline and Chat share permission ownership while cancellation foll
   assert(inline_session ~= nil)
   wait_for_prompt(chat_process, chat_session)
   wait_for_prompt(inline_process, inline_session)
+  local host_window = nvim.api.nvim_get_current_win()
   local function permission(process, acp_id, request_id)
     process.options.stdout(
       nil,
@@ -2092,27 +2157,30 @@ T["command"]["inline and Chat share permission ownership while cancellation foll
   permission(chat_process, "chat-acp", 9)
   permission(inline_process, "inline-acp", 10)
   assert(nvim.wait(1000, function()
-    return #picks > 0 and inline_session:inspect().status == "waiting_permission"
+    return current_decision_title():find("inline-acp", 1, true) ~= nil
+      and inline_session:inspect().status == "waiting_permission"
   end, 1))
-  MiniTest.expect.equality(#picks, 1)
+  local stale_inline_choice = decision_mapping("<CR>")
+  nvim.api.nvim_set_current_win(host_window)
   nvim.api.nvim_set_current_buf(chat_buffer)
+  assert(nvim.wait(1000, function()
+    return current_decision_title():find("chat-acp", 1, true) ~= nil
+  end, 1))
+  stale_inline_choice()
+  MiniTest.expect.equality(inline_session:inspect().status, "waiting_permission")
   nvim.cmd.LouiselmCancel()
   assert(nvim.wait(1000, function()
     return chat_session:inspect().status == "cancelling"
   end, 1))
   MiniTest.expect.equality(inline_session:inspect().status, "waiting_permission")
-  nvim.schedule(function()
-    picks[1].callback(picks[1].items[2])
-  end)
-  assert(nvim.wait(1000, function()
-    return #picks == 2
-  end, 1))
+  nvim.api.nvim_set_current_win(host_window)
   nvim.api.nvim_set_current_buf(source)
+  assert(nvim.wait(1000, function()
+    return current_decision_title():find("inline-acp", 1, true) ~= nil
+  end, 1))
   nvim.cmd.LouiselmCancel()
   MiniTest.expect.equality(inline_session:inspect().status, "cancelling")
-  nvim.schedule(function()
-    picks[2].callback(picks[2].items[2])
-  end)
+  stale_inline_choice()
   for _, process in ipairs({ chat_process, inline_process }) do
     local cancellations, responses = 0, {}
     for _, encoded in ipairs(process.writes) do
@@ -2166,7 +2234,8 @@ T["command"]["inline process permission flow"]["uses native controls with the mo
   if action ~= "no_request" then
     assert(
       nvim.wait(2000, function()
-        return nvim.api.nvim_buf_get_name(0):match("^louiselm%-diff://") ~= nil
+        return nvim.api.nvim_get_option_value("filetype", { buf = 0 }) == "diff"
+          and current_decision_title():find("Review proposed edit", 1, true) ~= nil
       end, 1),
       "mock permission did not open a usable diff review"
     )

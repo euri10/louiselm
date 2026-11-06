@@ -156,6 +156,100 @@ end
 
 T["review"] = MiniTest.new_set()
 
+T["review"]["defers every opened request while its Session cannot show UI"] = function()
+  local visible = false
+  local path = temp_file({ "before" })
+  local diff = Diff.new(function()
+    return visible
+  end)
+  local origin = nvim.api.nvim_get_current_buf()
+  MiniTest.finally(function()
+    diff:dispose()
+    nvim.fn.delete(path)
+  end)
+  for _ = 1, 2 do
+    visible = false
+    assert(diff:open({
+      operation = { kind = "file_edit", path = path },
+      toolCall = { rawInput = { content = "after\n" } },
+      options = { "allow", "deny" },
+    }, function()
+      error("hidden review must not answer")
+    end))
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), origin)
+    MiniTest.expect.equality(diff:contains_current(), false)
+    visible = true
+    assert(diff:show())
+    MiniTest.expect.equality(diff:contains_current(), true)
+    diff:close()
+  end
+end
+
+T["review"]["hides without answering or replacing another Session buffer"] = function()
+  local path = temp_file({ "before" })
+  local responses = {}
+  local diff = Diff.new()
+  local origin = nvim.api.nvim_get_current_buf()
+  local origin_window = nvim.api.nvim_get_current_win()
+  local other = nvim.api.nvim_create_buf(false, true)
+  MiniTest.finally(function()
+    diff:dispose()
+    nvim.api.nvim_buf_delete(other, { force = true })
+    nvim.fn.delete(path)
+  end)
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { content = "after\n" } },
+    options = { "allow", "deny" },
+  }, function(result)
+    responses[#responses + 1] = result
+    return true
+  end))
+  local buffer = diff.buffer
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(origin_window), origin)
+  nvim.api.nvim_win_set_cursor(0, { 5, 0 })
+  diff:hide()
+  MiniTest.expect.equality(responses, {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
+  nvim.api.nvim_set_current_buf(other)
+  assert(diff:show())
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 5, 0 })
+  diff:hide()
+  diff:close()
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), other)
+  MiniTest.expect.equality(responses, {})
+end
+
+T["review"]["file edit review and permission choice retain the Session label"] = function()
+  local path = temp_file({ "before" })
+  local diff = Diff.new()
+  MiniTest.finally(function()
+    diff:dispose()
+    nvim.fn.delete(path)
+  end)
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { content = "after\n" } },
+    options = {
+      { optionId = "allow", kind = "allow_once" },
+      { optionId = "always", kind = "allow_always" },
+      { optionId = "deny", kind = "reject_once" },
+    },
+  }, function()
+    return true
+  end, "[codex session-7] Build QA"))
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_lines(diff.buffer, 2, 3, false),
+    { "[codex session-7] Build QA · Review proposed edit:  a = accept, d/q/Esc = reject" }
+  )
+  assert(diff:accept())
+  MiniTest.expect.equality(
+    nvim.api.nvim_win_get_config(0).title[1][1],
+    "[codex session-7] Build QA · louiselm file edit allow: "
+  )
+end
+
 T["review"]["previews rawInput replacement fragments without deleting surrounding content"] = function()
   -- old_text/new_text shape and hello.py reproduction from louiselm-hht64's
   -- maintainer report (2026-10-09, acp-llm-adapter 0.9.1). No event order is assumed.
@@ -296,16 +390,17 @@ T["review"]["shows an edit and sends an allow response"] = function()
   local buffer = assert(diff.buffer)
   MiniTest.expect.equality(nvim.api.nvim_buf_get_option(buffer, "modifiable"), false)
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 2, 3, false), {
-    "Review proposed edit:  Esc then a = accept, d/q = reject",
+    "Review proposed edit:  a = accept, d/q/Esc = reject",
   })
   local mappings = {}
   for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "n")) do
-    mappings[mapping.lhs] = mapping.desc
+    mappings[mapping.lhs] = mapping.desc or true
   end
   MiniTest.expect.equality(mappings, {
     a = "Allow louiselm file edit",
     d = "Reject louiselm file edit",
-    q = "Reject louiselm file edit",
+    q = true,
+    ["<Esc>"] = true,
   })
 
   nvim.api.nvim_feedkeys("a", "mx", false)
@@ -316,9 +411,9 @@ T["review"]["shows an edit and sends an allow response"] = function()
   nvim.fn.delete(path)
 end
 
-T["review"]["rejects through both advertised keys"] = function()
+T["review"]["rejects through d q and Escape"] = function()
   local path = temp_file({ "before" })
-  for _, key in ipairs({ "d", "q" }) do
+  for _, key in ipairs({ "d", "q", "<Esc>" }) do
     local responses = {}
     local diff = Diff.new()
     assert(diff:open({
@@ -330,7 +425,7 @@ T["review"]["rejects through both advertised keys"] = function()
       return true
     end))
 
-    nvim.api.nvim_feedkeys(key, "mx", false)
+    nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes(key, true, false, true), "mx", false)
 
     MiniTest.expect.equality(responses, { { outcome = { outcome = "selected", optionId = "reject" } } })
     MiniTest.expect.equality(diff.buffer, nil)
@@ -409,7 +504,7 @@ T["review"]["reviews a whole-file ACP diff content entry without old text"] = fu
   nvim.fn.delete(path)
 end
 
-T["review"]["cancels the permission request when its review buffer is wiped"] = function()
+T["review"]["terminal close and disposal retire the review without answering"] = function()
   local path = temp_file({ "before" })
   local responses = {}
   local diff = Diff.new()
@@ -422,24 +517,20 @@ T["review"]["cancels the permission request when its review buffer is wiped"] = 
     return true
   end))
 
-  nvim.api.nvim_buf_delete(diff.buffer, { force = true })
+  local buffer = diff.buffer
+  diff:close()
 
-  MiniTest.expect.equality(responses, { { outcome = { outcome = "cancelled" } } })
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  MiniTest.expect.equality(responses, {})
   MiniTest.expect.equality(diff.buffer, nil)
   diff:dispose()
-  MiniTest.expect.equality(#responses, 1)
+  MiniTest.expect.equality(#responses, 0)
   nvim.fn.delete(path)
 end
 
 T["review"]["asks which lifetime to use when an edit has multiple allow options"] = function()
   local path = temp_file({ "before" })
   local response
-  local labels
-  local original_select = nvim.ui.select
-  nvim.ui.select = function(options, config, callback)
-    labels = nvim.tbl_map(config.format_item, options)
-    callback(options[2])
-  end
   local diff = Diff.new()
   assert(diff:open({
     operation = { kind = "file_edit", path = path },
@@ -456,12 +547,181 @@ T["review"]["asks which lifetime to use when an edit has multiple allow options"
 
   assert(diff:accept())
 
-  nvim.ui.select = original_select
-  MiniTest.expect.equality(labels, { "Allow Once", "Always Allow This File" })
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_lines(diff.buffer, 0, -1, false),
+    { "Allow Once", "Always Allow This File" }
+  )
+  nvim.api.nvim_win_set_cursor(0, { 2, 0 })
+  local picker_buffer = diff.buffer
+  diff:hide()
+  MiniTest.expect.equality(response, nil)
+  assert(diff:show())
+  MiniTest.expect.equality(diff.buffer, picker_buffer)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 2, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-always" } })
   MiniTest.expect.equality(diff.buffer, nil)
   diff:dispose()
   nvim.fn.delete(path)
+end
+
+T["review"]["cancelled lifetime selection returns to the review and stale choices cannot answer a new request"] = function()
+  local path = temp_file({ "before" })
+  local diff = Diff.new()
+  MiniTest.finally(function()
+    diff:dispose()
+    nvim.fn.delete(path)
+  end)
+  local request = {
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { content = "after\n" } },
+    options = {
+      { optionId = "once", kind = "allow_once" },
+      { optionId = "always", kind = "allow_always" },
+      { optionId = "deny", kind = "reject_once" },
+    },
+  }
+  local responses = {}
+  local function response(result)
+    responses[#responses + 1] = result
+    return true
+  end
+  assert(diff:open(request, response))
+  local prompt = rawget(diff, "prompt")
+  local select = prompt.select
+  local old_callback
+  prompt.select = function(owner, items, options, callback)
+    old_callback = callback
+    return select(owner, items, options, callback)
+  end
+  assert(diff:accept())
+  local picker = diff.buffer
+  nvim.api.nvim_feedkeys("q", "mx", false)
+  MiniTest.expect.equality(responses, {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(picker), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("filetype", { buf = diff.buffer }), "diff")
+  old_callback(request.options[2])
+  MiniTest.expect.equality(responses, {})
+  assert(diff:accept())
+  local retired_callback = old_callback
+  diff:close()
+  assert(diff:open(request, response))
+  retired_callback(request.options[2])
+  MiniTest.expect.equality(responses, {})
+  assert(diff:reject())
+  MiniTest.expect.equality(responses, { { outcome = { outcome = "selected", optionId = "deny" } } })
+end
+
+T["review"]["lifetime callbacks schedule editor work from fast events"] = function()
+  local path = temp_file({ "before" })
+  local diff = Diff.new()
+  MiniTest.finally(function()
+    diff:dispose()
+    nvim.fn.delete(path)
+  end)
+  local responses = {}
+  local request = {
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { content = "after\n" } },
+    options = {
+      { optionId = "once", kind = "allow_once" },
+      { optionId = "always", kind = "allow_always" },
+    },
+  }
+  assert(diff:open(request, function(result)
+    assert(not nvim.in_fast_event())
+    responses[#responses + 1] = result
+    return true
+  end))
+  local callback
+  rawget(diff, "prompt").select = function(_, _, _, selected)
+    callback = selected
+    return true
+  end
+  assert(diff:accept())
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    if not timer:is_closing() then
+      timer:close()
+    end
+  end)
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    callback(request.options[2])
+    MiniTest.expect.equality(responses, {})
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return #responses == 1
+  end, 5))
+  MiniTest.expect.equality(responses, { { outcome = { outcome = "selected", optionId = "always" } } })
+  MiniTest.expect.equality(diff.buffer, nil)
+end
+
+T["review"]["failed lifetime presentation keeps rejection usable and reports a sanitized mapping error"] = function()
+  local path = temp_file({ "before" })
+  local diff = Diff.new()
+  local responses, messages = {}, {}
+  local notify = nvim.notify
+  MiniTest.finally(function()
+    diff:dispose()
+    rawset(nvim, "notify", notify)
+    nvim.fn.delete(path)
+  end)
+  rawset(nvim, "notify", function(message)
+    messages[#messages + 1] = message
+  end)
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { content = "after\n" } },
+    options = {
+      { optionId = "once", kind = "allow_once" },
+      { optionId = "always", kind = "allow_always" },
+      { optionId = "deny", kind = "reject_once" },
+    },
+  }, function(result)
+    responses[#responses + 1] = result
+    return true
+  end))
+  rawget(diff, "prompt").select = function()
+    return false, "private request contents"
+  end
+  nvim.api.nvim_feedkeys("a", "mx!", false)
+  nvim.api.nvim_feedkeys("q", "mx!", false)
+  MiniTest.expect.equality(responses, { { outcome = { outcome = "selected", optionId = "deny" } } })
+  MiniTest.expect.equality(messages, { "louiselm: diff decision failed" })
+end
+
+T["review"]["restored preview rejects saved custom mappings from before it was hidden"] = function()
+  local path = temp_file({ "before" })
+  local diff = Diff.new()
+  local responses = {}
+  MiniTest.finally(function()
+    diff:dispose()
+    nvim.fn.delete(path)
+  end)
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { content = "after\n" } },
+    options = { "allow", "deny" },
+  }, function(result)
+    responses[#responses + 1] = result
+    return true
+  end))
+  local saved = {}
+  for _, item in ipairs(nvim.api.nvim_buf_get_keymap(diff.buffer, "n")) do
+    if item.lhs == "a" or item.lhs == "d" then
+      saved[#saved + 1] = item.callback
+    end
+  end
+  diff:hide()
+  assert(diff:show())
+  for _, callback in ipairs(saved) do
+    callback()
+  end
+  MiniTest.expect.equality(responses, {})
+  nvim.api.nvim_feedkeys("d", "mx!", false)
+  MiniTest.expect.equality(responses, { { outcome = { outcome = "selected", optionId = "deny" } } })
 end
 
 return T

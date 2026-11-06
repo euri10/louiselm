@@ -400,6 +400,17 @@ function M.register()
   end
 
   local decisions = Decisions.new({
+    is_visible = function(session)
+      local buffer = nvim.api.nvim_get_current_buf()
+      if inline ~= nil and not inline.disposed and inline.session == session then
+        return inline.buffer == buffer
+      end
+      if chat == nil or chat.disposed then
+        return false
+      end
+      local view = chat.views[session:inspect().id]
+      return view ~= nil and view.session == session and view.renderer.buffer == buffer
+    end,
     is_live = function(session)
       if disposed then
         return false

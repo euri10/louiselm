@@ -286,7 +286,7 @@ local function emit_api(lines, context)
   )
   append_prose(
     lines,
-    "The chat queues Grok interactions with permission decisions across attached Sessions. Questions support multiple selections, freeform notes and read-only previews; plan mode also offers Chat about this and Skip interview. Plan review offers Approve, Request changes and Abandon. :LouiselmCancel cancels the Session owning an active decision, including while plan feedback input is open. Provider-owned selectors may remain visible until dismissed, but their late callbacks have no authority.",
+    "Permission decisions and Grok interactions appear only in their requesting Session. Background requests stay pending. Switching away hides the owned decision window without answering; returning restores choices, previews and unfinished notes or feedback. Other Sessions can handle their own requests independently. Questions support multiple selections, freeform notes and read-only previews; plan mode also offers Chat about this and Skip interview. Plan review offers Approve, Request changes and Abandon. :LouiselmCancel cancels the Session owning the visible decision, including while plan feedback input is open. Cancellation and disposal retire its UI and invalidate late callbacks. Decision visibility does not change Agent permission policy or auto-approval settings.",
     context
   )
 end

@@ -54,10 +54,22 @@ pending requests once and emit their request IDs in `interaction_cancelled`.
 If the process has already exited, settlement still retires callbacks even
 though no response can reach the closed transport. Invalid consumer responses
 return an error and leave ownership pending; valid responses settle ownership
-before writing, including a failed write. UI code owns selectors, inputs and
-read-only preview windows. A retired provider-owned selector/input may remain
-visible until dismissed; it cannot authorize a response or release a newer
-Session's decision slot.
+before writing, including a failed write. LouiseLM owns decision selectors,
+inputs and read-only previews, including their suspension and disposal.
+
+Decisions appear only while viewing their requesting Session. A background
+request stays pending; it neither opens a picker over another Session nor
+blocks that Session's own requests. Switching away hides the decision without
+answering it. Returning restores choices, preview position and unfinished
+feedback or notes. Cancelling or disposing the requesting Session still
+settles its requests exactly once; a hidden or retired presentation cannot
+answer through an old callback.
+
+Decision titles identify the requesting Session by Agent, local Session ID and
+name. That identity stays on question and plan pickers, feedback/note inputs,
+request details and file-edit reviews. This visibility rule applies to ordinary
+background Sessions as well as Sessions started by another Session. It does
+not change the configured Agent's permission policy or auto-approval choices.
 
 Fixtures in `tests/fixtures/grok_interactions.lua` derive from the official
 source above. `tests/fixtures/grok_ask_user_question.json` is a real harmless
@@ -67,11 +79,12 @@ envelope assumption tracked in `louiselm-hosvi`. The real plan-review frame in
 `01a15376-b52e-73c2-a67b-d51d4f32d95e`, proxy `log.jsonl` line198, during
 qa-round `louiselm-r3gec`. Its harmless plan was approved by the maintainer.
 Lifecycle race ordering remains synthetic, including libuv delivery races.
-`louiselm-byvq` remains open for maintainer
-acceptance when Grok quota permits: exercise single/multiple/freeform answers,
-both plan interview actions, approve/change/abandon review, cancel while
-feedback input is active, and dispose with late callbacks. Confirm continuation
-on a surviving Session. Automated gates do not establish that live acceptance.
+Maintainer acceptance for `louiselm-byvq` completed on 2026-11-06: stock-Grok
+question and plan actions, cancellation with feedback open, direct disposal
+with exercised late callbacks and an independent review, and continuation on
+the retained Session. Pinned protocol and human evidence lives in that issue;
+automated gates and offline replay alone do not establish live acceptance.
+Session-local decision presentation remains separately tracked in `louiselm-d2mgl`.
 
 ## Offline UI replay
 
@@ -91,8 +104,9 @@ XDG_STATE_HOME="$qa_state" nvim --noplugin -i NONE \
   -u scripts/interaction_qa.lua --listen "$qa_state/nvim.sock"
 ```
 
-This uses Neovim's native selectors, not the maintainer's customized UI provider.
-To check the usual configured selectors in a separate instance, omit
+Permission and interaction decisions use LouiseLM's owned windows. Other
+commands, such as the Session picker, use the configured UI provider.
+To check those commands with the usual provider in a separate instance, omit
 `--noplugin -u scripts/interaction_qa.lua` and instead add
 `-c 'luafile scripts/interaction_qa.lua'`. The init refuses live Sessions; never
 source it into an active editor. It configures only `replay-plan`,

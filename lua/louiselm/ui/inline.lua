@@ -61,16 +61,9 @@ end
 ---@param event louiselm.session.Event
 local function handle_event(self, session, event)
   if self.disposed or self.session ~= session then
-    if event.type == "permission_requested" then
-      self.decisions:request(session, nil, event.respond)
-    end
     return
   end
-  if event.type == "permission_requested" then
-    self.decisions:request(session, event.data, event.respond)
-  elseif event.type == "permission_cancelled" then
-    self.decisions:cancel(session, type(event.data) == "table" and event.data.request_ids or nil)
-  elseif event.type == "chunk" and not self.cancelled then
+  if event.type == "chunk" and not self.cancelled then
     local data = event.data
     local text = type(data) == "table" and data.text or nil
     if text == nil and type(data) == "table" and type(data.content) == "table" then
@@ -179,6 +172,9 @@ function M.new(api, options)
   }, Inline)
   inline.decisions = options and options.decisions
     or Decisions.new({
+      is_visible = function(session)
+        return not inline.disposed and inline.session == session and inline.buffer == nvim.api.nvim_get_current_buf()
+      end,
       is_live = function(session)
         return not inline.disposed
           and inline.session == session
@@ -257,9 +253,15 @@ function Inline:run(prompt, agent_name)
   end
   self.session = session
   self.unsubscribe = session:on(function(event)
-    nvim.schedule(function()
-      handle_event(self, session, event)
-    end)
+    if event.type == "permission_requested" then
+      self.decisions:request(session, event.data, event.respond, true)
+    elseif event.type == "permission_cancelled" then
+      self.decisions:cancel(session, type(event.data) == "table" and event.data.request_ids or nil)
+    else
+      nvim.schedule(function()
+        handle_event(self, session, event)
+      end)
+    end
   end)
   self.decisions:present_next()
   return session:inspect().id, nil
