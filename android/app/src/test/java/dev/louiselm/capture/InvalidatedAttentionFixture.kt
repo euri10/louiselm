@@ -1,5 +1,8 @@
 package dev.louiselm.capture
 
+import android.content.Context
+import android.os.Looper
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 
@@ -31,6 +34,10 @@ class AttentionFixturePairing {
 @Implements(PinnedHttps::class, isInAndroidSdk = false)
 class AttentionFixtureReceiver {
     @Implementation(methodName = "fetchAttention")
-    internal fun fetchAttention(@Suppress("UNUSED_PARAMETER") config: PairingConfig): AttentionFetch =
-        parseAttentionResponse(invalidatedAttentionPayload)
+    internal fun fetchAttention(@Suppress("UNUSED_PARAMETER") config: PairingConfig): AttentionFetch {
+        check(Looper.myLooper() != Looper.getMainLooper())
+        val options = RuntimeEnvironment.getApplication().getSharedPreferences("attention-fixture", Context.MODE_PRIVATE)
+        if (options.getBoolean("offline", false)) return AttentionFetch.Retry("receiver is offline")
+        return parseAttentionResponse(checkNotNull(options.getString("payload", invalidatedAttentionPayload)))
+    }
 }

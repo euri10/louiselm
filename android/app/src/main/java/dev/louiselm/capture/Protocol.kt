@@ -24,6 +24,7 @@ internal enum class AttentionKind(val reason: String) {
     SESSION_FAILED("Session failed"),
     SKILL_APPROVAL_PENDING("Skill approval is pending"),
     SKILL_UNVERIFIED("Skill supply is unverified"),
+    ENDORSEMENT_WITHDRAWN("Endorsement was withdrawn"),
     ;
 
     companion object {
@@ -34,6 +35,7 @@ internal enum class AttentionKind(val reason: String) {
             "session_failed" -> SESSION_FAILED
             "skill_approval_pending" -> SKILL_APPROVAL_PENDING
             "skill_unverified" -> SKILL_UNVERIFIED
+            "endorsement_withdrawn" -> ENDORSEMENT_WITHDRAWN
             else -> throw IllegalArgumentException("attention kind is unsupported")
         }
     }
@@ -80,16 +82,39 @@ internal enum class AttentionCode {
 internal enum class AttentionSubjectKind {
     SESSION,
     RUN,
+    SUPPLY,
     ;
 
     companion object {
         fun parse(value: String): AttentionSubjectKind = when (value) {
             "session" -> SESSION
             "run" -> RUN
+            "supply" -> SUPPLY
             else -> throw IllegalArgumentException("attention subject kind is unsupported")
         }
     }
 }
+
+internal enum class WithdrawalUrgency {
+    RELIED_ON,
+    SUBJECT_ONLY,
+    ;
+
+    companion object {
+        fun parse(value: String): WithdrawalUrgency = when (value) {
+            "relied_on" -> RELIED_ON
+            "subject_only" -> SUBJECT_ONLY
+            else -> throw IllegalArgumentException("withdrawal urgency is unsupported")
+        }
+    }
+}
+
+internal data class AttentionWithdrawal(
+    val packageDigest: String,
+    val withdrawalDigest: String,
+    val endorser: String,
+    val urgency: WithdrawalUrgency,
+)
 
 internal data class AttentionItem(
     val subjectKind: AttentionSubjectKind,
@@ -101,6 +126,7 @@ internal data class AttentionItem(
     val linkedRunId: String?,
     val stage: String?,
     val code: AttentionCode?,
+    val withdrawal: AttentionWithdrawal? = null,
 )
 
 internal data class AttentionSnapshot(
@@ -109,10 +135,10 @@ internal data class AttentionSnapshot(
 ) {
     companion object {
         fun parse(payload: String): AttentionSnapshot {
-            require(payload.length <= MAX_ATTENTION_RESPONSE) { "attention response is too large" }
+            require(payload.toByteArray(Charsets.UTF_8).size <= MAX_ATTENTION_RESPONSE) { "attention response is too large" }
             val value = JSONObject(payload)
             requireKeys(value, setOf("generation", "items"), "attention snapshot")
-            val generation = value.getLong("generation")
+            val generation = requireLong(value, "generation")
             require(generation >= 0) { "attention generation is invalid" }
             val array = value.getJSONArray("items")
             val items = ArrayList<AttentionItem>(array.length())
@@ -136,25 +162,41 @@ internal data class AttentionSnapshot(
                     "linked_run_id",
                     "stage",
                     "code",
+                    "withdrawal",
                 ),
                 "attention item",
             )
-            val subjectKind = AttentionSubjectKind.parse(value.getString("subject_kind"))
-            val subjectId = value.getString("subject_id")
+            val subjectKind = AttentionSubjectKind.parse(requireString(value, "subject_kind"))
+            val subjectId = requireString(value, "subject_id")
             require(validAttentionId(subjectId)) { "attention subject id is invalid" }
             if (subjectKind == AttentionSubjectKind.RUN) {
                 require(validCanonicalUuid(subjectId)) { "attention Run id is invalid" }
             }
-            val kind = AttentionKind.parse(value.getString("kind"))
-            val sourceOperationId = value.getString("source_operation_id")
+            val kind = AttentionKind.parse(requireString(value, "kind"))
+            if (subjectKind == AttentionSubjectKind.SUPPLY) {
+                val uid = subjectId.toLongOrNull()
+                require(uid != null && uid in 1..4294967295L && uid.toString() == subjectId) {
+                    "attention supply id is invalid"
+                }
+                require(kind == AttentionKind.SKILL_APPROVAL_PENDING || kind == AttentionKind.ENDORSEMENT_WITHDRAWN) {
+                    "attention supply kind is invalid"
+                }
+            }
+            if (kind == AttentionKind.ENDORSEMENT_WITHDRAWN) {
+                require(subjectKind == AttentionSubjectKind.SUPPLY) { "withdrawal requires a supply subject" }
+            }
+            val sourceOperationId = requireString(value, "source_operation_id")
             require(validCanonicalUuid(sourceOperationId)) { "attention operation id is invalid" }
-            val createdAtMs = value.getLong("created_at_ms")
+            val createdAtMs = requireLong(value, "created_at_ms")
             require(createdAtMs > 0) { "attention creation time is invalid" }
-            val reason = value.getString("reason")
+            val reason = requireString(value, "reason")
             require(reason == kind.reason) { "attention reason is invalid" }
             val linkedRunId = optionalString(value, "linked_run_id")
             if (linkedRunId != null) require(validCanonicalUuid(linkedRunId)) { "attention linked Run id is invalid" }
             val stage = optionalString(value, "stage")
+            if (subjectKind == AttentionSubjectKind.SUPPLY) {
+                require(linkedRunId == null && stage == null) { "supply Attention cannot carry Run or stage context" }
+            }
             if (stage != null) {
                 require(stage.isNotEmpty() && stage.toByteArray(Charsets.UTF_8).size <= MAX_ATTENTION_STAGE)
                 require(stage.all { it.isLetterOrDigit() || it in "._/-" }) { "attention stage is invalid" }
@@ -169,22 +211,59 @@ internal data class AttentionSnapshot(
             if (kind == AttentionKind.SKILL_APPROVAL_PENDING || kind == AttentionKind.SKILL_UNVERIFIED) {
                 require(stage == null) { "skill Attention cannot carry stage text" }
             }
+            val withdrawal = if (value.has("withdrawal") && !value.isNull("withdrawal")) {
+                parseWithdrawal(value.getJSONObject("withdrawal"))
+            } else null
+            require((kind == AttentionKind.ENDORSEMENT_WITHDRAWN) == (withdrawal != null)) {
+                "attention withdrawal does not match kind"
+            }
+            val eligible = value.get("eligible")
+            require(eligible is Boolean) { "attention eligibility is invalid" }
             return AttentionItem(
                 subjectKind,
                 subjectId,
                 kind,
                 sourceOperationId,
                 createdAtMs,
-                value.getBoolean("eligible"),
+                eligible,
                 linkedRunId,
                 stage,
                 code,
+                withdrawal,
             )
+        }
+
+        private fun parseWithdrawal(value: JSONObject): AttentionWithdrawal {
+            requireKeys(value, setOf("package_digest", "withdrawal_digest", "endorser", "urgency"), "withdrawal")
+            val packageDigest = requireString(value, "package_digest")
+            val withdrawalDigest = requireString(value, "withdrawal_digest")
+            for (digest in listOf(packageDigest, withdrawalDigest)) {
+                require(digest.matches(Regex("sha256:[0-9a-f]{64}"))) { "withdrawal digest is invalid" }
+            }
+            val endorser = requireString(value, "endorser")
+            require(endorser.isNotBlank() && endorser.toByteArray(Charsets.UTF_8).size <= 256 &&
+                endorser.none { it.isISOControl() }) { "withdrawal endorser is invalid" }
+            return AttentionWithdrawal(
+                packageDigest, withdrawalDigest, endorser, WithdrawalUrgency.parse(requireString(value, "urgency")),
+            )
+        }
+
+        // Android JSONObject getters coerce strings, booleans and numbers. The closed wire schema does not.
+        private fun requireString(value: JSONObject, key: String): String {
+            val field = value.get(key)
+            require(field is String) { "attention $key must be a string" }
+            return field
+        }
+
+        private fun requireLong(value: JSONObject, key: String): Long = when (val field = value.get(key)) {
+            is Int -> field.toLong()
+            is Long -> field
+            else -> throw IllegalArgumentException("attention $key must be an integer in range")
         }
 
         private fun optionalString(value: JSONObject, key: String): String? {
             if (!value.has(key) || value.isNull(key)) return null
-            return value.getString(key)
+            return requireString(value, key)
         }
 
         private fun requireKeys(value: JSONObject, allowed: Set<String>, label: String) {

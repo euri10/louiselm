@@ -12,6 +12,7 @@ import com.google.firebase.messaging.RemoteMessage
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -164,5 +165,45 @@ class AttentionNotificationTest {
         } finally {
             controller.destroy()
         }
+    }
+
+    @Test
+    fun supplyInboxNeverEntersNotificationsOrRepeatsAfterServiceRestart() {
+        val context = RuntimeEnvironment.getApplication()
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        context.getSharedPreferences("pairing-v2", Context.MODE_PRIVATE).edit().putString("ciphertext", "fixture").commit()
+        val state = AttentionState(context)
+        assertTrue(state.enable())
+        val owner = checkNotNull(state.owner())
+        assertTrue(state.registered(owner))
+        assertTrue(state.cache(owner, AttentionSnapshot.parse(supplyAttentionPayload())))
+        val manager = context.getSystemService(NotificationManager::class.java)
+        fun wake(vararg fields: Pair<String, String>) {
+            val controller = Robolectric.buildService(AttentionMessagingService::class.java).create()
+            val callbacks = Executors.newSingleThreadExecutor()
+            try {
+                callbacks.submit {
+                    controller.get().onMessageReceived(RemoteMessage.Builder("fixture").setData(mapOf(*fields)).build())
+                }.get()
+            } finally {
+                callbacks.shutdownNow()
+                controller.destroy()
+            }
+        }
+        for (field in listOf("package_digest", "endorser", "profile", "request", "urgency")) {
+            wake("generation" to "9", field to "private metadata")
+        }
+        assertEquals(0, shadowOf(manager).size())
+        wake("generation" to "9")
+        val notification = shadowOf(manager).allNotifications.single()
+        assertEquals("LouiseLM needs your attention", notification.extras.getString(Notification.EXTRA_TITLE))
+        assertEquals("Open the private inbox to see what needs attention.", notification.extras.getString(Notification.EXTRA_TEXT))
+        assertNull(notification.actions)
+        assertEquals(null, shadowOf(notification.contentIntent).savedIntent.extras)
+        manager.cancelAll()
+        wake("generation" to "9")
+        wake("generation" to "8")
+        assertEquals(0, shadowOf(manager).size())
+        assertEquals(3, AttentionState(context).cached(owner)?.items?.size)
     }
 }

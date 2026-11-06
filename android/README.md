@@ -110,7 +110,12 @@ the manual WorkManager retry path.
 When paired, **Attention inbox** reads the authenticated `/v1/attention`
 snapshot through the same pinned receiver identity. It displays only the
 closed typed kind, fixed reason, bounded Session or Run identifier, optional
-linked Run or stage, and age. It has no mutation controls; transient network
+linked Run or stage, and age. Local supply withdrawals show the affected package
+digest, local endorser label and urgency (`relied_on` or `subject_only`), with a
+fixed suggestion to review locally and consider quarantine. Supply Admission
+requests show only fixed text and the request reference; profile bytes, Dossier
+diffs, paths and Agent prose are never inbox content. Labels are inert text,
+and supply cards have accessible headings and grouping. It has no mutation controls; transient network
 failures retain the last safely parsed screen and offer refresh, while revoked
 pairing or pin failures require pairing/operator repair. The seen generation is
 stored only in app-private preferences.
@@ -205,6 +210,16 @@ in `louiselm-qbr.9.9`.
   only the fixed generic copy; tap to fetch the matching private inbox. Repeat
   the same/older generation, then a newer one: no duplicate alert, then a new
   alert. Reopen/restart the app and repeat to check durable deduplication.
+- Supply Attention (`louiselm-d6fv.8.12`): record the APK and receiver builds.
+  Confirm a withdrawal with no live Session shows the exact affected package,
+  local endorser and urgency; inspect both urgency levels and a supply Admission
+  request. With TalkBack, check card grouping, headings and literal labels.
+  The request must show only fixed text and its reference, with no profile or
+  Dossier content and no approval/rejection/quarantine controls. Check offline
+  restart retains these cards, unchanged state sends no reminders, and every
+  notification stays generic. Retained/parked references must keep the withdrawal
+  visible until authoritative reconciliation clears it. Automated tests do not
+  establish this paired-device acceptance.
 - Disconnect Tailscale but leave internet available. Trigger a wake-up: generic
   notification still appears; tapping shows a retryable unavailable inbox, with
   no action resolved. Restore Tailscale and refresh/reopen to consume the

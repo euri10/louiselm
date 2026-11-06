@@ -59,6 +59,20 @@
     </plurals>
     <string name="attention_session">Session: %1$s</string>
     <string name="attention_run">Run: %1$s</string>
+    <string name="attention_supply">Local supply</string>
+    <string name="attention_request">Request: %1$s</string>
+    <string name="attention_turn_ready">Agent turn is ready</string>
+    <string name="attention_permission_required">Permission is required</string>
+    <string name="attention_run_parked">Run is Parked</string>
+    <string name="attention_session_failed">Session failed</string>
+    <string name="attention_skill_approval_pending">Skill approval is pending</string>
+    <string name="attention_skill_unverified">Skill supply is unverified</string>
+    <string name="attention_endorsement_withdrawn">Endorsement was withdrawn</string>
+    <string name="attention_withdrawal_package">Package: %1$s</string>
+    <string name="attention_withdrawal_endorser">Endorser: %1$s</string>
+    <string name="attention_withdrawal_relied_on">Admission relied on this Endorsement (relied_on)</string>
+    <string name="attention_withdrawal_subject_only">Endorsement names this package (subject_only)</string>
+    <string name="attention_withdrawal_review">Review locally and consider quarantine. Reading this card does not resolve the withdrawal.</string>
     <string name="attention_linked_run">Linked Run: %1$s</string>
     <string name="attention_stage">Stage: %1$s</string>
     <string name="attention_age">Age: %1$s</string>

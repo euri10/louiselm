@@ -2,9 +2,12 @@ package dev.louiselm.capture
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.os.Looper
+import android.text.Spanned
+import android.text.style.ClickableSpan
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -12,6 +15,8 @@ import android.widget.TextView
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import androidx.work.impl.WorkManagerImpl
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,6 +56,10 @@ class MainActivityTest {
             .setExecutor(workExecutor)
             .setTaskExecutor(workExecutor)
             .build())
+        createActivity()
+    }
+
+    private fun createActivity() {
         controller = Robolectric.buildActivity(MainActivity::class.java)
         activity = controller.get()
         // Control the existing executor before onCreate, without a production
@@ -96,6 +105,111 @@ class MainActivityTest {
         assertTrue(text.contains(activity.getString(R.string.attention_session, "invalidated-session")))
         assertFalse(text.any { it.contains("invalid Attention inbox") })
         assertEquals(7L, AttentionState(activity).cached("fixture-pair")?.generation)
+    }
+
+    @Test
+    @Config(
+        sdk = [28, 34, 37],
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun supplyCardsAreAccessibleReadOnlyAndKeepLabelsInert() {
+        showSupplyInbox()
+        val labels = views(activity.window.decorView).filterIsInstance<TextView>().toList()
+        assertEquals(2, labels.count { it.text.toString() == "Endorsement was withdrawn" })
+        assertTrue(labels.any { it.text.toString() == "Package: $supplyPackageDigest" })
+        assertTrue(labels.any { it.text.toString() == "Endorser: $SUPPLY_ENDORSER" })
+        assertTrue(labels.any { it.text.toString() == "Admission relied on this Endorsement (relied_on)" })
+        assertTrue(labels.any { it.text.toString() == "Endorsement names this package (subject_only)" })
+        val approval = labels.single { it.text.toString() == "Skill approval is pending" }
+        val approvalCard = approval.parent as ViewGroup
+        assertEquals(
+            listOf("Skill approval is pending", "Local supply", "Request: $SUPPLY_REQUEST"),
+            views(approvalCard).filterIsInstance<TextView>().map { it.text.toString() }.toList(),
+        )
+        val headings = labels.filter { it.text.toString() in listOf("Endorsement was withdrawn", "Skill approval is pending") }
+        for (heading in headings) {
+            val card = heading.parent as ViewGroup
+            assertTrue(heading.isAccessibilityHeading)
+            assertTrue(card.isScreenReaderFocusable)
+            assertFalse(views(card).any { it is Button || it.isClickable || it.isLongClickable })
+            for (label in views(card).filterIsInstance<TextView>()) {
+                assertEquals(label.text.toString(), label.createAccessibilityNodeInfo().text.toString())
+                assertEquals(0, label.autoLinkMask)
+                val text = label.text
+                if (text is Spanned) assertTrue(text.getSpans(0, text.length, ClickableSpan::class.java).isEmpty())
+            }
+        }
+        assertEquals(3, AttentionState(activity).cached("fixture-pair")?.items?.size)
+    }
+
+    @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun supplyCardsSurviveOfflineRestartAndIgnoreQueuedRenderAfterDestruction() {
+        showSupplyInbox()
+        val before = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(before.contains("Endorser: $SUPPLY_ENDORSER"))
+        val options = activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE)
+        options.edit().putBoolean("offline", true).commit()
+        controller.close()
+        drainStatus()
+        createActivity()
+        var labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(labels.contains("Endorser: $SUPPLY_ENDORSER"))
+        assertTrue(labels.any { it.contains("receiver is offline") })
+        options.edit().putBoolean("offline", false).putString("payload", "{\"generation\":10,\"items\":[]}").commit()
+        controller.newIntent(Intent(activity, MainActivity::class.java).setAction(ATTENTION_INBOX_ACTION))
+        executor.runAll() // Fetch completes off-thread; its UI render is still queued.
+        controller.close()
+        shadowOf(Looper.getMainLooper()).idle()
+        labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(labels.contains("Endorser: $SUPPLY_ENDORSER"))
+        assertEquals(9L, AttentionState(activity).cached("fixture-pair")?.generation)
+    }
+
+    @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun supplyRefreshKeepsIneligibleCardsUpdatesMetadataAndAcceptsAuthoritativeClear() {
+        showSupplyInbox()
+        val options = activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE)
+        val withdrawal = supplyWithdrawal().put("eligible", false).apply {
+            getJSONObject("withdrawal").put("endorser", "Renamed reviewer").put("urgency", "subject_only")
+        }
+        val session = JSONObject(invalidatedAttentionPayload).getJSONArray("items").getJSONObject(0)
+        val run = JSONObject().put("subject_kind", "run").put("subject_id", SUPPLY_REQUEST)
+            .put("kind", "run_parked").put("reason", "Run is Parked").put("source_operation_id", SUPPLY_REQUEST)
+            .put("created_at_ms", 123).put("eligible", true).put("stage", "review/execute")
+        val payload = JSONObject().put("generation", 10).put("items", JSONArray().put(withdrawal).put(session).put(run))
+        options.edit().putString("payload", payload.toString()).commit()
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        fun text(): List<String> = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(text().contains("Endorser: Renamed reviewer"))
+        assertFalse(text().contains("Endorser: $SUPPLY_ENDORSER"))
+        assertFalse(text().contains("Admission relied on this Endorsement (relied_on)"))
+        assertTrue(text().contains("Endorsement names this package (subject_only)"))
+        assertTrue(text().contains("Session: invalidated-session"))
+        assertTrue(text().contains("Run: $SUPPLY_REQUEST"))
+        assertTrue(text().contains("Stage: review/execute"))
+        assertFalse(checkNotNull(AttentionState(activity).cached("fixture-pair")).items.first().eligible)
+        options.edit().putString("payload", supplyAttentionPayload()).commit() // Older response cannot undo the update.
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        assertTrue(text().contains("Endorser: Renamed reviewer"))
+        assertEquals(10L, AttentionState(activity).cached("fixture-pair")?.generation)
+        options.edit().putString("payload", "{\"generation\":11,\"items\":[]}").commit()
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        assertTrue(text().contains(activity.getString(R.string.attention_empty)))
+        assertFalse(text().contains("Endorsement was withdrawn"))
+        assertFalse(text().contains("Run is Parked"))
+        assertEquals(AttentionSnapshot(11, emptyList()), AttentionState(activity).cached("fixture-pair"))
     }
 
     @Test
@@ -276,6 +390,14 @@ class MainActivityTest {
         controller.close()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(before, status.text.toString())
+    }
+
+    private fun showSupplyInbox() {
+        activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).edit()
+            .putString("payload", supplyAttentionPayload()).commit()
+        shadowOf(activity).grantPermissions(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        button(R.string.attention_retry).performClick()
+        drainStatus()
     }
 
     private fun recordFixture(): String {

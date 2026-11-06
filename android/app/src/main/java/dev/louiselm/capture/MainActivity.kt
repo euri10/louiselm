@@ -580,22 +580,52 @@ class MainActivity : Activity() {
             snapshot.items.forEach { item ->
                 val card = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(0, 12, 0, 12)
+                    val padding = (12 * resources.displayMetrics.density).toInt()
+                    setPadding(0, padding, 0, padding)
+                    isScreenReaderFocusable = true
                 }
                 card.addView(TextView(this).apply {
-                    text = item.kind.reason
+                    text = getString(when (item.kind) {
+                        AttentionKind.TURN_READY -> R.string.attention_turn_ready
+                        AttentionKind.PERMISSION_REQUIRED -> R.string.attention_permission_required
+                        AttentionKind.RUN_PARKED -> R.string.attention_run_parked
+                        AttentionKind.SESSION_FAILED -> R.string.attention_session_failed
+                        AttentionKind.SKILL_APPROVAL_PENDING -> R.string.attention_skill_approval_pending
+                        AttentionKind.SKILL_UNVERIFIED -> R.string.attention_skill_unverified
+                        AttentionKind.ENDORSEMENT_WITHDRAWN -> R.string.attention_endorsement_withdrawn
+                    })
                     textSize = 18f
+                    isAccessibilityHeading = true
                 }, matchWidth())
                 card.addView(TextView(this).apply {
-                    text = getString(
-                        if (item.subjectKind == AttentionSubjectKind.SESSION) {
-                            R.string.attention_session
-                        } else {
-                            R.string.attention_run
-                        },
-                        item.subjectId,
-                    )
+                    text = when (item.subjectKind) {
+                        AttentionSubjectKind.SESSION -> getString(R.string.attention_session, item.subjectId)
+                        AttentionSubjectKind.RUN -> getString(R.string.attention_run, item.subjectId)
+                        AttentionSubjectKind.SUPPLY -> getString(R.string.attention_supply)
+                    }
                 }, matchWidth())
+                if (item.subjectKind == AttentionSubjectKind.SUPPLY && item.kind == AttentionKind.SKILL_APPROVAL_PENDING) {
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_request, item.sourceOperationId)
+                    }, matchWidth())
+                }
+                item.withdrawal?.let { withdrawal ->
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_withdrawal_package, withdrawal.packageDigest)
+                    }, matchWidth())
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_withdrawal_endorser, withdrawal.endorser)
+                    }, matchWidth())
+                    card.addView(TextView(this).apply {
+                        text = getString(when (withdrawal.urgency) {
+                            WithdrawalUrgency.RELIED_ON -> R.string.attention_withdrawal_relied_on
+                            WithdrawalUrgency.SUBJECT_ONLY -> R.string.attention_withdrawal_subject_only
+                        })
+                    }, matchWidth())
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_withdrawal_review)
+                    }, matchWidth())
+                }
                 item.linkedRunId?.let { linkedRunId ->
                     card.addView(TextView(this).apply {
                         text = getString(R.string.attention_linked_run, linkedRunId)
@@ -606,9 +636,11 @@ class MainActivity : Activity() {
                         text = getString(R.string.attention_stage, stage)
                     }, matchWidth())
                 }
-                card.addView(TextView(this).apply {
-                    text = getString(R.string.attention_age, formatAttentionAge(item.createdAtMs))
-                }, matchWidth())
+                if (item.subjectKind != AttentionSubjectKind.SUPPLY || item.kind != AttentionKind.SKILL_APPROVAL_PENDING) {
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_age, formatAttentionAge(item.createdAtMs))
+                    }, matchWidth())
+                }
                 attentionCards.addView(card, matchWidth())
             }
         }
