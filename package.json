@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "site:build": "./scripts/build-site",
-    "site:test": "node ./scripts/test-demo-config.mjs && ./scripts/test-public-artifact.sh",
+    "site:test": "node ./scripts/test-demo-config.mjs && node --test ./scripts/test-build-demo.mjs && ./scripts/test-public-artifact.sh",
     "site:test:browser": "playwright test"
   },
   "devDependencies": {

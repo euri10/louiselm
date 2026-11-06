@@ -5,6 +5,13 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 public_origin=https://louiselm.com
 
+if [[ $# != 0 ]]; then
+	[[ $# == 2 && $1 == --offline-assets && -d $2 ]] || {
+		echo 'usage: build-site [--offline-assets DIR]' >&2
+		exit 64
+	}
+fi
+
 command -v myst >/dev/null 2>&1 || {
 	echo "error: myst not found on PATH" >&2
 	exit 1
@@ -18,7 +25,7 @@ command -v myst >/dev/null 2>&1 || {
 	myst build --html --strict --ci
 )
 
-node "$script_dir/build-demo.mjs" "$repo_root" "$repo_root/_build/html"
+node "$script_dir/build-demo.mjs" "$repo_root" "$repo_root/_build/html" "$@"
 
 # MyST renders static pages by requesting its temporary localhost server and
 # preserves that request origin in generated metadata. Static apex hosting has

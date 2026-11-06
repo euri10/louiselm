@@ -2,11 +2,15 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+	closeSync,
+	constants,
 	copyFileSync,
 	existsSync,
+	fstatSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
@@ -65,6 +69,27 @@ function neovimPackageHeaders(url) {
 		return { 'private-token': process.env.LOUISELM_DEMO_PACKAGE_TOKEN };
 	}
 	fail('Neovim package download requires CI_JOB_TOKEN or LOUISELM_DEMO_PACKAGE_TOKEN');
+}
+
+async function loadAsset(asset, name, offlineAssets, privatePackage = false) {
+	if (!/^[0-9a-f]{64}$/.test(asset.sha256)) fail(`invalid asset digest: ${name}`);
+	let bytes;
+	if (offlineAssets != null) {
+		let fd;
+		try {
+			fd = openSync(join(offlineAssets, asset.sha256), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+			if (!fstatSync(fd).isFile()) fail('not a regular asset file');
+			bytes = readFileSync(fd);
+		} catch {
+			fail(`offline asset unavailable: ${name} (${asset.sha256})`);
+		} finally {
+			if (fd != null) closeSync(fd);
+		}
+	} else {
+		bytes = await download(asset.url, privatePackage ? { accept: 'application/octet-stream', ...neovimPackageHeaders(asset.url) } : {}, privatePackage ? 'error' : 'follow');
+	}
+	verify(bytes, asset.sha256, name);
+	return bytes;
 }
 
 function run(command, args, options = {}) {
@@ -138,7 +163,7 @@ function adaptVendorLua(vendor, path, source) {
 	return adapted;
 }
 
-async function buildVendorBundle(lock, scratch, target) {
+async function buildVendorBundle(lock, scratch, target, offlineAssets) {
 	const installedRoot = '/home/user/.local/share/nvim/site/pack/louiselm/opt';
 	const vendors = [
 		{ key: 'snacks', installName: 'snacks.nvim', licenseName: 'LICENSE-snacks.txt' },
@@ -148,8 +173,7 @@ async function buildVendorBundle(lock, scratch, target) {
 	const pins = {};
 	for (const vendor of vendors) {
 		const asset = lock[vendor.key];
-		const archive = await download(asset.url);
-		verify(archive, asset.sha256, `${vendor.installName} archive`);
+		const archive = await loadAsset(asset, `${vendor.installName} archive`, offlineAssets);
 		const archivePath = join(scratch, `${vendor.key}.tgz`);
 		writeFileSync(archivePath, archive);
 		run('tar', ['-xzf', archivePath, '-C', scratch]);
@@ -198,7 +222,10 @@ function quietRuntimeDebug(source) {
 }
 
 async function main() {
-	if (process.argv.length !== 4) fail('usage: build-demo.mjs <source-root> <artifact-root>');
+	if (process.argv.length !== 4 && !(process.argv.length === 6 && process.argv[4] === '--offline-assets')) {
+		fail('usage: build-demo.mjs <source-root> <artifact-root> [--offline-assets DIR]');
+	}
+	const offlineAssets = process.argv.length === 6 ? realpathSync(process.argv[5]) : undefined;
 	const sourceRoot = realpathSync(resolve(process.argv[2]));
 	const artifactRoot = realpathSync(resolve(process.argv[3]));
 	const demoSource = join(sourceRoot, 'demo');
@@ -212,12 +239,7 @@ async function main() {
 	mkdirSync(runtimeRoot, { recursive: true });
 
 	try {
-		const neovimArchive = await download(
-			lock.neovim.url,
-			{ accept: 'application/octet-stream', ...neovimPackageHeaders(lock.neovim.url) },
-			'error',
-		);
-		verify(neovimArchive, lock.neovim.sha256, 'Neovim WASM archive');
+		const neovimArchive = await loadAsset(lock.neovim, 'Neovim WASM archive', offlineAssets, true);
 		const neovimArchivePath = join(scratch, 'nvim-wasm-emscripten.zip');
 		writeFileSync(neovimArchivePath, neovimArchive);
 		run('unzip', ['-q', '-j', neovimArchivePath, ...runtimeMembers, '-d', runtimeRoot]);
@@ -232,12 +254,10 @@ async function main() {
 			writeFileSync(path, quietRuntimeDebug(readFileSync(path, 'utf8')));
 		}
 
-		const neovimLicense = await download(lock.neovim.license_url);
-		verify(neovimLicense, lock.neovim.license_sha256, 'Neovim license');
+		const neovimLicense = await loadAsset({ url: lock.neovim.license_url, sha256: lock.neovim.license_sha256 }, 'Neovim license', offlineAssets);
 		writeFileSync(join(target, 'LICENSE-neovim.txt'), neovimLicense);
 
-		const msgpackrArchive = await download(lock.msgpackr.url);
-		verify(msgpackrArchive, lock.msgpackr.sha256, 'msgpackr archive');
+		const msgpackrArchive = await loadAsset(lock.msgpackr, 'msgpackr archive', offlineAssets);
 		const msgpackrArchivePath = join(scratch, 'msgpackr.tgz');
 		writeFileSync(msgpackrArchivePath, msgpackrArchive);
 		writeFileSync(join(runtimeRoot, 'msgpackr.js'), run('tar', ['-xOzf', msgpackrArchivePath, lock.msgpackr.browser_path]));
@@ -249,7 +269,7 @@ async function main() {
 			copyFileSync(join(demoSource, name), join(target, name));
 		}
 		buildFileBundle(sourceRoot, join(target, 'bundle.js'));
-		await buildVendorBundle(lock, scratch, target);
+		await buildVendorBundle(lock, scratch, target, offlineAssets);
 		copyFileSync(join(demoSource, 'assets.lock.json'), join(target, 'assets.lock.json'));
 		writeFileSync(join(target, 'asset-manifest.json'), `${JSON.stringify(outputManifest(lock, target), null, 2)}\n`);
 	} finally {

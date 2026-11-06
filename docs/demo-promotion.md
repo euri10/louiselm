@@ -24,6 +24,33 @@ commit-addressed project package because upstream replaces numeric assets on
 every nightly release. CI authenticates with `CI_JOB_TOKEN`; local builds need
 `LOUISELM_DEMO_PACKAGE_TOKEN` with package-read access.
 
+### Offline builds
+
+`npm run site:build -- --offline-assets /private/demo-assets` reads every demo
+download from that directory, using its lowercase SHA256 as the filename, with
+no extension. Supply the original Neovim ZIP, Neovim license, msgpackr archive,
+Snacks archive and which-key archive at the digests in `demo/assets.lock.json`.
+The latter archives include their licenses, which retain their separate digest
+checks. Every selected file must be regular, not a symlink, and match its pin;
+missing or changed bytes fail without a download fallback. This mode never
+looks up the package token. Already-rendered demo output cannot replace these
+original inputs. Running without the option retains online downloading.
+
+The option controls demo assets, not npm or MyST provisioning. Before an offline
+build, trusted preparation must also supply the pinned Node/npm/MyST dependencies
+and the complete installed theme cache under
+`_build/templates/site/<SHA256 of the template URL in myst.yml>`, including its
+own dependencies. `myst clean --site --html --yes` preserves that cache while
+rebuilding all site content. MyST has no offline switch: use denied external
+networking with namespace-local loopback available for its rendering servers.
+Do not make credentials or network grants available to a confined verifier to
+repair missing inputs, or treat a host cache as verified provisioning evidence.
+
+`npm run site:test` includes an offline builder fixture with synthetic archives
+and explicit missing/drifted-input refusals. It needs Python 3 (standard-library
+ZIP creation), tar and unzip, and no downloads or credentials. These fixtures
+do not certify a real site build, trusted VM provisioning or deployed journeys.
+
 ## Deployed journey matrix
 
 Leave Result as `pending` until the entire row passes on the deployed route.
