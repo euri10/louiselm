@@ -519,7 +519,8 @@ fn the_cli_materializes_current_views_and_the_empty_mask() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let views: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let output: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let views = &output["views"];
     let skills = Path::new(views["claude"]["skills_root"].as_str().unwrap());
     assert_eq!(entries(skills), [member.package.directory_name()]);
     assert!(Digest::parse(views["claude"]["digest"].as_str().unwrap()).is_ok());

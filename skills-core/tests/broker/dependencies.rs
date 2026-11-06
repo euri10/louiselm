@@ -76,6 +76,7 @@ fn staged_inputs(
             arguments: vec![],
             environment: std::collections::BTreeMap::new(),
             tool_integration: None,
+            always_on_path: None,
         }),
         runtime: Some(RuntimeMeasurement {
             runtime_id: "runtime".into(),

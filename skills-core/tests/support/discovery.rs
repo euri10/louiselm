@@ -172,6 +172,7 @@ fn manifest_fixture(runtime: &RuntimePackage) -> SessionInputManifest {
             arguments: vec![],
             environment: BTreeMap::new(),
             tool_integration: None,
+            always_on_path: None,
         }),
         runtime: Some(runtime.measure().unwrap()),
         skills: Some(louiselm_skills::session_manifest::SkillInputs::Enabled {

@@ -61,6 +61,65 @@ fn provider_configuration_matches_the_lua_contract() {
     }
 }
 
+#[test]
+fn always_on_path_is_optional_and_round_trips_without_expansion() {
+    let fixture = tempfile::tempdir().unwrap();
+    for path in [
+        None,
+        Some("/home/operator/.codex/AGENTS.md"),
+        Some("/home/operator/$AGENT/~/instructions.md"),
+    ] {
+        let mut agent = serde_json::json!({
+            "id": "demo", "provider": "fixture", "runtime_id": "demo-runtime",
+            "arguments": [], "environment": {}
+        });
+        if let Some(path) = path {
+            agent["always_on_path"] = path.into();
+        }
+        let document = serde_json::json!({
+            "schema": "louiselm.launch.registry/1", "entries": [&agent]
+        });
+        fs::write(fixture.path().join("agents.json"), document.to_string()).unwrap();
+        let loaded = Registry::open(fixture.path())
+            .expect("an explicit absolute file destination or its absence is valid")
+            .agent("demo")
+            .unwrap();
+        assert_eq!(serde_json::to_value(loaded).unwrap(), agent);
+    }
+}
+
+#[test]
+fn always_on_path_rejects_nonabsolute_or_unsafe_file_destinations() {
+    let fixture = tempfile::tempdir().unwrap();
+    for path in [
+        "",
+        "/",
+        "AGENTS.md",
+        "~/.codex/AGENTS.md",
+        "$HOME/.codex/AGENTS.md",
+        "/home/operator/../AGENTS.md",
+        "/home/operator/AGENTS.md/",
+        "/home/operator/AGENTS.md/.",
+        "/home/operator/AGENTS\n.md",
+        "/home/operator/AGENTS\0.md",
+    ] {
+        let document = serde_json::json!({
+            "schema": "louiselm.launch.registry/1",
+            "entries": [{"id": "demo", "provider": "fixture", "runtime_id": "demo-runtime",
+                "arguments": [], "environment": {}, "always_on_path": path}]
+        });
+        fs::write(fixture.path().join("agents.json"), document.to_string()).unwrap();
+        assert!(
+            matches!(
+                Registry::open(fixture.path()),
+                Err(RegistryError::Malformed { kind, reason })
+                    if kind == "agent" && reason.contains("always_on_path")
+            ),
+            "destination {path:?} must be refused as an invalid always_on_path"
+        );
+    }
+}
+
 fn root_fixture() -> Option<tempfile::TempDir> {
     if !rustix::process::geteuid().is_root() {
         assert!(

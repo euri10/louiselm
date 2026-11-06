@@ -806,12 +806,27 @@ fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> 
     let alerts = endorsement::current_alerts(store)?;
     // Delivery needs the configured Agents, so it is reported only
     // when --registry names them.
-    let delivery = match (&status.generation, options.registry.is_some()) {
-        (Some(generation), true) => Some(admission::profile_delivery(
-            store,
-            &admission::load(store, &Digest::parse(generation)?)?,
-            &options.registered_agents()?,
-        )?),
+    let delivery = match (&status.generation, &options.registry) {
+        (Some(generation), Some(root)) => {
+            let registry = crate::registry::Registry::open(root)?;
+            Some(if admissible {
+                crate::instruction_view::profile_status(
+                    store,
+                    &options.policy()?,
+                    &registry,
+                    generation,
+                )?
+            } else {
+                let mut delivery = admission::profile_delivery(
+                    store,
+                    &admission::load(store, &Digest::parse(generation)?)?,
+                    &registry.agent_ids(),
+                )?;
+                delivery.undelivered = registry.agent_ids();
+                delivery.undelivered.sort();
+                delivery
+            })
+        }
         _ => None,
     };
     if options.robot {
@@ -933,15 +948,16 @@ fn view_command(options: &Options) -> Result<i32, CliError> {
             let registry = options.registry.as_ref().ok_or_else(|| {
                 CliError::Invalid("view materialize needs --registry <dir>".to_owned())
             })?;
-            instruction_view::materialize(
+            let (views, delivery) = instruction_view::materialize_for_operator(
                 &store,
                 &options.policy()?,
                 &crate::registry::Registry::open(registry)?,
-            )?
-            .iter()
-            .map(|(agent, view)| (agent.clone(), view_output(view)))
-            .collect::<serde_json::Map<_, _>>()
-            .into()
+            )?;
+            let views = views
+                .iter()
+                .map(|(agent, view)| (agent.clone(), view_output(view)))
+                .collect::<serde_json::Map<_, _>>();
+            serde_json::json!({"views": views, "operator_profile": delivery})
         }
         "empty" => view_output(&instruction_view::empty(&store)?),
         other => return Err(CliError::Invalid(format!("unknown view command '{other}'"))),

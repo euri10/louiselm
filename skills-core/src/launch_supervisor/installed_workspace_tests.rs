@@ -40,6 +40,7 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
         runtime_id: "runtime".into(),
         arguments: vec![],
         environment: std::collections::BTreeMap::new(),
+        always_on_path: None,
         tool_integration: Some(
             if codex.is_some() {
                 super::super::super::tool_integration::CODEX_CONTRACT

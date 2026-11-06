@@ -29,10 +29,13 @@ use crate::{
     admission::{self, AdmissionError},
     capture,
     generation::RECORD_SCHEMA,
+    inspect::PackageKind,
     posture::DimensionName,
     quarantine::{self, QuarantineError},
     registry::Registry,
 };
+
+mod profile;
 
 /// A materialized artifact; only this module constructs its identity and path.
 #[derive(Clone, Debug)]
@@ -142,7 +145,53 @@ pub fn materialize(
 ) -> Result<BTreeMap<String, InstructionView>, ViewError> {
     let (_locked, current) = admission::locked_current(store)?;
     let record = current.ok_or(ViewError::Refused("no_current_generation"))?;
-    validate_generation(store, policy, &record)?;
+    let packages = checked_packages(store, policy, &record)?;
+    publish_views(store, policy, registry, &record, &packages)
+}
+
+/// Ordinary CLI delivery holds the same Admission lock as view publication.
+/// Launch consumers call `materialize`, which never writes host instruction slots.
+pub(crate) fn materialize_for_operator(
+    store: &Store,
+    policy: &Policy,
+    registry: &Registry,
+) -> Result<
+    (
+        BTreeMap<String, InstructionView>,
+        admission::ProfileDelivery,
+    ),
+    ViewError,
+> {
+    let (_locked, current) = admission::locked_current(store)?;
+    let record = current.ok_or(ViewError::Refused("no_current_generation"))?;
+    let packages = checked_packages(store, policy, &record)?;
+    let views = publish_views(store, policy, registry, &record, &packages)?;
+    let delivery = profile::delivery(&record, &packages, registry, true)?;
+    Ok((views, delivery))
+}
+
+/// Rechecks current supply and declared files without publishing any artifact.
+pub(crate) fn profile_status(
+    store: &Store,
+    policy: &Policy,
+    registry: &Registry,
+    generation: &str,
+) -> Result<admission::ProfileDelivery, ViewError> {
+    let (_locked, current) = admission::locked_current(store)?;
+    let record = current.ok_or(ViewError::Refused("no_current_generation"))?;
+    if record.generation != generation {
+        return Err(ViewError::Refused("generation_changed_during_status"));
+    }
+    let packages = checked_packages(store, policy, &record)?;
+    profile::delivery(&record, &packages, registry, false)
+}
+
+fn checked_packages<'a>(
+    store: &Store,
+    policy: &Policy,
+    record: &'a GenerationRecord,
+) -> Result<BTreeMap<&'a str, Package>, ViewError> {
+    validate_generation(store, policy, record)?;
     require_directory(&store.root().join("packages"), false)?;
     let mut packages = BTreeMap::new();
     for member in &record.payload.members {
@@ -165,7 +214,16 @@ pub fn materialize(
         verify_tree(&package.root.join("files"), &expected, false)?;
         packages.insert(member.package_digest.as_str(), package);
     }
+    Ok(packages)
+}
 
+fn publish_views(
+    store: &Store,
+    policy: &Policy,
+    registry: &Registry,
+    record: &GenerationRecord,
+    packages: &BTreeMap<&str, Package>,
+) -> Result<BTreeMap<String, InstructionView>, ViewError> {
     let mut views = BTreeMap::new();
     for agent in registry.agent_ids() {
         let selected = record
@@ -174,6 +232,7 @@ pub fn materialize(
             .iter()
             .filter(|member| member.agents.contains(&agent))
             .map(|member| &packages[member.package_digest.as_str()])
+            .filter(|package| PackageKind::of(&package.manifest) == PackageKind::Skill)
             .collect::<Vec<_>>();
         let mut view = if selected.is_empty() {
             empty(store)?

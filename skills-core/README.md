@@ -407,7 +407,9 @@ refuses the operation; no member is silently dropped. Repeat the command to
 verify existing artifacts. A registry entry with no members receives the empty
 view; membership naming an unregistered Agent creates nothing on that host.
 
-Each result names a digest, `root` and `skills_root`. The store layout is
+The result's `views` map names a digest, `root` and `skills_root` for each Agent.
+Its `operator_profile` reports the profile package digest and `undelivered`
+Agent names. The store layout is
 `views/sha256-<view-digest>/view.json` plus
 `skills/sha256-<package-digest>/SKILL.md` and the package's supporting files.
 The digest covers a canonical description of Generation, Agent and package
@@ -415,6 +417,40 @@ identities, independent of host paths. Publication never overwrites an existing
 destination; files and directories are read-only and every reuse checks their
 contents, modes and complete inventory. The store owner must still protect its
 root from untrusted writers.
+
+An Agent registration may declare `"always_on_path": "/absolute/native/file"`
+for ordinary Operator profile delivery. This is the effective native instruction
+file, verified against that installed Agent; paths are literal, with no tilde or
+environment expansion. An absent declaration is supported and reported as
+undelivered. There is no filename inferred from an Agent or Provider name.
+
+Installed harness checks on 2026-11-06 established these paths:
+
+| Agent | Native instruction file |
+| --- | --- |
+| Claude 2.1.316 | `$CLAUDE_CONFIG_DIR/CLAUDE.md`, default `~/.claude/CLAUDE.md` |
+| Codex 0.159.1 | `$CODEX_HOME/AGENTS.md`, default `~/.codex/AGENTS.md`; a nonempty `AGENTS.override.md` takes precedence |
+| OpenCode 1.19.5 | `$OPENCODE_CONFIG_DIR/AGENTS.md`, otherwise `${XDG_CONFIG_HOME:-~/.config}/opencode/AGENTS.md` |
+
+Resolve these paths when registering the Agent. For Codex, register the effective
+override file if one is intentionally managed; writing a shadowed base file does
+not make the harness consume it. Native settings can also disable instruction
+loading. Delivery status checks the declared file, not a running Model's context.
+
+`view materialize` writes the complete admitted `PROFILE.md` bytes, including its
+frontmatter, into each declared slot within the signed Agent scope. It atomically
+replaces hand edits with a private file (mode `0600`), and refuses symlink or
+non-regular destinations and symlink parent directories. Every package is verified
+before delivery; invalid or quarantined supply writes no instruction file. Each
+replacement is atomic, not the whole multi-Agent batch: an I/O failure may leave
+earlier complete deliveries. Fix the error and rerun the command.
+
+Profiles never enter `skills/`. Shared launch materialization writes no host
+instruction files; Verified private-home binding is separate work. With no admitted
+profile, existing instruction files remain untouched. `generation status
+--registry DIR` checks actual declared file bytes and reports missing, changed,
+undeclared or out-of-scope destinations as undelivered. Registering a new Agent
+does not extend an existing signed scope; delivery to it needs a new Admission.
 
 `view empty --store DIR --robot-json` produces the canonical empty mask for
 `skills=off`, without requiring a Generation or trust enrollment. Its

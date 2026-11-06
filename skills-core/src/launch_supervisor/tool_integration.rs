@@ -400,6 +400,7 @@ mod tests {
             arguments: vec![],
             environment: BTreeMap::new(),
             tool_integration: contract.map(str::to_owned),
+            always_on_path: None,
         }
     }
 

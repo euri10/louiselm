@@ -31,6 +31,7 @@ fn agent() -> AgentRegistration {
         arguments: vec!["acp".to_owned()],
         environment: BTreeMap::from([("CODEX_HOME".to_owned(), "/opt/codex-home".to_owned())]),
         tool_integration: None,
+        always_on_path: None,
     }
 }
 

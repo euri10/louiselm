@@ -92,6 +92,7 @@ fn codex_configuration_explicitly_disables_added_extensions() {
         arguments: vec![],
         environment: BTreeMap::new(),
         tool_integration: Some(super::super::tool_integration::CODEX_CONTRACT.into()),
+        always_on_path: None,
     };
     assert_eq!(
         crate::runtime_configuration::resolve(&agent).unwrap(),

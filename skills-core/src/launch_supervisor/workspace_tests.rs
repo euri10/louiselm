@@ -42,6 +42,7 @@ fn registry_fixture(root: &Path) -> (Registry, AgentRegistration, RuntimePackage
         arguments: vec![],
         environment: std::collections::BTreeMap::new(),
         tool_integration: Some(crate::runtime_configuration::CONTRACT.into()),
+        always_on_path: None,
     };
     let runtime = RuntimePackage {
         id: "runtime".into(),

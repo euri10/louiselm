@@ -140,6 +140,11 @@ pub struct AgentRegistration {
     /// Verified launch; ordinary unverified Sessions need not opt in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_integration: Option<String>,
+    /// Explicit absolute native instruction file for ordinary Operator profile
+    /// delivery. No environment or tilde expansion; omission declares no slot.
+    /// Contained launch preparation never writes this host destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_on_path: Option<PathBuf>,
 }
 
 impl AgentRegistration {
@@ -422,6 +427,19 @@ impl Registry {
             validate_identifier("agent", &agent.id)?;
             validate_identifier("runtime", &agent.runtime_id)?;
             agent.provider.validate()?;
+            if let Some(path) = &agent.always_on_path
+                && (validate_absolute_path("agent", path).is_err()
+                    || path.file_name().is_none()
+                    || path.as_os_str().as_encoded_bytes().ends_with(b"/")
+                    || path.as_os_str().as_encoded_bytes().ends_with(b"/.")
+                    || path.to_string_lossy().chars().any(char::is_control))
+            {
+                return Err(RegistryError::Malformed {
+                        kind: "agent".to_owned(),
+                        reason: "always_on_path must name an absolute, normalized file without control characters"
+                            .to_owned(),
+                    });
+            }
         }
         for envelope in &self.envelopes {
             validate_identifier("envelope", &envelope.id)?;

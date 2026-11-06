@@ -79,12 +79,13 @@ pub struct AdmissionRequest<'a> {
 }
 
 /// Which Operator profile a Generation carries, and which configured Agents
-/// it does not reach.
+/// it does not reach under the caller's scope or file-delivery check.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProfileDelivery {
     /// The profile member's package digest, when the Generation has one.
     pub profile: Option<String>,
-    /// Configured Agents the profile is not scoped to, sorted.
+    /// Configured Agents not reached, sorted. Admission checks signed scope;
+    /// ordinary delivery additionally checks the declared native files.
     pub undelivered: Vec<String>,
 }
 
