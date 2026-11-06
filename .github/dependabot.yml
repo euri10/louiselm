@@ -4,8 +4,8 @@
 # waits for the maintainer. Squash-merge only: the commit policy
 # (scripts/check-release-commits.py) can reject a merge commit's message.
 # Not tracked here, pinned by hand: StyLua, LuaLS, restic and the Android SDK
-# platform in .github/workflows/ci.yml, mini.nvim in scripts/install-test-deps,
-# and the verifier toolchain in scripts/verifier-toolchain.
+# platform in .github/workflows/ci.yml, mini.nvim and Snacks in
+# scripts/install-test-deps, and the verifier toolchain in scripts/verifier-toolchain.
 # A release must age a week (cooldown) before it is proposed; most broken or
 # malicious versions are yanked within days.
 version: 2

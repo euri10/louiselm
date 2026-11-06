@@ -7,6 +7,7 @@ umask 022
 export PATH=/usr/bin:/bin
 root=/usr/lib/louiselm/verifier
 mini_revision=1345d191bb3da9c7b0e977f4387c5761f9bff68d
+snacks_revision=882c996cf28183f4d63640de0b4c02ec886d01f2
 sqlite_package=3.46.1-7+deb13u2
 yaml_package=6.2.8-2+b2
 
@@ -17,6 +18,16 @@ download() {
     --max-time 900 --retry 2 --output "$destination" "$url"
   printf '%s  %s\n' "$digest" "$destination" | sha256sum --check --status ||
     fail "download checksum mismatch: ${destination##*/}"
+}
+install_plugin() {
+  local name=$1 revision=$2 url=$3
+  git clone --filter=blob:none --no-checkout "$url" "$scratch/$name.nvim"
+  git -C "$scratch/$name.nvim" fetch --depth 1 origin "$revision"
+  git -C "$scratch/$name.nvim" checkout --detach "$revision"
+  [[ $(git -C "$scratch/$name.nvim" rev-parse HEAD) == "$revision" ]] || fail "$name.nvim revision mismatch"
+  install -d -m 0755 "$stage/$name.nvim"
+  git -C "$scratch/$name.nvim" archive HEAD | tar -x -C "$stage/$name.nvim"
+  printf '%s\n' "$revision" > "$stage/$name-revision"
 }
 check() {
   [[ -d $root && ! -L $root ]] || fail "missing trusted toolchain at $root"
@@ -29,6 +40,7 @@ check() {
   [[ $("$root/bin/stylua" --version) == 'stylua 2.5.2' ]] || fail 'StyLua version drift'
   [[ $("$root/bin/lua-language-server" --version) == *'3.19.1'* ]] || fail 'LuaLS version drift'
   [[ $(<"$root/mini-revision") == "$mini_revision" ]] || fail 'mini.nvim revision drift'
+  [[ $(<"$root/snacks-revision") == "$snacks_revision" ]] || fail 'snacks.nvim revision drift'
   [[ $(/usr/bin/sqlite3 --version) == 3.46.1\ * ]] || fail 'sqlite3 version drift'
   env -i HOME=/tmp PATH="$root/bin:/usr/bin:/bin" \
     'LUA_PATH=/usr/share/lua/5.1/?.lua;/usr/share/lua/5.1/?/init.lua;;' \
@@ -68,13 +80,8 @@ case ${1:-} in
     install -m 0755 "$0" "$stage/bin/verifier-toolchain"
     ln -s ../nvim/bin/nvim "$stage/bin/nvim"
     ln -s ../luals/bin/lua-language-server "$stage/bin/lua-language-server"
-    git clone --filter=blob:none --no-checkout https://github.com/nvim-mini/mini.nvim.git "$scratch/mini.nvim"
-    git -C "$scratch/mini.nvim" fetch --depth 1 origin "$mini_revision"
-    git -C "$scratch/mini.nvim" checkout --detach "$mini_revision"
-    [[ $(git -C "$scratch/mini.nvim" rev-parse HEAD) == "$mini_revision" ]] || fail 'mini.nvim revision mismatch'
-    install -d -m 0755 "$stage/mini.nvim"
-    git -C "$scratch/mini.nvim" archive HEAD | tar -x -C "$stage/mini.nvim"
-    printf '%s\n' "$mini_revision" > "$stage/mini-revision"
+    install_plugin mini "$mini_revision" https://github.com/nvim-mini/mini.nvim.git
+    install_plugin snacks "$snacks_revision" https://github.com/folke/snacks.nvim.git
     (cd "$stage" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
     chmod 0755 "$stage"
     mv -T -- "$stage" "$root"

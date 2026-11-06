@@ -104,8 +104,17 @@ XDG_STATE_HOME="$qa_state" nvim --noplugin -i NONE \
   -u scripts/interaction_qa.lua --listen "$qa_state/nvim.sock"
 ```
 
-Permission and interaction decisions use LouiseLM's owned windows. Other
-commands, such as the Session picker, use the configured UI provider.
+Permission and interaction selectors use Snacks automatically when it is the
+configured `vim.ui.select` provider, preserving its select layout, filtering
+and key bindings. No extra LouiseLM setting is needed. Without that provider,
+they use LouiseLM's native windows; editable inputs and read-only previews
+remain native in both cases. LouiseLM owns the decision lifecycle in either
+presentation: leaving a Session retains its pending choice and search, and
+Snacks' global resume cannot revive a hidden or retired decision. Picker-level
+automatic confirmation is disabled for decisions; the Agent's configured
+permission policy and auto-approval behavior are unchanged.
+
+Other commands, such as the Session picker, use the configured UI provider.
 To check those commands with the usual provider in a separate instance, omit
 `--noplugin -u scripts/interaction_qa.lua` and instead add
 `-c 'luafile scripts/interaction_qa.lua'`. The init refuses live Sessions; never

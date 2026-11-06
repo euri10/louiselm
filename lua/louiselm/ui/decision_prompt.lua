@@ -1,5 +1,6 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns this presentation boundary.
 local nvim = vim
+local Snacks = require("louiselm.ui.decision_snacks")
 
 ---@class louiselm.ui.DecisionSelectOptions
 ---@field prompt? string Single-line title; control characters are displayed as spaces.
@@ -21,6 +22,7 @@ local nvim = vim
 ---@field package callback? fun(value?: unknown, index?: integer)
 ---@field package saved_view? table<string, integer>
 ---@field package can_show? fun(): boolean Whether the requesting Session currently owns the host.
+---@field package snacks? louiselm.ui.DecisionSnacks Optional configured selector, owned by this prompt.
 ---@field select fun(self: louiselm.ui.DecisionPrompt, items: unknown[], options: louiselm.ui.DecisionSelectOptions, callback: fun(item?: unknown, index?: integer)): boolean, string?
 ---@field input fun(self: louiselm.ui.DecisionPrompt, options: louiselm.ui.DecisionInputOptions, callback: fun(value?: string)): boolean, string?
 ---@field inspect fun(self: louiselm.ui.DecisionPrompt, lines: string[], title: string, on_close: fun()): boolean, string?
@@ -40,6 +42,7 @@ end
 ---@param self louiselm.ui.DecisionPrompt
 local function clear(self)
   self:hide()
+  self.snacks = nil
   local buffer = self.buffer
   self.buffer = nil
   self.kind = nil
@@ -94,6 +97,9 @@ end
 ---@param self louiselm.ui.DecisionPrompt
 ---@return boolean owned False for hidden, disposed or unfocused presentations.
 function Prompt:contains_current()
+  if self.snacks ~= nil then
+    return not self.disposed and self.snacks:contains_current()
+  end
   return not self.disposed
     and self.buffer ~= nil
     and nvim.api.nvim_get_current_buf() == self.buffer
@@ -105,6 +111,9 @@ end
 ---@return boolean hidden Whether a visible window was closed.
 function Prompt:hide()
   self.revision = self.revision + 1
+  if self.snacks ~= nil then
+    return self.snacks:hide()
+  end
   local window = self.window
   if
     self.kind == "input"
@@ -130,12 +139,15 @@ function Prompt:show()
   if self.disposed then
     return false, "decision prompt is disposed"
   end
-  if self.buffer == nil or not nvim.api.nvim_buf_is_valid(self.buffer) then
+  if self.snacks == nil and (self.buffer == nil or not nvim.api.nvim_buf_is_valid(self.buffer)) then
     return false, "no decision prompt is prepared"
   end
   if self.can_show ~= nil and not self.can_show() then
     self:hide()
     return true
+  end
+  if self.snacks ~= nil then
+    return self.snacks:show()
   end
   if self.window ~= nil and nvim.api.nvim_win_is_valid(self.window) then
     return true
@@ -201,11 +213,26 @@ local function replace(self, kind, lines, title, callback, items)
   end
   clear(self)
   local ok, err = pcall(function()
-    self.buffer = nvim.api.nvim_create_buf(false, true)
     self.kind = kind
     self.title = single_line(title)
     self.callback = callback
     self.items = items
+    if kind == "select" and items ~= nil then
+      self.snacks = Snacks.new(lines, self.title, function(index)
+        local value
+        if index ~= nil then
+          value = items[index]
+        end
+        clear(self)
+        callback(value, index)
+      end, function()
+        return not self.disposed and (self.can_show == nil or self.can_show())
+      end)
+    end
+    if self.snacks ~= nil then
+      return
+    end
+    self.buffer = nvim.api.nvim_create_buf(false, true)
     nvim.api.nvim_set_option_value("buftype", "nofile", { buf = self.buffer })
     nvim.api.nvim_set_option_value("bufhidden", "hide", { buf = self.buffer })
     nvim.api.nvim_set_option_value("swapfile", false, { buf = self.buffer })

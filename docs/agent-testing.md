@@ -29,12 +29,12 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
 ```
 
 The verifier Lua toolchain is provisioned from a trusted release under
-`/usr/lib/louiselm/verifier`; its binaries and pinned `mini.nvim` are read-only
-inside the tool namespace. On Debian 13 x86-64, run
+`/usr/lib/louiselm/verifier`; its binaries and pinned `mini.nvim`/`snacks.nvim`
+are read-only inside the tool namespace. On Debian 13 x86-64, run
 `scripts/verifier-toolchain install` as root during trusted provisioning, after
 refreshing package metadata. It pins Debian `sqlite3` and `lua-yaml` versions,
 checksums the upstream Neovim, StyLua and LuaLS archives before extraction, and
-checks the exact `mini.nvim` revision. `scripts/verifier-toolchain check` is
+checks both plugin revisions. `scripts/verifier-toolchain check` is
 offline and rejects missing or changed files and versions; every verification
 run checks the installed copy before executing candidate commands. The verifier
 sets Lua 5.1's system package paths explicitly so the release Neovim can load
@@ -372,8 +372,15 @@ nvim --headless --noplugin -u "$PWD/tests/minimal_init.lua" \
   -c 'lua MiniTest.run()' -c 'qa!'
 ```
 
-`install-test-deps` provisions mini.nvim and nothing else. The skills specs
-additionally need `lyaml`, which the script deliberately does not install:
+`install-test-deps` provisions pinned mini.nvim and Snacks checkouts. Real-Snacks
+decision-picker tests are mandatory: they use `SNACKS_NVIM_PATH` when supplied,
+otherwise the `snacks.nvim` sibling of `MINI_NVIM_PATH`, or `.deps/snacks.nvim`
+when neither variable is set. The trusted verifier provisions that sibling
+read-only, so the tests need no network or developer checkout. Installer changes
+also run `python3 scripts/test-install-test-deps.py`; CI enforces this offline
+fixture, including cached pins and refusal of invalid checkouts/revisions.
+The skills specs additionally need `lyaml`, which the script deliberately does
+not install:
 
 ```bash
 luarocks --lua-version 5.1 install lyaml

@@ -8,13 +8,18 @@ public API documentation. Read once before applicable work.
 - Target the latest stable Neovim at release and its embedded LuaJIT/Lua 5.1.
   Do not support standalone Lua or add Lua 5.2+ syntax, APIs, or version shims.
 - Lua runtime dependencies are forbidden; use LuaJIT and stable Neovim APIs.
-  One named exception: `lyaml`, which `skills/discovery.lua` uses to parse
+  Named exceptions: `lyaml`, which `skills/discovery.lua` uses to parse
   SKILL.md frontmatter. Hand-rolling a YAML subset is explicitly rejected —
   frontmatter parsing is load-bearing rather than incidental, since a
   persisted workflow may itself be a frontmatter document discovered by the
-  same mechanism (louiselm-4gif, louiselm-uqip). This is one exception with a
-  rationale, not an open door; the bullet below still governs everything else.
-- `mini.test` is the sole *direct* Lua test dependency. The suite additionally
+  same mechanism (louiselm-4gif, louiselm-uqip); and optional `snacks.nvim`
+  integration for Session-owned decision selectors when Snacks is the configured
+  `vim.ui.select` provider (maintainer-approved, louiselm-d2mgl.7). Preserve its
+  layout and controls without weakening Session visibility or callback ownership;
+  retain native UI when Snacks is absent or not selected. These exceptions do not
+  authorize other dependencies.
+- `mini.test` and the pinned `snacks.nvim` integration fixture are the direct Lua
+  test dependencies. The suite additionally
   needs `lyaml` present, reached through the skills code rather than required
   by a test — see [testing](agent-testing.md) for the install commands and why
   its absence surfaces as scattered assertion failures.

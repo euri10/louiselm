@@ -360,9 +360,9 @@ jobs:
             sudo -n env LOUISELM_LUA_SOURCE=/var/tmp/louiselm-lua-source timeout 900 \
               /bin/bash -c '\''umask 077; exec "$1" launch_supervisor::tool_execution::tests::privileged_confined_lua_gates_from_clean_snapshot --exact --nocapture'\'' bash "$library_test"
           '
-          # The disposable overlay must also reject changed trusted bytes.
+          # The disposable overlay must also reject changed dependency bytes.
           ./scripts/launcher-vm exec sudo -n bash -ceu '
-            printf drift >> /usr/lib/louiselm/verifier/mini-revision
+            printf drift >> /usr/lib/louiselm/verifier/snacks.nvim/lua/snacks/init.lua
             if output=$(/bin/bash /home/vm/verifier-toolchain check 2>&1); then
               echo "changed toolchain passed its check" >&2; exit 1
             fi
@@ -516,22 +516,16 @@ jobs:
           neovim: true
           version: ${{ matrix.neovim }}
 
-      # scripts/install-test-deps pins mini.nvim to an exact revision and
-      # verifies it after checkout, so the cache key can be that revision:
-      # it stays warm until the pin is deliberately bumped.
-      - name: Resolve pinned mini.nvim revision
-        id: mini
-        run: |
-          set -eu
-          rev=$(sed -n 's/^mini_revision="\(.*\)"$/\1/p' scripts/install-test-deps)
-          test -n "$rev"
-          echo "revision=$rev" >> "$GITHUB_OUTPUT"
-
-      - name: Cache mini.nvim
+      # The installer pins and verifies both plugins. Its bytes invalidate the
+      # cache whenever either pin or the installation contract changes.
+      - name: Cache Lua test dependencies
         uses: actions/cache@v6
         with:
           path: .deps
-          key: mini-nvim-${{ steps.mini.outputs.revision }}
+          key: lua-test-deps-${{ hashFiles('scripts/install-test-deps') }}
+
+      - name: Verify pinned dependency installation
+        run: python3 scripts/test-install-test-deps.py
 
       - name: Install test dependencies
         run: ./scripts/install-test-deps
@@ -541,13 +535,9 @@ jobs:
       # it does not crash -- it silently fails 36 assertions across four spec
       # files that expect real parsed skill data (louiselm-zpsj).
       #
-      # scripts/install-test-deps provisions only mini.nvim, so this is
-      # installed here rather than by the documented setup path. That split is
-      # deliberate but temporary: teaching the script to do it would make a
-      # LuaRocks/LibYAML toolchain a prerequisite for running the tests, which
-      # sits awkwardly against docs/agent-lua.md ("Lua runtime dependencies
-      # are forbidden", "mini.test is the sole test dependency"). See
-      # louiselm-zpsj before collapsing the two.
+      # scripts/install-test-deps provisions mini.nvim and Snacks. LuaRocks and
+      # LibYAML provisioning remains an explicit operator/CI step; see
+      # louiselm-zpsj before combining those setup paths.
       #
       # Exporting LUA_PATH/LUA_CPATH is the mechanism the project already
       # documents for this: discovery.lua's own error text tells users to eval
