@@ -34,8 +34,12 @@ are read-only inside the tool namespace. On Debian 13 x86-64, run
 `scripts/verifier-toolchain install` as root during trusted provisioning, after
 refreshing package metadata. It pins Debian `sqlite3` and `lua-yaml` versions,
 checksums the upstream Neovim, StyLua and LuaLS archives before extraction, and
-checks both plugin revisions. `scripts/verifier-toolchain check` is
-offline and rejects missing or changed files and versions; every verification
+checks both plugin revisions. Extraction ignores upstream numeric owners and
+applies umask `022` instead of preserving group/world write permissions;
+publication and checks require root ownership throughout and no group/world
+write permission (symlink mode bits are ignored). `scripts/verifier-toolchain check` is
+offline and rejects unsafe metadata before executing tools, as well as missing
+or changed files and versions; every verification
 run checks the installed copy before executing candidate commands. The verifier
 sets Lua 5.1's system package paths explicitly so the release Neovim can load
 Debian's `lyaml`. Provisioning generates LuaLS's built-in definitions before
@@ -49,6 +53,11 @@ and a private home. It uses umask `077`, matching the installed launcher;
 permission fixtures must establish and assert their actual intended mode rather
 than relying on `mkdir` to bypass umask (louiselm-recording-fixture-umask-69fu8).
 That offline VM gate is required; a host-side Lua pass does not substitute for it.
+The job also runs `sudo python3 scripts/test-verifier-toolchain.py` in the guest.
+Its offline, resource-limited private filesystem exercises the real extraction
+commands with UID/GID 1001 archives and rejects owner/group/write-mode drift
+without touching installed tools. Run it only in the prepared launcher VM,
+with `verifier-toolchain` beside the test script (louiselm-l72qk).
 Bump the pinned versions and hashes deliberately when updating the verifier toolchain.
 
 The stock Codex configuration also runs
