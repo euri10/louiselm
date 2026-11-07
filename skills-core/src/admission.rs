@@ -24,8 +24,10 @@
 
 mod linked;
 mod transaction;
+mod verification;
 mod withdrawals;
 pub use linked::{admit_linked, linked_generation_members, verify_linked};
+pub use verification::verify_record;
 pub(crate) use withdrawals::supply_withdrawal_alerts;
 
 use std::{fs, io, path::PathBuf};
@@ -38,8 +40,8 @@ use crate::{
     dossier::{Dossier, DossierError, DossierRequest, NextAction, ReviewDepth},
     endorsement::focus::FocusContext,
     generation::{
-        GENERATION_SCHEMA, GenerationPayload, GenerationRecord, GenerationState, Member,
-        RECORD_SCHEMA,
+        GENERATION_SCHEMA, GenerationPayload, GenerationRecord, GenerationState, HISTORICAL_SCHEMA,
+        Member, RECORD_SCHEMA,
     },
     inspect::PackageKind,
     policy::Policy,
@@ -47,7 +49,7 @@ use crate::{
     signer::{Signer, SignerError},
     sshsig::{self, ADMISSION_NAMESPACE},
     store::{Store, StoreError},
-    trust::{Role, TrustError, TrustStore},
+    trust::{TrustError, TrustStore},
     witness::{Witness, WitnessError, WitnessEvidence},
 };
 
@@ -260,7 +262,26 @@ pub fn admit(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
 ) -> Result<GenerationRecord, AdmissionError> {
-    admit_inner(store, policy, request, None)
+    admit_inner(store, policy, request, None, None)
+}
+
+/// Admits a freshly reviewed `/3` successor to the exact current `/2` history.
+///
+/// This is an explicit new Admission, not conversion of an old signature. It
+/// preserves the trust domain and historical bytes, and returns a candidate
+/// requiring the ordinary witness and activation steps. Legacy records remain
+/// unusable as active supply in this build.
+///
+/// # Errors
+/// Refuses an absent, changed, unwitnessed or unverifiable legacy predecessor,
+/// and returns the same review, signing and persistence errors as [`admit`].
+pub fn admit_transition(
+    store: &Store,
+    policy: &Policy,
+    request: &AdmissionRequest<'_>,
+    expected_predecessor: &Digest,
+) -> Result<GenerationRecord, AdmissionError> {
+    admit_inner(store, policy, request, None, Some(expected_predecessor))
 }
 
 fn admit_inner(
@@ -268,10 +289,21 @@ fn admit_inner(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
     operation: Option<&str>,
+    transition: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
     let locked = transaction::lock(store)?;
     let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
     let signing_key = trust.admission_key()?.clone();
+    let previous = current_unlocked(store)?;
+    verification::admission_predecessor(store, previous.as_ref(), &trust, transition)?;
+    let sequence = match &previous {
+        None => 1,
+        Some(record) => record
+            .payload
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| AdmissionError::Chain("Generation sequence exhausted".to_owned()))?,
+    };
 
     // Focus is recomputed here from local evidence, exactly as the Dossier
     // view shows it; what it relied on is signed with the member.
@@ -316,12 +348,9 @@ fn admit_inner(
         });
     }
 
-    let previous = current_unlocked(store)?;
     let mut payload = GenerationPayload::new(
         &trust.trust_domain,
-        previous
-            .as_ref()
-            .map_or(1, |record| record.payload.sequence + 1),
+        sequence,
         previous.as_ref().map(|record| record.digest().to_string()),
         &policy.digest().to_string(),
         members,
@@ -356,89 +385,6 @@ fn admit_inner(
     trust.approved_admissions.insert(record.generation.clone());
     locked.write(&trust)?;
     Ok(record)
-}
-
-/// Checks a stored record against the chain and the enrolled keys.
-///
-/// # Errors
-/// Rejects schema, digest, trust-domain, signer, or predecessor/sequence inconsistencies; propagates trust, signature, and stored-chain read errors.
-pub fn verify_record(
-    store: &Store,
-    record: &GenerationRecord,
-    trust: &TrustStore,
-) -> Result<(), AdmissionError> {
-    if record.payload.schema != GENERATION_SCHEMA {
-        return Err(AdmissionError::Chain(format!(
-            "unsupported payload schema '{}'",
-            record.payload.schema
-        )));
-    }
-    let actual = record.payload.digest();
-    if record.generation != actual.to_string() {
-        return Err(AdmissionError::DigestMismatch {
-            claimed: record.generation.clone(),
-            actual: actual.to_string(),
-        });
-    }
-    if record.payload.trust_domain != trust.trust_domain {
-        return Err(AdmissionError::Chain(format!(
-            "trust domain '{}' is not '{}'",
-            record.payload.trust_domain, trust.trust_domain
-        )));
-    }
-    if record.payload.signer_role != Role::Primary.name() {
-        return Err(AdmissionError::Chain(format!(
-            "signer role '{}' may not admit a Generation",
-            record.payload.signer_role
-        )));
-    }
-    if record.payload.member_root != record.payload.recomputed_member_root().to_string() {
-        return Err(AdmissionError::RootMismatch);
-    }
-    verify_chain_position(store, record)?;
-
-    let payload_bytes = record.payload.canonical_bytes();
-    let mut last = None;
-    for key in trust.verification_keys(Role::Primary, &record.generation) {
-        match sshsig::verify(
-            &record.signature,
-            ADMISSION_NAMESPACE,
-            &payload_bytes,
-            &key.public_key,
-            key.sk_policy,
-        ) {
-            Ok(_) => return Ok(()),
-            Err(error) => last = Some(error),
-        }
-    }
-    Err(AdmissionError::Signature(last.unwrap_or(
-        sshsig::SignatureError::KeyMismatch {
-            found: "no enrolled primary key".to_owned(),
-        },
-    )))
-}
-
-fn verify_chain_position(store: &Store, record: &GenerationRecord) -> Result<(), AdmissionError> {
-    match (&record.payload.predecessor, record.payload.sequence) {
-        (None, 1) => Ok(()),
-        (None, sequence) => Err(AdmissionError::Chain(format!(
-            "sequence {sequence} declares no predecessor"
-        ))),
-        (Some(_), 1) => Err(AdmissionError::Chain(
-            "the first Generation cannot have a predecessor".to_owned(),
-        )),
-        (Some(predecessor), sequence) => {
-            let digest = Digest::parse(predecessor)?;
-            let earlier = load_unlocked(store, &digest)?;
-            if earlier.payload.sequence + 1 != sequence {
-                return Err(AdmissionError::Chain(format!(
-                    "sequence {sequence} does not follow {}",
-                    earlier.payload.sequence
-                )));
-            }
-            Ok(())
-        }
-    }
 }
 
 /// Publishes and confirms a Generation's exact bytes on the witness remote.
@@ -530,13 +476,26 @@ pub fn activate(
                 current: previous.payload.sequence,
             });
         }
+        if record.payload.predecessor.as_deref() != Some(previous.generation.as_str()) {
+            return Err(AdmissionError::Chain(
+                "candidate does not follow the current Generation".to_owned(),
+            ));
+        }
+    } else {
+        verification::require_no_legacy_history(store)?;
+        if record.payload.predecessor.is_some() {
+            return Err(AdmissionError::Chain(
+                "candidate has no current predecessor".to_owned(),
+            ));
+        }
     }
     record.state = GenerationState::Current;
     transaction::activate(store, previous.as_ref(), &record, activated_at_ms)?;
     Ok(record)
 }
 
-/// Returns the Generation in force, when there is one.
+/// Reads the locally current record, without granting supply authority.
+/// Historical `/2` records are inspectable here; consumers must verify them.
 ///
 /// # Errors
 /// Returns lock, interrupted-activation recovery, listing, or decoding errors.
@@ -558,15 +517,7 @@ pub(crate) fn locked_current(
     AdmissionError,
 > {
     let locked = transaction::lock(store)?;
-    let mut records = list_unlocked(store)?
-        .into_iter()
-        .filter(|record| record.state == GenerationState::Current);
-    let current = records.next();
-    if records.next().is_some() {
-        return Err(AdmissionError::Chain(
-            "multiple current Generations".to_owned(),
-        ));
-    }
+    let current = current_unlocked(store)?;
     if let Some(record) = &current {
         let trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
         verify_record(store, record, &trust)?;
@@ -673,6 +624,11 @@ fn admitted_unlocked(store: &Store) -> Result<Vec<Digest>, AdmissionError> {
     let Some(record) = current_unlocked(store)? else {
         return Ok(Vec::new());
     };
+    // Match the Dossier/status view: retained history is not current supply
+    // and does not earn an admitted focus base for the new review.
+    if record.payload.schema == HISTORICAL_SCHEMA {
+        return Ok(Vec::new());
+    }
     let quarantine = quarantine::load(store)?;
     let (effective, _) = quarantine::partition(
         quarantine.as_ref(),
@@ -686,9 +642,22 @@ fn admitted_unlocked(store: &Store) -> Result<Vec<Digest>, AdmissionError> {
 }
 
 fn current_unlocked(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError> {
-    Ok(list_unlocked(store)?
-        .into_iter()
-        .find(|record| record.state == GenerationState::Current))
+    Ok(unique_current(&list_unlocked(store)?)?.cloned())
+}
+
+fn unique_current(
+    records: &[GenerationRecord],
+) -> Result<Option<&GenerationRecord>, AdmissionError> {
+    let mut current = records
+        .iter()
+        .filter(|record| record.state == GenerationState::Current);
+    let first = current.next();
+    if current.next().is_some() {
+        return Err(AdmissionError::Chain(
+            "multiple current Generations".to_owned(),
+        ));
+    }
+    Ok(first)
 }
 
 /// Reads a stored record without verifying it.
@@ -796,35 +765,80 @@ pub fn record_path(store: &Store, digest: &Digest) -> PathBuf {
 pub fn status(store: &Store) -> Result<GenerationStatus, AdmissionError> {
     let records = list(store)?;
     let quarantine = quarantine::load(store)?;
-    let in_force = records
-        .iter()
-        .find(|record| record.state == GenerationState::Current);
+    let in_force = unique_current(&records)?;
+    let historical = in_force.filter(|record| record.payload.schema == HISTORICAL_SCHEMA);
     let pending = records
         .iter()
-        .filter(|record| record.state == GenerationState::PendingWitness)
+        .filter(|record| {
+            record.state == GenerationState::PendingWitness
+                && record.payload.schema == GENERATION_SCHEMA
+        })
         .collect::<Vec<_>>();
 
     let (effective_members, excluded_members) = match in_force {
-        Some(record) => quarantine::partition(
+        Some(record) if historical.is_none() => quarantine::partition(
             quarantine.as_ref(),
             &record.generation,
             &record.payload.member_digests(),
         ),
-        None => (Vec::new(), Vec::new()),
+        _ => (Vec::new(), Vec::new()),
     };
     let state = in_force.map(|record| {
-        if excluded_members.is_empty() {
+        if historical.is_some() {
+            GenerationState::Invalid
+        } else if excluded_members.is_empty() {
             record.state
         } else {
             GenerationState::Quarantined
         }
     });
 
-    let next_action = if records.is_empty() {
+    let next_action = status_next_action(&records, in_force, &pending, excluded_members.len());
+    Ok(GenerationStatus {
+        schema: STATUS_SCHEMA.to_owned(),
+        state,
+        generation: in_force.map(|record| record.generation.clone()),
+        sequence: in_force.map(|record| record.payload.sequence),
+        predecessor: in_force.and_then(|record| record.payload.predecessor.clone()),
+        signer_role: in_force.map(|record| record.payload.signer_role.clone()),
+        witness: in_force.and_then(|record| record.witness.clone()),
+        effective_members,
+        excluded_members,
+        pending: pending
+            .iter()
+            .map(|record| record.generation.clone())
+            .collect(),
+        failure: historical
+            .map(|_| {
+                "generation/2 is retained history, not active supply in this release".to_owned()
+            })
+            .or_else(|| in_force.and_then(|record| record.invalid_reason.clone())),
+        next_action,
+    })
+}
+
+// Guidance is derived from the same snapshot as the status; it is not authority
+// to skip the verification at the selected operation's boundary.
+fn status_next_action(
+    records: &[GenerationRecord],
+    in_force: Option<&GenerationRecord>,
+    pending: &[&GenerationRecord],
+    excluded: usize,
+) -> NextAction {
+    if records.is_empty() {
         NextAction {
             id: "admit_first_generation".to_owned(),
             detail: "No Skill Generation exists; admit one to give a verified Session any supply."
                 .to_owned(),
+        }
+    } else if in_force.is_none()
+        && records
+            .iter()
+            .any(|record| record.payload.schema == HISTORICAL_SCHEMA)
+    {
+        NextAction {
+            id: "inspect_generation_history".to_owned(),
+            detail: "Historical generation/2 records exist without a current predecessor; inspect retained history before Admission or activation.".to_owned(),
         }
     } else if let Some(record) = pending.iter().find(|record| record.witness.is_some()) {
         NextAction {
@@ -842,12 +856,21 @@ pub fn status(store: &Store) -> Result<GenerationStatus, AdmissionError> {
                 record.generation
             ),
         }
-    } else if !excluded_members.is_empty() {
+    } else if let Some(record) =
+        in_force.filter(|record| record.payload.schema == HISTORICAL_SCHEMA)
+    {
+        NextAction {
+            id: "admit_history_successor".to_owned(),
+            detail: format!(
+                "Historical generation/2 is not active supply in this release; review members and admit a new Generation with --transition-from {}, then witness and activate it.",
+                record.generation
+            ),
+        }
+    } else if excluded != 0 {
         NextAction {
             id: "admit_after_quarantine".to_owned(),
             detail: format!(
-                "{} member(s) are quarantined; restoring them requires a newly admitted Generation.",
-                excluded_members.len()
+                "{excluded} member(s) are quarantined; restoring them requires a newly admitted Generation."
             ),
         }
     } else {
@@ -855,25 +878,7 @@ pub fn status(store: &Store) -> Result<GenerationStatus, AdmissionError> {
             id: "none".to_owned(),
             detail: "The current Generation is witnessed and in force.".to_owned(),
         }
-    };
-
-    Ok(GenerationStatus {
-        schema: STATUS_SCHEMA.to_owned(),
-        state,
-        generation: in_force.map(|record| record.generation.clone()),
-        sequence: in_force.map(|record| record.payload.sequence),
-        predecessor: in_force.and_then(|record| record.payload.predecessor.clone()),
-        signer_role: in_force.map(|record| record.payload.signer_role.clone()),
-        witness: in_force.and_then(|record| record.witness.clone()),
-        effective_members,
-        excluded_members,
-        pending: pending
-            .iter()
-            .map(|record| record.generation.clone())
-            .collect(),
-        failure: in_force.and_then(|record| record.invalid_reason.clone()),
-        next_action,
-    })
+    }
 }
 
 fn write_record(store: &Store, record: &GenerationRecord) -> Result<(), AdmissionError> {

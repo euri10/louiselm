@@ -235,6 +235,15 @@ pub fn run() -> Result<i32, CliError> {
             "--skill-request requires generation admit".into(),
         ));
     }
+    if options.transition_from.is_some()
+        && (command != "generation"
+            || options.subject("generation")? != "admit"
+            || options.skill_request.is_some())
+    {
+        return Err(CliError::Invalid(
+            "--transition-from requires generation admit without --skill-request".into(),
+        ));
+    }
 
     match command {
         "package" => package(&options),
@@ -297,6 +306,9 @@ struct Options {
     key: Option<String>,
     #[arg(long)]
     skill_request: Option<String>,
+    /// Exact current generation/2 to follow with a freshly reviewed generation/3.
+    #[arg(long)]
+    transition_from: Option<String>,
     #[arg(long)]
     remote: Option<PathBuf>,
     #[arg(long)]
@@ -892,20 +904,23 @@ fn generation(options: &Options) -> Result<i32, CliError> {
                 return linked_admission::run(options, &store, &policy, operation);
             }
             let key = options.signing_key()?;
-            let record = admission::admit(
-                &store,
-                &policy,
-                &AdmissionRequest {
-                    members: options.admission_members()?,
-                    signer: &SshKeygenSigner::new(&key),
-                    admitted_at_ms: now_ms(),
-                    configured_agents: options
-                        .registry
-                        .is_some()
-                        .then(|| options.registered_agents())
-                        .transpose()?,
-                },
-            )?;
+            let signer = SshKeygenSigner::new(&key);
+            let request = AdmissionRequest {
+                members: options.admission_members()?,
+                signer: &signer,
+                admitted_at_ms: now_ms(),
+                configured_agents: options
+                    .registry
+                    .is_some()
+                    .then(|| options.registered_agents())
+                    .transpose()?,
+            };
+            let record = match &options.transition_from {
+                Some(digest) => {
+                    admission::admit_transition(&store, &policy, &request, &Digest::parse(digest)?)?
+                }
+                None => admission::admit(&store, &policy, &request)?,
+            };
             report(options, &record, |record| {
                 let relied: usize = record
                     .payload

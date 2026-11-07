@@ -17,8 +17,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{canonical::Digest, witness::WitnessEvidence};
 
-/// The Generation payload schema this build signs and reads.
+mod history;
+
+/// The Generation payload schema this build signs and permits as active supply.
 pub const GENERATION_SCHEMA: &str = "louiselm.skills.generation/3";
+
+pub(crate) const HISTORICAL_SCHEMA: &str = "louiselm.skills.generation/2";
 
 /// The stored record schema.
 pub const RECORD_SCHEMA: &str = "louiselm.skills.generation-record/1";
@@ -47,8 +51,11 @@ pub struct Member {
 }
 
 /// The bytes a hardware key signs to admit a Generation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Decoding also preserves historical `/2` payloads in their original wire
+/// shape. Their in-memory members have empty `relied_on` lists, which are never
+/// serialized into `/2` bytes. Only `/3` is eligible for active supply.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GenerationPayload {
     /// Schema identifier.
     pub schema: String,
@@ -68,7 +75,6 @@ pub struct GenerationPayload {
     pub members: Vec<Member>,
     /// Optional broker operation whose exact request this Admission resolves.
     /// Covered by the signature; never grants launch or supply authority.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_operation: Option<String>,
 }
 
@@ -111,11 +117,11 @@ impl GenerationPayload {
     ///
     /// # Panics
     /// Panics only if serialization fails after a future schema change introduces
-    /// a fallible serializer. The current derived schema has only JSON-native values.
+    /// a fallible serializer. Both supported wire shapes have only JSON-native values.
     #[must_use]
     #[expect(
         clippy::expect_used,
-        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+        reason = "Both versioned wire shapes serialize only JSON-native values."
     )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a generation payload is always serializable")
@@ -133,7 +139,11 @@ impl GenerationPayload {
     /// cannot claim a root that does not cover what it contains.
     #[must_use]
     pub fn recomputed_member_root(&self) -> Digest {
-        member_root(&self.members)
+        if self.schema == HISTORICAL_SCHEMA {
+            history::member_root(&self.members)
+        } else {
+            member_root(&self.members)
+        }
     }
 
     /// Returns every admitted package digest, in payload order.
@@ -217,11 +227,11 @@ impl GenerationRecord {
     ///
     /// # Panics
     /// Panics only if serialization fails after a future schema change introduces
-    /// a fallible serializer. The current derived schema has only JSON-native values.
+    /// a fallible serializer. Both supported wire shapes have only JSON-native values.
     #[must_use]
     #[expect(
         clippy::expect_used,
-        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+        reason = "Both versioned wire shapes serialize only JSON-native values."
     )]
     pub fn witness_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(&WitnessedGeneration {

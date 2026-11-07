@@ -18,20 +18,49 @@ struct Fixture {
     _directory: tempfile::TempDir,
     store: Store,
     previous: GenerationRecord,
+    previous_bytes: Vec<u8>,
     candidate: GenerationRecord,
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_history(false)
+    }
+
+    fn with_history(historical: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).unwrap();
-        let previous = record(1, None, GenerationState::Current);
+        let mut previous = record(1, None, GenerationState::Current);
+        if historical {
+            previous.payload.schema = crate::generation::HISTORICAL_SCHEMA.to_owned();
+            previous.payload.members.push(crate::generation::Member {
+                package_digest: Digest::of(b"legacy package").to_string(),
+                dossier_digest: Digest::of(b"legacy dossier").to_string(),
+                review_depth: "read".to_owned(),
+                agents: vec!["codex".to_owned()],
+                relied_on: Vec::new(),
+            });
+            previous.payload.member_root = previous.payload.recomputed_member_root().to_string();
+            previous.generation = previous.digest().to_string();
+        }
         let candidate = record(
             2,
             Some(previous.generation.clone()),
             GenerationState::PendingWitness,
         );
         admission::write_record(&store, &previous).unwrap();
+        // Noncanonical outer formatting proves recovery restores actual old
+        // bytes, not a reconstructed record. Signed payload bytes stay canonical.
+        let previous_bytes = if historical {
+            serde_json::to_vec_pretty(&previous).unwrap()
+        } else {
+            serde_json::to_vec(&previous).unwrap()
+        };
+        fs::write(
+            admission::record_path(&store, &previous.digest()),
+            &previous_bytes,
+        )
+        .unwrap();
         admission::write_record(&store, &candidate).unwrap();
         fs::write(
             store.root().join("pins.jsonl"),
@@ -42,6 +71,7 @@ impl Fixture {
             _directory: directory,
             store,
             previous,
+            previous_bytes,
             candidate,
         }
     }
@@ -56,6 +86,10 @@ impl Fixture {
         assert_eq!(
             admission::current(&self.store).unwrap(),
             Some(self.previous.clone())
+        );
+        assert_eq!(
+            fs::read(admission::record_path(&self.store, &self.previous.digest())).unwrap(),
+            self.previous_bytes
         );
         assert_eq!(
             admission::load(&self.store, &self.candidate.digest()).unwrap(),
@@ -99,33 +133,35 @@ fn injected_error() -> AdmissionError {
 
 #[test]
 fn every_precommit_failure_restores_supply_and_lineage() {
-    for stop in [
-        Checkpoint::JournalDurable,
-        Checkpoint::PreviousWritten,
-        Checkpoint::CandidateWritten,
-        Checkpoint::PinsWritten,
-    ] {
-        let fixture = Fixture::new();
-        let locked = lock(&fixture.store).unwrap();
-        let result = activate_with(
-            &fixture.store,
-            Some(&fixture.previous),
-            &fixture.activated(),
-            20,
-            |point| {
-                if point == stop {
-                    Err(injected_error())
-                } else {
-                    Ok(())
-                }
-            },
-        );
-        assert!(
-            matches!(result, Err(AdmissionError::Io { .. })),
-            "{stop:?}: {result:?}"
-        );
-        drop(locked);
-        fixture.assert_restored();
+    for historical in [false, true] {
+        for stop in [
+            Checkpoint::JournalDurable,
+            Checkpoint::PreviousWritten,
+            Checkpoint::CandidateWritten,
+            Checkpoint::PinsWritten,
+        ] {
+            let fixture = Fixture::with_history(historical);
+            let locked = lock(&fixture.store).unwrap();
+            let result = activate_with(
+                &fixture.store,
+                Some(&fixture.previous),
+                &fixture.activated(),
+                20,
+                |point| {
+                    if point == stop {
+                        Err(injected_error())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(
+                matches!(result, Err(AdmissionError::Io { .. })),
+                "{stop:?}: {result:?}"
+            );
+            drop(locked);
+            fixture.assert_restored();
+        }
     }
 }
 
@@ -255,39 +291,43 @@ fn crash_child() {
 
 #[test]
 fn restart_recovers_each_precommit_crash_and_preserves_a_completed_commit() {
-    for stop in [
-        Checkpoint::JournalDurable,
-        Checkpoint::PreviousWritten,
-        Checkpoint::CandidateWritten,
-        Checkpoint::PinsWritten,
-        Checkpoint::JournalRemoved,
-    ] {
-        let fixture = Fixture::new();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "admission::transaction::tests::crash_child",
-                "--nocapture",
-            ])
-            .env("LOUISELM_ACTIVATION_CRASH_ROOT", fixture.store.root())
-            .env("LOUISELM_ACTIVATION_CRASH_POINT", format!("{stop:?}"))
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(77), "{stop:?}: {output:?}");
-        if stop == Checkpoint::JournalRemoved {
-            assert_eq!(
-                admission::current(&fixture.store).unwrap(),
-                Some(fixture.activated())
-            );
-            assert_eq!(
-                fs::read_to_string(fixture.store.root().join("pins.jsonl"))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                2
-            );
-        } else {
-            fixture.assert_restored();
+    for historical in [false, true] {
+        for stop in [
+            Checkpoint::JournalDurable,
+            Checkpoint::PreviousWritten,
+            Checkpoint::CandidateWritten,
+            Checkpoint::PinsWritten,
+            Checkpoint::JournalRemoved,
+        ] {
+            let fixture = Fixture::with_history(historical);
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "admission::transaction::tests::crash_child",
+                    "--nocapture",
+                ])
+                .env("LOUISELM_ACTIVATION_CRASH_ROOT", fixture.store.root())
+                .env("LOUISELM_ACTIVATION_CRASH_POINT", format!("{stop:?}"))
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(77), "{stop:?}: {output:?}");
+            if stop == Checkpoint::JournalRemoved {
+                assert_eq!(
+                    admission::current(&fixture.store).unwrap(),
+                    Some(fixture.activated())
+                );
+                assert_eq!(
+                    fs::read_to_string(fixture.store.root().join("pins.jsonl"))
+                        .unwrap()
+                        .lines()
+                        .count(),
+                    2
+                );
+            } else {
+                fixture.assert_restored();
+            }
+            let retained = admission::load(&fixture.store, &fixture.previous.digest()).unwrap();
+            assert_eq!(retained.witness_bytes(), fixture.previous.witness_bytes());
         }
     }
 }

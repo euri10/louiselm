@@ -149,6 +149,7 @@ recovery reset --store PATH
 
 generation admit --member DIGEST[:DEPTH][=AGENT,...] ... --key PRIVKEY
                  [--all-agents --registry DIR]
+                 [--transition-from CURRENT_GENERATION_2_DIGEST]
 generation witness DIGEST --remote URL [--branch B]
 generation activate DIGEST
 generation status | list
@@ -160,6 +161,26 @@ quarantine exclude DIGEST... --reason TEXT
 quarantine all --reason TEXT
 quarantine show
 ```
+
+An installed `generation/2` is retained **history only** in this release: it is
+readable for inspection and predecessor verification, but cannot provide an
+Instruction view or enabled Skills to a new Session. `generation status` reports
+it as not admissible (exit 2), with no effective members. Ordinary Admission
+refuses it as the current predecessor until the operator explicitly names its
+exact digest with `generation admit --transition-from DIGEST` and supplies the
+complete, freshly reviewed member set. This flag is exclusive to standalone
+Admission; it cannot be combined with `--skill-request`.
+
+The transition verifies the signed history under the existing trust domain and
+enrolled/retired-key rules, requires the current predecessor's witness evidence,
+and recomputes Dossiers and Endorsement reliance under the current policy. It
+signs a new `generation/3` at the next sequence, pointing to the exact old digest.
+The result is only `pending_witness`: the ordinary witness and activation steps
+remain mandatory. Historical payloads, signatures, digests and witnessed bytes
+are not rewritten; activation only supersedes the old local lifecycle state,
+using the existing recoverable journal. Do not reset trust, delete history, or
+disable Skills to bypass this boundary. Deploying this support requires a newly
+qualified, signed release; a previously signed bundle does not gain the change.
 
 Operator profiles are private: `endorsement sign-batch`, `withdraw`, and `export`
 refuse them, including imported records about a profile. These commands require

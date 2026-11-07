@@ -22,7 +22,7 @@ pub fn admit_linked(
     if !crate::broker::attention::canonical_uuid(operation) {
         return Err(AdmissionError::Chain("invalid approval operation".into()));
     }
-    admit_inner(store, policy, request, Some(operation))
+    admit_inner(store, policy, request, Some(operation), None)
 }
 
 /// Independently verifies exact signed Admission and confirms its durability.
