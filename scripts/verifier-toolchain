@@ -35,7 +35,7 @@ install_plugin() {
   git -C "$scratch/$name.nvim" archive HEAD | tar --no-same-owner --no-same-permissions -x -C "$stage/$name.nvim"
   printf '%s\n' "$revision" > "$stage/$name-revision"
 }
-check() {
+check() (
   [[ -d $root && ! -L $root ]] || fail "missing trusted toolchain at $root"
   check_permissions "$root"
   (cd "$root" && sha256sum --check --status SHA256SUMS) || fail 'trusted toolchain bytes drifted'
@@ -43,18 +43,22 @@ check() {
   [[ $(readlink "$root/bin/lua-language-server") == ../luals/bin/lua-language-server ]] || fail 'LuaLS link drift'
   [[ $(dpkg-query -W -f='${Version}' sqlite3) == "$sqlite_package" ]] || fail 'sqlite3 package drift'
   [[ $(dpkg-query -W -f='${Version}' lua-yaml) == "$yaml_package" ]] || fail 'lua-yaml package drift'
+  # Version probes also write logs. Keep them outside the measured tree and
+  # isolate this cleanup from install's staging trap.
+  check_scratch=$(mktemp -d /tmp/louiselm-verifier-check.XXXXXXXX)
+  trap 'rm -r -- "$check_scratch"' EXIT
   [[ $("$root/bin/nvim" --version) == "NVIM v0.12.5"$'\n'* ]] || fail 'Neovim version drift'
   [[ $("$root/bin/stylua" --version) == 'stylua 2.5.2' ]] || fail 'StyLua version drift'
-  [[ $("$root/bin/lua-language-server" --version) == *'3.19.1'* ]] || fail 'LuaLS version drift'
+  [[ $("$root/bin/lua-language-server" --version --logpath="$check_scratch/luals") == *'3.19.1'* ]] || fail 'LuaLS version drift'
   [[ $(<"$root/mini-revision") == "$mini_revision" ]] || fail 'mini.nvim revision drift'
   [[ $(<"$root/snacks-revision") == "$snacks_revision" ]] || fail 'snacks.nvim revision drift'
   [[ $(/usr/bin/sqlite3 --version) == 3.46.1\ * ]] || fail 'sqlite3 version drift'
-  env -i HOME=/tmp PATH="$root/bin:/usr/bin:/bin" \
+  env -i HOME="$check_scratch" PATH="$root/bin:/usr/bin:/bin" \
     'LUA_PATH=/usr/share/lua/5.1/?.lua;/usr/share/lua/5.1/?/init.lua;;' \
     'LUA_CPATH=/usr/lib/x86_64-linux-gnu/lua/5.1/?.so;;' \
     "$root/bin/nvim" --headless --noplugin -u NONE -i NONE \
     -c "lua if not pcall(require, 'lyaml') then vim.cmd('cquit 1') end" -c 'qa!'
-}
+)
 
 case ${1:-} in
   check) [[ $# == 1 ]] || fail 'usage: verifier-toolchain {install|check}'; check ;;

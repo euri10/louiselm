@@ -58,6 +58,10 @@ Its offline, resource-limited private filesystem exercises the real extraction
 commands with UID/GID 1001 archives and rejects owner/group/write-mode drift
 without touching installed tools. Run it only in the prepared launcher VM,
 with `verifier-toolchain` beside the test script (louiselm-l72qk).
+Run it again with `--installed` to exercise the real pinned tools twice each as
+root and UID 1000, with private writable copies and read-only installed inputs.
+Self-checks must preserve measured bytes/metadata and remove their private
+scratch logs; a successful version probe alone does not prove this (louiselm-6u2hz).
 Bump the pinned versions and hashes deliberately when updating the verifier toolchain.
 
 The stock Codex configuration also runs

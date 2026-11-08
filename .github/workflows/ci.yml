@@ -350,6 +350,7 @@ jobs:
           set -euo pipefail
           ./scripts/launcher-vm put scripts/test-verifier-toolchain.py /home/vm/test-verifier-toolchain.py
           ./scripts/launcher-vm exec sudo -n python3 /home/vm/test-verifier-toolchain.py
+          ./scripts/launcher-vm exec sudo -n python3 /home/vm/test-verifier-toolchain.py --installed
           ./scripts/launcher-vm exec /bin/bash /home/vm/verifier-toolchain check
           ./scripts/launcher-vm exec mkdir -p /var/tmp/louiselm-lua-source
           git archive HEAD | ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-lua-source

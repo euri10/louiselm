@@ -100,33 +100,82 @@ class VerifierOwnershipTests(unittest.TestCase):
 
 
 def limits():
-    for kind, value in ((resource.RLIMIT_CPU, 20), (resource.RLIMIT_AS, 512 * 1024**2),
-                        (resource.RLIMIT_NPROC, 64), (resource.RLIMIT_FSIZE, 8 * 1024**2)):
+    for kind, value in ((resource.RLIMIT_CPU, 60), (resource.RLIMIT_AS, 512 * 1024**2),
+                        (resource.RLIMIT_NPROC, 64), (resource.RLIMIT_FSIZE, 64 * 1024**2)):
         resource.setrlimit(kind, (value, value))
 
 
+def fingerprint():
+    result = {}
+    for path in [ROOT, *sorted(ROOT.rglob("*"))]:
+        info = path.lstat()
+        content = (os.readlink(path) if path.is_symlink() else
+                   hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None)
+        result[str(path.relative_to(ROOT))] = (info.st_mode, info.st_uid, info.st_gid,
+                                              info.st_mtime_ns, content)
+    return result
+
+
+def installed_checks(mode):
+    if mode == "writable":
+        shutil.copytree("/toolchain-source", ROOT, symlinks=True)
+    before = fingerprint()
+    for uid in (0, 1000):
+        for repeat in range(2):
+            result = subprocess.run(["setpriv", f"--reuid={uid}", f"--regid={uid}",
+                                     "--clear-groups", "bash", str(SOURCE), "check"],
+                                    text=True, capture_output=True, timeout=20, check=False)
+            assert result.returncode == 0, result.stderr[-2000:]
+            after = fingerprint()
+            changed = [name for name in before.keys() | after.keys()
+                       if before.get(name) != after.get(name)]
+            assert not changed, f"self-check changed measured tools: {sorted(changed)[:10]}"
+            assert not list(Path("/tmp").glob("louiselm-verifier-check.*")), "check scratch leaked"
+            print(f"PASS: {mode}, uid {uid}, check {repeat + 1}, unchanged tools", flush=True)
+
+
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--inside"]:
+    if len(sys.argv) == 2 and sys.argv[1] in ("--inside", "--inside-writable", "--inside-readonly"):
         mounts = Path("/proc/self/mountinfo").read_text().splitlines()
         assert os.geteuid() == 0
-        assert any(line.split()[4] == str(ROOT.parent) and " - tmpfs " in line
-                   for line in mounts), "fixture must not reach the installed toolchain"
-        unittest.main(argv=[sys.argv[0]], verbosity=2)
+        if sys.argv[1] == "--inside-readonly":
+            assert any(line.split()[4] == "/usr" and "ro" in line.split()[5].split(",")
+                       for line in mounts), "installed tools must be read-only"
+        else:
+            assert any(line.split()[4] == str(ROOT.parent) and " - tmpfs " in line
+                       for line in mounts), "fixture must not reach the installed toolchain"
+        if sys.argv[1] == "--inside":
+            unittest.main(argv=[sys.argv[0]], verbosity=2)
+        else:
+            installed_checks(sys.argv[1].removeprefix("--inside-"))
     else:
-        if len(sys.argv) != 1 or os.geteuid() != 0:
-            raise SystemExit("run as root only in the launcher VM or a mapped disposable user namespace")
+        if sys.argv[1:] not in ([], ["--installed"]) or os.geteuid() != 0:
+            raise SystemExit("run as root in the prepared launcher VM; optional --installed checks real tools")
         script = Path(__file__).resolve()
-        command = ["bwrap", "--unshare-pid", "--unshare-net", "--unshare-ipc",
-                   "--unshare-uts", "--die-with-parent", "--new-session", "--clearenv",
-                   "--cap-add", "CAP_CHOWN", "--cap-add", "CAP_FOWNER"]
-        for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64"):
-            command += ["--ro-bind", path, path]
-        command += ["--proc", "/proc", "--dev", "/dev", "--size", "33554432",
-                    "--tmpfs", "/tmp", "--size", "33554432", "--tmpfs", str(ROOT.parent),
-                    "--ro-bind", str(script), "/source/test.py",
-                    "--ro-bind", str(script.with_name("verifier-toolchain")), str(SOURCE),
-                    "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
-                    "--setenv", "TMPDIR", "/tmp", "--chdir", "/tmp",
-                    "--", "python3", "/source/test.py", "--inside"]
-        raise SystemExit(subprocess.run(command, env={"PATH": "/usr/bin:/bin"},
-                                       preexec_fn=limits, timeout=60, check=False).returncode)
+        for mode in (("writable", "readonly") if sys.argv[1:] else ("metadata",)):
+            command = ["bwrap", "--unshare-pid", "--unshare-net", "--unshare-ipc",
+                       "--unshare-uts", "--die-with-parent", "--new-session", "--clearenv",
+                       "--cap-add", "CAP_CHOWN", "--cap-add", "CAP_FOWNER",
+                       "--cap-add", "CAP_SETUID", "--cap-add", "CAP_SETGID"]
+            for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64"):
+                command += ["--ro-bind", path, path]
+            if mode != "metadata":
+                command += ["--ro-bind", str(ROOT), "/toolchain-source",
+                            "--dir", "/var", "--chmod", "755", "/var",
+                            "--dir", "/var/lib", "--chmod", "755", "/var/lib",
+                            "--ro-bind", "/var/lib/dpkg", "/var/lib/dpkg"]
+            if mode != "readonly":
+                command += ["--size", "1073741824", "--tmpfs", str(ROOT.parent),
+                            "--chmod", "755", str(ROOT.parent)]
+            command += ["--proc", "/proc", "--dev", "/dev", "--size", "33554432",
+                        "--tmpfs", "/tmp", "--chmod", "1777", "/tmp",
+                        "--dir", "/source", "--chmod", "755", "/source",
+                        "--ro-bind", str(script), "/source/test.py",
+                        "--ro-bind", str(script.with_name("verifier-toolchain")), str(SOURCE),
+                        "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
+                        "--setenv", "TMPDIR", "/tmp", "--chdir", "/tmp", "--", "python3",
+                        "/source/test.py", "--inside" if mode == "metadata" else f"--inside-{mode}"]
+            result = subprocess.run(command, env={"PATH": "/usr/bin:/bin"},
+                                    preexec_fn=limits, timeout=120, check=False)
+            if result.returncode:
+                raise SystemExit(result.returncode)
