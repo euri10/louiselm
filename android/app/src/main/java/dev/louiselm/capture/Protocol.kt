@@ -127,6 +127,7 @@ internal data class AttentionItem(
     val stage: String?,
     val code: AttentionCode?,
     val withdrawal: AttentionWithdrawal? = null,
+    val sessionName: String? = null,
 )
 
 internal data class AttentionSnapshot(
@@ -154,6 +155,7 @@ internal data class AttentionSnapshot(
                 setOf(
                     "subject_kind",
                     "subject_id",
+                    "session_name",
                     "kind",
                     "source_operation_id",
                     "created_at_ms",
@@ -168,6 +170,14 @@ internal data class AttentionSnapshot(
             )
             val subjectKind = AttentionSubjectKind.parse(requireString(value, "subject_kind"))
             val subjectId = requireString(value, "subject_id")
+            val sessionName = optionalString(value, "session_name")
+            if (sessionName != null) {
+                require(subjectKind == AttentionSubjectKind.SESSION && sessionName.isNotBlank() &&
+                    sessionName.toByteArray(Charsets.UTF_8).size <= 256 &&
+                    sessionName.none { it.isISOControl() || it == '\u2028' || it == '\u2029' }) {
+                    "attention session_name is invalid"
+                }
+            }
             require(validAttentionId(subjectId)) { "attention subject id is invalid" }
             if (subjectKind == AttentionSubjectKind.RUN) {
                 require(validCanonicalUuid(subjectId)) { "attention Run id is invalid" }
@@ -230,6 +240,7 @@ internal data class AttentionSnapshot(
                 stage,
                 code,
                 withdrawal,
+                sessionName,
             )
         }
 

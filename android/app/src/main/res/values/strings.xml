@@ -75,8 +75,10 @@
     <string name="attention_withdrawal_review">Review locally and consider quarantine. Reading this card does not resolve the withdrawal.</string>
     <string name="attention_linked_run">Linked Run: %1$s</string>
     <string name="attention_stage">Stage: %1$s</string>
-    <string name="attention_age">Age: %1$s</string>
+    <string name="attention_age">Item age: %1$s</string>
     <string name="attention_retry">Refresh inbox</string>
-    <string name="attention_retry_state">Inbox unavailable: %1$s The last safe screen is retained.</string>
+    <string name="attention_refreshing">Refreshing inbox…</string>
+    <string name="attention_retry_state">Inbox unavailable: %1$s Cached inbox: items may have changed. Reconnect to the receiver and refresh.</string>
+    <string name="attention_unavailable_state">Inbox unavailable: %1$s Reconnect to the receiver and refresh.</string>
     <string name="attention_operator_state">Inbox requires operator action: %1$s</string>
 </resources>

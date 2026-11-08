@@ -25,7 +25,8 @@ internal val invalidatedAttentionPayload = """
 @Implements(PairingStore::class, isInAndroidSdk = false)
 class AttentionFixturePairing {
     @Implementation
-    fun binding(): String = "fixture-pair"
+    fun binding(): String? = RuntimeEnvironment.getApplication()
+        .getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).getString("binding", "fixture-pair")
 
     @Implementation(methodName = "load")
     internal fun load(): PairingConfig = PairingConfig("https://192.0.2.1", "aa".repeat(32), "fixture", "dummy")
@@ -37,6 +38,7 @@ class AttentionFixtureReceiver {
     internal fun fetchAttention(@Suppress("UNUSED_PARAMETER") config: PairingConfig): AttentionFetch {
         check(Looper.myLooper() != Looper.getMainLooper())
         val options = RuntimeEnvironment.getApplication().getSharedPreferences("attention-fixture", Context.MODE_PRIVATE)
+        options.edit().putInt("fetches", options.getInt("fetches", 0) + 1).commit()
         if (options.getBoolean("offline", false)) return AttentionFetch.Retry("receiver is offline")
         return parseAttentionResponse(checkNotNull(options.getString("payload", invalidatedAttentionPayload)))
     }

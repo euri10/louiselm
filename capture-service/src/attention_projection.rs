@@ -177,6 +177,7 @@ fn apply(items: &mut Vec<AttentionItem>, change: &ProjectionChange) {
             let item = AttentionItem {
                 subject_kind: attention.subject_kind,
                 subject_id: attention.subject_id.clone(),
+                session_name: attention.session_name.clone(),
                 kind: attention.kind,
                 source_operation_id: attention.source_operation_id.clone(),
                 created_at_ms: attention.created_at_ms,

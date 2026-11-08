@@ -110,13 +110,23 @@ the manual WorkManager retry path.
 When paired, **Attention inbox** reads the authenticated `/v1/attention`
 snapshot through the same pinned receiver identity. It displays only the
 closed typed kind, fixed reason, bounded Session or Run identifier, optional
-linked Run or stage, and age. Local supply withdrawals show the affected package
+Session name, linked Run or stage, and age. Session names appear above the persistent
+ID and survive offline caching. Neovim supplies the chosen name or its local
+`session-N` fallback; older stored items without a name still show their ID.
+Names are inert, single-line text bounded to 256 UTF-8 bytes. This requires
+Attention/receiver interface 2: update the receiver, app and Neovim together.
+Local supply withdrawals show the affected package
 digest, local endorser label and urgency (`relied_on` or `subject_only`), with a
 fixed suggestion to review locally and consider quarantine. Supply Admission
 requests show only fixed text and the request reference; profile bytes, Dossier
 diffs, paths and Agent prose are never inbox content. Labels are inert text,
 and supply cards have accessible headings and grouping. It has no mutation controls; transient network
-failures retain the last safely parsed screen and offer refresh, while revoked
+failures retain the last safely parsed screen, explicitly labelled as cached
+and possibly changed. Item age measures the Attention condition, not Session
+uptime. Refresh shows **Refreshing inbox…** and disables repeat requests until
+the result is displayed. Recording, receiver and inbox controls precede the
+cards, and the scrollable page respects system bars and display cutouts.
+Transient failures offer refresh, while revoked
 pairing or pin failures require pairing/operator repair. The seen generation is
 stored only in app-private preferences.
 
@@ -228,6 +238,13 @@ in `louiselm-qbr.9.9`.
   pairing and enable again; verify notification delivery resumes for the new
   paired device. Replace the receiver and verify old queued work cannot publish
   an old inbox into the new pairing.
+- With a long inbox and large text, scroll to each control and the last card:
+  nothing should hide behind the status/navigation bars or a display cutout.
+  Press Refresh: **Refreshing inbox…** must appear immediately and stay disabled
+  until the result. Offline failure must restore Refresh and label retained
+  cards as cached; reconnecting must replace them with current receiver state.
+  Dispose an unseen completed Session in Neovim, then refresh: its turn alert
+  must disappear while unrelated Attention remains.
 
 - On Android 17, deny Nearby devices access from Pair or Sync; verify offline
   recording still saves. Grant access and retry Pair, Sync, and Refresh. Revoke

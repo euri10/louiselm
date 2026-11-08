@@ -884,7 +884,8 @@ fn metadata_and_interface_refusal_do_not_create_state() {
     assert_eq!(metadata["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(metadata["interfaces"]["capture"], 1);
     assert_eq!(metadata["interfaces"]["run"], 1);
-    assert_eq!(metadata["interfaces"]["attention"], 1);
+    assert_eq!(metadata["interfaces"]["attention"], 2);
+    assert_eq!(metadata["interfaces"]["receiver"], 2);
     let refused = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
         .args(["--require-interface=999", "status"])
         .env("XDG_STATE_HOME", &state)

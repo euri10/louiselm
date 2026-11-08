@@ -296,6 +296,7 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
         .upsert(AttentionDraft {
             subject_kind: AttentionSubjectKind::Run,
             subject_id: "11111111-2222-4333-8444-555555555555".to_owned(),
+            session_name: None,
             kind: AttentionKind::SkillUnverified,
             source_operation_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
             created_at_ms: 1_765_000_000_000,
@@ -305,6 +306,20 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
             withdrawal: None,
         })
         .expect("attention");
+    attention
+        .upsert(AttentionDraft {
+            subject_kind: AttentionSubjectKind::Session,
+            subject_id: "codex/session-24".to_owned(),
+            session_name: Some("Android inbox polish".to_owned()),
+            kind: AttentionKind::TurnReady,
+            source_operation_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned(),
+            created_at_ms: 1_765_000_000_001,
+            linked_run_id: None,
+            stage: None,
+            code: None,
+            withdrawal: None,
+        })
+        .expect("named Session attention");
     let pairing = Arc::new(PairingRegistry::open(temporary.path().join("state")).expect("pairing"));
     let offer = pairing
         .issue(
@@ -345,11 +360,23 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
             .expect("body"),
     )
     .expect("snapshot JSON");
-    assert_eq!(snapshot["generation"], 1);
-    assert_eq!(snapshot["items"][0]["kind"], "skill_unverified");
-    assert_eq!(snapshot["items"][0]["code"], "witness_missing");
-    assert_eq!(snapshot["items"][0]["reason"], "Skill supply is unverified");
-    assert!(snapshot["items"][0].get("arbitrary_text").is_none());
+    assert_eq!(snapshot["generation"], 2);
+    let items = snapshot["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2);
+    let skill = items
+        .iter()
+        .find(|item| item["kind"] == "skill_unverified")
+        .expect("skill");
+    assert_eq!(skill["code"], "witness_missing");
+    assert_eq!(skill["reason"], "Skill supply is unverified");
+    assert!(skill.get("arbitrary_text").is_none());
+    assert!(skill.get("session_name").is_none());
+    let session = items
+        .iter()
+        .find(|item| item["kind"] == "turn_ready")
+        .expect("Session");
+    assert_eq!(session["subject_id"], "codex/session-24");
+    assert_eq!(session["session_name"], "Android inbox polish");
 
     assert_eq!(
         app.clone()

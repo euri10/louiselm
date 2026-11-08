@@ -8,7 +8,7 @@ for _, interface in ipairs({ "run", "attention" }) do
     for _, metadata in ipairs({
       false,
       {},
-      { component = "capture", version = "0.9.2", interfaces = { [interface] = 2 } },
+      { component = "capture", version = "0.9.2", interfaces = { [interface] = 99 } },
     }) do
       local pipe = { closing = false, writes = {} }
       function pipe:connect(_, callback)

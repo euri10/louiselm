@@ -50,7 +50,7 @@ T["renders durable conditions read-only and ignores queued frames after close"] 
   local function send(items)
     pipe.read(nil, nvim.json.encode({
       type = "snapshot",
-      service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+      service = { component = "capture", version = "0.9.2", interfaces = { attention = 2 } },
       snapshot = { generation = 1, items = items },
     }) .. "\n")
   end

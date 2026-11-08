@@ -263,7 +263,13 @@ The Attention store keeps only current unresolved typed conditions. `attention l
 prints its bounded snapshot; `attention status` prints generation, unresolved count,
 and fixed-kind counts. `status` includes the same summary and reports a sanitized
 storage error if Attention state cannot be read. The local `attention.sock` accepts
-only operator-capability mutations and no Agent-authored text. Paired devices can
+only operator-capability mutations and no Agent-authored prose. Session items may
+carry an optional inert `session_name` (nonblank, single-line, at most 256 UTF-8
+bytes), supplied by the trusted editor controller from the chosen name or local
+`session-N` fallback. This label never changes item identity or generic push
+payloads. It is stored with the condition; subsequent events use the current name.
+Attention and receiver interfaces are revision 2; deploy the editor, receiver and
+Android app together. Stored items without a name remain valid. Paired devices can
 `GET /v1/attention` with their pairing credential; that route is read-only.
 
 All snapshot consumers reconcile local Run Park conditions against the durable
@@ -327,7 +333,7 @@ without keyboard/mouse input, paste input, or focus returning to Neovim. Each
 delay; paste content is not inspected or retained by Attention. This delay is
 shared across Sessions: actively using another Session postpones delivery,
 while Agent output and programmatic cursor movement do not. Viewing a completed
-Session or starting its next prompt clears its pending turn alert. Eligibility
+Session, starting its next prompt, or disposing it clears its pending turn alert. Eligibility
 is distinct from FCM submission and eventual phone delivery.
 
 A later plugin that replaces `vim.paste` without delegating to the installed

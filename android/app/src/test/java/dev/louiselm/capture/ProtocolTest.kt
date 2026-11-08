@@ -7,8 +7,34 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
+import org.json.JSONObject
 
 class ProtocolTest {
+    @Test
+    fun sessionNamesAreOptionalBoundedStringsAndCannotLabelOtherSubjects() {
+        fun payload(name: Any?, subject: String = "session"): String {
+            val value = JSONObject(invalidatedAttentionPayload)
+            value.getJSONArray("items").getJSONObject(0)
+                .put("session_name", name).put("subject_kind", subject)
+            return value.toString()
+        }
+        for (name in listOf(null, JSONObject.NULL, "session-24", "Android <inbox> polish", "é".repeat(128))) {
+            assertTrue(parseAttentionResponse(payload(name)) is AttentionFetch.Success)
+        }
+        for (name in listOf("", " ", "line\nbreak", "bad\u0085name", "bad\u2028name", "é".repeat(129), 42, true, JSONObject())) {
+            assertTrue(parseAttentionResponse(payload(name)) is AttentionFetch.OperatorAction)
+        }
+        val supply = JSONObject(payload("session-24", "supply"))
+        val supplyItem = supply.getJSONArray("items").getJSONObject(0)
+            .put("subject_id", "1000")
+            .put("kind", "skill_approval_pending")
+            .put("reason", "Skill approval is pending")
+            .put("code", "admission_required")
+        assertTrue(parseAttentionResponse(supply.toString()) is AttentionFetch.OperatorAction)
+        supplyItem.remove("session_name")
+        assertTrue(parseAttentionResponse(supply.toString()) is AttentionFetch.Success)
+    }
+
     @Test
     fun quarantinedAttentionSnapshotIsAccepted() {
         val result = parseAttentionResponse(invalidatedAttentionPayload.replace("evidence_invalidated", "quarantined"))

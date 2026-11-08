@@ -134,6 +134,9 @@ pub struct AttentionDraft {
     pub subject_kind: AttentionSubjectKind,
     /// Session identifier, canonical Run UUID, or canonical nonzero operator UID for Supply.
     pub subject_id: String,
+    /// Optional inert Session display name, bounded to 256 UTF-8 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
     /// Typed condition.
     pub kind: AttentionKind,
     /// Stable UUID for the source lifecycle operation.
@@ -171,6 +174,9 @@ pub struct AttentionItem {
     pub subject_kind: AttentionSubjectKind,
     /// Session identifier, canonical Run UUID, or canonical nonzero operator UID for Supply.
     pub subject_id: String,
+    /// Optional inert Session display name, bounded to 256 UTF-8 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
     /// Typed condition.
     pub kind: AttentionKind,
     /// Stable UUID for the source lifecycle operation.
@@ -337,6 +343,7 @@ impl AttentionStore {
             let mut item = AttentionItem {
                 subject_kind: draft.subject_kind,
                 subject_id: draft.subject_id,
+                session_name: draft.session_name,
                 kind: draft.kind,
                 source_operation_id: draft.source_operation_id,
                 created_at_ms: draft.created_at_ms,
@@ -576,6 +583,7 @@ fn reject_symlink(path: &Path, label: &str) -> Result<(), AttentionError> {
 
 fn validate_draft(draft: &AttentionDraft) -> Result<(), AttentionError> {
     validate_key(&draft.key())?;
+    validate_session_name(draft.subject_kind, draft.session_name.as_deref())?;
     if draft.created_at_ms == 0 {
         return Err(AttentionError::Invalid(
             "created_at_ms must be positive".to_owned(),
@@ -592,6 +600,7 @@ fn validate_draft(draft: &AttentionDraft) -> Result<(), AttentionError> {
 
 fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
     validate_key(&item.key())?;
+    validate_session_name(item.subject_kind, item.session_name.as_deref())?;
     if item.created_at_ms == 0 {
         return Err(AttentionError::Invalid(
             "created_at_ms must be positive".to_owned(),
@@ -609,6 +618,25 @@ fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
     )?;
     validate_code(item.kind, item.code, item.stage.as_deref())?;
     withdrawal::validate(item.kind, item.withdrawal.as_ref())
+}
+
+fn validate_session_name(
+    subject_kind: AttentionSubjectKind,
+    name: Option<&str>,
+) -> Result<(), AttentionError> {
+    let Some(name) = name else { return Ok(()) };
+    if subject_kind != AttentionSubjectKind::Session
+        || name.trim().is_empty()
+        || name.len() > 256
+        || name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
+        return Err(AttentionError::Invalid(
+            "session_name must be bounded single-line text on a Session".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_code(
@@ -750,6 +778,7 @@ fn sort_items(items: &mut [AttentionItem]) {
 fn same_content(left: &AttentionItem, right: &AttentionItem) -> bool {
     left.subject_kind == right.subject_kind
         && left.subject_id == right.subject_id
+        && left.session_name == right.session_name
         && left.kind == right.kind
         && left.source_operation_id == right.source_operation_id
         && left.created_at_ms == right.created_at_ms

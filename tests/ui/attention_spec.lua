@@ -9,6 +9,84 @@ local nvim = vim
 
 local T = MiniTest.new_set()
 
+T["disposal clears durable turn alerts even without local entries and cancels delayed delivery"] = function()
+  local original_read = RunClient.read_operator_capability
+  local original_connect = AttentionClient.connect
+  local paste_dispatcher = AttentionPaste.new()
+  local attention
+  MiniTest.finally(function()
+    if attention ~= nil then
+      attention:dispose()
+    end
+    paste_dispatcher:dispose()
+    RunClient.read_operator_capability = original_read
+    AttentionClient.connect = original_connect
+  end)
+  -- Live receiver generation 3475 retained a turn_ready for a Session absent
+  -- from the editor on 2026-11-08 (louiselm-3phjr). Other kinds must survive.
+  local retained = {
+    { subject_id = "ended", kind = "turn_ready" },
+    { subject_id = "ended", kind = "skill_unverified" },
+    { subject_id = "other", kind = "turn_ready" },
+  }
+  local scheduled = {}
+  local deliveries = 0
+  local fake = { ready = false }
+  function fake:clear_session_kind(session_id, kind, callback)
+    retained = nvim.tbl_filter(function(item)
+      return item.subject_id ~= session_id or item.kind ~= kind
+    end, retained)
+    callback({ generation = 1, items = retained })
+    return true
+  end
+  function fake:upsert(item, callback)
+    retained[#retained + 1] = item
+    callback({ generation = 2, items = retained })
+    return true
+  end
+  function fake:set_eligible(_, _, callback)
+    deliveries = deliveries + 1
+    callback({ generation = 3, items = retained })
+    return true
+  end
+  function fake:dispose()
+    return true
+  end
+  local connected
+  ---@diagnostic disable-next-line: duplicate-set-field
+  RunClient.read_operator_capability = function(_, callback)
+    callback("capability", nil)
+    return true
+  end
+  ---@diagnostic disable-next-line: duplicate-set-field
+  AttentionClient.connect = function(_, on_snapshot)
+    connected = on_snapshot
+    return fake
+  end
+  attention = assert(Attention.new({
+    paste_dispatcher = paste_dispatcher,
+    schedule = function(_, callback)
+      scheduled[#scheduled + 1] = callback
+    end,
+  }))
+  attention:session_disposed("ended")
+  MiniTest.expect.equality(type(connected), "function")
+  fake.ready = true
+  connected({ generation = 0, items = retained })
+  MiniTest.expect.equality(retained, {
+    { subject_id = "ended", kind = "skill_unverified" },
+    { subject_id = "other", kind = "turn_ready" },
+  })
+  attention:turn_done({ status = "ready", acp_session_id = "new", agent = "codex", current_turn = 1 }, false)
+  MiniTest.expect.equality(#retained, 3)
+  attention:session_disposed("new")
+  for _, callback in ipairs(scheduled) do
+    callback()
+  end
+  MiniTest.expect.equality(deliveries, 0)
+  MiniTest.expect.equality(#retained, 2)
+end
+
 T["resuming in a fresh controller durably clears only that Session failure"] = function()
   local original_read = RunClient.read_operator_capability
   local original_connect = AttentionClient.connect
@@ -150,6 +228,8 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
     end,
   }))
   local state = {
+    id = "session-7",
+    name = "Android inbox polish",
     status = "ready",
     agent = "codex",
     acp_session_id = "session-1",
@@ -162,6 +242,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   MiniTest.expect.equality(#fake.upserts, 1)
   MiniTest.expect.equality(fake.upserts[1].subject_id, "session-1")
   MiniTest.expect.equality(fake.upserts[1].created_at_ms, 123)
+  MiniTest.expect.equality(fake.upserts[1].session_name, "Android inbox polish")
 
   scheduled[#scheduled]()
   MiniTest.expect.equality(#fake.eligibilities, 1)
@@ -173,6 +254,23 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
     { session_id = "session-1", kind = "turn_ready" },
   })
   MiniTest.expect.equality(fake.clear_sessions, {})
+
+  state.name = nil
+  state.current_turn = 5
+  attention:turn_done(state, false)
+  MiniTest.expect.equality(fake.upserts[2].session_name, "session-7")
+  state.name = "\n" .. string.rep("é", 200)
+  state.current_turn = 6
+  attention:turn_done(state, false)
+  local bounded = fake.upserts[3].session_name
+  assert(#bounded <= 256 and not bounded:find("\n", 1, true))
+  assert(nvim.str_utfindex(bounded, "utf-32") > 0)
+  for _, name in ipairs({ "", "\t\n", string.rep(" ", 300), "  " }) do
+    state.name = name
+    state.current_turn = state.current_turn + 1
+    attention:turn_done(state, false)
+    MiniTest.expect.equality(fake.upserts[#fake.upserts].session_name, "session-7")
+  end
 
   attention:dispose()
   MiniTest.expect.equality(fake.disposed, true)
@@ -262,6 +360,8 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   }))
   local state = {
     status = "error",
+    id = "session-8",
+    name = "Permissions test",
     acp_session_id = "session-1",
     current_turn = 4,
   }
@@ -270,11 +370,13 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   attention:permission_required(state, { request_id = 7 })
   MiniTest.expect.equality(#fake.upserts, 1)
   attention:permission_resolved("session-1", 7)
+  MiniTest.expect.equality(fake.upserts[1].session_name, "Permissions test")
   MiniTest.expect.equality(#fake.clears, 1)
 
   attention:session_failed(state, "11111111-2222-4333-8444-555555555555")
   MiniTest.expect.equality(#fake.upserts, 2)
   MiniTest.expect.equality(fake.upserts[2].linked_run_id, "11111111-2222-4333-8444-555555555555")
+  MiniTest.expect.equality(fake.upserts[2].session_name, "Permissions test")
   attention:prompt_started("session-1")
   MiniTest.expect.equality(#fake.clears, 1)
   MiniTest.expect.equality(fake.clear_session_kinds, {
@@ -285,6 +387,7 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
 
   attention:run_parked("11111111-2222-4333-8444-555555555555")
   MiniTest.expect.equality(#fake.upserts, 3)
+  MiniTest.expect.equality(fake.upserts[3].session_name, nil)
   attention:run_resumed("11111111-2222-4333-8444-555555555555")
   MiniTest.expect.equality(#fake.clears, 2)
 

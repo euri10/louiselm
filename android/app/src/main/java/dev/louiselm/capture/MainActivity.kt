@@ -21,6 +21,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import androidx.work.WorkInfo
@@ -56,6 +59,7 @@ class MainActivity : Activity() {
     private var qrPhoto: File? = null
     private var lastAttention: AttentionSnapshot? = null
     private var lastAttentionOwner: String? = null
+    private var attentionRefreshing = false
     private var inboxVisible = false
     private var pendingReceiverAction: (() -> Unit)? = null
     private val uploadObserver = Observer<List<WorkInfo>> { workInfos ->
@@ -68,6 +72,12 @@ class MainActivity : Activity() {
         captureStore = CaptureStore(applicationContext)
         pairingStore = PairingStore(applicationContext)
         page = contentView()
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        ViewCompat.setOnApplyWindowInsetsListener(page) { view, insets ->
+            val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+            insets
+        }
         setContentView(page)
         if (intent.action == ATTENTION_INBOX_ACTION) focusAttentionInbox()
         refreshStatus()
@@ -155,26 +165,6 @@ class MainActivity : Activity() {
         }, matchWidth())
         statusView = TextView(this).apply { textSize = 16f }
         content.addView(statusView, matchWidth())
-        content.addView(TextView(this).apply {
-            text = getString(R.string.attention_title)
-            textSize = 22f
-            setPadding(0, padding, 0, padding / 2)
-        }, matchWidth())
-        attentionStatusView = TextView(this).apply { textSize = 16f }
-        content.addView(attentionStatusView, matchWidth())
-        attentionCards = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(attentionCards, matchWidth())
-        attentionRetryButton = Button(this).apply {
-            text = getString(R.string.attention_retry)
-            setOnClickListener { withReceiverNetworkAccess { refreshAttention() } }
-        }
-        content.addView(attentionRetryButton, matchWidth(topMargin = padding / 2))
-        content.addView(Button(this).apply {
-            text = getString(R.string.attention_enable)
-            setOnClickListener { enableNotifications() }
-        }, matchWidth())
-        notificationStatusView = TextView(this).apply { textSize = 16f }
-        content.addView(notificationStatusView, matchWidth())
         captureButton = Button(this).apply {
             text = getString(R.string.start_capture)
             setOnClickListener { toggleRecording() }
@@ -199,6 +189,26 @@ class MainActivity : Activity() {
                 }
             }
         }, matchWidth(topMargin = padding / 2))
+        content.addView(TextView(this).apply {
+            text = getString(R.string.attention_title)
+            textSize = 22f
+            setPadding(0, padding, 0, padding / 2)
+        }, matchWidth())
+        attentionStatusView = TextView(this).apply { textSize = 16f }
+        content.addView(attentionStatusView, matchWidth())
+        attentionRetryButton = Button(this).apply {
+            text = getString(R.string.attention_retry)
+            setOnClickListener { withReceiverNetworkAccess { refreshAttention() } }
+        }
+        content.addView(attentionRetryButton, matchWidth(topMargin = padding / 2))
+        content.addView(Button(this).apply {
+            text = getString(R.string.attention_enable)
+            setOnClickListener { enableNotifications() }
+        }, matchWidth())
+        notificationStatusView = TextView(this).apply { textSize = 16f }
+        content.addView(notificationStatusView, matchWidth())
+        attentionCards = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(attentionCards, matchWidth())
         return ScrollView(this).apply { addView(content) }
     }
 
@@ -493,11 +503,15 @@ class MainActivity : Activity() {
             ?: getString(R.string.never_status)
 
     private fun refreshAttention() {
+        if (attentionRefreshing || isDestroyed || isFinishing) return
         if (!hasReceiverNetworkAccess(this)) {
             attentionStatusView.text = getString(R.string.local_network_denied)
             attentionRetryButton.isEnabled = true
             return
         }
+        attentionRefreshing = true
+        attentionRetryButton.isEnabled = false
+        attentionRetryButton.text = getString(R.string.attention_refreshing)
         networkExecutor.execute {
             val owner = pairingStore.binding()
             val state = AttentionState(applicationContext)
@@ -526,8 +540,14 @@ class MainActivity : Activity() {
                 AttentionFetch.OperatorAction(getString(R.string.attention_notification_failed))
             }
             runOnUiThread {
-                if (isDestroyed) return@runOnUiThread
-                if (pairingStore.binding() != owner) return@runOnUiThread
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                attentionRefreshing = false
+                attentionRetryButton.text = getString(R.string.attention_retry)
+                attentionRetryButton.isEnabled = true
+                if (pairingStore.binding() != owner) {
+                    refreshAttention()
+                    return@runOnUiThread
+                }
                 if (lastAttentionOwner != owner) {
                     lastAttentionOwner = owner
                     lastAttention = null
@@ -554,7 +574,10 @@ class MainActivity : Activity() {
                     }
                     is AttentionFetch.Retry -> {
                         if (cached != null) renderAttention(cached)
-                        attentionStatusView.text = getString(R.string.attention_retry_state, result.message)
+                        attentionStatusView.text = getString(
+                            if (lastAttention != null) R.string.attention_retry_state else R.string.attention_unavailable_state,
+                            result.message,
+                        )
                         attentionRetryButton.isEnabled = true
                     }
                     is AttentionFetch.OperatorAction -> {
@@ -597,6 +620,12 @@ class MainActivity : Activity() {
                     textSize = 18f
                     isAccessibilityHeading = true
                 }, matchWidth())
+                item.sessionName?.let { name ->
+                    card.addView(TextView(this).apply {
+                        text = name
+                        textSize = 16f
+                    }, matchWidth())
+                }
                 card.addView(TextView(this).apply {
                     text = when (item.subjectKind) {
                         AttentionSubjectKind.SESSION -> getString(R.string.attention_session, item.subjectId)

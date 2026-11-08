@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.net.ConnectivityManager
 import android.os.Looper
 import android.text.Spanned
@@ -11,7 +12,11 @@ import android.text.style.ClickableSpan
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import androidx.work.impl.WorkManagerImpl
@@ -97,6 +102,171 @@ class MainActivityTest {
         shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
         instrumentedPackages = ["dev.louiselm.capture"],
     )
+    fun sessionNamesAppearAlongsideIdsAndSurviveOfflineRestart() {
+        val item = JSONObject(invalidatedAttentionPayload).getJSONArray("items").getJSONObject(0)
+        val items = JSONArray()
+        for ((id, name) in listOf("named" to "Android inbox polish", "unnamed" to "session-24", "older" to null)) {
+            items.put(JSONObject(item.toString()).put("subject_id", id).put("session_name", name))
+        }
+        val options = activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE)
+        options.edit().putString("payload", JSONObject().put("generation", 12).put("items", items).toString()).commit()
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        fun checkLabels() {
+            val labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+            for (name in listOf("Android inbox polish", "session-24")) assertTrue(labels.contains(name))
+            for (id in listOf("named", "unnamed", "older")) assertTrue(labels.contains("Session: $id"))
+        }
+        checkLabels()
+        options.edit().putBoolean("offline", true).commit()
+        controller.close()
+        drainStatus()
+        createActivity()
+        checkLabels()
+    }
+
+    @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun refreshShowsBusyUntilUiCompletionAndAllowsRetryAfterOfflineFailure() {
+        val refresh = button(R.string.attention_retry)
+        val options = activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE)
+        val fetches = options.getInt("fetches", 0)
+        refresh.performClick()
+        assertFalse(refresh.isEnabled)
+        assertEquals("Refreshing inbox…", refresh.text.toString())
+        controller.newIntent(Intent(activity, MainActivity::class.java).setAction(ATTENTION_INBOX_ACTION))
+        executor.runAll()
+        assertEquals(fetches + 1, options.getInt("fetches", 0))
+        assertFalse(refresh.isEnabled) // The background result has not reached the screen yet.
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(refresh.isEnabled)
+        assertEquals(activity.getString(R.string.attention_retry), refresh.text.toString())
+        drainStatus()
+        activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).edit()
+            .putBoolean("offline", true).commit()
+        refresh.performClick()
+        assertFalse(refresh.isEnabled)
+        drainStatus()
+        assertTrue(refresh.isEnabled)
+        assertEquals(activity.getString(R.string.attention_retry), refresh.text.toString())
+        val labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(labels.any { it.contains("Cached inbox") && it.contains("may have changed") })
+        assertTrue(labels.contains("Skill supply is unverified"))
+    }
+
+    @Test
+    @Config(
+        sdk = [28, 34, 37],
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun longInboxKeepsControlsBeforeCardsAndReachableInsideSystemInsets() {
+        shadowOf(activity).grantPermissions(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        val items = JSONArray()
+        repeat(60) { index ->
+            items.put(JSONObject().put("subject_kind", "session").put("subject_id", "session-$index")
+                .put("kind", "turn_ready").put("reason", "Agent turn is ready")
+                .put("source_operation_id", "11111111-2222-4333-8444-555555555555")
+                .put("created_at_ms", 123).put("eligible", true))
+        }
+        activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).edit()
+            .putString("payload", JSONObject().put("generation", 10).put("items", items).toString()).commit()
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        val page = views(activity.window.decorView).filterIsInstance<ScrollView>().single()
+        // Before API 30, dispatch derives navigation insets from the real root's
+        // stable insets, not this synthetic builder. Check injected bars/cutouts
+        // on newer APIs; all three versions exercise the long-list layout below.
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val insets = WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.of(0, 24, 0, 48))
+                .setInsets(WindowInsetsCompat.Type.displayCutout(), Insets.of(12, 32, 0, 0))
+                .build()
+            repeat(2) { ViewCompat.dispatchApplyWindowInsets(page, insets) }
+            assertEquals(12, page.paddingLeft)
+            assertEquals(32, page.paddingTop)
+            assertEquals(48, page.paddingBottom)
+        }
+        page.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY))
+        page.layout(0, 0, 400, 600)
+        val headings = views(page).filterIsInstance<TextView>().filter { it.text == "Agent turn is ready" }.toList()
+        assertEquals(60, headings.size)
+        val firstCard = Rect()
+        headings.first().getDrawingRect(firstCard)
+        page.offsetDescendantRectToMyCoords(headings.first(), firstCard)
+        for (label in listOf(R.string.attention_retry, R.string.attention_enable,
+            R.string.start_capture, R.string.pair_receiver, R.string.sync_now)) {
+            val control = button(label)
+            val bounds = Rect()
+            control.getDrawingRect(bounds)
+            page.offsetDescendantRectToMyCoords(control, bounds)
+            assertTrue("Controls must precede the expanding inbox", bounds.bottom <= firstCard.top)
+            page.scrollTo(0, bounds.top - page.paddingTop)
+            val visible = Rect()
+            assertTrue(control.getGlobalVisibleRect(visible))
+            assertEquals(control.height, visible.height())
+            assertTrue(control.isEnabled)
+        }
+        // The bottom of the final card is scrollable above navigation too.
+        page.isSmoothScrollingEnabled = false
+        page.fullScroll(View.FOCUS_DOWN)
+        val finalCard = headings.last().parent as View
+        val visible = Rect()
+        assertTrue(finalCard.getGlobalVisibleRect(visible))
+        assertTrue(visible.bottom <= page.height - page.paddingBottom)
+    }
+
+    @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun refreshDiscardsOldPairingCompletionAndSettlesForTheNewReceiver() {
+        val refresh = button(R.string.attention_retry)
+        refresh.performClick()
+        executor.runAll() // Old receiver result is waiting for the UI.
+        activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).edit()
+            .putString("binding", "replacement-pair")
+            .putString("payload", "{\"generation\":1,\"items\":[]}").commit()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(refresh.isEnabled)
+        assertEquals("Refreshing inbox…", refresh.text.toString())
+        drainStatus()
+        assertTrue(refresh.isEnabled)
+        assertEquals(activity.getString(R.string.attention_retry), refresh.text.toString())
+        assertEquals(AttentionSnapshot(1, emptyList()), AttentionState(activity).cached("replacement-pair"))
+        val labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(labels.contains(activity.getString(R.string.attention_empty)))
+        assertFalse(labels.contains("Skill supply is unverified"))
+    }
+
+    @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun refreshStopsBusyButRemainsDisabledWhenReceiverNeedsRepair() {
+        val refresh = button(R.string.attention_retry)
+        activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).edit()
+            .putString("payload", "{}").commit()
+        refresh.performClick()
+        assertEquals("Refreshing inbox…", refresh.text.toString())
+        drainStatus()
+        assertEquals(activity.getString(R.string.attention_retry), refresh.text.toString())
+        assertFalse(refresh.isEnabled)
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.contains("Inbox requires operator action") })
+    }
+
+    @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
     fun invalidatedEvidenceRendersFromPrivateInbox() {
         button(R.string.attention_retry).performClick()
         drainStatus()
@@ -161,6 +331,7 @@ class MainActivityTest {
         assertTrue(labels.contains("Endorser: $SUPPLY_ENDORSER"))
         assertTrue(labels.any { it.contains("receiver is offline") })
         options.edit().putBoolean("offline", false).putString("payload", "{\"generation\":10,\"items\":[]}").commit()
+        val refresh = button(R.string.attention_retry)
         controller.newIntent(Intent(activity, MainActivity::class.java).setAction(ATTENTION_INBOX_ACTION))
         executor.runAll() // Fetch completes off-thread; its UI render is still queued.
         controller.close()
@@ -168,6 +339,8 @@ class MainActivityTest {
         labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
         assertTrue(labels.contains("Endorser: $SUPPLY_ENDORSER"))
         assertEquals(9L, AttentionState(activity).cached("fixture-pair")?.generation)
+        assertEquals("Refreshing inbox…", refresh.text.toString())
+        assertFalse(refresh.isEnabled) // Destroyed Views are not updated by the late completion.
     }
 
     @Test
@@ -220,6 +393,7 @@ class MainActivityTest {
         controller.newIntent(Intent(activity, MainActivity::class.java).setAction(ATTENTION_INBOX_ACTION))
         drainStatus()
         assertEquals(activity.getString(R.string.attention_unpaired), inbox.text.toString())
+        assertFalse(button(R.string.attention_retry).isEnabled)
         controller.newIntent(Intent(activity, MainActivity::class.java).setAction(ATTENTION_INBOX_ACTION))
         controller.close()
         inbox.text = "destroyed screen"

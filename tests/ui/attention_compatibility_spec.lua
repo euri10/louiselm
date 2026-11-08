@@ -157,7 +157,7 @@ T["one actionable incompatibility warning while ordinary chat turns remain usabl
   assert(text:find("chat still works", 1, true))
   MiniTest.expect.equality(f.mutations, {})
   MiniTest.expect.equality(f.errors, {
-    "unidentified capture service: incompatible attention interface; install a capture release supporting attention interface 1 (see docs/releases.md)",
+    "unidentified capture service: incompatible attention interface; install a capture release supporting attention interface 2 (see docs/releases.md)",
   })
 end
 
@@ -184,7 +184,7 @@ T["recovery replays queued conditions and clears then rearms warnings"] = functi
   MiniTest.expect.equality(#f.errors, 1)
   MiniTest.expect.equality(f.mutations, {})
 
-  f.metadata = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } }
+  f.metadata = { component = "capture", version = "0.9.2", interfaces = { attention = 2 } }
   attention:activity()
   wait_for(function()
     return #f.mutations == 5 and f.pending == 0 and #timers > 0
@@ -222,13 +222,13 @@ T["recovery replays queued conditions and clears then rearms warnings"] = functi
   MiniTest.expect.equality(f.errors[2], f.errors[1])
 
   -- Different failures still reach the operator before another recovery.
-  f.metadata = { component = "capture", version = "0.9.2", interfaces = { attention = 2 } }
+  f.metadata = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } }
   f:reject(attention)
   f:reject(attention)
   MiniTest.expect.equality(#f.errors, 3)
   MiniTest.expect.equality(
     f.errors[3],
-    "louiselm-capture 0.9.2: incompatible attention interface; install a capture release supporting attention interface 1 (see docs/releases.md)"
+    "louiselm-capture 0.9.2: incompatible attention interface; install a capture release supporting attention interface 2 (see docs/releases.md)"
   )
 end
 

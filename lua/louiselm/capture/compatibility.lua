@@ -7,6 +7,7 @@ local M = {}
 ---@return boolean compatible
 ---@return string? error_message Specific installed identity and update instruction.
 function M.check(metadata, interface)
+  local required = interface == "attention" and 2 or 1
   local identity = "unidentified capture service"
   if
     type(metadata) == "table"
@@ -16,7 +17,7 @@ function M.check(metadata, interface)
     and metadata.version:match("^%d+%.%d+%.%d+$") ~= nil
   then
     identity = "louiselm-capture " .. metadata.version
-    if type(metadata.interfaces) == "table" and metadata.interfaces[interface] == 1 then
+    if type(metadata.interfaces) == "table" and metadata.interfaces[interface] == required then
       return true
     end
   end
@@ -26,7 +27,9 @@ function M.check(metadata, interface)
       .. interface
       .. " interface; install a capture release supporting "
       .. interface
-      .. " interface 1 (see docs/releases.md)"
+      .. " interface "
+      .. tostring(required)
+      .. " (see docs/releases.md)"
 end
 
 ---Explain an older CLI's refusal without changing other service diagnostics.

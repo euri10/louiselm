@@ -24,6 +24,72 @@ const RUN_ID: &str = "11111111-2222-4333-8444-555555555555";
 const OPERATION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 #[test]
+fn session_names_survive_persistence_and_update_without_changing_identity() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = AttentionStore::new(temporary.path(), None).unwrap();
+    let mut value = serde_json::to_value(draft()).unwrap();
+    value["session_name"] = "Android inbox polish".into();
+    let named: AttentionDraft = serde_json::from_value(value.clone()).unwrap();
+    let first = store.upsert(named.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&first).unwrap()["items"][0]["session_name"],
+        "Android inbox polish"
+    );
+    assert_eq!(store.upsert(named).unwrap().generation, first.generation);
+    value["session_name"] = "session-24".into();
+    let changed = store
+        .upsert(serde_json::from_value(value).unwrap())
+        .unwrap();
+    assert!(changed.generation > first.generation);
+    assert_eq!(changed.items.len(), 1);
+    assert_eq!(changed.items[0].subject_id, SESSION_ID);
+    let restarted = AttentionStore::new(temporary.path(), None).unwrap();
+    assert_eq!(
+        serde_json::to_value(restarted.snapshot().unwrap()).unwrap()["items"][0]["session_name"],
+        "session-24"
+    );
+}
+
+#[test]
+fn session_name_is_optional_bounded_text_and_only_for_sessions() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = AttentionStore::new(temporary.path(), None).unwrap();
+    assert!(store.upsert(draft()).is_ok());
+    for name in [
+        "",
+        " ",
+        "line\nbreak",
+        "tab\tname",
+        "bad\u{0085}name",
+        "bad\u{2028}name",
+        &"x".repeat(257),
+    ] {
+        let mut value = serde_json::to_value(draft()).unwrap();
+        value["session_name"] = name.into();
+        let parsed: AttentionDraft = serde_json::from_value(value).unwrap();
+        let err = store.upsert(parsed).unwrap_err().to_string();
+        assert!(err.contains("session_name"), "{err}");
+    }
+    let mut value = serde_json::to_value(draft()).unwrap();
+    value["session_name"] = serde_json::json!(42);
+    assert!(serde_json::from_value::<AttentionDraft>(value.clone()).is_err());
+    value["session_name"] = "É".repeat(128).into();
+    assert!(
+        store
+            .upsert(serde_json::from_value(value.clone()).unwrap())
+            .is_ok()
+    );
+    value["subject_kind"] = "run".into();
+    value["subject_id"] = RUN_ID.into();
+    value["kind"] = "run_parked".into();
+    let err = store
+        .upsert(serde_json::from_value(value).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("session_name"), "{err}");
+}
+
+#[test]
 fn broker_projection_order_survives_clear_and_receiver_restart() {
     use louiselm_capture::{BrokerProjection, ProjectionChange};
     let temporary = tempfile::tempdir().unwrap();
@@ -159,6 +225,7 @@ fn draft() -> AttentionDraft {
     AttentionDraft {
         subject_kind: AttentionSubjectKind::Session,
         subject_id: SESSION_ID.to_owned(),
+        session_name: None,
         kind: AttentionKind::TurnReady,
         source_operation_id: OPERATION_ID.to_owned(),
         created_at_ms: 100,
@@ -180,6 +247,7 @@ fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
     let approval = AttentionDraft {
         subject_kind: AttentionSubjectKind::Run,
         subject_id: RUN_ID.to_owned(),
+        session_name: None,
         kind: AttentionKind::SkillApprovalPending,
         source_operation_id: OPERATION_ID.to_owned(),
         created_at_ms: 100,
@@ -201,6 +269,7 @@ fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
     let unverified = AttentionDraft {
         subject_kind: AttentionSubjectKind::Session,
         subject_id: SESSION_ID.to_owned(),
+        session_name: None,
         kind: AttentionKind::SkillUnverified,
         source_operation_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned(),
         created_at_ms: 101,

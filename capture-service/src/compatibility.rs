@@ -37,8 +37,8 @@ pub fn metadata() -> ServiceMetadata {
         interfaces: Interfaces {
             capture: 1,
             run: 1,
-            attention: 1,
-            receiver: 1,
+            attention: 2,
+            receiver: 2,
         },
     }
 }

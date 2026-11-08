@@ -49,6 +49,40 @@ Attention.__index = Attention
 local IDLE_DELAY_MS = 30 * 1000
 local enqueue
 
+local function session_name(state)
+  local name = type(state.name) == "string" and state.name or state.id
+  if type(name) ~= "string" then
+    return nil
+  end
+  local parts, bytes = {}, 0
+  local has_text = false
+  for _, code in ipairs(nvim.fn.str2list(name)) do
+    -- Display metadata is single-line, bounded UTF-8, never part of the key.
+    local whitespace = code <= 32
+      or (code >= 127 and code <= 160)
+      or code == 5760
+      or (code >= 8192 and code <= 8202)
+      or code == 8232
+      or code == 8233
+      or code == 8239
+      or code == 8287
+      or code == 12288
+    local char = whitespace and " " or nvim.fn.nr2char(code)
+    if bytes + #char > 256 then
+      while bytes > 253 do
+        bytes = bytes - #table.remove(parts)
+      end
+      parts[#parts + 1] = "…"
+      break
+    end
+    parts[#parts + 1] = char
+    bytes = bytes + #char
+    has_text = has_text or char ~= " "
+  end
+  local label = nvim.trim(table.concat(parts))
+  return has_text and label or state.id
+end
+
 local function valid_uuid(value)
   local compact = type(value) == "string" and value:gsub("-", "") or ""
   return type(value) == "string"
@@ -352,6 +386,7 @@ function Attention:turn_done(state, seen)
     draft = {
       subject_kind = "session",
       subject_id = state.acp_session_id,
+      session_name = session_name(state),
       kind = "turn_ready",
       source_operation_id = operation_id(state),
       created_at_ms = self.now_ms(),
@@ -434,6 +469,7 @@ function Attention:permission_required(state, data)
     draft = {
       subject_kind = key.subject_kind,
       subject_id = key.subject_id,
+      session_name = session_name(state),
       kind = key.kind,
       source_operation_id = key.source_operation_id,
       created_at_ms = self.now_ms(),
@@ -505,6 +541,7 @@ function Attention:session_failed(state, linked_run_id)
       created_at_ms = self.now_ms(),
       linked_run_id = valid_uuid(linked_run_id) and linked_run_id or nil,
       stage = nil,
+      session_name = session_name(state),
     },
   })
 end
@@ -549,13 +586,14 @@ function Attention:run_resumed(run_id)
   end)
 end
 
----Clear failure and permission conditions when a Session ends.
+---Clear turn-ready, failure and permission conditions when a Session ends.
 ---@param self louiselm.ui.Attention
 ---@param session_id string Agent-side Session identifier.
 function Attention:session_disposed(session_id)
   if self.disposed then
     return
   end
+  self:seen(session_id)
   clear_entries(self, function(entry)
     return entry.session_id == session_id and (entry.kind == "session_failed" or entry.kind == "permission_required")
   end)
