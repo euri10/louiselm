@@ -150,7 +150,11 @@ prompt or verification callbacks cannot start another worker after disposal.
 The controller stages the selected inputs, Parks and exports each successful
 worker, launches a distinct verifier Session, runs the broker's fixed plan and
 reads durable status before the continuation. The broker checks the plan against
-the Run envelope and spends verifier authority once. Promotion when configured,
+the Run envelope and spends verifier authority once. Each export or verifier-run
+request gets a deadline capped at one hour from its construction and at the
+approved Run expiry. A long Run does not widen the native operation budget;
+elapsed preparation time does not consume a later operation's fresh budget,
+and no issued request is renewed or retried. Promotion when configured,
 failure recording and Run summary are part of this controller. This does not claim Verified
 posture or complete the first live Run.
 

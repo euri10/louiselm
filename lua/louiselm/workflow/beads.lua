@@ -327,6 +327,13 @@ local function operation_id(session_id, operation)
   return "verification-" .. operation .. "-" .. nvim.fn.sha256(session_id):sub(1, 32)
 end
 
+local function verification_expiry(self)
+  local seconds, microseconds = nvim.uv.gettimeofday()
+  local now = seconds * 1000 + math.floor(microseconds / 1000)
+  -- Native verification has a one-hour job budget, independent of Run duration.
+  return math.min(self.options.envelope.expires_at_ms, now + 3600000)
+end
+
 ---@param self louiselm.workflow.BeadExecutor
 ---@param action string
 ---@param request table
@@ -550,7 +557,6 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
   local grant = prepared.verification.verifier_grant
   local verifier_launch = grant.request
   result.verifier_session_id = verifier_launch.session_id
-  local expires = self.options.envelope.expires_at_ms
   local reported = false
   local function report(status, passed, message)
     if reported then
@@ -601,7 +607,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
             request_id = operation_id(launch.session_id, "export"),
             launch = launch,
             head = parked.head,
-            expires_at_ms = expires,
+            expires_at_ms = verification_expiry(self),
             operation = { kind = "export", input_id = input_id, input_digest = input_digest },
           }
           control(
@@ -659,7 +665,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
                             request_id = operation_id(verifier_launch.session_id, "run"),
                             launch = verifier_launch,
                             head = verifier_status.broker_head,
-                            expires_at_ms = expires,
+                            expires_at_ms = verification_expiry(self),
                             operation = {
                               kind = "run",
                               producer_session_id = launch.session_id,

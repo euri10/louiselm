@@ -13,6 +13,11 @@ local function now_ms()
   local seconds, micros = nvim.uv.gettimeofday()
   return seconds * 1000 + math.floor(micros / 1000)
 end
+if index == 1 then
+  -- Live Run fddd29b9 (1uqo1) reached export with almost three hours left.
+  -- Keep the real broker/supervisor operation limits in this offline regression.
+  case.envelope.expires_at_ms = now_ms() + 10800000
+end
 print("installed verification case " .. index)
 local completed, failure, observed = false, nil, false
 local controller = assert(Workflow.new_bead_executor({

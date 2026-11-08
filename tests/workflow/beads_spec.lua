@@ -4,6 +4,11 @@ local nvim = vim
 local T = MiniTest.new_set()
 local DIGEST = "sha256:" .. string.rep("a", 64)
 
+local function now_ms()
+  local seconds, microseconds = nvim.uv.gettimeofday()
+  return seconds * 1000 + math.floor(microseconds / 1000)
+end
+
 local function later(callback, first, second)
   local timer = assert(nvim.uv.new_timer())
   timer:start(0, 0, function()
@@ -88,6 +93,18 @@ local function fixture()
       local response
       if argv[2] == "verification" then
         local input = nvim.json.decode(options.stdin)
+        if input.kind == "export" or input.kind == "run" then
+          f[input.kind .. "_requests"] = f[input.kind .. "_requests"] or {}
+          table.insert(f[input.kind .. "_requests"], input.request)
+          -- Native broker/supervisor verification accepts at most 61 minutes,
+          -- not the whole 180-minute expiry from live Run fddd29b9 (1uqo1).
+          local remaining = input.request.expires_at_ms - now_ms()
+          if remaining <= 0 or remaining > 3660000 then
+            f.deadline_refusal = "expired"
+            later(done, { code = 2, stdout = "", stderr = "" })
+            return { kill = function() end }
+          end
+        end
         if input.kind == "stage" then
           f.stage_requests = f.stage_requests or {}
           f.stage_requests[#f.stage_requests + 1] = input
@@ -125,6 +142,12 @@ local function fixture()
         end
         if input.kind == "run" and f.unknown_verification then
           later(done, { code = 1, stdout = "", stderr = "" })
+          return { kill = function() end }
+        end
+        if input.kind == "export" and f.hold_export then
+          f.export_done = function()
+            later(done, { code = 0, stdout = nvim.json.encode(response), stderr = "" })
+          end
           return { kill = function() end }
         end
       elseif argv[2] == "session" then
@@ -268,6 +291,80 @@ end
 
 local function wait(predicate)
   MiniTest.expect.equality(nvim.wait(2000, predicate, 1), true)
+end
+
+T["bounds fresh verification operations within a three-hour Run"] = function()
+  local f = fixture()
+  f.options.envelope.expires_at_ms = now_ms() + 10800000
+  f.hold_export = true
+  f:start()
+  wait(function()
+    return #f.workers == 1 and f.workers[1].complete ~= nil
+  end)
+  local before_export = now_ms()
+  f.workers[1].complete()
+  wait(function()
+    return f.export_done ~= nil or #f.handoffs == 1
+  end)
+  MiniTest.expect.equality(f.deadline_refusal, nil)
+  local export_expiry = f.export_requests[1].expires_at_ms
+  MiniTest.expect.equality(export_expiry >= before_export + 3600000, true)
+  MiniTest.expect.equality(export_expiry <= now_ms() + 3600000, true)
+  -- Cross the export's construction time without changing any global clock.
+  wait(function()
+    return now_ms() > export_expiry - 3600000
+  end)
+  local before_run = now_ms()
+  f.export_done()
+  wait(function()
+    return #f.handoffs == 1
+  end)
+  MiniTest.expect.equality(f.handoffs[1].verification_passed, true)
+  MiniTest.expect.equality(f.run_requests[1].expires_at_ms >= before_run + 3600000, true)
+  MiniTest.expect.equality(f.run_requests[1].expires_at_ms <= now_ms() + 3600000, true)
+  MiniTest.expect.equality(f.run_requests[1].expires_at_ms > export_expiry, true)
+  MiniTest.expect.equality(f.export_requests[1].expires_at_ms, export_expiry)
+  MiniTest.expect.equality(#f.export_requests, 1)
+  MiniTest.expect.equality(#f.run_requests, 1)
+end
+
+T["verification cannot outlive the remaining Run expiry"] = function()
+  local f = fixture()
+  f.options.envelope.expires_at_ms = now_ms() + 10000
+  f:start()
+  wait(function()
+    return #f.workers == 1 and f.workers[1].complete ~= nil
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return #f.handoffs == 1
+  end)
+  MiniTest.expect.equality(f.handoffs[1].verification_passed, true)
+  MiniTest.expect.equality(f.export_requests[1].expires_at_ms, f.options.envelope.expires_at_ms)
+  MiniTest.expect.equality(f.run_requests[1].expires_at_ms, f.options.envelope.expires_at_ms)
+end
+
+T["an expired Run cannot authorize verification or a successor"] = function()
+  local f = fixture()
+  f.options.envelope.expires_at_ms = now_ms() + 100
+  f:start()
+  wait(function()
+    return #f.workers == 1 and f.workers[1].complete ~= nil and now_ms() >= f.options.envelope.expires_at_ms
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return #f.handoffs == 1
+  end)
+  MiniTest.expect.equality(f.deadline_refusal, "expired")
+  MiniTest.expect.equality(f.handoffs[1].verification_passed, false)
+  MiniTest.expect.equality(#f.verifiers, 0)
+  later(f.verify_done, false)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "Run verification outcome is uncertain")
+  MiniTest.expect.equality(#f.workers, 1)
+  MiniTest.expect.equality(#f.prepared, 1)
 end
 
 T["sequences contained workers across the verification continuation"] = function()
