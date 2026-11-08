@@ -21,20 +21,20 @@ phase() {
   "$repo/scripts/launcher-vm" exec sudo -n env LOUISELM_REQUIRE_CONSUMED_RECOVERY=1 \
     timeout 180 "${fixture[@]}" "$library_test" "$prefix::privileged_consumed_recovery_$name" \
     --exact --nocapture --test-threads=1 | tee "$evidence/$name.log"
-  rg -q '^test result: ok\. 1 passed; 0 failed;' "$evidence/$name.log"
-  rg -q "$marker" "$evidence/$name.log"
+  grep -Eq '^test result: ok\. 1 passed; 0 failed;' "$evidence/$name.log"
+  grep -Fq "$marker" "$evidence/$name.log"
 }
 echo "Recovery VM evidence: $evidence"
 "$repo/scripts/launcher-vm" exec sudo -n env LOUISELM_REQUIRE_CONSUMED_RECOVERY=1 \
   timeout 30 "$library_test" launcher_install::consumed_recovery::storage::tests::privileged_recovery_storage_preserves_bytes_and_refuses_untrusted_paths \
   --exact --nocapture --test-threads=1 | tee "$evidence/storage.log"
-rg -q '^test result: ok\. 1 passed; 0 failed;' "$evidence/storage.log"
-rg -q RECOVERY_STORAGE_TRUST_AND_PRESERVATION "$evidence/storage.log"
+grep -Eq '^test result: ok\. 1 passed; 0 failed;' "$evidence/storage.log"
+grep -Fq RECOVERY_STORAGE_TRUST_AND_PRESERVATION "$evidence/storage.log"
 phase before_reboot RECOVERY_ARMED_REBOOT_REQUIRED
 "$repo/scripts/launcher-vm" stop
 "$repo/scripts/launcher-vm" start
 phase after_reboot RECOVERY_PROVED_HISTORY_RETAINED
-rg -q RECOVERY_RECEIPTED_HEAD_PRESERVED "$evidence/after_reboot.log"
-rg -q RECOVERY_INSTALLED_INSPECTION_VERIFIED "$evidence/after_reboot.log"
+grep -Fq RECOVERY_RECEIPTED_HEAD_PRESERVED "$evidence/after_reboot.log"
+grep -Fq RECOVERY_INSTALLED_INSPECTION_VERIFIED "$evidence/after_reboot.log"
 "$repo/scripts/launcher-vm" get /var/tmp/louiselm-consumed-recovery-evidence.json "$evidence/proof.json"
 echo "Recovery VM passed across a real kernel reboot: $evidence"

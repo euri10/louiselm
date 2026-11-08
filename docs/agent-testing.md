@@ -254,6 +254,9 @@ only after disposal. Toy source metadata and software keys prove no desktop
 reproduction, fresh clean-build provenance or hardware ceremony.
 
 Consumed-launch recovery changes additionally require
+`python3 scripts/test-consumed-recovery-vm.py` for the host coordinator's
+portable log guards; CI runs it without ripgrep in the fixture PATH.
+It does not replace the real-reboot gate:
 `bash scripts/test-consumed-recovery-vm <guest-library-test-executable>` in the
 fresh disposable launcher VM with no system installation or retained Sessions.
 Build the candidate binaries and library test first. The fixture uses fixed
