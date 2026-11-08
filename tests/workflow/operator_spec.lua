@@ -177,6 +177,69 @@ T["prepares exact HEAD and fresh scoped worker/verifier grants"] = function()
   assert(f.controller:dispose())
 end
 
+T["preserves reviewed execution order against the canonical envelope set"] = function()
+  local f = fixture()
+  f.selection.beads = {
+    { id = "b-3", prompt = "Third ID first" },
+    { id = "b-1", prompt = "First ID second" },
+    { id = "b-2", prompt = "Second ID last" },
+  }
+  local original = nvim.deepcopy(f.selection)
+  f.controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
+  MiniTest.finally(function()
+    assert(f.controller:dispose())
+  end)
+  MiniTest.expect.equality(#f.calls, 0)
+  MiniTest.expect.equality(f.controller.options.bead_ids, { "b-3", "b-1", "b-2" })
+  MiniTest.expect.equality(f.controller.options.envelope.bead_scope.issue_ids, { "b-1", "b-2", "b-3" })
+  f:prepare("b-3", HEAD)
+  f:stage(HEAD)
+  f:reply(0, {
+    schema = "louiselm.launch-inputs.staged/1",
+    manifest_digest = DIGEST,
+    source_snapshot_digest = DIGEST,
+    source_base_digest = DIGEST,
+    cache_base_digest = DIGEST,
+    base_commit = HEAD,
+  })
+  assert(f.prepared, f.error)
+  MiniTest.expect.equality(f.prepared.prompt, "Third ID first")
+  MiniTest.expect.equality(f.prepared.grant.beads_mutations.issue_ids, { "b-3" })
+  MiniTest.expect.equality(f.prepared.grant.request.session_id, f.selection.envelope.run_id .. "-worker-1")
+  MiniTest.expect.equality(f.selection, original)
+end
+
+T["requires exact canonical scope membership before effects"] = function()
+  for _, scope in ipairs({
+    { "b-1", "b-2" },
+    { "b-1", "b-2", "b-3", "b-4" },
+    { "b-1", "b-2", "foreign" },
+    { "b-1", "b-1", "b-3" },
+    { "b-3", "b-1", "b-2" },
+  }) do
+    local f = fixture()
+    f.selection.envelope.bead_scope.issue_ids = scope
+    if scope[1] == "b-3" then
+      f.selection.beads = { f.selection.beads[3], f.selection.beads[1], f.selection.beads[2] }
+    end
+    local controller, err = require("louiselm.workflow.operator").new(f.selection, f.options)
+    MiniTest.finally(function()
+      if controller then
+        assert(controller:dispose())
+      end
+    end)
+    MiniTest.expect.equality(controller, nil)
+    MiniTest.expect.equality(err, "reviewed Beads must match the exact sorted Run envelope scope")
+    MiniTest.expect.equality(#f.calls, 0)
+  end
+  local f = fixture()
+  f.selection.beads[3].id = "b-1"
+  local controller, err = require("louiselm.workflow.operator").new(f.selection, f.options)
+  MiniTest.expect.equality(controller, nil)
+  MiniTest.expect.equality(err, "operator Run requires unique reviewed Beads and explicit prompts")
+  MiniTest.expect.equality(#f.calls, 0)
+end
+
 T["denied Run families refuse the Bead workflow before effects"] = function()
   for _, family in ipairs({ "bead_scope", "provider_requests" }) do
     for _, denied in ipairs({ nvim.NIL, false }) do

@@ -4,6 +4,13 @@
 local nvim = vim
 nvim.opt.rtp:prepend(nvim.fn.getcwd())
 local selection = nvim.json.decode(table.concat(nvim.fn.readfile(nvim.env.LOUISELM_BEADS_FIXTURE), "\n"))
+assert(nvim.deep_equal(selection.envelope.bead_scope.issue_ids, { "operator-1", "operator-2", "operator-3" }))
+assert(nvim.deep_equal(
+  nvim.tbl_map(function(bead)
+    return bead.id
+  end, selection.beads),
+  { "operator-3", "operator-1", "operator-2" }
+))
 local completed, failure = false, nil
 ---@type louiselm.workflow.BeadRunSummary?
 local summary
@@ -49,6 +56,7 @@ assert(summary and #summary.accepted == 3 and #summary.failed == 0)
 assert(approvals == 3 and #heads == 4, "expected three approvals and commits: " .. summary.text)
 assert(summary.branch == "run/" .. selection.envelope.run_id)
 for index, bead in ipairs(selection.beads) do
+  assert(summary.accepted[index] == bead.id, "execution must preserve the reviewed order")
   assert(summary.commits[bead.id] == heads[index + 1])
   local snapshot = selection.snapshot_parent .. "/" .. selection.envelope.run_id .. "-" .. index
   local metadata = nvim.json.decode(table.concat(nvim.fn.readfile(snapshot .. "/snapshot.json"), "\n"))
@@ -105,4 +113,6 @@ assert(
   retained.code == 0 and nvim.json.decode(retained.stdout).state == "active",
   "real capture must retain the exact initialized anchor"
 )
-print("installed operator: three accepted commits, current-HEAD snapshots and real capture ledger")
+print(
+  "installed operator: reviewed nonalphabetic order, three accepted commits, current-HEAD snapshots and real capture ledger"
+)

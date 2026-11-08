@@ -17,6 +17,11 @@ selection. Calling `start` authorizes those exact bytes through the authenticate
 operator CLI. Construct a new Run ID for each execution; restarting this Lua
 object does not replay or renew approval.
 
+`envelope.bead_scope.issue_ids` is the canonical, sorted, unique permission set.
+The execution list (`bead_ids`, or `beads` in the operator caller) carries the
+reviewed order independently. The operator caller requires exactly the same
+members in both lists and preserves the selected execution order.
+
 ```lua
 local controller = assert(require("louiselm.workflow").new_bead_executor({
   envelope = selected_envelope,
@@ -215,13 +220,14 @@ invocation: starting it approves the exact envelope and admits the real capture
 ledger. No API key belongs in it. The closed `louiselm.operator.bead-run/1` object
 contains:
 
-- `envelope`: complete `RunEnvelope`, with a fresh UUID Run ID, exact ordered
+- `envelope`: complete `RunEnvelope`, with a fresh UUID Run ID, exact sorted
   Bead scope, two Sessions per Bead, one failure comment per Bead, fixed plan
   digest, finite expiry and explicit finite shared Provider request cap. This
   first-Run caller permits only `gpt-5.6-luna`, with an at-most-high reasoning cap;
   the registered runtime must select the approved low-effort default.
-- `beads`: exactly the same ordered IDs, as `{id, prompt}` records containing
-  individually reviewed worker instructions.
+- `beads`: exactly the same IDs in reviewed execution order, as `{id, prompt}`
+  records containing individually reviewed worker instructions. This order need
+  not be alphabetical; the envelope's permission set must remain sorted.
 - `manifest`: complete resolved `SessionInputManifest` from trusted provisioning,
   naming the measured installed Agent, current Generation/view, policy and
   explicit input categories. Do not invent placeholder identities or treat a
@@ -301,8 +307,9 @@ after its worker disappears. The measured ACP peer and tracker are offline
 fixtures; the gate runs a passing plan, a failing plan, an unapprovable
 worker and accepted promotion into a dedicated Run worktree. No Provider requests are issued. Capture
 admission/attachment is doubled in cases 1–4. Case 5 runs the actual operator
-caller with the real capture CLI, three separately promoted commits, next-HEAD
-snapshots and six durable terminal cleanup receipts. Its ACP peer and verification
+caller with the real capture CLI, a nonalphabetical reviewed execution order
+against the exact sorted permission set, three separately promoted commits,
+next-HEAD snapshots and six durable terminal cleanup receipts. Its ACP peer and verification
 plan remain offline fixtures, not live acceptance. Live Codex/Provider acceptance remains the
 persistent-VM Run's responsibility.
 Cases 6–7 inject a captured durable Provider hold after worker completion and

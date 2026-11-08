@@ -122,8 +122,10 @@ local function validate(selection, options)
     end
     ids[index], prompts[bead.id] = bead.id, bead.prompt
   end
-  if not nvim.deep_equal(ids, envelope.bead_scope.issue_ids) then
-    return nil, "reviewed Bead order must equal the exact Run envelope list"
+  local scope_ids = nvim.deepcopy(ids)
+  table.sort(scope_ids)
+  if not nvim.deep_equal(scope_ids, envelope.bead_scope.issue_ids) then
+    return nil, "reviewed Beads must match the exact sorted Run envelope scope"
   end
   if
     envelope.max_sessions ~= 2 * #ids

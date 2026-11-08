@@ -534,9 +534,9 @@ fn operator_selection(
     envelope["provider_requests"]["max_run_requests"] = serde_json::json!(6);
     serde_json::json!({
         "schema":"louiselm.operator.bead-run/1", "envelope":envelope,
-        "beads":[{"id":"operator-1","prompt":"promote-fixture-1"},
-            {"id":"operator-2","prompt":"promote-fixture-2"},
-            {"id":"operator-3","prompt":"promote-fixture-3"}],
+        "beads":[{"id":"operator-3","prompt":"promote-fixture-1"},
+            {"id":"operator-1","prompt":"promote-fixture-2"},
+            {"id":"operator-2","prompt":"promote-fixture-3"}],
         "manifest":manifest, "cache":cache, "plan":case["plan"],
         "snapshot_parent":snapshots, "input_group":config.broker_uid,
         "worktree":{"path":checkout,"journal_parent":journal,"head":preview.base_commit},
