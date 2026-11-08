@@ -438,6 +438,52 @@ fn tool_output_and_descendant_lifetime_are_bounded() {
 }
 
 #[test]
+fn preparation_deadline_is_not_an_identity_rejection() {
+    let (root, executor) = fixture();
+    let mut plan = executor.plan.clone();
+    plan.session_id = "expired-tool".to_owned();
+    plan.arguments = vec!["-c".to_owned(), "touch should-not-exist".to_owned()];
+    let started = AtomicBool::new(false);
+    let error = run(
+        &executor.backend,
+        &plan,
+        Duration::ZERO,
+        &AtomicBool::new(false),
+        || Ok(true),
+        |prepared| {
+            started.store(true, Ordering::Release);
+            prepared.start().map_err(super::super::system::map_sandbox)
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error, SupervisorError::ToolDeadlineExpired);
+    assert_eq!(
+        error.to_string(),
+        "tool execution deadline expired before start"
+    );
+    assert!(!started.load(Ordering::Acquire));
+    assert!(!root.path().join("workspace/should-not-exist").exists());
+}
+
+#[test]
+fn expired_preparation_does_not_hide_invalid_identity() {
+    let (_root, executor) = fixture();
+    for ready in [Ok(false), Err(SupervisorError::AgentIdentityRejected)] {
+        assert_eq!(
+            run(
+                &executor.backend,
+                &executor.plan,
+                Duration::ZERO,
+                &AtomicBool::new(false),
+                || ready.clone(),
+                |_| panic!("an unauthenticated tool must not start"),
+            ),
+            Err(SupervisorError::AgentIdentityRejected)
+        );
+    }
+}
+
+#[test]
 fn cancelled_start_never_executes_repository_code() {
     let (root, executor) = fixture();
     let mut plan = executor.plan.clone();

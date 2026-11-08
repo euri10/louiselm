@@ -953,6 +953,9 @@ pub enum SupervisorError {
     /// The actual Agent process identity could not be authenticated.
     #[error("Agent process identity rejected")]
     AgentIdentityRejected,
+    /// Tool preparation exhausted the execution budget before releasing the startup gate.
+    #[error("tool execution deadline expired before start")]
+    ToolDeadlineExpired,
     /// No enforced Agent/tool separation was proved for this integration.
     #[error("Agent/tool isolation unproven")]
     ToolIsolationUnproven,

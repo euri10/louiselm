@@ -264,11 +264,18 @@ pub(super) fn run(
         .ok_or(SupervisorError::WorkerUnavailable)?;
     let mut prepared = backend.prepare(plan).map_err(super::system::map_sandbox)?;
     let ready = alive();
-    if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline || ready != Ok(true) {
+    let refusal = if cancelled.load(Ordering::Acquire) || ready != Ok(true) {
+        Some(SupervisorError::AgentIdentityRejected)
+    } else if Instant::now() >= deadline {
+        Some(SupervisorError::ToolDeadlineExpired)
+    } else {
+        None
+    };
+    if let Some(error) = refusal {
         prepared
             .dispose()
             .map_err(|_| SupervisorError::CleanupUnproven)?;
-        return Err(SupervisorError::AgentIdentityRejected);
+        return Err(error);
     }
     let mut session = start(prepared)?;
     drop(session.take_stdin());
