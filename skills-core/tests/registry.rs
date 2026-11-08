@@ -62,6 +62,28 @@ fn provider_configuration_matches_the_lua_contract() {
 }
 
 #[test]
+fn contained_profile_slot_is_explicit_and_confined_to_the_home_root() {
+    let fixture = tempfile::tempdir().unwrap();
+    for (path, valid) in [
+        ("AGENTS.md", true),
+        ("AGENTS.override.md", true),
+        ("", false),
+        ("/AGENTS.md", false),
+        ("../AGENTS.md", false),
+        (".codex/AGENTS.md", false),
+        ("AGENTS.md/", false),
+        ("AGENTS\n.md", false),
+    ] {
+        let document = serde_json::json!({"schema":"louiselm.launch.registry/1", "entries":[{
+            "id":"demo", "provider":"fixture", "runtime_id":"fixture", "arguments":[], "environment":{},
+            "contained_always_on_path":path,
+        }]});
+        fs::write(fixture.path().join("agents.json"), document.to_string()).unwrap();
+        assert_eq!(Registry::open(fixture.path()).is_ok(), valid, "{path:?}");
+    }
+}
+
+#[test]
 fn always_on_path_is_optional_and_round_trips_without_expansion() {
     let fixture = tempfile::tempdir().unwrap();
     for path in [

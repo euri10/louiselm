@@ -10,6 +10,69 @@ use std::{
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 
+pub(crate) fn from_generation(
+    store: &crate::Store,
+    policy: &crate::Policy,
+    record: &GenerationRecord,
+    agent: &str,
+) -> Result<Option<super::OperatorProfile>, ViewError> {
+    let packages = super::checked_packages(store, policy, record)?;
+    let profile = from_packages(record, &packages, agent)?;
+    if profile.is_none()
+        && packages
+            .values()
+            .any(|package| PackageKind::of(&package.manifest) == PackageKind::OperatorProfile)
+    {
+        return Err(ViewError::Refused("operator_profile_scope_mismatch"));
+    }
+    Ok(profile)
+}
+
+pub(super) fn from_packages(
+    record: &GenerationRecord,
+    packages: &BTreeMap<&str, Package>,
+    agent: &str,
+) -> Result<Option<super::OperatorProfile>, ViewError> {
+    let mut selected = None;
+    let mut seen = false;
+    for member in &record.payload.members {
+        let package = &packages[member.package_digest.as_str()];
+        if PackageKind::of(&package.manifest) != PackageKind::OperatorProfile {
+            continue;
+        }
+        if seen {
+            return Err(ViewError::Refused("multiple_operator_profiles"));
+        }
+        seen = true;
+        if !member.agents.iter().any(|id| id == agent) {
+            continue;
+        }
+        let entry = package
+            .manifest
+            .entry(PROFILE_FILE)
+            .ok_or(ViewError::Refused("missing_profile_file"))?;
+        if package.manifest.entries.len() != 1
+            || entry.executable
+            || entry.size > MAX_PROFILE_BYTES as u64
+        {
+            return Err(ViewError::Refused("invalid_profile_shape"));
+        }
+        selected = Some(super::OperatorProfile {
+            package: package.digest.clone(),
+            bytes: read_file(
+                &package.file_path(PROFILE_FILE),
+                &Entry::File {
+                    digest: Digest::parse(&entry.sha256).map_err(crate::StoreError::from)?,
+                    size: entry.size,
+                    executable: false,
+                },
+                false,
+            )?,
+        });
+    }
+    Ok(selected)
+}
+
 use super::{Entry, ViewError, io_error, read_file, tree_error};
 use crate::{
     Digest, GenerationRecord, Package,

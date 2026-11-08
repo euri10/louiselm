@@ -16,6 +16,7 @@ fn inputs(temp: &TempDir) -> SessionInputManifest {
     fs::write(temp.path().join("cache/dependency"), b"warm cache").unwrap();
     let digest = |bytes: &[u8]| Some(Digest::of(bytes).to_string());
     SessionInputManifest::build(SessionInputs {
+        operator_profile: None,
         agent: Some(AgentRegistration {
             id: "agent".into(),
             provider: Provider::Fixed("fixture".into()),
@@ -24,6 +25,7 @@ fn inputs(temp: &TempDir) -> SessionInputManifest {
             environment: std::collections::BTreeMap::new(),
             tool_integration: None,
             always_on_path: None,
+            contained_always_on_path: None,
             native_instruction_paths: vec![],
         }),
         runtime: Some(RuntimeMeasurement {
@@ -81,6 +83,58 @@ fn stage(temp: &TempDir, manifest: &SessionInputManifest) -> Output {
         temp.path().join("staged").to_str().unwrap(),
         "--robot-json",
     ])
+}
+
+#[test]
+fn profile_staging_requires_exact_private_bytes_and_detects_later_substitution() {
+    use louiselm_skills::session_manifest::{MeasuredInput, OperatorProfileInput};
+    let temp = fixture();
+    let mut manifest = inputs(&temp);
+    manifest.agent.contained_always_on_path = Some("AGENTS.md".into());
+    manifest.operator_profile = Some(OperatorProfileInput {
+        package_digest: Digest::of(b"admitted profile fixture").to_string(),
+        input: MeasuredInput::from_bytes("AGENTS.md", false, b"private defaults").unwrap(),
+    });
+    let snapshot = temp.path().join("snapshot");
+    let cache = temp.path().join("cache");
+    let output = temp.path().join("profile-inputs");
+    assert!(matches!(
+        louiselm_skills::workspace::launch_inputs::stage(
+            &manifest, &snapshot, &cache, None, &output
+        ),
+        Err(louiselm_skills::workspace::WorkspaceError::Invalid(
+            "Operator profile input mismatch"
+        ))
+    ));
+    assert!(!output.exists());
+    louiselm_skills::workspace::launch_inputs::stage(
+        &manifest,
+        &snapshot,
+        &cache,
+        Some(b"private defaults"),
+        &output,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(output.join("operator-profile.md")).unwrap(),
+        b"private defaults"
+    );
+    let preview =
+        louiselm_skills::workspace::launch_inputs::inspect(&output, &manifest.digest()).unwrap();
+    assert!(
+        !serde_json::to_string(&preview)
+            .unwrap()
+            .contains("private defaults")
+    );
+    let profile = output.join("operator-profile.md");
+    fs::set_permissions(&profile, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&profile, b"substituted").unwrap();
+    assert!(matches!(
+        louiselm_skills::workspace::launch_inputs::inspect(&output, &manifest.digest()),
+        Err(louiselm_skills::workspace::WorkspaceError::Invalid(
+            "Operator profile input mismatch"
+        ))
+    ));
 }
 
 #[test]

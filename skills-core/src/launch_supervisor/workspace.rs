@@ -28,6 +28,7 @@ pub(super) struct SessionWorkspace {
     directory: std::path::PathBuf,
     marker: crate::workspace::retention::cleanup::SealedStorage,
     pub(super) skill_masks: Option<crate::sandbox::SkillMasks>,
+    pub(super) operator_profile: Option<crate::sandbox::OperatorProfileMount>,
 }
 
 pub(super) fn load(
@@ -113,6 +114,7 @@ impl SessionWorkspace {
         let marker =
             crate::workspace::retention::cleanup::SealedStorage::new(request, &inputs.manifest)
                 .map_err(|_| SupervisorError::DurabilityUnavailable)?;
+        let mut operator_profile = None;
         let result =
             (|| -> Result<(CacheOverlay, Option<crate::sandbox::SkillMasks>), WorkspaceError> {
                 marker.persist(directory)?;
@@ -121,6 +123,24 @@ impl SessionWorkspace {
                 assign_tree(&plan.workspace, uid, gid)?;
                 fs::DirBuilder::new().mode(0o700).create(&plan.home)?;
                 chown(&plan.home, Some(uid), Some(gid))?;
+                if let (Some(input), Some(bytes)) =
+                    (&inputs.manifest.operator_profile, &inputs.operator_profile)
+                {
+                    operator_profile = Some(
+                        crate::sandbox::OperatorProfileMount::prepare(
+                            &directory.join("operator-profile"),
+                            input,
+                            bytes,
+                            runtime,
+                            plan,
+                        )
+                        .map_err(|_| {
+                            WorkspaceError::Invalid(
+                                "contained Operator profile preparation refused",
+                            )
+                        })?,
+                    );
+                }
                 let skill_masks = if matches!(
                     request.skills,
                     crate::session_manifest::SkillInputs::Off { .. }
@@ -161,6 +181,7 @@ impl SessionWorkspace {
                 directory: directory.into(),
                 marker,
                 skill_masks,
+                operator_profile,
             })
         } else {
             seal(&root)?;

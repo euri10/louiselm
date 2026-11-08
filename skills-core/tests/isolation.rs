@@ -37,6 +37,7 @@ fn complete_evidence() -> IsolationEvidence {
     IsolationEvidence {
         contract_version: CONTRACT_VERSION.to_owned(),
         skill_masks: None,
+        operator_profile: None,
         native_sources: None,
         backend: "test".to_owned(),
         backend_version: "0".to_owned(),

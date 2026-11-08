@@ -19,7 +19,7 @@ spec.loader.exec_module(qa)
 
 def inputs():
     manifest = {
-        "schema": "louiselm.session.input-manifest/3",
+        "schema": "louiselm.session.input-manifest/4",
         "agent": {"id": "qa", "tool_integration": "louiselm.test-tool-integration/1"},
         "skills": {"mode": "off", "view_digest": qa.EMPTY_VIEW},
         "isolation": {"network": "denied"},

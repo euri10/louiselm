@@ -32,6 +32,7 @@ pub(super) fn command() -> clap::Command {
         .subcommand(
             clap::Command::new("stage")
                 .args(["--manifest", "--snapshot", "--cache", "--output"].map(super::value))
+                .arg(super::value("--operator-profile").required(false))
                 .arg(super::robot_flag()),
         )
         .subcommand(
@@ -86,10 +87,24 @@ pub(super) fn run(args: &clap::ArgMatches) -> Result<i32, CliError> {
             .map_err(|_| invalid("Session input manifest unavailable"))?;
         let manifest = SessionInputManifest::parse(&bytes)
             .map_err(|_| invalid("invalid Session input manifest"))?;
+        let profile = values
+            .get("--operator-profile")
+            .map(|path| {
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)
+                    .and_then(|file| {
+                        file.take(crate::inspect::MAX_PROFILE_BYTES as u64 + 1)
+                            .read_to_end(&mut bytes)
+                    })
+                    .map_err(|_| invalid("Operator profile input unavailable"))?;
+                Ok::<_, CliError>(bytes)
+            })
+            .transpose()?;
         workspace::launch_inputs::stage(
             &manifest,
             Path::new(required("--snapshot")?),
             Path::new(required("--cache")?),
+            profile.as_deref(),
             Path::new(required("--output")?),
         )
     } else {

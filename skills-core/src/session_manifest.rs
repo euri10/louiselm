@@ -24,7 +24,7 @@ mod validation;
 pub use resolution::InputResolutionError;
 
 /// Canonical Session input record schema.
-pub const INPUT_MANIFEST_SCHEMA: &str = "louiselm.session.input-manifest/3";
+pub const INPUT_MANIFEST_SCHEMA: &str = "louiselm.session.input-manifest/4";
 /// Maximum encoded record size, checked before parsing.
 pub const MAX_INPUT_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
@@ -78,6 +78,8 @@ pub struct SessionInputs {
     pub runtime_configuration_digest: Option<String>,
     /// Explicitly resolved skills mode and exact Instruction view.
     pub skills: Option<SkillInputs>,
+    /// Exact admitted private profile, or explicit absence. Skills-off omits it.
+    pub operator_profile: Option<crate::instruction_view::OperatorProfile>,
     /// Complete per-Session project-instruction snapshot.
     pub project_instructions: Option<Vec<MeasuredInput>>,
     /// Added tool schemas; built-ins belong to runtime and configuration identity.
@@ -224,6 +226,9 @@ pub struct SessionInputManifest {
     pub runtime_configuration_digest: String,
     /// Explicit skills mode and exact Instruction view binding.
     pub skills: SkillInputs,
+    /// Private always-on input bound to this Agent and admitted Generation.
+    /// Contains measurements only, never profile bytes or a host source path.
+    pub operator_profile: Option<OperatorProfileInput>,
     /// Project instructions, never hardware-admitted packages.
     pub project_instructions: Vec<MeasuredInput>,
     /// Measured added tool schemas, excluding runtime built-ins.
@@ -246,6 +251,39 @@ pub struct SessionInputManifest {
     pub acp_mcp_servers: Vec<String>,
     /// Reachable services and fixed disclosure statement.
     pub provider_disclosure: ProviderDisclosure,
+}
+
+/// Exact admitted profile and its declared private-home file measurement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorProfileInput {
+    /// Profile package in the manifest's signed Generation and Agent scope.
+    pub package_digest: String,
+    /// Exact private-home filename, content digest and byte count.
+    pub input: MeasuredInput,
+}
+
+impl OperatorProfileInput {
+    pub(crate) fn from_profile(
+        profile: &crate::instruction_view::OperatorProfile,
+        agent: &AgentRegistration,
+    ) -> Result<Self, SessionManifestError> {
+        let path =
+            agent
+                .contained_always_on_path
+                .as_deref()
+                .ok_or(SessionManifestError::Missing {
+                    field: "operator_profile",
+                })?;
+        Ok(Self {
+            package_digest: profile.package_digest().to_string(),
+            input: MeasuredInput::from_bytes(path, false, profile.bytes())?,
+        })
+    }
+
+    pub(crate) fn matches_bytes(&self, bytes: &[u8]) -> bool {
+        bytes.len() as u64 == self.input.size && Digest::of(bytes).hex() == self.input.sha256
+    }
 }
 
 /// Stable refusals without payload or configuration contents.
@@ -306,9 +344,8 @@ impl SessionManifestError {
                     Some(DimensionName::Runtime)
                 } else {
                     match *field {
-                        "skills" | "generation_digest" | "view_digest" | "policy_digest" => {
-                            Some(DimensionName::ManagedSupply)
-                        }
+                        "skills" | "generation_digest" | "view_digest" | "policy_digest"
+                        | "operator_profile" => Some(DimensionName::ManagedSupply),
                         "project_instructions"
                         | "tool_schemas"
                         | "plugin_schemas"
@@ -355,6 +392,11 @@ impl SessionInputManifest {
                 reason: "no measured runtime is bound",
             })?;
         let skills = required(inputs.skills, "skills")?;
+        let operator_profile = inputs
+            .operator_profile
+            .as_ref()
+            .map(|profile| OperatorProfileInput::from_profile(profile, &agent))
+            .transpose()?;
         let provider_disclosure = ProviderDisclosure {
             providers: agent
                 .reachable_providers()
@@ -372,6 +414,7 @@ impl SessionInputManifest {
                 "runtime_configuration_digest",
             )?,
             skills,
+            operator_profile,
             project_instructions: required(inputs.project_instructions, "project_instructions")?,
             tool_schemas: required(inputs.tool_schemas, "tool_schemas")?,
             plugin_schemas: required(inputs.plugin_schemas, "plugin_schemas")?,

@@ -100,6 +100,7 @@ impl ToolExecutor {
                 .skill_masks
                 .as_ref()
                 .map(crate::sandbox::SkillMasks::workspace_only),
+            operator_profile: None,
             system_roots,
             network: NetworkPolicy::Denied,
             identity: agent.identity,

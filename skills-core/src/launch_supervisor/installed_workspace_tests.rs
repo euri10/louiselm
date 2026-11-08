@@ -41,6 +41,7 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
         arguments: vec![],
         environment: std::collections::BTreeMap::new(),
         always_on_path: None,
+        contained_always_on_path: None,
         native_instruction_paths: vec![],
         tool_integration: Some(
             if codex.is_some() {
@@ -52,6 +53,7 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
         ),
     };
     SessionInputManifest::build(SessionInputs {
+        operator_profile: None,
         runtime_configuration_digest: Some(
             crate::runtime_configuration::resolve(&agent)
                 .unwrap()
@@ -130,6 +132,7 @@ pub(in crate::launch_supervisor) fn stage_manifest_with_snapshot(
         inputs,
         &staging.path().join("snapshot"),
         &staging.path().join("cache"),
+        None,
         &root.join(inputs.digest().hex()),
     )
     .unwrap();

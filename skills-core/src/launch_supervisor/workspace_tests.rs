@@ -43,6 +43,7 @@ fn registry_fixture(root: &Path) -> (Registry, AgentRegistration, RuntimePackage
         environment: std::collections::BTreeMap::new(),
         tool_integration: Some(crate::runtime_configuration::CONTRACT.into()),
         always_on_path: None,
+        contained_always_on_path: None,
         native_instruction_paths: vec![],
     };
     let runtime = RuntimePackage {
@@ -90,6 +91,7 @@ fn manifest_fixture(
     fs::create_dir(&cache).unwrap();
     let identity = Digest::of(b"fixture").to_string();
     SessionInputManifest::build(SessionInputs {
+        operator_profile: None,
         runtime_configuration_digest: Some(
             crate::runtime_configuration::resolve(&agent)
                 .unwrap()
@@ -135,6 +137,7 @@ fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
         &manifest,
         &snapshot,
         &cache,
+        None,
         &input_root.join(manifest.digest().hex()),
     )
     .unwrap();
@@ -175,6 +178,7 @@ fn launch_loader_uses_canonical_runtime_and_rejects_foreign_bindings() {
             &substituted,
             &snapshot,
             &cache,
+            None,
             &input_root.join(substituted.digest().hex()),
         )
         .unwrap();

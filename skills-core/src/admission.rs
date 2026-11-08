@@ -26,6 +26,7 @@ mod linked;
 mod transaction;
 mod verification;
 mod withdrawals;
+pub(crate) use linked::verified_generation;
 pub use linked::{admit_linked, linked_generation_members, verify_linked};
 pub use verification::verify_record;
 pub(crate) use withdrawals::supply_withdrawal_alerts;

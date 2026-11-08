@@ -84,6 +84,10 @@ impl AuthenticatedInputs {
             || evidence.isolation_evidence_digest != json_digest(isolation)?.to_string()
             || evidence.isolation_contract != isolation.contract_version
             || isolation.contract_version != manifest.isolation.contract_version
+            || !crate::discovery_source::operator_profile_matches(
+                &manifest,
+                isolation.operator_profile.as_ref(),
+            )
             || !crate::discovery_source::skill_masks_match(
                 &request.skills,
                 &manifest.runtime,

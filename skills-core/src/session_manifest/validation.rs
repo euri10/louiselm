@@ -50,6 +50,25 @@ impl SessionInputManifest {
             nonempty("agent.tool_integration", integration)?;
         }
         self.skills.validate()?;
+        if let Some(profile) = &self.operator_profile {
+            if self.skills.generation_digest().is_none()
+                || self.agent.contained_always_on_path.as_deref()
+                    != Some(profile.input.path.as_str())
+                || profile.input.path.contains('/')
+                || profile.input.executable
+                || profile.input.size > crate::inspect::MAX_PROFILE_BYTES as u64
+            {
+                return Err(malformed(
+                    "operator_profile",
+                    "profile requires enabled supply and its declared private-home slot",
+                ));
+            }
+            digest("operator_profile", &profile.package_digest, true)?;
+            files(
+                "operator_profile",
+                std::iter::once((profile.input.path.as_str(), profile.input.sha256.as_str())),
+            )?;
+        }
         digest("policy_digest", &self.policy_digest, true)?;
         digest("source_snapshot_digest", &self.source_snapshot_digest, true)?;
         digest("source_base_digest", &self.source_base_digest, true)?;

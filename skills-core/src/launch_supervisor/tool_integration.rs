@@ -318,6 +318,7 @@ pub(super) fn launch_values(
     integration: Integration,
     runtime_root: &Path,
     home: &Path,
+    profile_slot: Option<&str>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
     match integration {
         Integration::TestTool => (Vec::new(), BTreeMap::new()),
@@ -325,7 +326,7 @@ pub(super) fn launch_values(
             let root = runtime_root.display().to_string();
             let home = home.display().to_string();
             let (config, authentication) = codex_configuration();
-            let environment = BTreeMap::from([
+            let mut environment = BTreeMap::from([
                 ("CODEX_CONFIG".to_owned(), config),
                 (
                     "CODEX_PATH".to_owned(),
@@ -339,6 +340,9 @@ pub(super) fn launch_values(
                 ("USER".to_owned(), "louiselm".to_owned()),
                 ("XDG_STATE_HOME".to_owned(), format!("{home}/.local/state")),
             ]);
+            if profile_slot.is_some() {
+                environment.insert("CODEX_HOME".into(), home);
+            }
             let adapter = runtime_root.join(CODEX_ADAPTER).display().to_string();
             (vec![adapter], environment)
         }
@@ -401,6 +405,7 @@ mod tests {
             environment: BTreeMap::new(),
             tool_integration: contract.map(str::to_owned),
             always_on_path: None,
+            contained_always_on_path: None,
             native_instruction_paths: vec![],
         }
     }
@@ -417,6 +422,7 @@ mod tests {
             cache: None,
             beads_replica: None,
             skill_masks: None,
+            operator_profile: None,
             system_roots: vec![],
             identity: IdentityPlan::NamespaceOnly,
             network: NetworkPolicy::Denied,
@@ -576,7 +582,7 @@ mod tests {
     fn codex_launch_values_are_fixed_by_the_contract() {
         let root = Path::new("/runtime");
         let home = Path::new("/session/home");
-        let (arguments, environment) = launch_values(Integration::CodexAcp, root, home);
+        let (arguments, environment) = launch_values(Integration::CodexAcp, root, home, None);
         assert_eq!(arguments, ["/runtime/codex-acp.js"]);
         assert_eq!(environment["CODEX_PATH"], "/runtime/codex");
         assert_eq!(environment["HOME"], "/session/home");
@@ -605,12 +611,23 @@ mod tests {
                 .all(|key| !key.contains("KEY") && !key.contains("TOKEN")),
             "no credential enters the Session environment"
         );
+        assert!(!environment.contains_key("CODEX_HOME"));
+        for slot in ["AGENTS.md", "AGENTS.override.md"] {
+            let (profile_arguments, mut profile_environment) =
+                launch_values(Integration::CodexAcp, root, home, Some(slot));
+            assert_eq!(profile_arguments, arguments);
+            assert_eq!(
+                profile_environment.remove("CODEX_HOME"),
+                Some("/session/home".into())
+            );
+            assert_eq!(profile_environment, environment);
+        }
         assert_eq!(
-            launch_values(Integration::CodexAcp, root, home),
+            launch_values(Integration::CodexAcp, root, home, None),
             (arguments, environment)
         );
         assert_eq!(
-            launch_values(Integration::TestTool, root, home),
+            launch_values(Integration::TestTool, root, home, None),
             (vec![], BTreeMap::new())
         );
     }

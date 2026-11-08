@@ -73,6 +73,7 @@ fn fixture(root: &Path) -> (RuntimePackage, ConfinementPlan, Inventory) {
         cache: None,
         beads_replica: None,
         skill_masks: None,
+        operator_profile: None,
         system_roots: vec![root.join("system")],
         network: NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,

@@ -142,7 +142,11 @@ fn runtime_fixture(fixture: &Fixture) -> (RuntimePackage, Inventory) {
                 } else {
                     SourceRoot::Home
                 },
-                path: format!("sources/{}", kind.name()),
+                path: if kind == SourceKind::GlobalInstructions {
+                    "AGENTS.md".into()
+                } else {
+                    format!("sources/{}", kind.name())
+                },
             })
             .collect(),
     };
@@ -165,6 +169,7 @@ fn runtime_fixture(fixture: &Fixture) -> (RuntimePackage, Inventory) {
 
 fn manifest_fixture(runtime: &RuntimePackage) -> SessionInputManifest {
     SessionInputManifest::build(SessionInputs {
+        operator_profile: None,
         agent: Some(AgentRegistration {
             id: "fixture-agent".into(),
             provider: Provider::Fixed("fixture-provider".into()),
@@ -173,6 +178,7 @@ fn manifest_fixture(runtime: &RuntimePackage) -> SessionInputManifest {
             environment: BTreeMap::new(),
             tool_integration: None,
             always_on_path: None,
+            contained_always_on_path: None,
             native_instruction_paths: vec![],
         }),
         runtime: Some(runtime.measure().unwrap()),
@@ -248,6 +254,7 @@ fn isolation_fixture(inventory: &Inventory, manifest: &SessionInputManifest) -> 
             })
             .collect(),
         skill_masks: None,
+        operator_profile: None,
         native_sources: Some(SourceEvidence {
             schema: SOURCE_EVIDENCE_SCHEMA.into(),
             inventory_digest: digest(&inventory.canonical_bytes()),

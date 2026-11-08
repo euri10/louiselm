@@ -117,6 +117,13 @@ dependencies), run from the repository root:
 `node --test --test-timeout=5000 skills-core/tests/recovery_browser.test.cjs`.
 CI runs it alongside the Rust gates; Cargo alone does not execute the client.
 
+Contained Operator profile changes also run the ignored library test
+`sandbox::operator_profile::tests::privileged_profile_source_is_readable_only_by_its_assigned_identity`
+as root only in the disposable launcher VM, with `--exact --ignored --nocapture`.
+CI requires it. It proves real HostIdentity reads, immutable profile/global masks,
+writable Agent state, foreign-identity denial and zero-survivor cleanup. Namespace-only
+tests cannot establish the assigned UID's access to supervisor-owned staging.
+
 Sender guard build changes also run `python3 scripts/test-sender-guard-build.py`
 and `python3 scripts/test-sender-guard.py <built-louiselm-launch>`. They check
 Cargo source/header invalidation, compiler failure and the embedded object's

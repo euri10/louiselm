@@ -4,7 +4,7 @@ use super::{
     AuthenticatedInputs, DiscoveryError, Inventory, MAX_DISCOVERY_BYTES, SOURCE_EVIDENCE_SCHEMA,
     json_digest,
 };
-use crate::discovery_source::{SourceControl, SourceKind, SourceObservation};
+use crate::discovery_source::{Source, SourceControl, SourceKind, SourceObservation, SourceRoot};
 use crate::registry::RuntimePackage;
 use std::collections::BTreeMap;
 
@@ -42,6 +42,17 @@ impl DiscoveryProof {
             return Err(DiscoveryError::Refused("runtime_mismatch"));
         }
         let inventory = Inventory::load(runtime)?;
+        if let Some(profile) = &bound.isolation.operator_profile {
+            let expected: Vec<_> = inventory
+                .sources
+                .iter()
+                .filter(|source| source.kind == SourceKind::GlobalInstructions)
+                .cloned()
+                .collect();
+            if profile.sources != expected {
+                return Err(DiscoveryError::Refused("profile_source_set_mismatch"));
+            }
+        }
         bound.isolation.check()?;
         let observations = bound
             .isolation
@@ -87,7 +98,7 @@ impl DiscoveryProof {
                 return Err(DiscoveryError::Refused("source_set_mismatch"));
             }
             verify_control(
-                source.kind,
+                source,
                 &observation.control,
                 bound,
                 &observations.evidence_id,
@@ -130,13 +141,18 @@ impl DiscoveryProof {
 }
 
 fn verify_control(
-    kind: SourceKind,
+    source: &Source,
     control: &SourceControl,
     bound: &AuthenticatedInputs,
     evidence_id: &str,
 ) -> Result<(), DiscoveryError> {
     let manifest = &bound.manifest;
-    let snapshot = match kind {
+    let snapshot = match source.kind {
+        SourceKind::GlobalInstructions => manifest
+            .operator_profile
+            .as_ref()
+            .filter(|profile| source.root == SourceRoot::Home && source.path == profile.input.path)
+            .map(|profile| format!("sha256:{}", profile.input.sha256)),
         SourceKind::ProjectInstructions => {
             Some(json_digest(&manifest.project_instructions)?.to_string())
         }

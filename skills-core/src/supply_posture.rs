@@ -121,7 +121,18 @@ fn managed(
     }
     if let Some(manifest) = manifest
         && (manifest.skills != request.skills
-            || manifest.policy_digest != policy.digest().to_string())
+            || manifest.policy_digest != policy.digest().to_string()
+            || view
+                .operator_profile()
+                .map(|profile| {
+                    crate::session_manifest::OperatorProfileInput::from_profile(
+                        profile,
+                        &manifest.agent,
+                    )
+                })
+                .transpose()
+                .map_err(|_| FailureCode::RootTrustFailed)?
+                != manifest.operator_profile)
     {
         return Err(FailureCode::RootTrustFailed);
     }

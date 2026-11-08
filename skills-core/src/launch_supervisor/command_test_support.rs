@@ -139,6 +139,7 @@ pub(in crate::launch_supervisor) fn fixture(root: &Path) -> Fixture {
         cache: None,
         beads_replica: None,
         skill_masks: None,
+        operator_profile: None,
         system_roots: default_system_roots(),
         network: crate::registry::NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,

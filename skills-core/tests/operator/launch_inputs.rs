@@ -11,6 +11,7 @@ fn request() -> LaunchInputsRequest {
     LaunchInputsRequest {
         manifest: Box::new(
             SessionInputManifest::build(SessionInputs {
+                operator_profile: None,
                 agent: Some(AgentRegistration {
                     id: "agent".into(),
                     provider: Provider::Fixed("fixture".into()),
@@ -19,6 +20,7 @@ fn request() -> LaunchInputsRequest {
                     environment: std::collections::BTreeMap::new(),
                     tool_integration: None,
                     always_on_path: None,
+                    contained_always_on_path: None,
                     native_instruction_paths: vec![],
                 }),
                 runtime: Some(RuntimeMeasurement {

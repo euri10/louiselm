@@ -21,6 +21,9 @@ pub enum ConfigurationError {
     /// Registered overrides could widen the integration's fixed inputs.
     #[error("fixed runtime configuration requires empty registered arguments and environment")]
     RegistrationOverrides,
+    /// The fixed Codex integration cannot load this declared private-home slot.
+    #[error("Codex contained profile slot must be AGENTS.md or AGENTS.override.md")]
+    UnsupportedProfileSlot,
 }
 
 /// Resolves the exact installed configuration for a known integration.
@@ -38,7 +41,16 @@ pub fn resolve(agent: &AgentRegistration) -> Result<Digest, ConfigurationError> 
     }
     match agent.tool_integration.as_deref() {
         Some(CONTRACT) => Ok(Digest::of(CONTRACT.as_bytes())),
-        Some(CODEX_CONTRACT) => Ok(codex_configuration_digest()),
+        Some(CODEX_CONTRACT) => {
+            let digest = codex_configuration_digest();
+            match agent.contained_always_on_path.as_deref() {
+                None => Ok(digest),
+                Some(slot @ ("AGENTS.md" | "AGENTS.override.md")) => Ok(Digest::of(
+                    format!("{digest}\nCODEX_HOME=private-home\n{slot}").as_bytes(),
+                )),
+                Some(_) => Err(ConfigurationError::UnsupportedProfileSlot),
+            }
+        }
         _ => Err(ConfigurationError::UnsupportedIntegration),
     }
 }

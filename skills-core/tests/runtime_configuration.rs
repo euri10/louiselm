@@ -19,6 +19,7 @@ fn agent() -> AgentRegistration {
         environment: BTreeMap::new(),
         tool_integration: Some("louiselm.codex-acp-integration/1".into()),
         always_on_path: None,
+        contained_always_on_path: None,
         native_instruction_paths: vec![],
     }
 }
@@ -30,6 +31,24 @@ fn supported_configuration_is_stable_and_integration_specific() {
     assert_eq!(codex, runtime_configuration::resolve(&agent).unwrap());
     agent.tool_integration = Some("louiselm.test-tool-integration/1".into());
     assert_ne!(codex, runtime_configuration::resolve(&agent).unwrap());
+}
+
+#[test]
+fn codex_profile_layout_is_bound_and_unsupported_native_slots_are_refused() {
+    let mut registration = agent();
+    let absent = runtime_configuration::resolve(&registration).unwrap();
+    for slot in ["AGENTS.md", "AGENTS.override.md"] {
+        registration.contained_always_on_path = Some(slot.into());
+        assert_ne!(
+            runtime_configuration::resolve(&registration).unwrap(),
+            absent
+        );
+    }
+    registration.contained_always_on_path = Some("ignored.md".into());
+    assert_eq!(
+        runtime_configuration::resolve(&registration),
+        Err(ConfigurationError::UnsupportedProfileSlot)
+    );
 }
 
 #[test]

@@ -146,6 +146,10 @@ pub struct AgentRegistration {
     /// Contained launch preparation never writes this host destination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub always_on_path: Option<PathBuf>,
+    /// Explicit native instruction filename directly inside a contained private
+    /// home. No inferred path or host-file delivery; omission declares no slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contained_always_on_path: Option<String>,
     /// Explicit absolute native instruction files or recursively scanned
     /// directories. Paths are literal, without environment, tilde or glob
     /// expansion; an empty list declares no additional native sources.
@@ -435,6 +439,15 @@ impl Registry {
             agent.provider.validate()?;
             if let Some(path) = &agent.always_on_path {
                 validate_instruction_path("always_on_path", path)?;
+            }
+            if let Some(path) = &agent.contained_always_on_path {
+                validate_relative_path("agent", path)?;
+                if path.contains('/') || path.chars().any(char::is_control) {
+                    return Err(RegistryError::Malformed {
+                        kind: "agent".into(),
+                        reason: "contained_always_on_path must be one private-home filename".into(),
+                    });
+                }
             }
             if agent.native_instruction_paths.len() > MAX_NATIVE_INSTRUCTION_PATHS {
                 return Err(RegistryError::Malformed {

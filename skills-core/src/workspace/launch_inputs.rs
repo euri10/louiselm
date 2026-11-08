@@ -35,6 +35,7 @@ pub struct InputPreview {
 pub(crate) struct LoadedInputs {
     pub(crate) manifest: SessionInputManifest,
     pub(crate) cache: CacheBase,
+    pub(crate) operator_profile: Option<Vec<u8>>,
     record: SnapshotRecord,
     files: SourceFiles,
 }
@@ -86,7 +87,13 @@ impl LoadedInputs {
         manifest: SessionInputManifest,
         snapshot: &Path,
         cache: &Path,
+        operator_profile: Option<&[u8]>,
     ) -> Result<Self, WorkspaceError> {
+        match (&manifest.operator_profile, operator_profile) {
+            (Some(expected), Some(bytes)) if expected.matches_bytes(bytes) => (),
+            (None, None) => (),
+            _ => return Err(WorkspaceError::Invalid("Operator profile input mismatch")),
+        }
         let expected = Digest::parse(&manifest.source_snapshot_digest)
             .map_err(|_| WorkspaceError::Invalid("invalid source identity"))?;
         let (record, files) = super::load_snapshot(snapshot, &expected)?;
@@ -99,6 +106,7 @@ impl LoadedInputs {
         Ok(Self {
             manifest,
             cache,
+            operator_profile: operator_profile.map(<[u8]>::to_vec),
             record,
             files,
         })
@@ -118,6 +126,9 @@ impl LoadedInputs {
     }
 
     fn write(&self, staging: &Path) -> Result<(), WorkspaceError> {
+        if let Some(bytes) = &self.operator_profile {
+            filesystem::write_file(&staging.join("operator-profile.md"), bytes, 0o400)?;
+        }
         filesystem::write_file(
             &staging.join("manifest.json"),
             &self.manifest.canonical_bytes(),
@@ -163,11 +174,13 @@ impl LoadedInputs {
     }
 }
 
-/// Copies a canonical manifest and its exact source/cache inputs into a new tree.
+/// Copies a canonical manifest and its exact source/cache/profile inputs into a new tree.
 ///
 /// The output parent must be controlled by the operator or broker. No process is
 /// launched, source Git metadata copied, or approval implied. All inputs are
 /// measured into memory before publication; the original paths are not retained.
+/// `operator_profile` must exactly match the manifest or be absent with it.
+/// The bytes remain outside the source snapshot and all payload-free previews.
 ///
 /// # Errors
 /// Refuses malformed manifests, changed/unsafe input bytes, mismatched digests,
@@ -176,12 +189,13 @@ pub fn stage(
     manifest: &SessionInputManifest,
     snapshot: &Path,
     cache: &Path,
+    operator_profile: Option<&[u8]>,
     output: &Path,
 ) -> Result<InputPreview, WorkspaceError> {
     let manifest = SessionInputManifest::parse(&manifest.canonical_bytes())?;
     filesystem::validate_output(output, &std::fs::canonicalize(snapshot)?)?;
     filesystem::validate_output(output, &std::fs::canonicalize(cache)?)?;
-    let inputs = LoadedInputs::capture(manifest, snapshot, cache)?;
+    let inputs = LoadedInputs::capture(manifest, snapshot, cache, operator_profile)?;
     inputs.publish(output)?;
     inputs.preview()
 }
@@ -197,7 +211,17 @@ pub(crate) fn load(input: &Path, expected: &Digest) -> Result<LoadedInputs, Work
             "Session input manifest digest mismatch",
         ));
     }
-    LoadedInputs::capture(manifest, &input.join("snapshot"), &input.join("cache"))
+    let profile = filesystem::read_source(
+        &root,
+        "operator-profile.md",
+        crate::inspect::MAX_PROFILE_BYTES,
+    )?;
+    LoadedInputs::capture(
+        manifest,
+        &input.join("snapshot"),
+        &input.join("cache"),
+        profile.as_ref().map(|file| file.bytes.as_slice()),
+    )
 }
 
 /// Remeasures a staged launch input and reports included/excluded source paths.

@@ -1452,10 +1452,10 @@ impl SystemLaunchPlatform {
         plan: &mut ConfinementPlan,
         release_root: &Path,
     ) -> Result<(super::ToolIsolationEvidence, Option<File>), SupervisorError> {
-        let integration = crate::registry::Registry::open_trusted(&self.registry_root)
+        let agent = crate::registry::Registry::open_trusted(&self.registry_root)
             .and_then(|registry| registry.agent(&request.agent_id))
-            .map_err(|_| SupervisorError::ToolIsolationUnproven)
-            .and_then(|agent| super::tool_integration::validate_registration(&agent))?;
+            .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+        let integration = super::tool_integration::validate_registration(&agent)?;
         let evidence = super::ToolIsolationEvidence::measure(
             integration,
             plan,
@@ -1477,8 +1477,12 @@ impl SystemLaunchPlatform {
             .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
         // Measurement requires empty registered values; the contract then
         // supplies its exact launcher-owned arguments and environment.
-        (plan.arguments, plan.environment) =
-            super::tool_integration::launch_values(integration, &plan.runtime_root, &plan.home);
+        (plan.arguments, plan.environment) = super::tool_integration::launch_values(
+            integration,
+            &plan.runtime_root,
+            &plan.home,
+            agent.contained_always_on_path.as_deref(),
+        );
         Ok((evidence, runtime))
     }
 
@@ -1706,6 +1710,8 @@ impl LaunchPlatform for SystemLaunchPlatform {
         }
         let workspace = self.prepare_workspace(request, &plan)?;
         plan.skill_masks.clone_from(&workspace.skill_masks);
+        plan.operator_profile
+            .clone_from(&workspace.operator_profile);
         let result = (|| {
             require_measured_bwrap(&self.config).map_err(|_| SupervisorError::SpawnFailed)?;
             let release_root = self

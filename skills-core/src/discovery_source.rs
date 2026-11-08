@@ -151,6 +151,54 @@ pub struct SkillMaskEvidence {
     pub sources: Vec<Source>,
 }
 
+/// Signed observations of one admitted profile and every other masked global
+/// instruction slot. This does not establish controls for other source categories.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorProfileEvidence {
+    /// Exact measured runtime inventory.
+    pub inventory_digest: String,
+    /// Manifest-bound profile input, without private bytes.
+    pub profile: crate::session_manifest::OperatorProfileInput,
+    /// Complete global-instruction inventory; only the profile slot contains bytes.
+    pub sources: Vec<Source>,
+}
+
+pub(crate) fn operator_profile_matches(
+    manifest: &crate::session_manifest::SessionInputManifest,
+    evidence: Option<&OperatorProfileEvidence>,
+) -> bool {
+    match (&manifest.operator_profile, evidence) {
+        (None, None) => true,
+        (Some(profile), Some(evidence)) => {
+            let inventory = manifest
+                .runtime
+                .adapters
+                .iter()
+                .find(|entry| entry.path == crate::discovery::INVENTORY_PATH);
+            let mut ids = std::collections::BTreeSet::new();
+            let mut paths = std::collections::BTreeSet::new();
+            evidence.profile == *profile
+                && inventory.is_some_and(|entry| {
+                    format!("sha256:{}", entry.sha256) == evidence.inventory_digest
+                })
+                && evidence.sources.iter().all(|source| {
+                    source.kind == SourceKind::GlobalInstructions
+                        && source.root == SourceRoot::Home
+                        && !source.path.contains('/')
+                        && crate::CanonicalPath::parse(&source.path, false).is_ok()
+                        && ids.insert(&source.id)
+                        && paths.insert(&source.path)
+                })
+                && evidence
+                    .sources
+                    .iter()
+                    .any(|source| source.path == profile.input.path)
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn skill_masks_match(
     skills: &crate::session_manifest::SkillInputs,
     runtime: &crate::registry::RuntimeMeasurement,

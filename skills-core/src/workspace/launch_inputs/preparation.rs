@@ -117,6 +117,10 @@ pub fn prepare(
     inputs.isolation = Some(IsolationIntent::new(envelope.network));
     inputs.envelope_id = Some(envelope.id);
     inputs.envelope_revision = Some(1);
+    let operator_profile = inputs
+        .operator_profile
+        .as_ref()
+        .map(|profile| profile.bytes().to_vec());
     let manifest = SessionInputManifest::build(inputs)?;
     let proposal = RunProposal {
         schema: PROPOSAL_SCHEMA.into(),
@@ -128,6 +132,7 @@ pub fn prepare(
     let inputs = LoadedInputs {
         manifest,
         cache,
+        operator_profile,
         record,
         files,
     };

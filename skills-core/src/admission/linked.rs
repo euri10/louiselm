@@ -112,6 +112,16 @@ pub fn linked_generation_members(
     domain: &str,
     generation: &Digest,
 ) -> Result<Vec<String>, AdmissionError> {
+    Ok(verified_generation(store, domain, generation)?
+        .payload
+        .member_digests())
+}
+
+pub(crate) fn verified_generation(
+    store: &Store,
+    domain: &str,
+    generation: &Digest,
+) -> Result<GenerationRecord, AdmissionError> {
     let locked = LockedTrust::read_only(store)?;
     if store
         .root()
@@ -130,7 +140,7 @@ pub fn linked_generation_members(
     let record = super::load_unlocked(store, generation)?;
     verify_record(store, &record, &trust)?;
     locked.confirm()?;
-    Ok(record.payload.member_digests())
+    Ok(record)
 }
 
 pub(super) fn find(

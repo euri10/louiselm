@@ -252,6 +252,7 @@ pub fn resolve(
         cache: None,
         beads_replica: None,
         skill_masks: None,
+        operator_profile: None,
         system_roots: default_system_roots(),
         network: envelope.network,
         identity,

@@ -211,6 +211,15 @@ fn preparing_launch_views_never_writes_host_slots_or_exposes_profiles_as_skills(
             .unwrap();
     for agent in AGENTS {
         assert!(!world.slot(agent).exists());
+        assert_eq!(
+            views[*agent].operator_profile().unwrap().bytes(),
+            PROFILE.as_bytes()
+        );
+        assert_eq!(
+            views[*agent].operator_profile().unwrap().package_digest(),
+            world.profile.as_ref().unwrap()
+        );
+        assert!(!format!("{:?}", views[*agent]).contains("Private operator defaults"));
         assert!(
             !views[*agent]
                 .skills_root()
@@ -218,6 +227,67 @@ fn preparing_launch_views_never_writes_host_slots_or_exposes_profiles_as_skills(
                 .exists()
         );
     }
+}
+
+#[test]
+fn contained_resolution_binds_admitted_bytes_and_off_never_resolves_a_profile() {
+    use louiselm_skills::session_manifest::{SessionInputs, SkillsMode};
+    let world = World::new(true);
+    let runtime = world.fixture.path("runtime");
+    write_file(&runtime.join("agent"), "offline runtime");
+    write_file(
+        &world.fixture.path("registry/runtimes.json"),
+        &json!({
+            "schema":"louiselm.launch.registry/1", "entries":[{
+                "id":"test", "root":runtime, "executable":"agent",
+                "executable_sha256":Digest::of(b"offline runtime").hex(),
+                "adapters":[], "version":"1", "origin":"offline fixture",
+            }],
+        })
+        .to_string(),
+    );
+    let registry = || Registry::open(&world.fixture.path("registry")).unwrap();
+    let off = SessionInputs::resolve(
+        &world.fixture.store(),
+        &Policy::embedded(),
+        &registry(),
+        "codex",
+        SkillsMode::Off,
+    )
+    .unwrap();
+    assert!(off.operator_profile.is_none());
+    assert!(off.skills.unwrap().generation_digest().is_none());
+    assert!(matches!(
+        SessionInputs::resolve(
+            &world.fixture.store(),
+            &Policy::embedded(),
+            &registry(),
+            "codex",
+            SkillsMode::Enabled
+        ),
+        Err(louiselm_skills::session_manifest::InputResolutionError::ProfileSlotUndeclared)
+    ));
+    let path = world.fixture.path("registry/agents.json");
+    let mut agents: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    agents["entries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|agent| agent["id"] == "codex")
+        .unwrap()["contained_always_on_path"] = "AGENTS.md".into();
+    write_file(&path, &agents.to_string());
+    let inputs = SessionInputs::resolve(
+        &world.fixture.store(),
+        &Policy::embedded(),
+        &registry(),
+        "codex",
+        SkillsMode::Enabled,
+    )
+    .unwrap();
+    let profile = inputs.operator_profile.unwrap();
+    assert_eq!(profile.bytes(), PROFILE.as_bytes());
+    assert_eq!(profile.package_digest(), world.profile.as_ref().unwrap());
+    assert!(!world.slot("codex").exists());
 }
 
 #[test]

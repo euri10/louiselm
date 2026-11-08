@@ -69,6 +69,7 @@ fn staged_inputs(
     let preview = workspace::prepare(&repo, &["Cargo.lock".into()], &snapshot).unwrap();
     let digest = |bytes: &[u8]| Some(Digest::of(bytes).to_string());
     let manifest = SessionInputManifest::build(SessionInputs {
+        operator_profile: None,
         agent: Some(AgentRegistration {
             id: "demo".into(),
             provider: Provider::Fixed("fixture".into()),
@@ -77,6 +78,7 @@ fn staged_inputs(
             environment: std::collections::BTreeMap::new(),
             tool_integration: None,
             always_on_path: None,
+            contained_always_on_path: None,
             native_instruction_paths: vec![],
         }),
         runtime: Some(RuntimeMeasurement {
@@ -109,7 +111,7 @@ fn staged_inputs(
     })
     .unwrap();
     service
-        .stage_launch_inputs(&manifest, &snapshot, &cache)
+        .stage_launch_inputs(&manifest, &snapshot, &cache, None)
         .unwrap();
     (manifest, bytes)
 }

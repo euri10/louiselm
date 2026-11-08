@@ -445,6 +445,30 @@ file, verified against that installed Agent; paths are literal, with no tilde or
 environment expansion. An absent declaration is supported and reported as
 undelivered. There is no filename inferred from an Agent or Provider name.
 
+Contained Sessions use a separate explicit `contained_always_on_path`, a single
+filename directly inside their private home. For the fixed Codex integration,
+declare `"AGENTS.override.md"` or `"AGENTS.md"`; this selects a private-home
+`CODEX_HOME` and changes the measured configuration identity. The measured runtime
+inventory must declare that file and every other global instruction file as
+top-level Home sources. Unsupported or overlapping layouts refuse preparation.
+Ordinary host destinations are never copied or written by contained preparation.
+
+With skills enabled, the same locked Generation/view resolution supplies the
+exact admitted profile. Manifest `operator_profile` binds its package and file
+measurements, without private content. The installed broker re-verifies the
+Generation, Agent scope and immutable package bytes through its protected
+Admission source before staging a private copy. Missing or substituted input
+refuses; a new Agent needs a new Admission. The supervisor read-only mounts the
+profile and empty masks over the other declared global instruction files, while
+leaving normal Agent state writable. Signed isolation evidence binds these mounts.
+Complete native-supply verification still requires every other source category;
+these profile controls alone do not activate full Verified posture.
+
+Explicit `skills=off` omits the profile and retains its no-Generation/no-enrollment
+contract. Without an admitted profile, the new manifest field is `null` and no
+profile mount is added. Actual desktop Admission/deployment is a separate operator
+workflow; local fixtures do not change the maintainer's personal defaults.
+
 Installed harness checks on 2026-11-06 established these paths:
 
 | Agent | Native instruction file |
@@ -560,7 +584,7 @@ Added schema fields describe only separately supplied extensions. The fixed
 launcher refuses nonempty added schemas, configuration drift, and unknown
 producers; these intended settings do not establish native-discovery control.
 
-`SessionInputManifest::build` creates `louiselm.session.input-manifest/3`.
+`SessionInputManifest::build` creates `louiselm.session.input-manifest/4`.
 Its `skills` field is either `{mode:"off",view_digest:EMPTY_VIEW}` or
 `{mode:"enabled",generation_digest:GENERATION,view_digest:AGENT_VIEW}`.
 Missing/unknown modes, contradictory fields and substituted empty-view identities
@@ -944,7 +968,7 @@ installed composition, not activation of the maintainer's desktop.
 
 `preflight --request request.json --manifest inputs.json --robot-json` reads
 exact canonical `louiselm.launch.request/3` and
-`louiselm.session.input-manifest/3` bytes. These are proposed inputs, not an
+`louiselm.session.input-manifest/4` bytes. These are proposed inputs, not an
 approval or proof that a Session ran. Do not log the input files: they can
 contain runtime arguments and environment. The safe output contains only
 opaque identities, digests, closed codes and fixed notices.

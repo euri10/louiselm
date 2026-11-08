@@ -19,6 +19,7 @@ impl BrokerService {
         manifest: &SessionInputManifest,
         snapshot: &Path,
         cache: &Path,
+        operator_profile: Option<&[u8]>,
     ) -> Result<InputPreview, BrokerError> {
         let root = self
             .verification_inputs
@@ -35,6 +36,7 @@ impl BrokerService {
             manifest,
             snapshot,
             cache,
+            operator_profile,
             &root.join(manifest.digest().hex()),
         )?)
     }
@@ -73,6 +75,21 @@ impl InstalledBroker {
         snapshot: &Path,
         cache: &Path,
     ) -> Result<InputPreview, BrokerError> {
-        self.service.stage_launch_inputs(manifest, snapshot, cache)
+        let source =
+            super::admission_source::AdmissionSource::installed().map_err(BrokerError::Storage)?;
+        let profile = match source {
+            Some(source) => {
+                if source.operator_uid != self.verifier.config().operator_uid
+                    || source.broker_uid != self.verifier.config().broker_uid
+                {
+                    return Err(BrokerError::ControllerMismatch);
+                }
+                source.operator_profile(manifest)?
+            }
+            None if manifest.operator_profile.is_none() => None,
+            None => return Err(BrokerError::InvalidGrant),
+        };
+        self.service
+            .stage_launch_inputs(manifest, snapshot, cache, profile.as_deref())
     }
 }

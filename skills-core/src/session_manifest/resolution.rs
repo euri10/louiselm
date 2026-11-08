@@ -20,6 +20,11 @@ pub enum InputResolutionError {
     /// Current witnessed Generation or materialized view failed verification.
     #[error("managed_supply: Generation or view resolution failed")]
     Supply(#[from] ViewError),
+    /// Admitted profile delivery has no explicit native private-home destination.
+    #[error(
+        "native_supply: admitted Operator profile requires contained_always_on_path in the Agent registration"
+    )]
+    ProfileSlotUndeclared,
 }
 
 impl InputResolutionError {
@@ -29,6 +34,7 @@ impl InputResolutionError {
         match self {
             Self::Runtime(_) => DimensionName::Runtime,
             Self::Supply(_) => DimensionName::ManagedSupply,
+            Self::ProfileSlotUndeclared => DimensionName::NativeSupply,
         }
     }
 
@@ -37,7 +43,7 @@ impl InputResolutionError {
     pub fn failure_code(&self) -> FailureCode {
         match self {
             Self::Runtime(RegistryError::RuntimeChanged { .. }) => FailureCode::RuntimeDrift,
-            Self::Runtime(_) => FailureCode::EvidenceMissing,
+            Self::Runtime(_) | Self::ProfileSlotUndeclared => FailureCode::EvidenceMissing,
             Self::Supply(_) => FailureCode::RootTrustFailed,
         }
     }
@@ -50,8 +56,10 @@ impl SessionInputs {
     /// Enabled mode requires current signed/witnessed supply; off mode uses only
     /// the canonical empty view, with no Generation or trust enrollment.
     /// The enabled Generation binding comes from the same locked operation as the view;
-    /// no second current-Generation read can race activation. Snapshot, envelope,
-    /// MCP and isolation fields remain `None` until their owners supply them.
+    /// no second current-Generation read can race activation.
+    /// An admitted profile is returned from that same locked read; a declared
+    /// contained instruction slot is required before it can be bound.
+    /// Snapshot, envelope, MCP and isolation fields remain `None` until their owners supply them.
     /// Call immediately before binding; this is not a currency or launch lease.
     ///
     /// # Errors
@@ -66,22 +74,32 @@ impl SessionInputs {
     ) -> Result<Self, InputResolutionError> {
         let agent = registry.agent(agent_id)?;
         let runtime = registry.runtime(&agent.runtime_id)?.measure()?;
-        let skills = match mode {
-            SkillsMode::Off => SkillInputs::Off {
-                view_digest: instruction_view::empty(store)?.digest().to_string(),
-            },
+        let (skills, operator_profile) = match mode {
+            SkillsMode::Off => (
+                SkillInputs::Off {
+                    view_digest: instruction_view::empty(store)?.digest().to_string(),
+                },
+                None,
+            ),
             SkillsMode::Enabled => {
                 let mut views = instruction_view::materialize(store, policy, registry)?;
                 let view = views
                     .remove(agent_id)
                     .ok_or(ViewError::Refused("unresolved_agent_view"))?;
-                SkillInputs::Enabled {
-                    generation_digest: view
-                        .generation()
-                        .ok_or(ViewError::Refused("unresolved_generation"))?
-                        .to_owned(),
-                    view_digest: view.digest().to_string(),
+                let profile = view.operator_profile().cloned();
+                if profile.is_some() && agent.contained_always_on_path.is_none() {
+                    return Err(InputResolutionError::ProfileSlotUndeclared);
                 }
+                (
+                    SkillInputs::Enabled {
+                        generation_digest: view
+                            .generation()
+                            .ok_or(ViewError::Refused("unresolved_generation"))?
+                            .to_owned(),
+                        view_digest: view.digest().to_string(),
+                    },
+                    profile,
+                )
             }
         };
         Ok(Self {
@@ -89,6 +107,7 @@ impl SessionInputs {
             runtime: Some(runtime),
             runtime_configuration_digest: None,
             skills: Some(skills),
+            operator_profile,
             policy_digest: Some(policy.digest().to_string()),
             project_instructions: None,
             tool_schemas: None,

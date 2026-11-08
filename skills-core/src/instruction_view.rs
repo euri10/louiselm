@@ -36,7 +36,7 @@ use crate::{
 };
 
 pub(crate) mod native;
-mod profile;
+pub(crate) mod profile;
 
 /// A materialized artifact; only this module constructs its identity and path.
 #[derive(Clone, Debug)]
@@ -45,9 +45,48 @@ pub struct InstructionView {
     root: PathBuf,
     skills_root: PathBuf,
     generation: Option<String>,
+    profile: Option<OperatorProfile>,
+}
+
+/// Exact private profile bytes verified with the view's admitted Generation.
+/// Debug output omits content; this handle is not a continuing authority lease.
+#[derive(Clone)]
+pub struct OperatorProfile {
+    package: Digest,
+    bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for OperatorProfile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OperatorProfile")
+            .field("package", &self.package)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OperatorProfile {
+    /// Admitted package identity, distinct from the file content digest.
+    #[must_use]
+    pub fn package_digest(&self) -> &Digest {
+        &self.package
+    }
+
+    /// Exact admitted private bytes. Never log, endorse or export them.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 impl InstructionView {
+    /// Profile verified under the same Admission lock as this view, when scoped
+    /// to its Agent. An empty skills-off view has no profile or Generation.
+    #[must_use]
+    pub fn operator_profile(&self) -> Option<&OperatorProfile> {
+        self.profile.as_ref()
+    }
+
     /// Generation verified under the materialization lock, including an Agent
     /// with no members. An explicit `skills=off` mask has no Generation.
     /// This binding does not change the shared empty tree's content address.
@@ -257,6 +296,7 @@ fn publish_views(
             )?
         };
         view.generation = Some(record.generation.clone());
+        view.profile = profile::from_packages(record, packages, &agent)?;
         views.insert(agent, view);
     }
     Ok(views)
@@ -466,6 +506,7 @@ fn publish(
         skills_root: root.join("skills"),
         root,
         generation: generation.map(str::to_owned),
+        profile: None,
     })
 }
 

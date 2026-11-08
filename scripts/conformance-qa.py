@@ -37,7 +37,7 @@ EMPTY_VIEW = digest(encoded({"schema": "louiselm.skills.instruction-view/1", "ge
 
 def records(proposal, manifest, uid, now):
     require(proposal.get("schema") == "louiselm.run.input-proposal/1"
-            and manifest.get("schema") == "louiselm.session.input-manifest/3"
+            and manifest.get("schema") == "louiselm.session.input-manifest/4"
             and proposal.get("manifest_digest") == digest(encoded(manifest))
             and proposal.get("envelope") == manifest.get("envelope")
             and proposal.get("envelope", {}).get("revision") == 1

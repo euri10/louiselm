@@ -178,6 +178,9 @@ pub struct IsolationEvidence {
     /// Actual skills-off root mounts; does not certify other native sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_masks: Option<crate::discovery_source::SkillMaskEvidence>,
+    /// Actual profile/mask mounts; independent of complete native-source proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_profile: Option<crate::discovery_source::OperatorProfileEvidence>,
 }
 
 /// Why isolation evidence cannot support a verified launch.

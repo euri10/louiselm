@@ -80,6 +80,59 @@ fn authenticated_skills_off_requires_exact_empty_mask_and_measured_inventory() {
 }
 
 #[test]
+fn admitted_profile_is_a_frozen_global_input_without_unmasking_other_sources() {
+    use louiselm_skills::{
+        Digest,
+        discovery_source::OperatorProfileEvidence,
+        session_manifest::{MeasuredInput, OperatorProfileInput},
+    };
+    let mut fixture = DiscoveryFixture::new();
+    let input = OperatorProfileInput {
+        package_digest: Digest::of(b"profile package").to_string(),
+        input: MeasuredInput::from_bytes("AGENTS.md", false, b"private profile").unwrap(),
+    };
+    fixture.manifest.agent.contained_always_on_path = Some("AGENTS.md".into());
+    fixture.manifest.operator_profile = Some(input.clone());
+    let native = fixture.isolation.native_sources.as_ref().unwrap();
+    fixture.isolation.operator_profile = Some(OperatorProfileEvidence {
+        inventory_digest: native.inventory_digest.clone(),
+        profile: input,
+        sources: native
+            .sources
+            .iter()
+            .filter(|entry| entry.source.kind == SourceKind::GlobalInstructions)
+            .map(|entry| entry.source.clone())
+            .collect(),
+    });
+    fixture.control(
+        SourceKind::GlobalInstructions,
+        SourceControl::FrozenSnapshot {
+            digest: Digest::of(b"private profile").to_string(),
+        },
+    );
+    fixture.sign();
+    DiscoveryProof::verify(&fixture.authenticate().unwrap(), &fixture.runtime).unwrap();
+
+    fixture.control(
+        SourceKind::NativeMcp,
+        SourceControl::FrozenSnapshot {
+            digest: Digest::of(b"private profile").to_string(),
+        },
+    );
+    fixture.sign();
+    assert!(matches!(
+        DiscoveryProof::verify(&fixture.authenticate().unwrap(), &fixture.runtime),
+        Err(DiscoveryError::Refused("native_source_unmasked"))
+    ));
+    fixture.isolation.operator_profile = None;
+    fixture.sign();
+    assert!(matches!(
+        fixture.authenticate(),
+        Err(DiscoveryError::Refused("launch_binding_mismatch"))
+    ));
+}
+
+#[test]
 fn complete_authenticated_sources_produce_a_bound_proof() {
     let fixture = DiscoveryFixture::new();
     let bound = fixture.authenticate().unwrap();

@@ -133,6 +133,7 @@ pub(super) fn prepare(root: &Path, config: &LauncherConfig, registry_root: &Path
         &manifest,
         &snapshot,
         &cache,
+        None,
         &input_root.join(manifest.digest().hex()),
     )
     .unwrap();

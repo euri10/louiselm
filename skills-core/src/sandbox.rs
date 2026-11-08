@@ -22,7 +22,9 @@ mod agent_identity;
 #[doc(hidden)]
 pub mod bootstrap;
 mod host_identity;
+mod operator_profile;
 mod skill_masks;
+pub use operator_profile::OperatorProfileMount;
 pub use skill_masks::SkillMasks;
 
 use std::{
@@ -140,6 +142,8 @@ pub struct ConfinementPlan {
     pub beads_replica: Option<PathBuf>,
     /// Launcher-owned empty Instruction view mounts, resolved from measured inventory.
     pub skill_masks: Option<SkillMasks>,
+    /// Launcher-owned profile file and masks of all other global instruction slots.
+    pub operator_profile: Option<OperatorProfileMount>,
     /// System directories mounted read-only.
     pub system_roots: Vec<PathBuf>,
     /// Whether the Session may reach the network.
@@ -1684,6 +1688,9 @@ impl BubblewrapBackend {
         if let Some(masks) = &plan.skill_masks {
             arguments.extend(masks.arguments());
         }
+        if let Some(profile) = &plan.operator_profile {
+            arguments.extend(profile.arguments());
+        }
         arguments.push("--chdir".to_owned());
         arguments.push(plan.workspace.display().to_string());
         arguments.push("--".to_owned());
@@ -1710,6 +1717,9 @@ impl BubblewrapBackend {
     pub fn prepare(&self, plan: &ConfinementPlan) -> Result<PreparedSession, SandboxError> {
         if let Some(masks) = &plan.skill_masks {
             masks.verify(plan)?;
+        }
+        if let Some(profile) = &plan.operator_profile {
+            profile.verify(plan)?;
         }
         let host_identity = if let IdentityPlan::HostIdentity { uid, gid } = plan.identity {
             if !rustix::process::geteuid().is_root() {
@@ -1951,6 +1961,10 @@ impl BubblewrapBackend {
                 evidence: {
                     let mut evidence = self.evidence(plan.network, cgroup.as_ref(), identity);
                     evidence.skill_masks = plan.skill_masks.as_ref().map(SkillMasks::evidence);
+                    evidence.operator_profile = plan
+                        .operator_profile
+                        .as_ref()
+                        .map(OperatorProfileMount::evidence);
                     evidence
                 },
                 child,
@@ -2105,6 +2119,7 @@ impl BubblewrapBackend {
             contract_version: CONTRACT_VERSION.to_owned(),
             native_sources: None,
             skill_masks: None,
+            operator_profile: None,
             backend: self.name().to_owned(),
             backend_version: self.version().unwrap_or_else(|_| "unknown".to_owned()),
             kernel: self.prerequisites(),
@@ -2823,6 +2838,7 @@ mod tests {
             evidence: IsolationEvidence {
                 contract_version: CONTRACT_VERSION.to_owned(),
                 skill_masks: None,
+                operator_profile: None,
                 native_sources: None,
                 backend: "test".to_owned(),
                 backend_version: "1".to_owned(),
@@ -3025,6 +3041,7 @@ mod tests {
             cache: None,
             beads_replica: None,
             skill_masks: None,
+            operator_profile: None,
             system_roots: default_system_roots(),
             network: NetworkPolicy::Denied,
             identity: IdentityPlan::HostIdentity {

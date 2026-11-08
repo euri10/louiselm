@@ -314,6 +314,7 @@ jobs:
             library_test=$(cargo test --manifest-path /home/vm/skills-core/Cargo.toml --lib --all-features --locked --no-run --message-format=json |
               jq -r '\''select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'\'')
             test -x "$library_test"
+            sudo -n env TMPDIR=/var/lib timeout 60 /bin/bash -c '\''umask 077; exec "$1" sandbox::operator_profile::tests::privileged_profile_source_is_readable_only_by_its_assigned_identity --exact --ignored --nocapture'\'' bash "$library_test"
             preparation_test=$(cargo test --manifest-path /home/vm/skills-core/Cargo.toml --test instruction_view --all-features --locked --no-run --message-format=json |
               jq -r '\''select(.reason == "compiler-artifact" and .target.name == "instruction_view" and .profile.test) | .executable // empty'\'')
             test -x "$preparation_test"

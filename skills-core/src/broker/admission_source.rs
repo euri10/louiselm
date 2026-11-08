@@ -40,6 +40,54 @@ pub struct AdmissionSource {
 }
 
 impl AdmissionSource {
+    pub(crate) fn operator_profile(
+        &self,
+        manifest: &crate::session_manifest::SessionInputManifest,
+    ) -> Result<Option<Vec<u8>>, BrokerError> {
+        let Some(generation) = manifest.skills.generation_digest() else {
+            return Ok(None);
+        };
+        let store = self.trusted_store()?;
+        let record = admission::verified_generation(
+            &store,
+            &self.trust_domain,
+            &Digest::parse(generation).map_err(|_| BrokerError::InvalidGrant)?,
+        )?;
+        self.check(&self.store.join("packages"), true)?;
+        for member in &record.payload.members {
+            let mut remaining = 65536;
+            self.check_tree(
+                &self.store.join("packages").join(
+                    Digest::parse(&member.package_digest)
+                        .map_err(|_| BrokerError::InvalidGrant)?
+                        .directory_name(),
+                ),
+                &mut remaining,
+            )?;
+        }
+        let profile = crate::instruction_view::profile::from_generation(
+            &store,
+            &Policy::embedded(),
+            &record,
+            &manifest.agent.id,
+        )
+        .map_err(|_| BrokerError::InvalidGrant)?;
+        let expected = profile
+            .as_ref()
+            .map(|profile| {
+                crate::session_manifest::OperatorProfileInput::from_profile(
+                    profile,
+                    &manifest.agent,
+                )
+            })
+            .transpose()
+            .map_err(|_| BrokerError::InvalidGrant)?;
+        if expected != manifest.operator_profile {
+            return Err(BrokerError::InvalidGrant);
+        }
+        Ok(profile.map(|profile| profile.bytes().to_vec()))
+    }
+
     /// Returns verified current and retained supply withdrawal conditions, read-only.
     /// Failed or unsettled evidence is an error, never an empty condition set.
     pub(super) fn withdrawal_alerts(

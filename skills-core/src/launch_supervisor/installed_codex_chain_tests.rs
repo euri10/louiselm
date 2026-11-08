@@ -160,8 +160,12 @@ fn stock_tools_keep_neovim_logs_outside_source() {
     let workspace = root.path().join("workspace");
     fs::create_dir(&home).unwrap();
     fs::create_dir(&workspace).unwrap();
-    let (_, environment) =
-        tool_integration::launch_values(tool_integration::Integration::CodexAcp, &stock, &home);
+    let (_, environment) = tool_integration::launch_values(
+        tool_integration::Integration::CodexAcp,
+        &stock,
+        &home,
+        None,
+    );
     let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
     let mut arguments = vec!["sandbox".into(), "-P".into(), ":workspace".into()];
     // Exercise the real shell environment policy, not a pre-injected test env.

@@ -32,6 +32,7 @@ fn agent() -> AgentRegistration {
         environment: BTreeMap::from([("CODEX_HOME".to_owned(), "/opt/codex-home".to_owned())]),
         tool_integration: None,
         always_on_path: None,
+        contained_always_on_path: None,
         native_instruction_paths: vec![],
     }
 }
@@ -55,6 +56,7 @@ fn measured(path: &str, content: &str) -> MeasuredInput {
 
 fn complete_inputs() -> SessionInputs {
     SessionInputs {
+        operator_profile: None,
         agent: Some(agent()),
         runtime: Some(runtime()),
         runtime_configuration_digest: Some(Digest::of(b"fixture configuration").to_string()),
@@ -86,6 +88,34 @@ fn complete_inputs() -> SessionInputs {
 }
 
 #[test]
+fn admitted_profile_is_bound_separately_from_skills_and_refused_when_off() {
+    let mut value =
+        serde_json::to_value(SessionInputManifest::build(complete_inputs()).unwrap()).unwrap();
+    value["agent"]["contained_always_on_path"] = "AGENTS.md".into();
+    value["operator_profile"] = serde_json::json!({
+        "package_digest": POLICY,
+        "input": measured("AGENTS.md", "private defaults"),
+    });
+    let manifest: SessionInputManifest = serde_json::from_value(value.clone()).unwrap();
+    let parsed = SessionInputManifest::parse(&manifest.canonical_bytes()).unwrap();
+    assert_eq!(
+        serde_json::to_value(parsed).unwrap()["operator_profile"],
+        value["operator_profile"]
+    );
+    value["skills"] = serde_json::json!({
+        "mode":"off", "view_digest":louiselm_skills::instruction_view::empty_digest().to_string(),
+    });
+    let off: SessionInputManifest = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        SessionInputManifest::parse(&off.canonical_bytes()),
+        Err(SessionManifestError::Malformed {
+            field: "operator_profile",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn explicit_skills_off_binds_the_empty_view_without_a_generation() {
     let root = tempfile::tempdir().unwrap();
     let store = louiselm_skills::Store::open(root.path()).unwrap();
@@ -94,7 +124,7 @@ fn explicit_skills_off_binds_the_empty_view_without_a_generation() {
     let mut record =
         serde_json::to_value(SessionInputManifest::build(complete_inputs()).unwrap()).unwrap();
     record.as_object_mut().unwrap().remove("skill_generation");
-    record["schema"] = "louiselm.session.input-manifest/3".into();
+    record["schema"] = "louiselm.session.input-manifest/4".into();
     record["skills"] = serde_json::json!({"mode":"off", "view_digest":empty.digest().to_string()});
     let manifest: SessionInputManifest =
         serde_json::from_value(record).expect("explicit off inputs must not require a Generation");

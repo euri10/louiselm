@@ -74,6 +74,7 @@ fn codex_configuration_explicitly_disables_added_extensions() {
         super::super::tool_integration::Integration::CodexAcp,
         Path::new("/runtime"),
         Path::new("/session/home"),
+        None,
     );
     let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
     for feature in ["plugins", "remote_plugin", "apps"] {
@@ -93,6 +94,7 @@ fn codex_configuration_explicitly_disables_added_extensions() {
         environment: BTreeMap::new(),
         tool_integration: Some(super::super::tool_integration::CODEX_CONTRACT.into()),
         always_on_path: None,
+        contained_always_on_path: None,
         native_instruction_paths: vec![],
     };
     assert_eq!(
@@ -124,6 +126,7 @@ fn measured_integration_rejects_missing_evidence_and_runtime_overrides() {
         cache: None,
         beads_replica: None,
         skill_masks: None,
+        operator_profile: None,
         system_roots: vec![],
         identity: IdentityPlan::NamespaceOnly,
         network: NetworkPolicy::Denied,
