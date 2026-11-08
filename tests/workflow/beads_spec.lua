@@ -293,6 +293,163 @@ local function wait(predicate)
   MiniTest.expect.equality(nvim.wait(2000, predicate, 1), true)
 end
 
+T["payload-free progress follows real worker and verifier boundaries"] = function()
+  local f = fixture()
+  local events = {}
+  f.options.on_progress = function(event)
+    MiniTest.expect.equality(nvim.in_fast_event(), false)
+    events[#events + 1] = event
+  end
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = function(_, decide)
+    f.decide = decide
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  MiniTest.expect.equality(events[#events].phase, "working")
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  MiniTest.expect.equality(events[#events].phase, "verifying")
+  f.verify_done(true)
+  wait(function()
+    return f.decide ~= nil
+  end)
+  MiniTest.expect.equality(events[#events].phase, "awaiting_promotion")
+  for _, event in ipairs(events) do
+    MiniTest.expect.equality(event.run_id, f.options.envelope.run_id)
+    MiniTest.expect.equality(event.index, 1)
+    MiniTest.expect.equality(event.total, 2)
+    MiniTest.expect.equality(event.bead_id, "b-1")
+    for key in pairs(event) do
+      assert(nvim.tbl_contains({ "run_id", "bead_id", "index", "total", "phase" }, key))
+    end
+  end
+  f.decide(true)
+  wait(function()
+    return #f.prepared == 2
+  end)
+  local phases = {}
+  for _, event in ipairs(events) do
+    phases[#phases + 1] = event.phase
+  end
+  assert(nvim.tbl_contains(phases, "promoting"))
+  assert(f.runner:dispose())
+  local count = #events
+  nvim.wait(20, function()
+    return false
+  end, 1)
+  MiniTest.expect.equality(#events, count)
+end
+
+T["review expiry stops without rejection, commit or successor and cancels the UI"] = function()
+  local f = fixture()
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  local closed = 0
+  f.options.on_promotion = function(_, decide)
+    f.decide = decide
+    return function()
+      closed = closed + 1
+    end
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.decide ~= nil
+  end)
+  later(f.decide, nil, "Run promotion preview expired; no changes applied")
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.ok, false)
+  assert(f.error:find("expired", 1, true))
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(f.commit_calls, nil)
+  MiniTest.expect.equality(f.summary.failed, {})
+  MiniTest.expect.equality(closed, 1)
+  f.decide(true)
+  assert(f.runner:dispose())
+  MiniTest.expect.equality(closed, 1)
+end
+
+T["operator view and real review stop cleanly when a verified preview expires"] = function()
+  local f = fixture()
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = require("louiselm.ui.run_promotion").prompt
+  f.preview_expiry = now_ms() + 500
+  f.runner = assert(require("louiselm.workflow.beads").new(f.options))
+  MiniTest.finally(function()
+    f.runner:dispose()
+  end)
+  local buffer = assert(require("louiselm.ui.bead_run").open(f.runner))
+  MiniTest.finally(function()
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end)
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.runner.status == "disposed"
+  end)
+  local text = table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+  assert(text:find("Run stopped: Run promotion preview expired; no changes applied", 1, true), text)
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(f.commit_calls, nil)
+  MiniTest.expect.equality(f.failure_requests, nil)
+  MiniTest.expect.equality(f.runner.summary.accepted, {})
+  MiniTest.expect.equality(f.runner.cancel_promotion, nil)
+  MiniTest.expect.equality(#nvim.api.nvim_list_wins(), 1)
+end
+
+T["disposal closes a pending review and ignores its late acceptance"] = function()
+  local f = fixture()
+  local closed = 0
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = function(_, decide)
+    f.decide = decide
+    return function()
+      closed = closed + 1
+    end
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.decide ~= nil
+  end)
+  assert(f.runner:dispose())
+  later(f.decide, true)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(closed, 1)
+  MiniTest.expect.equality(f.commit_calls, nil)
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+end
+
 T["bounds fresh verification operations within a three-hour Run"] = function()
   local f = fixture()
   f.options.envelope.expires_at_ms = now_ms() + 10800000

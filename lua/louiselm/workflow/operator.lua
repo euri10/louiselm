@@ -18,7 +18,7 @@ local M = {}
 ---@class louiselm.workflow.OperatorBeadOptions
 ---@field system? fun(command: string[], options: table, callback: fun(result: table)): unknown Async subprocess seam.
 ---@field session_api? louiselm.session.Api Session seam for deterministic tests.
----@field on_promotion? fun(preview: table, decide: fun(accepted: boolean)) Defaults to the real manual promotion UI.
+---@field on_promotion? fun(preview: table, decide: fun(accepted: boolean?, error_message?: string)): louiselm.workflow.PromotionCancellation? Defaults to focused manual review; optional return cancels its UI.
 
 local function digest(value)
   return type(value) == "string" and #value == 71 and value:match("^sha256:[0-9a-f]+$") ~= nil

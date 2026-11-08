@@ -52,6 +52,15 @@ local advance, next_bead
 ---@field provider_hold? { run_id: string, reason: "exhausted"|"expired", held_at_ms: integer } Authenticated Run-wide hold; no automatic extension or retry.
 ---@field text string Human-readable host handoff, with no worker output.
 
+---@class louiselm.workflow.BeadProgress
+---@field run_id string
+---@field bead_id string
+---@field index integer Current Bead, one-based.
+---@field total integer Selected Bead count.
+---@field phase "authorizing"|"preparing"|"working"|"verifying"|"awaiting_promotion"|"promoting"
+
+---@alias louiselm.workflow.PromotionCancellation fun()
+
 ---@class louiselm.workflow.BeadExecutorOptions
 ---@field envelope table Closed Rust RunEnvelope explicitly selected by the operator; start authorizes it.
 ---@field bead_ids string[] Execution order, restricted to envelope.bead_scope.issue_ids.
@@ -59,7 +68,8 @@ local advance, next_bead
 ---@field prepare fun(bead_id: string, callback: fun(prepared: louiselm.workflow.BeadPreparation?, error_message?: string), expected_head?: string): boolean, string? Stage the next snapshot from the current Run branch HEAD.
 ---@field on_worker fun(result: louiselm.workflow.BeadResult, continue: fun(accepted: boolean?, error_message?: string)) Operator acceptance. True accepts passing work, false rejects and continues; nil stops the Run.
 ---@field worktree? { path: string, journal_parent: string, head: string } Dedicated clean run/<run-id> checkout and initial HEAD.
----@field on_promotion? fun(preview: table, decide: fun(accepted: boolean)) Present the exact preview to the maintainer.
+---@field on_promotion? fun(preview: table, decide: fun(accepted: boolean?, error_message?: string)): louiselm.workflow.PromotionCancellation? Present exact review; nil decision stops. Optional return cancels UI without deciding.
+---@field on_progress? fun(progress: louiselm.workflow.BeadProgress) Payload-free phase updates on the main loop; suppressed after completion/disposal.
 ---@field session_api? louiselm.session.Api Testable Session boundary; owned Sessions always join this Run.
 ---@field system? fun(command: string[], options: table, callback: fun(result: table)): unknown Testable subprocess boundary.
 
@@ -75,6 +85,7 @@ local advance, next_bead
 ---@field summary louiselm.workflow.BeadRunSummary
 ---@field owned_api? louiselm.session.Api
 ---@field cancel_hold_poll? fun() Owned pending-prompt poll cancellation.
+---@field cancel_promotion? fun() Owned pending promotion UI cancellation.
 ---@field start fun(self: louiselm.workflow.BeadExecutor, callback: fun(ok: boolean, error_message?: string, summary: louiselm.workflow.BeadRunSummary)): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.BeadExecutor): boolean, string?
 
@@ -100,10 +111,38 @@ local function strings(value)
   return true
 end
 
+local function progress(self, phase)
+  local callback = self.options.on_progress
+  if not callback then
+    return
+  end
+  local event = {
+    run_id = self.options.envelope.run_id,
+    bead_id = self.options.bead_ids[self.index],
+    index = self.index,
+    total = #self.options.bead_ids,
+    phase = phase,
+  }
+  nvim.schedule(function()
+    if self.status == "active" then
+      callback(event)
+    end
+  end)
+end
+
+local function cancel_promotion(self)
+  local cancel = self.cancel_promotion
+  self.cancel_promotion = nil
+  if cancel then
+    cancel()
+  end
+end
+
 ---@param self louiselm.workflow.BeadExecutor
 ---@param ok boolean
 ---@param err? string
 local function finish(self, ok, err)
+  cancel_promotion(self)
   if self.cancel_hold_poll then
     self.cancel_hold_poll()
     self.cancel_hold_poll = nil
@@ -414,12 +453,18 @@ local function promote(self, result, callback)
     then
       return callback(nil, "Run promotion returned a mismatched preview")
     end
-    self.options.on_promotion(
+    progress(self, "awaiting_promotion")
+    self.cancel_promotion = self.options.on_promotion(
       preview,
-      response(self, function(accepted)
+      response(self, function(accepted, decision_error)
+        cancel_promotion(self)
+        if accepted == nil then
+          return callback(nil, decision_error or "operator stopped promotion review")
+        end
         if accepted ~= true then
           return callback(false)
         end
+        progress(self, "promoting")
         promotion_control(
           self,
           "commit",
@@ -444,6 +489,9 @@ local function promote(self, result, callback)
         )
       end)
     )
+    if self.status ~= "active" then
+      cancel_promotion(self)
+    end
   end)
 end
 
@@ -553,6 +601,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
   if result.error then
     return handoff(self, result)
   end
+  progress(self, "verifying")
   local launch = result.launch_request
   local grant = prepared.verification.verifier_grant
   local verifier_launch = grant.request
@@ -809,6 +858,7 @@ next_bead = function(self)
   if not id then
     return finish(self, true)
   end
+  progress(self, "preparing")
   local prepared_callback = response(self, function(prepared, preparation_error)
     if not prepared then
       return finish(self, false, preparation_error or "worker preparation failed")
@@ -871,6 +921,7 @@ next_bead = function(self)
                 end)
               end)
             end)
+            progress(self, "working")
             local session, start_error = self.run:create_session(
               self.options.agent_id,
               {
@@ -957,6 +1008,7 @@ function M.new(options)
         "on_worker",
         "worktree",
         "on_promotion",
+        "on_progress",
         "session_api",
         "system",
       }, key)
@@ -998,6 +1050,9 @@ function M.new(options)
   end
   if options.system ~= nil and type(options.system) ~= "function" then
     return nil, "system must be a function"
+  end
+  if options.on_progress ~= nil and type(options.on_progress) ~= "function" then
+    return nil, "on_progress must be a function"
   end
   if options.worktree ~= nil then
     local worktree = options.worktree
@@ -1083,6 +1138,7 @@ function Controller:start(callback)
     return false, "Bead Run requires a completion callback"
   end
   self.status, self.callback = "active", callback
+  progress(self, "authorizing")
   if self.run.session_api == nil then
     local api, errors = Session.new({
       [self.options.agent_id] = {

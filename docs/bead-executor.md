@@ -75,14 +75,32 @@ the digest-selected snapshot before staging. The dedicated checkout must be clea
 passing verification and `on_worker` continuation, the operator CLI rechecks the
 broker record, destination identity, clean tree and branch. `on_promotion`
 receives the exact changed paths, approval digest and expiry; the supplied UI
-helper shows them and the UTC deadline to the maintainer. The default preview
-expires four minutes after construction. Acceptance after that deadline stops
+helper focuses a scrollable review window showing those fields, the UTC deadline
+and a live countdown. `a` accepts that exact preview; `r`, Escape or closing
+the review rejects it. `q` stops the Run without promoting or starting a
+successor. The default preview expires four minutes after
+construction. At expiry the review closes and stops the Run without applying
+changes, refreshing approval or starting a successor. Acceptance after that deadline stops
 the Run with an explicit expiry message before any checkout changes. It does
 not refresh approval or retry. Rejection makes no checkout change. Acceptance
 reopens the same selection, rechecks the digest, applies through the existing
 broker promotion protocol, and creates one LouiseLM Git commit with
 `Refs <bead-id>`. A changed or uncertain operation stops the Run for inspection.
 Only the new commit becomes the `expected_head` of the next Bead.
+The callback's decision may be `nil, error_message` to stop review without
+rejection. Its optional return is an idempotent UI cancellation function,
+called on decision, completion or disposal without granting approval.
+
+Optional `on_progress(progress)` receives payload-free updates on Neovim's main
+loop: Run ID, Bead ID, one-based index, total and phase (`authorizing`,
+`preparing`, `working`, `verifying`, `awaiting_promotion`, `promoting`). Queued
+updates are suppressed after completion or disposal. The private-TTY operator
+view displays the current Bead and phase, then accepted/rejected/failed counts.
+Traversal ending with failed or rejected tasks is labelled accordingly;
+`Run complete` means every traversed task was accepted. Closing the Run buffer
+or editor disposes its controller. A Provider hold retains Sessions until the
+operator explicitly stops it.
+
 Promotion CLI failures return a `louiselm.run-promotion-error/1` JSON diagnostic
 on stderr, containing a payload-free `message`. The controller displays that
 specific refusal, distinguishing expiry from uncertain application or a Git

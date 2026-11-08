@@ -15,6 +15,7 @@ local controller = assert(require("louiselm.workflow.operator").new(selection, {
     assert(nvim.deep_equal(preview.changes.added, { "accepted-" .. approvals .. ".txt" }))
     assert(#preview.changes.modified == 0 and #preview.changes.deleted == 0)
     decide(true)
+    return nil
   end,
   system = function(argv, options, done)
     assert(nvim.fn.executable(argv[1]) == 1, "missing installed operator executable: " .. argv[1])
