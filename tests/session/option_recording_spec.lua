@@ -874,7 +874,7 @@ T["schema upgrade preserves prior turn facts and resumed observation streams sta
   MiniTest.expect.equality(rows[2].observer_id ~= first.observer_id, true)
   MiniTest.expect.equality(rows[2].sequence, 1)
   MiniTest.expect.equality(query("SELECT * FROM turns"), turns)
-  MiniTest.expect.equality(query("PRAGMA user_version")[1].user_version, 4)
+  MiniTest.expect.equality(query("PRAGMA user_version")[1].user_version, 5)
 end
 
 return T

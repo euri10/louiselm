@@ -17,7 +17,7 @@ local function query(path, sql)
   return result.stdout == "" and {} or nvim.json.decode(result.stdout)
 end
 
-local function new_session(directory, mode, load_id, extra_env)
+local function new_session(directory, mode, load_id, extra_env, name)
   local root = nvim.fn.getcwd()
   local api = assert(Session.new({
     mock = {
@@ -37,9 +37,9 @@ local function new_session(directory, mode, load_id, extra_env)
   resources[#resources + 1] = api
   local session
   if load_id then
-    session = assert(api:load_session("mock", load_id, { cwd = root }))
+    session = assert(api:load_session("mock", load_id, { cwd = root, name = name }))
   else
-    session = assert(api:create_session("mock", { cwd = root }))
+    session = assert(api:create_session("mock", { cwd = root, name = name }))
   end
   wait_for(function()
     return session:inspect().status == "ready"
@@ -73,6 +73,71 @@ local T = MiniTest.new_set({
     end,
   },
 })
+
+T["explicit Session names survive fresh owners and later renames"] = function()
+  local directory = nvim.fn.tempname()
+  directories[#directories + 1] = directory
+  local first, first_api = new_session(directory, nil, nil, nil, "Skill-created Session")
+  local id = first:inspect().acp_session_id
+  assert(first_api:dispose())
+  local restored, restored_api = new_session(directory, nil, id)
+  MiniTest.expect.equality(restored:inspect().name, "Skill-created Session")
+  assert(restored:set_name("renamed"))
+  local flushed = false
+  restored_api:flush_recording(function(err)
+    assert(err == nil, err and err.message)
+    flushed = true
+  end)
+  wait_for(function()
+    return flushed
+  end)
+  assert(restored_api:dispose())
+  local again, again_api = new_session(directory, nil, id)
+  MiniTest.expect.equality(again:inspect().name, "renamed")
+  assert(again_api:dispose())
+  local override, override_api = new_session(directory, nil, id, nil, "Explicit replacement")
+  MiniTest.expect.equality(override:inspect().name, "Explicit replacement")
+  assert(override_api:dispose())
+  MiniTest.expect.equality(new_session(directory, nil, id):inspect().name, "Explicit replacement")
+end
+
+T["generated Session labels do not become saved names"] = function()
+  local directory = nvim.fn.tempname()
+  directories[#directories + 1] = directory
+  local first, api = new_session(directory)
+  MiniTest.expect.equality(first:inspect().name, first:inspect().id)
+  local id = first:inspect().acp_session_id
+  assert(api:dispose())
+  local restored = new_session(directory, nil, id)
+  MiniTest.expect.equality(restored:inspect().name, id)
+  MiniTest.expect.equality(nvim.uv.fs_stat(directory .. "/turns.sqlite3"), nil)
+end
+
+T["failed name writes stay visible and retry the latest rename"] = function()
+  local directory = nvim.fn.tempname()
+  directories[#directories + 1] = directory
+  local session, api = new_session(directory, nil, nil, nil, "Original")
+  assert(nvim.uv.fs_chmod(directory, 493)) -- 0755 is refused by the private writer.
+  assert(session:set_name("Unsaved"))
+  wait_for(function()
+    return session:inspect().recording_error ~= nil
+  end)
+  MiniTest.expect.equality(session:inspect().recording_error.code, "permissions")
+  assert(session:set_name("Latest rename"))
+  MiniTest.expect.equality(session:inspect().name, "Latest rename")
+  assert(nvim.uv.fs_chmod(directory, 448))
+  local flushed = false
+  api:flush_recording(function(err)
+    assert(err == nil, err and err.message)
+    flushed = true
+  end)
+  wait_for(function()
+    return flushed
+  end)
+  local id = session:inspect().acp_session_id
+  assert(api:dispose())
+  MiniTest.expect.equality(new_session(directory, nil, id):inspect().name, "Latest rename")
+end
 
 T["headless unmeasured turns survive reopen and resumed local ordinals"] = function()
   local directory = nvim.fn.tempname()

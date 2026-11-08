@@ -72,7 +72,7 @@ local nvim = vim
 ---@class louiselm.session.Options
 ---@field cwd? string Working directory for the ACP session.
 ---@field env? table<string, string> Per-Session Agent process environment overrides.
----@field name? string User-facing session name.
+---@field name? string Explicit persistent display name; loading without one restores the saved name.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field broker_session_id? string Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 ---@field launch_request? louiselm.acp.LaunchRequest Launch through the installed supervisor instead of the configured command.
@@ -102,6 +102,8 @@ local nvim = vim
 ---@field acp_session_id string? Agent-side session identifier.
 ---@field load_session_id string? Agent-side session identifier to load.
 ---@field routing_read? fun() Cancel a pending routing preference read.
+---@field name_read? fun() Cancel a pending custom name read.
+---@field custom_name? string Explicit name supplied during this live Session, taking precedence over a pending restore.
 ---@field prompt_callback? fun(result: unknown, error?: string) Current prompt completion callback.
 ---@field admission? louiselm.session.Admission Admission ownership until a terminal settlement.
 ---@field recording_turn? { id: string, sequence: integer, finished: boolean, dispatched: boolean } Active recording identity.
@@ -1263,6 +1265,44 @@ local function initialize_routing(self, ready)
 end
 
 ---@param self louiselm.session.Session
+---@param ready fun()
+local function initialize_name(self, ready)
+  if self.state.status ~= "starting" then
+    return
+  end
+  if self.custom_name ~= nil then
+    self.owner.recording:save_session_name(self.state.agent, self.acp_session_id, self.custom_name, function(err)
+      if self.state.status ~= "starting" then
+        return
+      end
+      if err ~= nil then
+        fail(self, "could not save Session name: " .. err.message)
+      else
+        ready()
+      end
+    end)
+  elseif self.load_session_id ~= nil then
+    self.name_read = self.owner.recording:session_name(self.state.agent, self.load_session_id, function(name, err)
+      self.name_read = nil
+      if self.state.status ~= "starting" then
+        return
+      end
+      if err ~= nil then
+        fail(self, "could not restore Session name: " .. err.message)
+        return
+      end
+      -- A rename made while the read was pending owns the live name and its queued write.
+      if name ~= nil and self.custom_name == nil then
+        self.state.name = name
+      end
+      ready()
+    end)
+  else
+    ready()
+  end
+end
+
+---@param self louiselm.session.Session
 ---@param result unknown
 ---@param rpc_error? louiselm.acp.JsonRpcError
 local function handle_initialized(self, result, rpc_error)
@@ -1394,14 +1434,16 @@ local function handle_initialized(self, result, rpc_error)
     end
     self.state.config_options = options
     initialize_routing(self, function()
-      set_status(self, "ready")
-      if not self.ready_callback_called and self.state.status ~= "disposed" then
-        self.ready_callback_called = true
-        local callback = self.ready_callback
-        if callback ~= nil then
-          callback(self)
+      initialize_name(self, function()
+        set_status(self, "ready")
+        if not self.ready_callback_called and self.state.status ~= "disposed" then
+          self.ready_callback_called = true
+          local callback = self.ready_callback
+          if callback ~= nil then
+            callback(self)
+          end
         end
-      end
+      end)
     end)
   end
   local meta = session_meta(self.definition)
@@ -1506,7 +1548,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     state = {
       mcp = { servers = mcp_summaries, status = #mcp_servers == 0 and "disabled" or "configured" },
       id = id,
-      name = options.name or id,
+      name = options.name or load_session_id or id,
       source = load_session_id == nil and "new" or "loaded",
       agent = agent_name,
       broker_session_id = options.broker_session_id,
@@ -1534,6 +1576,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     mcp_servers = mcp_servers,
     acp_session_id = load_session_id,
     load_session_id = load_session_id,
+    custom_name = options.name,
     permission_policy = options.permission_policy or Permission.policy(),
     permission_store = options.permission_store or Permission.store(),
     permission_queue = {},
@@ -1721,7 +1764,9 @@ function Session:option_usage(option_id, callback)
   end
 end
 
----Set the user-facing name without changing the ACP session.
+---Set the display name and queue its persistence without changing the ACP session.
+---Names set before the ACP identity arrives are saved during startup. Persistence
+---completion/failure is reported through recording_changed; failed writes remain retryable.
 ---@param self louiselm.session.Session
 ---@param name string New non-empty session name.
 ---@return boolean renamed
@@ -1734,6 +1779,10 @@ function Session:set_name(name)
     return false, "session name must be a non-empty string"
   end
   self.state.name = name
+  self.custom_name = name
+  if self.acp_session_id ~= nil then
+    self.owner.recording:save_session_name(self.state.agent, self.acp_session_id, name)
+  end
   emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
   return true
 end
@@ -2483,6 +2532,10 @@ function Session:dispose(reason)
   if self.routing_read ~= nil then
     self.routing_read()
     self.routing_read = nil
+  end
+  if self.name_read ~= nil then
+    self.name_read()
+    self.name_read = nil
   end
   local client = self.client
   local closed, close_error = true, nil

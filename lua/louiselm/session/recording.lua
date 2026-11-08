@@ -78,6 +78,8 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field usage_query fun(self: louiselm.session.RecordingStore, query: louiselm.session.UsageQuery, callback: louiselm.session.UsageQueryCallback): fun()
 ---@field save_routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, preference: louiselm.session.RoutingPreference, callback: louiselm.session.RecordingCallback)
 ---@field routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.RoutingPreferenceCallback): fun()
+---@field save_session_name fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, name: string, callback?: louiselm.session.RecordingCallback)
+---@field session_name fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: fun(name: string?, error?: louiselm.session.RecordingError)): fun()
 
 ---@class louiselm.session.UsageCohort
 ---@field agent string Exact configured Agent.
@@ -131,6 +133,10 @@ CREATE TABLE IF NOT EXISTS admission_events (
 ) STRICT;
 CREATE TABLE IF NOT EXISTS routing_preferences (
   agent TEXT NOT NULL, acp_session_id TEXT NOT NULL, preference TEXT NOT NULL,
+  PRIMARY KEY(agent, acp_session_id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS session_names (
+  agent TEXT NOT NULL, acp_session_id TEXT NOT NULL, name TEXT NOT NULL,
   PRIMARY KEY(agent, acp_session_id)
 ) STRICT;
 ]]
@@ -628,9 +634,9 @@ local function drain(self)
         .. " AND (SELECT journal_mode = 'delete' FROM pragma_journal_mode)"
         .. " AND (SELECT synchronous = 3 FROM pragma_synchronous)"
         .. " AND (SELECT foreign_keys = 1 FROM pragma_foreign_keys)"
-        .. " AND (SELECT user_version IN (0,1,2,3,4) FROM pragma_user_version);",
+        .. " AND (SELECT user_version IN (0,1,2,3,4,5) FROM pragma_user_version);",
       SCHEMA,
-      "PRAGMA user_version=4;",
+      "PRAGMA user_version=5;",
     }
     for index = 1, count do
       sql[#sql + 1] = self.queue[index].sql
@@ -745,7 +751,7 @@ INSERT INTO history_guard SELECT
   (CAST(sqlite_version() AS INTEGER)>3 OR
     (CAST(sqlite_version() AS INTEGER)=3 AND CAST(substr(sqlite_version(),3) AS INTEGER)>=38))
   AND json_valid('{}')
-  AND (SELECT user_version IN (1,2,3,4) FROM pragma_user_version)
+  AND (SELECT user_version IN (1,2,3,4,5) FROM pragma_user_version)
   AND (SELECT journal_mode='delete' FROM pragma_journal_mode)
   AND (SELECT synchronous=3 FROM pragma_synchronous)
   AND (SELECT foreign_keys=1 FROM pragma_foreign_keys);
@@ -817,6 +823,25 @@ local function valid_preference(value)
   return true
 end
 
+---@param self louiselm.session.RecordingStore
+---@param sql string
+---@param callback? louiselm.session.RecordingCallback
+local function save_mutable(self, sql, callback)
+  self.queue[#self.queue + 1] = { sql = sql, callback = callback }
+  -- A failed writer must acknowledge refusal too; its queued choice remains retryable.
+  if self.error ~= nil then
+    local err = self.error
+    self.queue[#self.queue].callback = nil
+    if callback ~= nil then
+      nvim.schedule(function()
+        callback(err)
+      end)
+    end
+  else
+    drain(self)
+  end
+end
+
 ---Save mutable Session routing authority through the existing private writer.
 ---This never rewrites historical turn, option, admission or Forensics facts.
 ---@param self louiselm.session.RecordingStore
@@ -831,25 +856,96 @@ function Store:save_routing_preference(agent, acp_session_id, preference, callba
     end)
     return
   end
-  self.queue[#self.queue + 1] = {
-    sql = "INSERT INTO routing_preferences(agent,acp_session_id,preference) VALUES("
+  save_mutable(
+    self,
+    "INSERT INTO routing_preferences(agent,acp_session_id,preference) VALUES("
       .. sql_text(agent)
       .. ","
       .. sql_text(acp_session_id)
       .. ","
       .. sql_text(json(preference))
       .. ") ON CONFLICT(agent,acp_session_id) DO UPDATE SET preference=excluded.preference;",
-    callback = callback,
-  }
-  -- A failed writer must acknowledge refusal too; its queued choice remains retryable.
-  if self.error ~= nil then
-    local err = self.error
-    self.queue[#self.queue].callback = nil
+    callback
+  )
+end
+
+---Queue an explicit display name in private storage, scoped to one Agent/ACP identity.
+---Failures remain visible through the store observer and retryable with flush.
+---@param self louiselm.session.RecordingStore
+---@param agent string Configured Agent.
+---@param acp_session_id string Exact ACP Session identity.
+---@param name string Non-empty custom display name, never an inferred default.
+---@param callback? louiselm.session.RecordingCallback Main-loop durable acknowledgement, once.
+function Store:save_session_name(agent, acp_session_id, name, callback)
+  if not nonempty(agent) or not nonempty(acp_session_id) or not nonempty(name) then
     nvim.schedule(function()
-      callback(err)
+      local err = failure("invalid")
+      self.changed(err, #self.queue > 0)
+      if callback ~= nil then
+        callback(err)
+      end
     end)
-  else
-    drain(self)
+    return
+  end
+  save_mutable(
+    self,
+    "INSERT INTO session_names(agent,acp_session_id,name) VALUES("
+      .. sql_text(agent)
+      .. ","
+      .. sql_text(acp_session_id)
+      .. ","
+      .. sql_text(name)
+      .. ") ON CONFLICT(agent,acp_session_id) DO UPDATE SET name=excluded.name;",
+    callback
+  )
+end
+
+---Read one custom name without creating or migrating a store.
+---Missing/pre-feature names return nil; malformed state returns an explicit error.
+---@param self louiselm.session.RecordingStore
+---@param agent string Configured Agent.
+---@param acp_session_id string Exact ACP Session identity.
+---@param callback fun(name: string?, error?: louiselm.session.RecordingError) Main-loop result, once.
+---@return fun() cancel Suppress delivery and terminate the current read.
+function Store:session_name(agent, acp_session_id, callback)
+  local cancelled = false
+  local cancel_read
+  cancel_read = read(self, "SELECT user_version AS version FROM pragma_user_version;", function(rows, err)
+    if cancelled then
+      return
+    end
+    if not nonempty(agent) or not nonempty(acp_session_id) then
+      callback(nil, failure("invalid"))
+      return
+    end
+    if err ~= nil or rows == nil or #rows == 0 or rows[1].version < 5 then
+      callback(nil, err)
+      return
+    end
+    cancel_read = read(
+      self,
+      "SELECT name FROM session_names WHERE agent="
+        .. sql_text(agent)
+        .. " AND acp_session_id="
+        .. sql_text(acp_session_id)
+        .. ";",
+      function(records, query_error)
+        if cancelled then
+          return
+        end
+        if query_error ~= nil or records == nil or #records == 0 then
+          callback(nil, query_error)
+        elseif not nonempty(records[1].name) then
+          callback(nil, failure("corrupt"))
+        else
+          callback(records[1].name)
+        end
+      end
+    )
+  end)
+  return function()
+    cancelled = true
+    cancel_read()
   end
 end
 

@@ -1083,6 +1083,64 @@ end
 
 T["new"] = MiniTest.new_set()
 
+T["new"]["saves a rename made before the ACP identity arrives"] = function()
+  local processes = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test", command = "agent" } }))
+  local first = assert(api:create_session("agent", { name = "Creation name" }))
+  assert(first:set_name("Early rename"))
+  respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(processes[1], 2, { sessionId = "named-acp" })
+  wait_ready(first)
+  assert(first:dispose())
+  local restored = assert(api:load_session("agent", "named-acp"))
+  respond(processes[2], 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(processes[2], 2, {})
+  wait_ready(restored)
+  MiniTest.expect.equality(restored:inspect().name, "Early rename")
+end
+
+for _, action in ipairs({ "rename", "dispose" }) do
+  T["new"][action .. " takes precedence over a pending name restore"] = function()
+    local processes = fake_processes()
+    local api = assert(new_api({ agent = { provider = "test", command = "agent" } }))
+    local ready_count = 0
+    local session = assert(api:load_session("agent", "named-acp", nil, function()
+      ready_count = ready_count + 1
+    end))
+    local pending, cancelled
+    session.owner.recording.session_name = function(_, _, _, callback)
+      nvim.schedule(function()
+        pending = callback
+      end)
+      return function()
+        cancelled = true
+      end
+    end
+    respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+    respond(processes[1], 2, {})
+    assert(nvim.wait(6000, function()
+      return pending ~= nil
+    end, 10))
+    if action == "rename" then
+      assert(session:set_name("New name"))
+    else
+      assert(session:dispose())
+    end
+    local delivered = false
+    nvim.schedule(function()
+      pending("Old name")
+      delivered = true
+    end)
+    assert(nvim.wait(6000, function()
+      return delivered
+    end, 10))
+    MiniTest.expect.equality(session:inspect().name, action == "rename" and "New name" or "named-acp")
+    MiniTest.expect.equality(session:inspect().status, action == "rename" and "ready" or "disposed")
+    MiniTest.expect.equality(ready_count, action == "rename" and 1 or 0)
+    MiniTest.expect.equality(cancelled, action == "dispose" and true or nil)
+  end
+end
+
 T["new"]["persists normalized tokens and cumulative cost evidence from fast callbacks"] = function()
   local directory = nvim.fn.tempname()
   local processes, original_system = fake_processes()

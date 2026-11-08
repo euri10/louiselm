@@ -68,6 +68,53 @@ local function query(writer, sql)
   return result.stdout == "" and {} or nvim.json.decode(result.stdout)
 end
 
+T["custom Session names persist independently for each Agent and ACP identity"] = function()
+  local writer = store()
+  local function save(agent, id, name)
+    local done, result
+    writer:save_session_name(agent, id, name, function(err)
+      assert(not nvim.in_fast_event())
+      done, result = true, err
+    end)
+    MiniTest.expect.equality(done, nil)
+    wait_for(function()
+      return done
+    end)
+    return result
+  end
+  local function get(reader, agent, id)
+    local done, result, err
+    reader:session_name(agent, id, function(value, failure)
+      assert(not nvim.in_fast_event())
+      done, result, err = true, value, failure
+    end)
+    MiniTest.expect.equality(done, nil)
+    wait_for(function()
+      return done
+    end)
+    return result, err
+  end
+  MiniTest.expect.equality({ get(writer, "agent", "missing") }, {})
+  MiniTest.expect.equality(nvim.uv.fs_stat(writer.path), nil)
+  MiniTest.expect.equality(save("agent", "same", "quote'\n.shell false"), nil)
+  MiniTest.expect.equality(save("other", "same", "Other Agent"), nil)
+  MiniTest.expect.equality(save("agent", "second", "Other conversation"), nil)
+  local reader = assert(Recording.new(writer.directory, function() end))
+  MiniTest.expect.equality(get(reader, "agent", "same"), "quote'\n.shell false")
+  MiniTest.expect.equality(get(reader, "other", "same"), "Other Agent")
+  MiniTest.expect.equality(get(reader, "agent", "second"), "Other conversation")
+  MiniTest.expect.equality(save("agent", "same", "renamed"), nil)
+  MiniTest.expect.equality(get(reader, "agent", "same"), "renamed")
+  MiniTest.expect.equality(save("agent", "same", "").code, "invalid")
+  MiniTest.expect.equality(query(writer, "SELECT COUNT(*) AS n FROM turns")[1].n, 0)
+  query(writer, "UPDATE session_names SET name='' WHERE agent='agent'")
+  local _, err = get(reader, "agent", "same")
+  MiniTest.expect.equality(assert(err).code, "corrupt")
+  query(writer, "DROP TABLE session_names; PRAGMA user_version=4;")
+  MiniTest.expect.equality({ get(reader, "agent", "same") }, {})
+  MiniTest.expect.equality(query(writer, "PRAGMA user_version")[1].user_version, 4)
+end
+
 T["routing preferences are private mutable state scoped by Agent and ACP identity"] = function()
   local writer = store()
   local function save(agent, id, preference)

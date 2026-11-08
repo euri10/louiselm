@@ -5217,7 +5217,6 @@ T["chat"]["discovered resume permission recovery retains both views and staged i
   MiniTest.expect.equality(loads[2].session.state.acp_session_id, "discovered-acp")
   MiniTest.expect.equality(loads[2].options, {
     cwd = "/tmp/discovered",
-    name = "discovered-acp",
     resume_mode = "read-only",
   })
   finish_recovery(loads[2])
@@ -5564,7 +5563,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
   )
   MiniTest.expect.equality(load_call.agent, "codex")
   MiniTest.expect.equality(load_call.session_id, "prior-acp")
-  MiniTest.expect.equality(load_call.options, { cwd = "/tmp/project", name = "prior-acp" })
+  MiniTest.expect.equality(load_call.options, { cwd = "/tmp/project" })
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(first_buffer), true)
   MiniTest.expect.equality(first.disposed, false)
   MiniTest.expect.equality(chat:buffer(), chat:buffer("session-2"))

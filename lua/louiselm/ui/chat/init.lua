@@ -3195,7 +3195,7 @@ resume_current_session = function(self, resume_mode)
   local session, load_error
   session, load_error = self.api:load_session(state.agent, state.acp_session_id, {
     cwd = state.working_dir,
-    name = state.name,
+    name = state.name ~= state.id and state.name ~= state.acp_session_id and state.name or nil,
     resume_mode = resume_mode,
   }, function(ready, ready_error)
     nvim.schedule(function()
@@ -3343,7 +3343,6 @@ function Chat:resume_session(all_workspaces)
         local session, load_error
         session, load_error = self.api:load_session(selected.agent, selected.session_id, {
           cwd = selected.cwd,
-          name = selected.session_id,
         }, function(ready_session, ready_error)
           nvim.schedule(function()
             if settled or self.disposed or self.resume_discovery ~= discovery or session == nil then

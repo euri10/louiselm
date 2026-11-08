@@ -11,7 +11,7 @@ All shared LouiseLM state uses the same root, independently of the editor profil
 
 | Relative path | Owner and purpose |
 | --- | --- |
-| `usage/turns.sqlite3` | Session registry: durable facts and current routing preferences |
+| `usage/turns.sqlite3` | Session registry: durable facts, custom names and current routing preferences |
 | `usage.json` | Chat: read-only legacy replay annotations |
 | `forensics/` | Session registry: immutable Forensics records |
 | `permissions.json` | Permission store: remembered rules |
@@ -86,6 +86,18 @@ against the refreshed choices, before `ready` is published. Unsupported pins,
 corrupt state and failed persistence are actionable errors; they never silently
 select another pair or enable Auto. A saved Auto choice requires the Agent's
 baseline to remain configured. These controls do not change reading workers.
+
+Schema version 5 adds mutable `session_names`, keyed by configured Agent and
+ACP Session ID. Explicit `options.name` values and `session:set_name(name)`
+renames are saved through the same private asynchronous writer. Names supplied
+before the Agent assigns an ID are saved during startup. Rename persistence
+uses `recording_changed`/`recording_pending`/`recording_error`; failed writes
+remain queued for `flush_recording`. Loading restores a saved name before
+publishing `ready`, unless an explicit name was supplied or set during loading.
+Generated local handles and ACP-ID display fallbacks are never saved as custom
+names. Pre-feature stores have no recoverable name unless it was saved elsewhere;
+set that name again after updating. Older plugin processes cannot read schema 5,
+so restart all editors sharing this store when updating.
 
 A failed or unknown configuration does not trigger a
 resend; an unresolved request holds or errors the Session. Chat keeps the

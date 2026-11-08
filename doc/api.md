@@ -225,7 +225,7 @@ string|table
 - `disable_mcp: boolean?` -- Suppress LouiseLM-supplied MCP servers, for example during transcript replay. Does not control Agent-native configuration.
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `launch_request: (louiselm.acp.LaunchRequest)?` -- Launch through the installed supervisor instead of the configured command.
-- `name: string?` -- User-facing session name.
+- `name: string?` -- Explicit persistent display name; loading without one restores the saved name.
 - `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
@@ -256,6 +256,7 @@ string|table
 - `cancel: fun(self: louiselm.session.Session):boolean, string?`
 - `client: (louiselm.acp.Client)?` -- ACP client.
 - `codex_turn_failed: boolean?` -- Active prompt received systemError before its terminal response.
+- `custom_name: string?` -- Explicit name supplied during this live Session, taking precedence over a pending restore.
 - `definition: louiselm.agent.Definition` -- Agent process definition.
 - `dispose: fun(self: louiselm.session.Session, reason?: string):boolean, string?`
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
@@ -263,6 +264,7 @@ string|table
 - `interactions: louiselm.session.InteractionEntry[]` -- Pending vendor interactions, in arrival order.
 - `load_session_id: string?` -- Agent-side session identifier to load.
 - `mcp_servers: louiselm.mcp.WireServer[]` -- Owned ACP configuration; never included in inspectable state or recordings.
+- `name_read: fun()?` -- Cancel a pending custom name read.
 - `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.

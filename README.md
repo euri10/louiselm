@@ -324,6 +324,9 @@ Snacks users can bind Ctrl-d to the marked group through the optional
 Snacks remains optional, and Enter still switches Sessions.
 
 `:LouiselmSessionRename` changes the human-readable name (`Review` above).
+Custom names, including names supplied by Session-creation skills, are saved
+locally and restored when resuming the same Agent conversation after a restart.
+Names lost before name persistence was available must be set again.
 `session-7` is an internal handle and the initial default name; it stays stable
 after renaming. `codex/<uuid>` identifies the Agent conversation and can be
 copied with `:LouiselmSessionId`. The statusline's `louiselm://session-7` is a

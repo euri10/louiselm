@@ -367,6 +367,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Custom Session names set with :LouiselmSessionRename or supplied at creation are saved locally and restored on Resume after an editor restart. Generated Session handles are not saved as names. Names lost before persistence was available must be set again.",
+        context
+      )
+      append_prose(
+        lines,
         "When an Agent reports that it cannot safely preserve saved permissions and offers replacement modes, Resume offers Cancel or an explicit choice. Choosing a mode replaces the saved permissions and retries loading only; it does not submit the draft. Cancel leaves the stopped conversation intact. Current mandatory restrictions still apply, and Full access remains a supported operator choice. An explicit replacement fails unless the Agent acknowledges it. Other Agents retain their own Resume behavior.",
         context
       )
