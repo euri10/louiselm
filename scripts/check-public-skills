@@ -11,6 +11,7 @@ root=${1:-"$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/skills"}
 [ -d "$root" ] || { echo "usage: $(basename "$0") [skills-directory]" >&2; exit 1; }
 
 allowed_hosts='^(louiselm\.dev|github\.com|cli\.github\.com|docs\.astral\.sh|docs\.pytest\.org|docs\.npmjs\.com|www\.typescriptlang\.org|vitest\.dev|biomejs\.dev)$'
+ssh_key_algorithm='sk-ssh-ed25519@openssh.com'
 failed=0
 
 reject() {
@@ -35,20 +36,26 @@ scan() {
 }
 
 scan home_path '/(home|Users)/[^/[:space:]]+/'
-scan email '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+# Exempt only the exact protocol token, never its whole line or record.
+while IFS= read -r match; do
+	[[ "${match##*:}" == "$ssh_key_algorithm" ]] && continue
+	reject email "${match#"$root"/}"
+done < <(grep -rnoIE '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}' "$root" || true)
 scan ssh_remote 'git@[A-Za-z0-9.-]+:'
 scan session_id '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 
 # Hosts appear in URLs and bare ("the usual host is example.net"); both count.
 tlds='com|net|org|io|dev|app|cloud|fr|de|be|ch|nl|eu|uk|co|me|xyz|lan|local|internal|home|corp'
 while IFS= read -r host; do
+	[[ "$host" == "$ssh_key_algorithm" ]] && continue
 	if ! grep -qE "$allowed_hosts" <<<"$host"; then
 		reject unlisted_host "$host (review it, then add it to allowed_hosts)"
 	fi
 done < <(
 	{
 		grep -rhoIE 'https?://[A-Za-z0-9.-]+' "$root" | sed 's|^[a-z]*://||'
-		grep -rhoIE "\b([A-Za-z0-9-]+\.)+($tlds)\b" "$root"
+		# Keep the protocol name whole; bare openssh.com and its URLs still fail.
+		grep -rhoIE "${ssh_key_algorithm//./[.]}|\b([A-Za-z0-9-]+\.)+($tlds)\b" "$root"
 	} | sort -u || true
 )
 

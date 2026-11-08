@@ -29,6 +29,52 @@ expect_refusal() {
 	grep -q "$rule" <<<"$output" || { echo "FAIL: expected rule $rule, got: $output" >&2; exit 1; }
 }
 
+# Captured native record from the first Publisher ceremony, 2026-11-08
+# (louiselm-vhqzk). This gate scans privacy, not trust or the record's expiry.
+endorsement_fixture=$(<"$script_dir/../tests/fixtures/endorsement_hardware_record.json")
+endorsement_name=sha256-130ee13ba25efed10c675db0c1d4bb821e51e81814b4b7d9672a044a462ac4ea.json
+
+write_endorsement() {
+	clean
+	mkdir -p "$work_dir/skills/endorsements"
+	printf '%s' "$1" >"$work_dir/skills/endorsements/$endorsement_name"
+}
+
+write_endorsement "$endorsement_fixture"
+printf '%s  %s\n' 130ee13ba25efed10c675db0c1d4bb821e51e81814b4b7d9672a044a462ac4ea \
+	"$work_dir/skills/endorsements/$endorsement_name" | sha256sum --check --status || {
+	echo "FAIL: captured Endorsement bytes changed" >&2; exit 1;
+}
+"$check" "$work_dir/skills" >/dev/null || { echo "FAIL: native hardware Endorsement refused" >&2; exit 1; }
+
+expect_endorsement_refusal() {
+	local rule=$1 text=$2 record output
+	# Neither a known free-text field nor an unknown field may be skipped.
+	# Both share a single compact JSON line with the valid public key.
+	for record in \
+		"${endorsement_fixture/'"assumptions":[]'/"\"assumptions\":[\"$text\"]"}" \
+		"${endorsement_fixture%?},\"extra\":\"$text\"}"; do
+		write_endorsement "$record"
+		if output=$("$check" "$work_dir/skills" 2>&1); then
+			echo "FAIL: Endorsement $rule not refused" >&2
+			exit 1
+		fi
+		grep -q "$rule" <<<"$output" || { echo "FAIL: expected $rule, got: $output" >&2; exit 1; }
+	done
+}
+
+expect_endorsement_refusal email 'person@private.example.net'
+expect_endorsement_refusal email 'person@openssh.com'
+expect_endorsement_refusal email 'owner+sk-ssh-ed25519@openssh.com'
+expect_endorsement_refusal email 'sk-ssh-ed25519@openssh.com.private.example.net'
+expect_endorsement_refusal email 'sk-ssh-ed25519@openssh.com, person@github.com'
+expect_endorsement_refusal unlisted_host 'private.example.net'
+expect_endorsement_refusal unlisted_host 'openssh.com'
+expect_endorsement_refusal unlisted_host 'https://openssh.com'
+expect_endorsement_refusal home_path '/home/someone/private/project/'
+expect_endorsement_refusal ssh_remote 'git@private.example.net:team/repo.git'
+expect_endorsement_refusal session_id '12345678-1234-1234-1234-123456789abc'
+
 expect_refusal home_path 'Run it from /home/someone/code/project.'
 expect_refusal home_path 'Or /Users/someone/project.'
 expect_refusal email 'Contact person@private.example.net.'
