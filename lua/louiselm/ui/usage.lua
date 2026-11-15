@@ -44,6 +44,18 @@ local function literal(value)
   return delimiter .. text .. delimiter
 end
 
+local function attribution_summary(value)
+  if not value then
+    return "unknown"
+  end
+  return literal({
+    source = value.source,
+    batch_id = value.batch_id,
+    confirmer = value.confirmer,
+    reference = value.reference,
+  })
+end
+
 local function sorted_keys(value)
   local keys = nvim.tbl_keys(value)
   table.sort(keys)
@@ -125,6 +137,7 @@ local function render(self)
       .. " | **Model:** "
       .. literal(turn.model)
     lines[#lines + 1] = "**Starting options:** " .. literal(turn.options)
+    lines[#lines + 1] = "**Attribution:** " .. literal(turn.attribution)
     lines[#lines + 1] = "**Starting cost:** "
       .. literal(turn.cost_baseline)
       .. " | **changed during turn:** "
@@ -189,6 +202,7 @@ local function render(self)
         )
         lines[#lines + 1] = ""
         lines[#lines + 1] = "**Provider:** " .. literal(row.provider) .. " | **options:** " .. literal(row.options)
+        lines[#lines + 1] = "**Attribution:** " .. attribution_summary(row.attribution)
         if row.summary then
           metrics(lines, row.summary)
         end

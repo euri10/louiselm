@@ -26,7 +26,7 @@ local Stream = require("louiselm.session.usage_import_stream")
 ---@field sources louiselm.session.ImportSource[] Explicit file and line selections, at most 16.
 
 ---@class louiselm.session.ImportError
----@field code "invalid"|"timeout"|"unavailable"
+---@field code "invalid"|"changed"|"timeout"|"unavailable"
 ---@field message string Sanitized error; no source contents.
 
 ---@class louiselm.session.ImportEvidence
@@ -84,6 +84,7 @@ local Stream = require("louiselm.session.usage_import_stream")
 ---@field costs_truncated? boolean The per-turn cost observation limit was reached.
 ---@field peer_response? boolean A matching terminal response was observed.
 ---@field outcome? "completed"|"cancelled"|"failed" Absent when completion was not established.
+---@field outcome_at? string UTC timestamp of the established terminal response.
 ---@field stop_reason? string Valid observed ACP stop reason, when supplied.
 ---@field usage? louiselm.session.TurnUsage Reported fields only; never estimated.
 ---@field proposal louiselm.session.ImportAttribution Unconfirmed human attribution.
@@ -99,6 +100,7 @@ local Stream = require("louiselm.session.usage_import_stream")
 ---@field request? { id: string|number, option: string, value: string|boolean } Matched request, only for a response.
 ---@field request_evidence? louiselm.session.ImportEvidence Matched request location.
 ---@field evidence louiselm.session.ImportEvidence Replacement location.
+---@field during_unselected_turn? boolean The change occurred during a turn outside this preview.
 
 ---@class louiselm.session.ImportExclusion
 ---@field source integer One-based index into the selected sources.
@@ -130,6 +132,19 @@ local Stream = require("louiselm.session.usage_import_stream")
 ---@field counts { candidates: integer, exclusions: integer, transitions: integer } Exclusions counts all reasons, including omitted ones.
 
 ---@alias louiselm.session.ImportCallback fun(report: louiselm.session.ImportReport?, error: louiselm.session.ImportError?)
+
+---@class louiselm.session.ImportDeclaration
+---@field digest string Exact digest of the reviewed selection and source bytes.
+---@field bindings table<string, louiselm.session.ImportProposal> Explicit Agent/Provider for each one-based ACP source index.
+---@field confirmer string Human who confirmed the Agent/Provider proposals.
+---@field confirmed_at string UTC confirmation time.
+---@field reference string Human-review reference.
+---@class louiselm.session.ImportApplyReport
+---@field batch_id string Durable identity of this declaration and selection.
+---@field digest string Revalidated selection digest.
+---@field counts {admitted: integer, existing: integer, excluded: integer}
+---@field exclusions louiselm.session.ImportExclusion[] Bounded, payload-free reasons.
+---@alias louiselm.session.ImportApplyCallback fun(report: louiselm.session.ImportApplyReport?, error: louiselm.session.ImportError|louiselm.session.RecordingError?)
 
 local M = {}
 local MAX_FILES, MAX_BYTES, MAX_SOURCES = 32, 8 * 1024 * 1024, 16
@@ -505,6 +520,17 @@ function M.preview(selection, callback)
     cancelled = true
     finish()
   end
+end
+
+---Apply a human-confirmed selection after re-reading its evidence.
+---The recorder writes the normalized facts and declaration in one transaction.
+---@param store louiselm.session.RecordingStore Private destination selected by the caller.
+---@param selection louiselm.session.ImportSelection Exact reviewed selection.
+---@param declaration louiselm.session.ImportDeclaration Human confirmation of the preview digest.
+---@param callback louiselm.session.ImportApplyCallback Called once on the main loop.
+---@return fun() cancel Suppresses delivery before writing begins; an accepted transaction cannot be cancelled.
+function M.apply(store, selection, declaration, callback)
+  return store:apply_import(selection, declaration, callback)
 end
 
 return M

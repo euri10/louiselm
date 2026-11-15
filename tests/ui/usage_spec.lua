@@ -125,6 +125,29 @@ T["Markdown preserves recorded backticks and row navigation"] = function()
   MiniTest.expect.equality(text(view):find('**Data:** ```{"model":"' .. value .. '"}```', 1, true) ~= nil, true)
 end
 
+T["turn inspection shows human confirmation and evidence"] = function()
+  local view, calls = open()
+  view:set_query({ view = "turns", filters = { attribution = "human" } })
+  deliver(
+    calls[2],
+    page({
+      {
+        id = "imported",
+        agent = "sample",
+        acp_session_id = "session",
+        options = {},
+        attribution = { source = "human", confirmer = "reviewer", reference = "review-123", batch_id = "batch" },
+      },
+    })
+  )
+  MiniTest.expect.equality(text(view):find('"reviewer"', 1, true) ~= nil, true)
+  MiniTest.expect.equality(text(view):find('"review-123"', 1, true) ~= nil, true)
+  view:enter(1)
+  deliver(calls[3], page())
+  MiniTest.expect.equality(text(view):find("**Attribution:**", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text(view):find('"batch"', 1, true) ~= nil, true)
+end
+
 T["previous-page key reverses a pending next-page read"] = function()
   local view, calls = open()
   view:set_query({ view = "turns", filters = { agent = "codex" }, limit = 1 })

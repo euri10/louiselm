@@ -237,6 +237,7 @@ local function process_session(records, source, index, connection, selection, li
           request = request,
           request_evidence = request_evidence,
           evidence = evidence(index, "session", line),
+          during_unselected_turn = state.active and state.active.outside_selection or nil,
         }
       elseif in_range(entry.timestamp, from, until_time) and not state.transition_limit then
         state.transition_limit = true
@@ -459,6 +460,7 @@ local function process_session(records, source, index, connection, selection, li
             active.evidence.response = evidence(index, "session", line)
             if payload.error then
               active.outcome = "failed"
+              active.outcome_at = entry.timestamp
               active.evidence.outcome = evidence(index, "session", line)
             elseif type(payload.result) ~= "table" then
               exclude("invalid_completion", line)
@@ -474,6 +476,7 @@ local function process_session(records, source, index, connection, selection, li
                   or (payload.result.stopReason == "cancelled" and "cancelled" or "completed")
                 active.stop_reason = payload.result.stopReason
                 active.usage = usage
+                active.outcome_at = entry.timestamp
                 active.evidence.outcome = evidence(index, "session", line)
               end
             end

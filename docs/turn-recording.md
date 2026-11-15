@@ -410,7 +410,7 @@ Neovim's built-in Markdown syntax highlighting. Its filetype stays
 | `r` / `q` | Refresh / close |
 
 Dimension names are `agent`, `provider`, `model`, `session` (the ACP Session ID),
-and `option:<recorded option ID>`. For example,
+`attribution` (`machine` or `human`), and `option:<recorded option ID>`. For example,
 `{"agent":"codex","model":"astra","option:reasoning":"medium","option:enabled":false}`
 is one joint filter. Boolean `false` differs from string `"false"`; JSON `null`
 matches an absent dimension. Strings match their decoded values even when the
@@ -418,6 +418,10 @@ recorder and SQLite use different JSON escapes. Filters always use recorded
 attribution and the immutable starting tuple. Unknown query fields and invalid
 values are errors.
 Dimension values reflect matching recorded turns, not current Agent settings.
+Use `f` and `{"attribution":"machine"}` to restrict results to
+machine-observed attribution. Turn rows and their inspection show the source;
+human attribution includes its declaration, batch identity, selection and
+evidence references. Default queries and picker comparisons include both.
 
 Turn ranges and buckets use the recorded `prepared_at` timestamp. Event ranges
 use `observed_at`. UTC is explicit throughout; ranges include their start and
@@ -494,8 +498,8 @@ collection and exploration remain independent of it.
 ## Historical ACP import preview
 
 Historical import starts with an explicit dry run. It reads only selected ACP
-wire JSONL files and never opens or changes the usage store. There is no apply
-operation. Native-only histories, including Codex rollouts, are reported as
+wire JSONL files and never opens or changes the usage store. Native-only
+histories, including Codex rollouts, are reported as
 unsupported. Source selection does not establish that older or evicted data is
 complete.
 
@@ -576,3 +580,66 @@ local cancel = preview.preview(selection, function(report, err)
 end)
 -- cancel() suppresses delivery; any already-started read still closes its file.
 ```
+
+## Applying a confirmed preview
+
+After reviewing the preview, explicitly confirm its exact digest, proposed
+Agent/Provider mappings, source segments and time bounds. Supply the human
+confirmer, UTC confirmation time and a review reference. Applying re-runs the
+preview and refuses changed evidence or a changed selection. It never discovers
+additional files, infers attribution from current configuration, or stores raw
+prompts, tool content, environments or source payloads.
+
+Choose the private destination explicitly. The following command takes the same
+`selection` JSON used for preview and a declaration containing the digest from
+that preview:
+
+```sh
+declaration='{"digest":"sha256:REPLACE_WITH_REVIEWED_DIGEST","bindings":{"1":{"agent":"my-agent","provider":"my-provider"}},"confirmer":"reviewer","confirmed_at":"2026-09-01T10:00:00Z","reference":"review-123"}'
+scripts/apply-acp-usage /absolute/private/usage "$selection" "$declaration"
+```
+
+`bindings` explicitly names the Agent and Provider for every selected ACP
+source index; its entries must match the reviewed proposals exactly.
+The directory must meet the recorder's existing ownership and mode checks. A
+successful JSON report names the durable `batch_id`, digest, admitted and
+existing turn counts, and excluded evidence count and bounded reasons. The
+exclusion count includes preview reasons and option transitions as well as
+excluded turns. A repeated declaration of the same selection returns the same
+batch ID; already imported facts remain owned by their original batch. An
+overlapping or conflicting import never rewrites them. Ambiguous request-ID
+overlap with live records is excluded; separate historical connections are
+distinguished only where their reviewed source bytes and boundaries prove it.
+Import identifiers are reserved: ordinary recorder writes cannot append new
+observations to an imported turn or impersonate an imported option event.
+Between-turn option observations are excluded with a reason when their source
+cannot be separated safely from live or excluded history.
+
+All admitted facts, source references and the declaration commit together.
+Unobserved outcomes and unreported measurements remain absent; mixed turns
+stay excluded from fixed-configuration comparisons. An incomplete cost stream
+cannot produce a complete cost delta, and currencies are never combined.
+Storage failures return sanitized errors and do not leave an import queued for
+an implicit retry. Retry explicitly with a fresh evidence check. The stored
+batch identity and fact ownership support a later explicit withdrawal feature;
+this operation does not withdraw or correct earlier facts.
+
+The headless consumer is also available from Lua:
+
+```lua
+local import = require("louiselm.session.usage_import")
+local recording = require("louiselm.session.recording")
+local store, err = recording.new("/absolute/private/usage", function() end)
+if not store then
+  return -- handle err.code / err.message
+end
+local cancel = import.apply(store, selection, declaration, function(report, apply_error)
+  -- Runs once on the main loop; inspect report or the sanitized error.
+end)
+-- cancel() suppresses delivery before writing starts; an accepted write finishes.
+```
+
+Import-capable writers migrate the private database to schema 6. Older writers
+reject that schema instead of silently modifying a store containing imports;
+new readers can still inspect older schemas without migrating them. Do not run
+an older LouiseLM writer against the migrated database.

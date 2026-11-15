@@ -60,13 +60,13 @@ WITH ordered_costs AS (
  UNION ALL
  SELECT d.candidate,'cost',d.currency,count(*),avg(d.amount),sum(d.amount) FROM deltas d
  JOIN cohort_turns t ON t.candidate=d.candidate AND t.id=d.id
- WHERE json_extract(t.outcome_data,'$.peer_response')=1 GROUP BY d.candidate,d.currency
+ WHERE json_extract(t.outcome_data,'$.peer_response')=1 AND t.telemetry_gap=0 GROUP BY d.candidate,d.currency
 )
 SELECT * FROM metrics;
 
 ]]
 
----@alias louiselm.session.UsageDimension string Agent/provider/model/session or option:<recorded ID>.
+---@alias louiselm.session.UsageDimension string Agent/provider/model/session/attribution or option:<recorded ID>.
 ---@class louiselm.session.UsageQuery
 ---@field view? "summary"|"turns"|"events"|"dimensions" Defaults to summary.
 ---@field filters? table<louiselm.session.UsageDimension, string|boolean|userdata> Conjunction; vim.NIL matches an absent dimension. Turns use starting values.
@@ -85,6 +85,16 @@ SELECT * FROM metrics;
 ---@field total number Sum over measured turns only.
 ---@class louiselm.session.UsageTotalCurrency: louiselm.session.UsageTotalMetric
 ---@field currency string
+---@class louiselm.session.UsageAttribution
+---@field source "machine"|"human"
+---@field batch_id? string Human-declared batch identity.
+---@field digest? string Reviewed selection digest.
+---@field confirmer? string Human confirmer.
+---@field confirmed_at? string UTC confirmation time.
+---@field reference? string Human review reference.
+---@field selection? louiselm.session.ImportSelection Reviewed bounds and proposed mapping.
+---@field sources? louiselm.session.ImportSourceResult[] File evidence and digests.
+---@field evidence? louiselm.session.ImportCandidateEvidence Turn observations.
 ---@class louiselm.session.UsageRow
 ---@field dimensions? table<string, string|boolean> Summary group; absent values are omitted.
 ---@field bucket_start? string Inclusive UTC bucket boundary.
@@ -98,6 +108,7 @@ SELECT * FROM metrics;
 ---@field model? string|boolean Starting advertised Model.
 ---@field options? table<string, string|boolean> Immutable starting tuple.
 ---@field cost_baseline? louiselm.session.Cost
+---@field attribution? louiselm.session.UsageAttribution Inspectable machine or human attribution and evidence.
 ---@field mixed? boolean Changed during turn; excluded from fixed-configuration comparisons.
 ---@field kind? string Event kind.
 ---@field observed_at? string Event timestamp.
@@ -133,7 +144,13 @@ local fields = {
 local views = { summary = true, turns = true, events = true, dimensions = true }
 local buckets = { none = true, hour = true, day = true }
 local mixed_modes = { include = true, exclude = true, only = true }
-local dimensions = { agent = "agent", provider = "provider", model = "model", session = "acp_session_id" }
+local dimensions = {
+  agent = "agent",
+  provider = "provider",
+  model = "model",
+  session = "acp_session_id",
+  attribution = "attribution_source",
+}
 
 local function nonempty(value)
   return type(value) == "string" and value ~= ""
@@ -197,6 +214,7 @@ local function valid(query)
         not dimension(key)
         or (value ~= nvim.NIL and type(value) ~= "string" and type(value) ~= "boolean")
         or (value ~= nvim.NIL and dimensions[key] and key ~= "model" and type(value) ~= "string")
+        or (key == "attribution" and value ~= "machine" and value ~= "human")
       then
         return false
       end
@@ -292,12 +310,12 @@ function M.build(query, quote)
   local limit, offset = query.limit or 25, query.offset or 0
   local fixed = false
   for key in pairs(query.filters or {}) do
-    if key ~= "agent" and key ~= "session" then
+    if key ~= "agent" and key ~= "session" and key ~= "attribution" then
       fixed = true
     end
   end
   for _, key in ipairs(query.group_by or {}) do
-    if key ~= "agent" and key ~= "session" then
+    if key ~= "agent" and key ~= "session" and key ~= "attribution" then
       fixed = true
     end
   end
@@ -306,8 +324,8 @@ function M.build(query, quote)
     [[
 CREATE TEMP TABLE matching_turns AS
 SELECT t.*,o.data AS outcome_data,
- EXISTS(SELECT 1 FROM option_events e WHERE e.turn_id=t.id) AS mixed
-FROM turns t LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
+ (t.import_mixed OR EXISTS(SELECT 1 FROM option_events e WHERE e.turn_id=t.id)) AS mixed
+FROM usage_turns t LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
 WHERE EXISTS(SELECT 1 FROM turn_events d WHERE d.turn_id=t.id AND d.kind='dispatch') AND
 ]] .. predicates(query, quote, "t", view ~= "events") .. ";",
   }
@@ -356,7 +374,8 @@ WHERE EXISTS(SELECT 1 FROM turn_events d WHERE d.turn_id=t.id AND d.kind='dispat
 dimensions,bucket_start,bucket_end FROM grouped_turns GROUP BY bucket_start,dimensions;
 CREATE TEMP TABLE page_groups AS SELECT * FROM groups ORDER BY candidate LIMIT ]] .. limit .. " OFFSET " .. offset .. ";"
     sql[#sql + 1] = [[CREATE TEMP TABLE cohort_turns AS SELECT 0 AS candidate,t.* FROM selected_turns t
-UNION ALL SELECT g.candidate,t.id,t.agent,t.provider,t.acp_session_id,t.prepared_at,t.options,t.model,t.cost_baseline,t.outcome_data,t.mixed
+UNION ALL SELECT g.candidate,t.id,t.agent,t.provider,t.acp_session_id,t.prepared_at,t.options,t.model,t.cost_baseline,
+t.attribution_source,t.attribution,t.telemetry_gap,t.import_mixed,t.outcome_data,t.mixed
 FROM grouped_turns t JOIN page_groups g ON t.dimensions=g.dimensions AND t.bucket_start IS g.bucket_start;]]
     total = "(SELECT count(*) FROM groups)"
     page_rows = "SELECT json_object('dimensions',json(g.dimensions),'bucket_start',g.bucket_start,'bucket_end',g.bucket_end,'summary',"
@@ -373,6 +392,7 @@ UNION ALL SELECT * FROM page_turns;]]
     total = "(SELECT count(*) FROM selected_turns)"
     page_rows = [[SELECT json_object('id',t.id,'agent',t.agent,'provider',t.provider,'acp_session_id',t.acp_session_id,
 'prepared_at',t.prepared_at,'model',json(t.model),'options',json(t.options),'cost_baseline',json(t.cost_baseline),
+'attribution',json(coalesce(t.attribution,'{"source":"machine"}')),
 'mixed',json(CASE mixed WHEN 1 THEN 'true' ELSE 'false' END),'summary',]] .. summary_sql("t.candidate") .. ") AS data FROM page_turns t ORDER BY candidate"
   else
     sql[#sql + 1] = "CREATE TEMP TABLE cohort_turns AS SELECT 0 AS candidate,t.* FROM selected_turns t;"
@@ -382,6 +402,7 @@ SELECT 'agent' AS dimension,json_quote(agent) AS value FROM selected_turns
 UNION SELECT 'provider',json_quote(provider) FROM selected_turns
 UNION SELECT 'model',model FROM selected_turns WHERE model IS NOT NULL
 UNION SELECT 'session',json_quote(acp_session_id) FROM selected_turns
+UNION SELECT 'attribution',json_quote(attribution_source) FROM selected_turns
 UNION SELECT 'option:'||o.key,CASE o.type WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE json_quote(o.value) END
 FROM selected_turns t,json_each(t.options) o;]]
       total = "(SELECT count(*) FROM dimensions)"
@@ -401,14 +422,21 @@ FROM selected_turns t,json_each(t.options) o;]]
             .. quote(type(value) == "string" and value or nil)
         end
       end
+      local attribution = (query.filters or {}).attribution
+      if attribution ~= nil then
+        event_clauses[#event_clauses + 1] = attribution == "machine" and "i.event_id IS NULL"
+          or attribution == "human" and "i.event_id IS NOT NULL"
+          or "0"
+      end
       sql[#sql + 1] = [[CREATE TEMP TABLE events AS
 SELECT e.turn_id||':'||e.sequence AS id,e.kind,e.turn_id,e.observed_at,e.sequence,
 e.turn_id AS stream,NULL AS observer_id,e.data
 FROM turn_events e JOIN selected_turns t ON t.id=e.turn_id
 UNION ALL SELECT e.id,'options',e.turn_id,e.observed_at,e.sequence,e.observer_id,e.observer_id,
 json_object('agent',e.agent,'acp_session_id',e.acp_session_id,'previous_options',json(e.previous_options),
-'options',json(e.options),'source',e.source,'request',json(e.request))
-FROM option_events e WHERE e.turn_id IN (SELECT id FROM selected_turns)]] .. (between and " OR (" .. table.concat(
+'options',json(e.options),'source',e.source,'request',json(e.request),
+'attribution',json(coalesce(i.attribution,'{"source":"machine"}')))
+FROM option_events e LEFT JOIN imported_options i ON i.event_id=e.id WHERE e.turn_id IN (SELECT id FROM selected_turns)]] .. (between and " OR (" .. table.concat(
         event_clauses,
         " AND "
       ) .. ")" or "") .. ";"

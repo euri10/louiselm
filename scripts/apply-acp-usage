@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 3 ]; then
+  printf '%s\n' 'Usage: apply-acp-usage <private-store-directory> <selection-json> <declaration-json>' >&2
+  exit 2
+fi
+
+import_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+export LOUISELM_USAGE_APPLY_ROOT="$import_root"
+export LOUISELM_USAGE_APPLY_DIRECTORY="$1"
+export LOUISELM_USAGE_APPLY_SELECTION="$2"
+export LOUISELM_USAGE_APPLY_DECLARATION="$3"
+exec nvim --headless --noplugin -u NONE -i NONE -n \
+  --cmd 'lua vim.opt.rtp:prepend(vim.env.LOUISELM_USAGE_APPLY_ROOT)' \
+  -c 'lua dofile(vim.env.LOUISELM_USAGE_APPLY_ROOT .. "/scripts/apply-acp-usage.lua")'

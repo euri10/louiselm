@@ -549,10 +549,23 @@ string
 - `samples: integer` -- Turns reporting this measurement.
 - `total: number` -- Sum over measured turns only.
 
+### louiselm.session.UsageAttribution
+
+- `batch_id: string?` -- Human-declared batch identity.
+- `confirmed_at: string?` -- UTC confirmation time.
+- `confirmer: string?` -- Human confirmer.
+- `digest: string?` -- Reviewed selection digest.
+- `evidence: (louiselm.session.ImportCandidateEvidence)?` -- Turn observations.
+- `reference: string?` -- Human review reference.
+- `selection: (louiselm.session.ImportSelection)?` -- Reviewed bounds and proposed mapping.
+- `source: "human"|"machine"`
+- `sources: louiselm.session.ImportSourceResult[]?` -- File evidence and digests.
+
 ### louiselm.session.UsageRow
 
 - `acp_session_id: string?`
 - `agent: string?`
+- `attribution: (louiselm.session.UsageAttribution)?` -- Inspectable machine or human attribution and evidence.
 - `bucket_end: string?` -- Exclusive UTC bucket boundary.
 - `bucket_start: string?` -- Inclusive UTC bucket boundary.
 - `cost_baseline: (louiselm.session.Cost)?`
@@ -617,7 +630,7 @@ fun(page?: louiselm.session.UsagePage, error?: louiselm.session.RecordingError)
 
 ### louiselm.session.ImportError
 
-- `code: "invalid"|"timeout"|"unavailable"`
+- `code: "changed"|"invalid"|"timeout"|"unavailable"`
 - `message: string` -- Sanitized error; no source contents.
 
 ### louiselm.session.ImportEvidence
@@ -681,6 +694,7 @@ fun(page?: louiselm.session.UsagePage, error?: louiselm.session.RecordingError)
 - `options: table<string, boolean|string>` -- Complete supported starting tuple.
 - `options_uncertain: boolean?` -- A malformed option update prevented a complete tuple.
 - `outcome: ("cancelled"|"completed"|"failed")?` -- Absent when completion was not established.
+- `outcome_at: string?` -- UTC timestamp of the established terminal response.
 - `peer_response: boolean?` -- A matching terminal response was observed.
 - `proposal: louiselm.session.ImportAttribution` -- Unconfirmed human attribution.
 - `request_id: string|number` -- Request ID scoped to this connection and dispatch evidence.
@@ -692,6 +706,7 @@ fun(page?: louiselm.session.UsagePage, error?: louiselm.session.RecordingError)
 ### louiselm.session.ImportTransition
 
 - `connection_id: string` -- Selected connection file identity.
+- `during_unselected_turn: boolean?` -- The change occurred during a turn outside this preview.
 - `evidence: louiselm.session.ImportEvidence` -- Replacement location.
 - `observed_at: string` -- UTC source timestamp.
 - `options: table<string, boolean|string>` -- Complete tuple after replacement.
@@ -737,6 +752,27 @@ fun(page?: louiselm.session.UsagePage, error?: louiselm.session.RecordingError)
 
 ```lua
 fun(report?: louiselm.session.ImportReport, error?: louiselm.session.ImportError)
+```
+
+### louiselm.session.ImportDeclaration
+
+- `bindings: table<string, louiselm.session.ImportProposal>` -- Explicit Agent/Provider for each one-based ACP source index.
+- `confirmed_at: string` -- UTC confirmation time.
+- `confirmer: string` -- Human who confirmed the Agent/Provider proposals.
+- `digest: string` -- Exact digest of the reviewed selection and source bytes.
+- `reference: string` -- Human-review reference.
+
+### louiselm.session.ImportApplyReport
+
+- `batch_id: string` -- Durable identity of this declaration and selection.
+- `counts: { admitted: integer, existing: integer, excluded: integer }`
+- `digest: string` -- Revalidated selection digest.
+- `exclusions: louiselm.session.ImportExclusion[]` -- Bounded, payload-free reasons.
+
+### louiselm.session.ImportApplyCallback
+
+```lua
+fun(report?: louiselm.session.ImportApplyReport, error?: louiselm.session.ImportError|louiselm.session.RecordingError)
 ```
 
 ### louiselm.session.SelectedContentLimits

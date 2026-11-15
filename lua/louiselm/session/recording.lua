@@ -76,6 +76,7 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field usage_history fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.UsageHistoryCallback)
 ---@field usage_summaries fun(self: louiselm.session.RecordingStore, cohorts: louiselm.session.UsageCohort[], callback: louiselm.session.UsageSummariesCallback)
 ---@field usage_query fun(self: louiselm.session.RecordingStore, query: louiselm.session.UsageQuery, callback: louiselm.session.UsageQueryCallback): fun()
+---@field apply_import fun(self: louiselm.session.RecordingStore, selection: louiselm.session.ImportSelection, declaration: louiselm.session.ImportDeclaration, callback: louiselm.session.ImportApplyCallback): fun()
 ---@field save_routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, preference: louiselm.session.RoutingPreference, callback: louiselm.session.RecordingCallback)
 ---@field routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.RoutingPreferenceCallback): fun()
 ---@field save_session_name fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, name: string, callback?: louiselm.session.RecordingCallback)
@@ -138,6 +139,23 @@ CREATE TABLE IF NOT EXISTS routing_preferences (
 CREATE TABLE IF NOT EXISTS session_names (
   agent TEXT NOT NULL, acp_session_id TEXT NOT NULL, name TEXT NOT NULL,
   PRIMARY KEY(agent, acp_session_id)
+) STRICT;
+CREATE TABLE IF NOT EXISTS import_batches (
+  id TEXT PRIMARY KEY NOT NULL, digest TEXT NOT NULL, declaration TEXT NOT NULL,
+  selection TEXT NOT NULL, sources TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS import_turns (
+  turn_id TEXT PRIMARY KEY NOT NULL REFERENCES turns(id),
+  batch_id TEXT NOT NULL REFERENCES import_batches(id), evidence_key TEXT NOT NULL UNIQUE,
+  fingerprint TEXT NOT NULL, evidence TEXT NOT NULL,
+  connection_id TEXT NOT NULL, session_digest TEXT NOT NULL,
+  first_line INTEGER NOT NULL, last_line INTEGER NOT NULL, dispatch_line INTEGER NOT NULL,
+  mixed INTEGER NOT NULL CHECK(mixed IN (0,1)),
+  telemetry_gap INTEGER NOT NULL CHECK(telemetry_gap IN (0,1))
+) STRICT;
+CREATE TABLE IF NOT EXISTS import_options (
+  event_id TEXT PRIMARY KEY NOT NULL REFERENCES option_events(id),
+  batch_id TEXT NOT NULL REFERENCES import_batches(id), evidence TEXT NOT NULL
 ) STRICT;
 ]]
 
@@ -243,7 +261,7 @@ local TOKEN_FIELDS = {
 
 ---@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition|louiselm.session.AdmissionObservation
 ---@return string?
-local function record_sql(record)
+local function record_sql(record, condition)
   if type(record) ~= "table" then
     return nil
   end
@@ -498,9 +516,11 @@ local function record_sql(record)
     .. table_name
     .. "("
     .. table.concat(columns, ",")
-    .. ") VALUES("
+    .. ") SELECT "
     .. table.concat(values, ",")
-    .. ") ON CONFLICT("
+    .. " WHERE "
+    .. (condition or "1")
+    .. " ON CONFLICT("
     .. key
     .. ") DO UPDATE SET "
     .. checked
@@ -575,6 +595,26 @@ local function sqlite_error(stderr)
   return failure("storage")
 end
 
+local function write_header()
+  return {
+    ".timeout 1000",
+    "PRAGMA journal_mode=DELETE;",
+    "PRAGMA synchronous=EXTRA;",
+    "PRAGMA foreign_keys=ON;",
+    "PRAGMA trusted_schema=OFF;",
+    "BEGIN IMMEDIATE;",
+    "CREATE TEMP TABLE recording_guard(ok INTEGER NOT NULL CHECK(ok = 1));",
+    "INSERT INTO recording_guard SELECT (CAST(sqlite_version() AS INTEGER) > 3 OR"
+      .. " (CAST(sqlite_version() AS INTEGER) = 3 AND CAST(substr(sqlite_version(),3) AS INTEGER) >= 38)) AND json_valid('{}')"
+      .. " AND (SELECT journal_mode = 'delete' FROM pragma_journal_mode)"
+      .. " AND (SELECT synchronous = 3 FROM pragma_synchronous)"
+      .. " AND (SELECT foreign_keys = 1 FROM pragma_foreign_keys)"
+      .. " AND (SELECT user_version IN (0,1,2,3,4,5,6) FROM pragma_user_version);",
+    SCHEMA,
+    "PRAGMA user_version=6;",
+  }
+end
+
 ---@param self louiselm.session.RecordingStore
 local function drain(self)
   if self.busy or #self.queue == 0 then
@@ -621,23 +661,7 @@ local function drain(self)
       finished(private_error)
       return
     end
-    local sql = {
-      ".timeout 1000",
-      "PRAGMA journal_mode=DELETE;",
-      "PRAGMA synchronous=EXTRA;",
-      "PRAGMA foreign_keys=ON;",
-      "PRAGMA trusted_schema=OFF;",
-      "BEGIN IMMEDIATE;",
-      "CREATE TEMP TABLE recording_guard(ok INTEGER NOT NULL CHECK(ok = 1));",
-      "INSERT INTO recording_guard SELECT (CAST(sqlite_version() AS INTEGER) > 3 OR"
-        .. " (CAST(sqlite_version() AS INTEGER) = 3 AND CAST(substr(sqlite_version(),3) AS INTEGER) >= 38)) AND json_valid('{}')"
-        .. " AND (SELECT journal_mode = 'delete' FROM pragma_journal_mode)"
-        .. " AND (SELECT synchronous = 3 FROM pragma_synchronous)"
-        .. " AND (SELECT foreign_keys = 1 FROM pragma_foreign_keys)"
-        .. " AND (SELECT user_version IN (0,1,2,3,4,5) FROM pragma_user_version);",
-      SCHEMA,
-      "PRAGMA user_version=5;",
-    }
+    local sql = write_header()
     for index = 1, count do
       sql[#sql + 1] = self.queue[index].sql
     end
@@ -693,7 +717,18 @@ end
 ---@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition|louiselm.session.AdmissionObservation
 ---@param callback? louiselm.session.RecordingCallback
 function Store:append(record, callback)
-  local ok, sql = pcall(record_sql, record)
+  local reserved = false
+  if type(record) == "table" then
+    for _, id in ipairs({ record.id or "", record.turn_id or "" }) do
+      if type(id) == "string" and (id:match("^import:sha256:") or id:match("^import%-option:sha256:")) then
+        reserved = true
+      end
+    end
+  end
+  local ok, sql = false, nil
+  if not reserved then
+    ok, sql = pcall(record_sql, record)
+  end
   local invalid
   if not ok or sql == nil then
     sql = ""
@@ -751,7 +786,7 @@ INSERT INTO history_guard SELECT
   (CAST(sqlite_version() AS INTEGER)>3 OR
     (CAST(sqlite_version() AS INTEGER)=3 AND CAST(substr(sqlite_version(),3) AS INTEGER)>=38))
   AND json_valid('{}')
-  AND (SELECT user_version IN (1,2,3,4,5) FROM pragma_user_version)
+  AND (SELECT user_version IN (1,2,3,4,5,6) FROM pragma_user_version)
   AND (SELECT journal_mode='delete' FROM pragma_journal_mode)
   AND (SELECT synchronous=3 FROM pragma_synchronous)
   AND (SELECT foreign_keys=1 FROM pragma_foreign_keys);
@@ -791,6 +826,82 @@ COMMIT;
     if running ~= nil then
       running:kill(15)
       running = nil
+    end
+  end
+end
+
+-- Older stores have no import tables. Probe without migrating, then require the
+-- same schema inside the actual snapshot so a concurrent migration cannot hide
+-- imported rows from a successful query.
+local function read_usage(self, query, callback)
+  local cancelled = false
+  local cancel_read
+  cancel_read = read(self, "SELECT user_version AS version FROM pragma_user_version;", function(rows, err)
+    if cancelled then
+      return
+    end
+    if not rows or #rows == 0 then
+      callback(rows, err)
+      return
+    end
+    local version = rows[1].version
+    local imported = version >= 6
+        and [[
+INSERT INTO history_guard SELECT NOT EXISTS (
+ SELECT 1 FROM import_turns i LEFT JOIN import_batches b ON b.id=i.batch_id
+ LEFT JOIN turns t ON t.id=i.turn_id
+ WHERE b.id IS NULL OR t.id IS NULL OR json_type(i.evidence) IS NOT 'object'
+ OR json_type(b.declaration) IS NOT 'object' OR json_type(b.selection) IS NOT 'object'
+ OR json_type(b.sources) IS NOT 'array' OR json_type(b.declaration,'$.bindings') IS NOT 'object'
+ OR json_type(b.declaration,'$.confirmer') IS NOT 'text' OR json_extract(b.declaration,'$.confirmer')=''
+ OR json_type(b.declaration,'$.confirmed_at') IS NOT 'text'
+ OR json_type(b.declaration,'$.reference') IS NOT 'text' OR json_extract(b.declaration,'$.reference')=''
+);
+INSERT INTO history_guard SELECT NOT EXISTS (
+ SELECT 1 FROM import_options i LEFT JOIN import_batches b ON b.id=i.batch_id
+ LEFT JOIN option_events e ON e.id=i.event_id
+ WHERE b.id IS NULL OR e.id IS NULL OR json_type(i.evidence) IS NOT 'object'
+);
+INSERT INTO history_guard SELECT NOT EXISTS (
+ SELECT 1 FROM turns t LEFT JOIN import_turns i ON i.turn_id=t.id
+ WHERE t.id GLOB 'import:sha256:*' AND i.turn_id IS NULL
+);
+INSERT INTO history_guard SELECT NOT EXISTS (
+ SELECT 1 FROM option_events e LEFT JOIN import_options i ON i.event_id=e.id
+ WHERE e.id GLOB 'import-option:sha256:*' AND i.event_id IS NULL
+);
+CREATE TEMP TABLE imported_usage AS
+SELECT i.turn_id,i.mixed,i.telemetry_gap,
+ json_object('source','human','batch_id',b.id,'digest',b.digest,
+  'confirmer',json_extract(b.declaration,'$.confirmer'),
+  'confirmed_at',json_extract(b.declaration,'$.confirmed_at'),
+  'reference',json_extract(b.declaration,'$.reference'),
+  'selection',json(b.selection),'sources',json(b.sources),'evidence',json(i.evidence)) AS attribution
+FROM import_turns i JOIN import_batches b ON b.id=i.batch_id;
+CREATE TEMP TABLE imported_options AS
+SELECT i.event_id,json_object('source','human','batch_id',b.id,'evidence',json(i.evidence)) AS attribution
+FROM import_options i JOIN import_batches b ON b.id=i.batch_id;
+]]
+      or [[
+CREATE TEMP TABLE imported_usage(turn_id TEXT,mixed INTEGER,telemetry_gap INTEGER,attribution TEXT);
+CREATE TEMP TABLE imported_options(event_id TEXT,attribution TEXT);
+]]
+    local setup = "INSERT INTO history_guard SELECT (SELECT user_version FROM pragma_user_version)="
+      .. tostring(version)
+      .. ";\n"
+      .. imported
+      .. [[
+CREATE TEMP VIEW usage_turns AS
+SELECT t.*,CASE WHEN i.turn_id IS NULL THEN 'machine' ELSE 'human' END AS attribution_source,
+ i.attribution,coalesce(i.telemetry_gap,0) AS telemetry_gap,coalesce(i.mixed,0) AS import_mixed
+FROM turns t LEFT JOIN imported_usage i ON i.turn_id=t.id;
+]]
+    cancel_read = read(self, setup .. query, callback)
+  end)
+  return function()
+    cancelled = true
+    if cancel_read then
+      cancel_read()
     end
   end
 end
@@ -1088,14 +1199,14 @@ function Store:usage_summaries(cohorts, callback)
     end)
     return
   end
-  read(self, [[
+  read_usage(self, [[
 CREATE TEMP TABLE cohort_turns AS
 WITH candidates(candidate,agent,provider,options) AS (VALUES ]] .. table.concat(values, ",") .. [[)
 SELECT c.candidate,t.*,o.data AS outcome_data
-FROM candidates c JOIN turns t ON t.agent=c.agent AND t.provider=c.provider AND t.options=c.options
+FROM candidates c JOIN usage_turns t ON t.agent=c.agent AND t.provider=c.provider AND t.options=c.options
 LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
 WHERE EXISTS (SELECT 1 FROM turn_events d WHERE d.turn_id=t.id AND d.kind='dispatch')
-AND NOT EXISTS (SELECT 1 FROM option_events e WHERE e.turn_id=t.id);
+AND t.import_mixed=0 AND NOT EXISTS (SELECT 1 FROM option_events e WHERE e.turn_id=t.id);
 
 ]] .. UsageQuery.metrics .. [[
 SELECT * FROM metrics ORDER BY candidate,kind,name;
@@ -1154,7 +1265,7 @@ function Store:usage_query(query, callback)
     end
   end
   local view = query.view or "summary"
-  return read(self, sql, function(rows, err)
+  return read_usage(self, sql, function(rows, err)
     if rows == nil then
       callback(nil, err)
       return
@@ -1178,6 +1289,241 @@ function Store:usage_query(query, callback)
     end
     callback(page)
   end)
+end
+
+local function import_string(value, limit)
+  return type(value) == "string" and #value > 0 and #value <= limit and not value:find("[%z\1-\31\127]")
+end
+
+local function valid_declaration(value)
+  if type(value) ~= "table" or nvim.tbl_count(value) ~= 5 or type(value.bindings) ~= "table" then
+    return false
+  end
+  if nvim.tbl_count(value.bindings) > 16 then
+    return false
+  end
+  for source, binding in pairs(value.bindings) do
+    if
+      type(source) ~= "string"
+      or not source:match("^[1-9][0-9]*$")
+      or tonumber(source) > 16
+      or type(binding) ~= "table"
+      or nvim.tbl_count(binding) ~= 2
+      or not import_string(binding.agent, 128)
+      or not import_string(binding.provider, 128)
+    then
+      return false
+    end
+  end
+  return type(value.digest) == "string"
+    and #value.digest == 71
+    and value.digest:match("^sha256:[0-9a-f]+$") ~= nil
+    and import_string(value.confirmer, 256)
+    and import_string(value.reference, 512)
+    and require("louiselm.session.validation").timestamp_key(value.confirmed_at) ~= nil
+end
+
+local function matches_bindings(selection, declaration)
+  local count = 0
+  for index, source in ipairs(selection.sources) do
+    local binding = declaration.bindings[tostring(index)]
+    if source.kind == "acp" then
+      count = count + 1
+      if not binding or binding.agent ~= source.proposal.agent or binding.provider ~= source.proposal.provider then
+        return false
+      end
+    elseif binding then
+      return false
+    end
+  end
+  return nvim.tbl_count(declaration.bindings) == count
+end
+
+local ImportSQL = require("louiselm.session.usage_import_sql")
+
+local function run_import(self, report, sql, entries, batch_id, transition_entries, callback)
+  if nvim.fn.executable("sqlite3") ~= 1 then
+    callback(nil, failure("unavailable"))
+    return
+  end
+  local err = private_store(self, true)
+  if err then
+    callback(nil, err)
+    return
+  end
+  local started, process = pcall(
+    nvim.system,
+    {
+      "sqlite3",
+      "-batch",
+      "-bail",
+      "-json",
+      "-nofollow",
+      "-init",
+      "/dev/null",
+      self.path,
+    },
+    { cwd = self.directory, env = {}, text = true, stdin = table.concat(sql, "\n"), timeout = 5000 },
+    nvim.schedule_wrap(function(result)
+      if result.code ~= 0 then
+        callback(nil, sqlite_error(result.stderr or ""))
+        return
+      end
+      local decoded, decisions = pcall(nvim.json.decode, result.stdout ~= "" and result.stdout or "[]")
+      if not decoded or type(decisions) ~= "table" or #decisions < #entries then
+        callback(nil, failure("corrupt"))
+        return
+      end
+      local applied = {
+        batch_id = batch_id,
+        digest = report.digest,
+        counts = { admitted = 0, existing = 0, excluded = report.counts.exclusions },
+        exclusions = nvim.deepcopy(report.exclusions),
+      }
+      local by_key = {}
+      for _, entry in ipairs(entries) do
+        by_key[entry.key] = entry
+      end
+      local seen = 0
+      for _, decision in ipairs(decisions) do
+        local entry = by_key[decision.key]
+        local transition = transition_entries[decision.key]
+        if not entry and not transition then
+          callback(nil, failure("corrupt"))
+          return
+        end
+        if entry then
+          seen = seen + 1
+          by_key[decision.key] = nil
+        end
+        if entry and (decision.decision == "admitted" or decision.decision == "existing") then
+          applied.counts[decision.decision] = applied.counts[decision.decision] + 1
+        else
+          applied.counts.excluded = applied.counts.excluded + 1
+          if #applied.exclusions < 256 then
+            applied.exclusions[#applied.exclusions + 1] = {
+              source = entry and entry.candidate.evidence.dispatch.source or transition.source,
+              reason = decision.decision,
+              evidence = entry and entry.candidate.evidence.dispatch or transition,
+            }
+          end
+        end
+      end
+      if seen ~= #entries then
+        callback(nil, failure("corrupt"))
+        return
+      end
+      callback(applied)
+    end)
+  )
+  if not started or process == nil then
+    callback(nil, failure("unavailable"))
+  end
+end
+
+-- Bounded previews can contain thousands of normalized facts. Yield while
+-- encoding them so preparing the transaction cannot monopolize Neovim.
+local function write_import(self, report, declaration, callback, retry, cancelled, begin_write)
+  local worker = coroutine.create(function()
+    return ImportSQL.build(report, declaration, sql_text, json, record_sql, write_header)
+  end)
+  local function step()
+    if cancelled() then
+      return
+    end
+    local ok, sql, entries, batch_id, transitions = coroutine.resume(worker)
+    if not ok then
+      callback(nil, failure("invalid"))
+    elseif coroutine.status(worker) ~= "dead" then
+      nvim.schedule(step)
+    elseif not sql then
+      callback(nil, failure("invalid"))
+    elseif self.busy or #self.queue > 0 then
+      retry()
+    else
+      require("louiselm.session.usage_import").preview(report.selection, function(current, err)
+        if cancelled() then
+          return
+        elseif not current then
+          callback(nil, err)
+        elseif current.digest ~= declaration.digest then
+          callback(nil, { code = "changed", message = "Import evidence or selection changed since confirmation" })
+        elseif self.busy or #self.queue > 0 then
+          retry()
+        else
+          begin_write()
+          run_import(self, report, sql, entries, batch_id, transitions, callback)
+        end
+      end)
+    end
+  end
+  step()
+end
+
+---Revalidate a frozen preview and atomically apply its confirmed attribution.
+---Callbacks are scheduled; a failed transaction is never queued for implicit retry.
+---@param selection louiselm.session.ImportSelection
+---@param declaration louiselm.session.ImportDeclaration
+---@param callback louiselm.session.ImportApplyCallback
+---@return fun() cancel Cancels before the write starts; an accepted write finishes and reports its result.
+function Store:apply_import(selection, declaration, callback)
+  if type(callback) ~= "function" then
+    error("import apply requires a callback")
+  end
+  local cancelled, writing = false, false
+  local cancel_preview
+  local confirmed = valid_declaration(declaration) and nvim.deepcopy(declaration) or nil
+  if not confirmed then
+    nvim.schedule(function()
+      if not cancelled then
+        callback(nil, { code = "invalid", message = "Invalid import declaration" })
+      end
+    end)
+  else
+    local function revalidate(input)
+      cancel_preview = require("louiselm.session.usage_import").preview(input, function(report, err)
+        if cancelled then
+          return
+        end
+        if not report then
+          callback(nil, err)
+        elseif report.digest ~= confirmed.digest then
+          callback(nil, { code = "changed", message = "Import evidence or selection changed since confirmation" })
+        elseif not matches_bindings(report.selection, confirmed) then
+          callback(nil, { code = "invalid", message = "Import declaration does not match the reviewed attribution" })
+        elseif self.busy or #self.queue > 0 then
+          -- A local dispatch may still be queued. Acknowledge it first, then
+          -- re-read the reviewed evidence after the asynchronous barrier.
+          self:flush(function(flush_error)
+            if not cancelled then
+              if flush_error then
+                callback(nil, flush_error)
+              else
+                revalidate(report.selection)
+              end
+            end
+          end)
+        else
+          write_import(self, report, confirmed, callback, function()
+            revalidate(report.selection)
+          end, function()
+            return cancelled
+          end, function()
+            writing = true
+          end)
+        end
+      end)
+    end
+    revalidate(selection)
+  end
+  return function()
+    if not writing then
+      cancelled = true
+      if cancel_preview then
+        cancel_preview()
+      end
+    end
+  end
 end
 
 return M
