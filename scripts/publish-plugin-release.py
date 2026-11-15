@@ -5,6 +5,7 @@ import argparse
 import base64
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import tomllib
@@ -145,13 +146,17 @@ def main():
     parser.add_argument("--repository", required=True)
     parser.add_argument("--run-id", required=True, type=int)
     parser.add_argument("--component", choices=("plugin", "capture"), default="plugin")
+    parser.add_argument("--metadata-file", type=Path)
     args = parser.parse_args()
     require(args.repository == "euri10/louiselm", "only the release authority may publish")
     if args.component == "capture":
         from capture_release import prepare_assets
     else:
         prepare_assets = None
-    print(json.dumps(publish(github_api, args.repository, args.run_id, args.component, prepare_assets)))
+    metadata = json.dumps(publish(github_api, args.repository, args.run_id, args.component, prepare_assets))
+    if args.metadata_file:
+        args.metadata_file.write_text(metadata + "\n")
+    print(metadata)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 // Uses the action's exact locked Release Please library with in-memory GitHub
 // history/content fixtures. No network, credentials, PRs, or tags are created.
 const assert = require('node:assert/strict');
-const {readFileSync, mkdtempSync, rmSync, existsSync} = require('node:fs');
+const {readFileSync, readdirSync, mkdtempSync, rmSync, existsSync} = require('node:fs');
 const {tmpdir} = require('node:os');
 const {join} = require('node:path');
 const {spawnSync} = require('node:child_process');
@@ -223,6 +223,98 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
     assert.ok(steps.indexOf(settingsToken) < steps.indexOf(step));
     assert.equal(step.env.GH_TOKEN, '${{ github.token }}');
     assert.equal(step.env.GH_IMMUTABILITY_TOKEN, '${{ steps.immutability-token.outputs.token }}');
+  }
+  const sync = workflow.jobs['gitlab-sync'];
+  assert.equal(sync.needs, 'release');
+  assert.match(sync.if, /!cancelled\(\).*needs\.release\.outputs\.metadata/);
+  assert.deepEqual(sync.permissions, {contents: 'read'});
+  assert.equal(sync.steps[0].with.ref, '${{ needs.release.outputs.workflow_sha }}');
+  assert.equal(sync.steps[0].with['persist-credentials'], false);
+  assert.equal(workflow.jobs.release.outputs.metadata, '${{ steps.published.outputs.metadata }}');
+  assert.equal(workflow.jobs.release.outputs.workflow_sha, '${{ steps.source.outputs.sha }}');
+  assert.ok(publicationSteps[1].run.includes('--metadata-file'));
+  assert.ok(ci.jobs['plugin-release-contract'].steps.some(step => step.run?.includes('scripts/test-gitlab-release-sync.py')));
+  const syncStep = sync.steps[1];
+  assert.equal(syncStep.env.RELEASE_METADATA, '${{ needs.release.outputs.metadata }}');
+  assert.equal(syncStep.env.GITLAB_SYNC_KEY, '${{ secrets.GITLAB_RELEASE_SYNC_SSH_KEY }}');
+  assert.equal(syncStep.env.GITLAB_SYNC_KNOWN_HOSTS, '${{ vars.GITLAB_RELEASE_SYNC_KNOWN_HOSTS }}');
+  assert.match(syncStep.run, /StrictHostKeyChecking=yes/);
+  assert.match(syncStep.run, /--source https:\/\/github\.com\/euri10\/louiselm\.git/);
+  assert.match(syncStep.run, /--destination git@gitlab\.bartab\.fr:oss-public\/louiselm\.git/);
+});
+
+test('sync workflow reports missing credentials without running Git or exposing the key', () => {
+  const yaml = require('js-yaml');
+  const workflow = yaml.load(readFileSync('.github/workflows/release-please.yml', 'utf8'));
+  const script = workflow.jobs['gitlab-sync'].steps[1].run;
+  for (const [key, knownHosts, message] of [
+    ['', '', 'dedicated SSH key'],
+    ['private-key-fixture', '', 'verified SSH host key'],
+  ]) {
+    const run = spawnSync('bash', ['-e', '-c', script], {
+      encoding: 'utf8', env: {...process.env, GITLAB_SYNC_KEY: key, GITLAB_SYNC_KNOWN_HOSTS: knownHosts},
+    });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, new RegExp(message));
+    assert.doesNotMatch(run.stderr + run.stdout, /private-key-fixture/);
+  }
+});
+
+test('sync workflow confines and removes its credential files', () => {
+  const yaml = require('js-yaml');
+  const workflow = yaml.load(readFileSync('.github/workflows/release-please.yml', 'utf8'));
+  const script = workflow.jobs['gitlab-sync'].steps[1].run;
+  const directory = mkdtempSync(join(tmpdir(), 'release-credential-'));
+  try {
+    const stub = `python3() {
+      [[ "\${GITLAB_SYNC_KEY-unset}" == unset && "\${GITLAB_SYNC_KNOWN_HOSTS-unset}" == unset ]]
+      [[ "$GIT_SSH_COMMAND" == *StrictHostKeyChecking=yes* ]]
+      [[ "$(stat -c %a "$RUNNER_TEMP"/gitlab-sync.*/key)" == 600 ]]
+      [[ "$(stat -c %a "$RUNNER_TEMP"/gitlab-sync.*/known_hosts)" == 600 ]]
+      [[ "$1" == scripts/sync-gitlab-release.py && "$2" == --source && "$4" == --destination ]]
+      read -r metadata || [[ -n "$metadata" ]]
+      [[ "$metadata" == "$RELEASE_METADATA" ]]
+    }\n`;
+    const run = spawnSync('bash', ['-e', '-c', stub + script], {
+      encoding: 'utf8', env: {...process.env, RUNNER_TEMP: directory, RELEASE_METADATA: '[]',
+        GITLAB_SYNC_KEY: 'private-key-fixture', GITLAB_SYNC_KNOWN_HOSTS: 'verified-host-fixture'},
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(readdirSync(directory), []);
+    assert.doesNotMatch(run.stdout + run.stderr, /private-key-fixture/);
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('publication step passes both exact metadata files to the sync job', () => {
+  const yaml = require('js-yaml');
+  const workflow = yaml.load(readFileSync('.github/workflows/release-please.yml', 'utf8'));
+  const script = workflow.jobs.release.steps.find(step => step.id === 'published').run;
+  const directory = mkdtempSync(join(tmpdir(), 'release-metadata-'));
+  const plugin = [{component: 'plugin', version: '0.1.0', tag: 'plugin-v0.1.0', sha: 'a'.repeat(40), release_id: 7}];
+  const capture = [{component: 'capture', version: '0.2.0', tag: 'capture-v0.2.0', sha: 'a'.repeat(40), release_id: 8}];
+  try {
+    const stub = `python3() {
+      local output='' component='plugin'
+      while (($#)); do
+        case "$1" in --metadata-file) output="$2"; shift ;; --component) component="$2"; shift ;; esac
+        shift
+      done
+      if [[ "$component" == capture ]]; then printf '%s' "$CAPTURE_METADATA" > "$output";
+      else printf '%s' "$PLUGIN_METADATA" > "$output"; fi
+      echo 'noisy publisher output is not metadata'
+    }\n`;
+    const output = join(directory, 'output');
+    const run = spawnSync('bash', ['-e', '-c', stub + script], {
+      encoding: 'utf8', env: {...process.env, RUNNER_TEMP: directory, GITHUB_OUTPUT: output,
+        REPOSITORY: 'fixture', CI_RUN_ID: '10', PLUGIN_METADATA: JSON.stringify(plugin),
+        CAPTURE_METADATA: JSON.stringify(capture)},
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(output, 'utf8').trim().slice('metadata='.length)), [...plugin, ...capture]);
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
   }
 });
 

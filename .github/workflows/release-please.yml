@@ -34,6 +34,9 @@ jobs:
       contents: write
       actions: read
       pull-requests: read
+    outputs:
+      metadata: ${{ steps.published.outputs.metadata }}
+      workflow_sha: ${{ steps.source.outputs.sha }}
     steps:
       # workflow_run is privileged: run reviewed main code, never PR code or
       # artifacts from the triggering workflow. Source identity is fetched by SHA.
@@ -42,6 +45,10 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Record reviewed workflow source
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Create the release App token for this repository
         id: release-token
@@ -86,14 +93,18 @@ jobs:
           skip-github-pull-request: true
 
       - name: Publish only the checked approved commit
+        id: published
         env:
           GH_TOKEN: ${{ github.token }}
           GH_IMMUTABILITY_TOKEN: ${{ steps.immutability-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
         run: |
-          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
-          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID" --component capture
+          set -euo pipefail
+          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID" --metadata-file "$RUNNER_TEMP/plugin-release.json"
+          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID" --component capture --metadata-file "$RUNNER_TEMP/capture-release.json"
+          metadata=$(jq -cn --slurpfile plugin "$RUNNER_TEMP/plugin-release.json" --slurpfile capture "$RUNNER_TEMP/capture-release.json" '$plugin[0] + $capture[0]')
+          echo "metadata=$metadata" >> "$GITHUB_OUTPUT"
 
       - name: Wait for outstanding component drafts before proposing another version
         id: pending
@@ -125,3 +136,48 @@ jobs:
           token: ${{ steps.release-token.outputs.token }}
           target-branch: main
           skip-github-release: true
+
+  gitlab-sync:
+    name: GitLab release synchronization
+    needs: release
+    # Publication and proposals can finish independently of this secondary copy.
+    if: ${{ !cancelled() && needs.release.outputs.metadata != '' && needs.release.outputs.metadata != '[]' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Sync only the published commit and tags
+        env:
+          RELEASE_METADATA: ${{ needs.release.outputs.metadata }}
+          GITLAB_SYNC_KEY: ${{ secrets.GITLAB_RELEASE_SYNC_SSH_KEY }}
+          GITLAB_SYNC_KNOWN_HOSTS: ${{ vars.GITLAB_RELEASE_SYNC_KNOWN_HOSTS }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          if [[ -z "$GITLAB_SYNC_KEY" ]]; then
+            echo 'GitLab synchronization unavailable: configure the dedicated SSH key.' >&2
+            exit 1
+          fi
+          if [[ -z "$GITLAB_SYNC_KNOWN_HOSTS" ]]; then
+            echo 'GitLab synchronization unavailable: configure the verified SSH host key.' >&2
+            exit 1
+          fi
+          key_dir=$(mktemp -d "$RUNNER_TEMP/gitlab-sync.XXXXXX")
+          key_file="$key_dir/key"
+          known_hosts="$key_dir/known_hosts"
+          trap 'rm -f "$key_file" "$known_hosts"; rmdir "$key_dir"' EXIT
+          umask 077
+          printf '%s\n' "$GITLAB_SYNC_KEY" > "$key_file"
+          printf '%s\n' "$GITLAB_SYNC_KNOWN_HOSTS" > "$known_hosts"
+          unset GITLAB_SYNC_KEY GITLAB_SYNC_KNOWN_HOSTS
+          printf -v GIT_SSH_COMMAND 'ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%q -i %q' "$known_hosts" "$key_file"
+          export GIT_SSH_COMMAND
+          printf '%s' "$RELEASE_METADATA" | python3 scripts/sync-gitlab-release.py \
+            --source https://github.com/euri10/louiselm.git \
+            --destination git@gitlab.bartab.fr:oss-public/louiselm.git
