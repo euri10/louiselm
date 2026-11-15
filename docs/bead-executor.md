@@ -198,12 +198,14 @@ through the existing operator envelope; none is supplied or approved by preparat
 The selected immutable cache must be privately readable by the operator and broker;
 preparation does not change registry, group membership or access permissions.
 
-For the maintainer's first Run, the confirmed selection remains, in order,
-`louiselm-l9cj`, `louiselm-cf5q`, `louiselm-pnro`, Luna at low effort, six Sessions,
-an initial shared ceiling of 12 Provider requests, and the full Lua verification
-plan. Recording these bounds is not launch approval. Provisioning code changes
-must be rebuilt into a reviewed signed release before installation; a development
-binary or fixture pass cannot stand in for that deployment.
+Before each Run, recheck Bead readiness and have the operator freshly review the
+exact ordered selection, fixed verification plan and finite limits, including the
+Provider request cap, Session count and expiry. Earlier selections, plans, limits
+and approvals are historical records; they do not set defaults or authorize a
+new Run. Obtain separate explicit operator approval for the reviewed Run before
+invoking the caller. Provisioning code changes must be rebuilt into a reviewed
+signed release before installation; a development binary or fixture pass cannot
+stand in for that deployment.
 
 `scripts/bead-run.lua` is the concrete caller for a reviewed first Run of three
 to five Beads. In an interactive VM Neovim using the approved LouiseLM checkout,
