@@ -14,7 +14,11 @@ mod discovery_support;
 mod support;
 
 use discovery_support::DiscoveryFixture;
-use louiselm_skills::preflight::{DIRECT_LAUNCH_NOTICE, PREFLIGHT_SCHEMA};
+use louiselm_skills::{
+    launch::REQUEST_SCHEMA,
+    preflight::{DIRECT_LAUNCH_NOTICE, PREFLIGHT_SCHEMA},
+    session_manifest::INPUT_MANIFEST_SCHEMA,
+};
 use std::process::{Command, Output};
 
 fn run(fixture: &DiscoveryFixture, args: &[&str]) -> Output {
@@ -24,6 +28,28 @@ fn run(fixture: &DiscoveryFixture, args: &[&str]) -> Output {
         .env("LOUISELM_SKILLS_STORE", fixture.fixture.store_root())
         .output()
         .unwrap()
+}
+
+#[test]
+fn neovim_and_cli_help_match_the_accepted_input_schemas() {
+    let request = REQUEST_SCHEMA.strip_prefix("louiselm.launch.").unwrap();
+    let manifest = INPUT_MANIFEST_SCHEMA
+        .strip_prefix("louiselm.session.")
+        .unwrap();
+    let expected = format!("canonical launch {request} and Session {manifest}");
+    let output = Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
+        .args(["preflight", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let cli_help = String::from_utf8(output.stdout).unwrap();
+    let vimdoc =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../doc/louiselm.txt"))
+            .unwrap();
+    for help in [vimdoc.as_str(), cli_help.as_str()] {
+        let normalized = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized.contains(&expected), "missing {expected} in help");
+    }
 }
 
 #[test]
