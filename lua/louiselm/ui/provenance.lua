@@ -5,6 +5,7 @@ local Correlate = require("louiselm.provenance.correlate")
 local Sources = require("louiselm.provenance.sources")
 local Vintage = require("louiselm.provenance.vintage")
 local Locator = require("louiselm.session.locator")
+local Render = require("louiselm.ui.provenance.render")
 
 local M = {}
 
@@ -152,163 +153,42 @@ local function report_error(options, message)
   end
 end
 
----@param commit louiselm.provenance.Commit
----@param edges louiselm.provenance.Edge[]
----@param options louiselm.ui.ProvenanceOptions
----@return string[] lines
-local function commit_lines(commit, edges, options)
-  local subject = commit.message:match("^([^\r\n]*)") or ""
-  if subject == "" then
-    subject = "(no commit subject)"
-  end
-  local lines = { "# " .. subject, "", "Commit: " .. commit.id, "", "Issues served:" }
-  local issue_count = 0
-  local sessions = {}
-  for _, edge in ipairs(edges) do
-    if edge.target.kind == "issue" then
-      lines[#lines + 1] = "- " .. edge.target.id
-      issue_count = issue_count + 1
-    elseif edge.target.kind == "session" then
-      sessions[#sessions + 1] = edge.target.id
-    end
-  end
-  if issue_count == 0 then
-    lines[#lines + 1] = "- none recorded"
-  end
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Sessions:"
-  if #sessions == 0 then
-    lines[#lines + 1] = "- none recorded"
-  else
-    for _, session_id in ipairs(sessions) do
-      local path, error_message = Locator.resolve(session_id, options.definitions or {}, options.locator_options)
-      if path ~= nil then
-        lines[#lines + 1] = "- " .. session_id .. " → " .. path
-      else
-        lines[#lines + 1] = "- " .. session_id .. " → unresolved (" .. (error_message or "unknown error") .. ")"
-      end
-    end
-  end
-  return lines
-end
-
----@param history louiselm.provenance.IssueHistory
----@param edges louiselm.provenance.Edge[]
----@param options louiselm.ui.ProvenanceOptions
----@return string[] lines
-local function issue_lines(history, edges, options)
-  local lines = {
-    "# " .. (history.title or history.bead_id),
-    "",
-    "ID: " .. history.bead_id,
-    "Status: " .. (history.status or "unknown"),
-    "",
-    "Milestones:",
-  }
-  local milestone_count = 0
-  for _, name in ipairs({ "created", "closed" }) do
-    local milestone = history.milestones[name]
-    if milestone ~= nil then
-      lines[#lines + 1] = string.format("- %s: %s (%s)", name, milestone.timestamp, milestone.commit_sha)
-      milestone_count = milestone_count + 1
-    end
-  end
-  if milestone_count == 0 then
-    lines[#lines + 1] = "- none recorded"
-  end
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Commits:"
-  local commit_count = 0
-  for _, edge in ipairs(edges) do
-    if edge.target.kind == "commit" then
-      commit_count = commit_count + 1
-      lines[#lines + 1] = string.format(
-        "- %s · %s · %d%% confidence",
-        edge.target.id,
-        edge.correlation_method or edge.method,
-        math.floor(edge.confidence * 100 + 0.5)
-      )
-    end
-  end
-  if commit_count == 0 then
-    lines[#lines + 1] = "- none correlated"
-  end
-  local session_count = 0
-  local actor_count = 0
-  for _, edge in ipairs(edges) do
-    if edge.target.kind == "session" then
-      session_count = session_count + 1
-    elseif edge.target.kind == "actor" then
-      actor_count = actor_count + 1
-    end
-  end
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Sessions:"
-  for _, edge in ipairs(edges) do
-    if edge.target.kind == "session" then
-      local path, error_message = Locator.resolve(edge.target.id, options.definitions or {}, options.locator_options)
-      if path ~= nil then
-        lines[#lines + 1] = "- " .. edge.target.id .. " → " .. path
-      else
-        lines[#lines + 1] = "- " .. edge.target.id .. " → unresolved (" .. (error_message or "unknown error") .. ")"
-      end
-    end
-  end
-  if session_count == 0 then
-    lines[#lines + 1] = "- none recorded"
-  end
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Actors:"
-  for _, edge in ipairs(edges) do
-    if edge.target.kind == "actor" then
-      lines[#lines + 1] = "- " .. edge.target.id .. " (non-Session actor)"
-    end
-  end
-  if actor_count == 0 then
-    lines[#lines + 1] = "- none recorded"
-  end
-  return lines
-end
-
 ---@param session_id string
+---@param options louiselm.ui.ProvenanceOptions
+---@return louiselm.ui.provenance.Transcript
+local function resolve_transcript(session_id, options)
+  local path, error_message = Locator.resolve(session_id, options.definitions or {}, options.locator_options)
+  return { path = path, error = error_message }
+end
+
 ---@param edges louiselm.provenance.Edge[]
 ---@param options louiselm.ui.ProvenanceOptions
----@return string[] lines
-local function session_lines(session_id, edges, options)
-  local lines = { "# Session " .. session_id, "", "ID: " .. session_id, "", "Transcript:" }
-  local path, error_message = Locator.resolve(session_id, options.definitions or {}, options.locator_options)
-  if path ~= nil then
-    lines[#lines + 1] = "- " .. path
-  else
-    lines[#lines + 1] = "- unresolved (" .. (error_message or "unknown error") .. ")"
-  end
-
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Commits:"
-  local commit_count = 0
+---@return table<string, louiselm.ui.provenance.Transcript>
+local function resolve_transcripts(edges, options)
+  local transcripts = {}
   for _, edge in ipairs(edges) do
-    if edge.target.kind == "commit" then
-      commit_count = commit_count + 1
-      lines[#lines + 1] = "- " .. edge.target.id
+    if edge.target.kind == "session" then
+      transcripts[edge.target.id] = resolve_transcript(edge.target.id, options)
     end
   end
-  if commit_count == 0 then
-    lines[#lines + 1] = "- none recorded"
-  end
+  return transcripts
+end
 
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Issues:"
-  local issue_count = 0
-  for _, edge in ipairs(edges) do
-    if edge.target.kind == "issue" then
-      issue_count = issue_count + 1
-      lines[#lines + 1] = "- " .. edge.target.id
+---@param issue louiselm.provenance.BeadsIssue
+---@return louiselm.ui.provenance.DecisionRelation[]
+local function decision_relations(issue)
+  local relations = {}
+  for _, field in ipairs({ "description", "notes", "design", "acceptance_criteria" }) do
+    local text = issue[field]
+    if text ~= nil then
+      for relation, target_id in text:gmatch("Decision relation:%s*(%w+)%s+(%S+)") do
+        if relation == "supersedes" or relation == "reconsiders" then
+          relations[#relations + 1] = { relation = relation, target_id = target_id }
+        end
+      end
     end
   end
-  if issue_count == 0 then
-    lines[#lines + 1] = "- none recorded"
-  end
-  return lines
+  return relations
 end
 
 ---@param name string Buffer URI.
@@ -395,7 +275,8 @@ local function show_commit(sha, options)
         report_error(options, "could not correlate commit " .. sha)
         return
       end
-      local lines = commit_lines(commits[1], edges, options)
+      local lines =
+        Render.commit({ commit = commits[1], edges = edges, transcripts = resolve_transcripts(edges, options) })
       local opened, open_error = open_provenance("louiselm://provenance/commit/" .. commits[1].id, lines)
       if not opened then
         report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
@@ -406,32 +287,6 @@ local function show_commit(sha, options)
     return false, start_error and start_error.message or "could not start git"
   end
   return true
-end
-
----@param mutation louiselm.provenance.BeadsMutation
----@return string[] lines
-local function mutation_lines(mutation)
-  local provenance = mutation.output_provenance
-  local lines = {
-    "# Beads mutation " .. mutation.operation_id,
-    "",
-    "Broker audit fact (unchanged):",
-    "- Original outcome: " .. mutation.outcome,
-    "- Request digest: " .. mutation.request_digest,
-    "- Project digest: " .. mutation.project_digest,
-    "",
-    "Session-authored mutation content:",
-  }
-  if provenance.code == "session_output_tainted" then
-    lines[#lines + 1] = "- Tainted across the Session lifetime; operator review required"
-    lines[#lines + 1] = "- Taint digest: " .. provenance.taint_digest
-  elseif provenance.code == "untainted" then
-    lines[#lines + 1] = "- No Session output taint currently recorded"
-  else
-    lines[#lines + 1] = "- Unknown: missing or corrupt taint evidence; do not treat content as clean"
-  end
-  lines[#lines + 1] = "- Completed effects remain in canonical Beads; inspection never rolls them back"
-  return lines
 end
 
 ---@param operation_id string
@@ -451,7 +306,7 @@ local function show_mutation(operation_id, options)
       return
     end
     local opened, open_error =
-      open_provenance("louiselm://provenance/mutation/" .. operation_id, mutation_lines(mutation))
+      open_provenance("louiselm://provenance/mutation/" .. operation_id, Render.mutation(mutation))
     if not opened then
       report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
     end
@@ -503,8 +358,10 @@ local function show_issue(issue_id, options)
             return
           end
           local all_edges = Correlate.merge_issue_sessions(edges, actor_edges)
+          local presentation =
+            { history = history, edges = all_edges, transcripts = resolve_transcripts(all_edges, options) }
           local opened, open_error =
-            open_provenance("louiselm://provenance/issue/" .. issue_id, issue_lines(history, all_edges, options))
+            open_provenance("louiselm://provenance/issue/" .. issue_id, Render.issue(presentation))
           if not opened then
             report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
           end
@@ -519,152 +376,6 @@ local function show_issue(issue_id, options)
     return false, start_error and start_error.message or "could not start bvr"
   end
   return true
-end
-
----@param edge louiselm.provenance.Edge
----@return string
-local function evidence_edge_line(edge)
-  local method = edge.correlation_method or edge.method
-  local certainty = edge.method == "inferred" and "inferred" or "recorded"
-  return string.format(
-    "- %s · %s · %s · %d%% confidence",
-    edge.target.id,
-    certainty,
-    method,
-    math.floor(edge.confidence * 100 + 0.5)
-  )
-end
-
----@param timeline louiselm.provenance.DecisionTimeline
----@param history louiselm.provenance.IssueHistory
----@param issue louiselm.provenance.BeadsIssue
----@param options louiselm.ui.ProvenanceOptions
----@return string[] lines
-local function decision_lines(timeline, history, issue, options)
-  local lines = {
-    "# Decision " .. (timeline.anchor.title or timeline.anchor.id),
-    "",
-    "ID: " .. timeline.anchor.id,
-    "State: " .. timeline.anchor.state,
-    "Status: " .. (history.status or issue.status or "unknown"),
-    "",
-    "Implementation:",
-  }
-  if #timeline.implementation == 0 then
-    lines[#lines + 1] = "- unresolved (no correlated commits)"
-  else
-    for _, edge in ipairs(timeline.implementation) do
-      lines[#lines + 1] = evidence_edge_line(edge)
-    end
-  end
-
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Sessions:"
-  if #timeline.sessions == 0 then
-    lines[#lines + 1] = "- unresolved (no attributable Session links)"
-  else
-    for _, edge in ipairs(timeline.sessions) do
-      local path, error_message = Locator.resolve(edge.target.id, options.definitions or {}, options.locator_options)
-      if path ~= nil then
-        lines[#lines + 1] = "- " .. edge.target.id .. " → " .. path .. " · recorded · 100% confidence"
-      else
-        lines[#lines + 1] = "- "
-          .. edge.target.id
-          .. " → unresolved ("
-          .. (error_message or "unknown error")
-          .. ") · recorded · 100% confidence"
-      end
-    end
-  end
-
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "QA acceptance:"
-  if #timeline.qa == 0 then
-    lines[#lines + 1] = "- unresolved (no attributable acceptance tied to a correlated commit)"
-  else
-    for _, acceptance in ipairs(timeline.qa) do
-      local evidence = acceptance.evidence ~= nil and (" · " .. acceptance.evidence) or ""
-      lines[#lines + 1] =
-        string.format("- %s · %s · %s%s", acceptance.author, acceptance.commit_sha, acceptance.scope, evidence)
-    end
-  end
-
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Forensics:"
-  if #timeline.forensics == 0 then
-    lines[#lines + 1] = "- unresolved (no pointer recorded)"
-  else
-    for _, pointer in ipairs(timeline.forensics) do
-      lines[#lines + 1] = "- " .. pointer
-    end
-  end
-
-  if #timeline.gaps > 0 then
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "Unresolved evidence:"
-    for _, gap in ipairs(timeline.gaps) do
-      lines[#lines + 1] = "- " .. gap
-    end
-  end
-  return lines
-end
-
----@param lines string[]
----@param issue_id string
----@param ref string
----@param vintage louiselm.provenance.Vintage
-local function append_vintage(lines, issue_id, ref, vintage)
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Historical backlog:"
-  lines[#lines + 1] = "- ref: " .. ref
-  lines[#lines + 1] = string.format("- %d issues at decision time", #vintage.issues)
-  for _, issue in ipairs(vintage.issues) do
-    if issue.id == issue_id then
-      lines[#lines + 1] = "- anchor state: " .. (issue.status or "unknown")
-      break
-    end
-  end
-  lines[#lines + 1] = string.format(
-    "- since then: %d added, %d removed, %d changed",
-    #vintage.diff.added,
-    #vintage.diff.removed,
-    #vintage.diff.changed
-  )
-end
-
----@param lines string[]
----@param issue_id string
----@param ref string
----@param error_message string
-local function append_missing_vintage(lines, issue_id, ref, error_message)
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Historical backlog:"
-  lines[#lines + 1] = "- ref: " .. ref
-  lines[#lines + 1] = "- unavailable: " .. error_message
-end
-
----@param lines string[]
----@param issue louiselm.provenance.BeadsIssue
-local function append_relations(lines, issue)
-  local relations = {}
-  for _, field in ipairs({ "description", "notes", "design", "acceptance_criteria" }) do
-    local text = issue[field]
-    if text ~= nil then
-      for relation, target_id in text:gmatch("Decision relation:%s*(%w+)%s+(%S+)") do
-        if relation == "supersedes" or relation == "reconsiders" then
-          relations[#relations + 1] = { relation = relation, target_id = target_id }
-        end
-      end
-    end
-  end
-  if #relations == 0 then
-    return
-  end
-  lines[#lines + 1] = ""
-  lines[#lines + 1] = "Relations:"
-  for _, relation in ipairs(relations) do
-    lines[#lines + 1] = string.format("- %s %s · recorded", relation.relation, relation.target_id)
-  end
 end
 
 ---@param issue_id string
@@ -720,8 +431,19 @@ local function show_decision(issue_id, options)
             report_error(options, "could not derive Decision evidence " .. issue_id)
             return
           end
-          local lines = decision_lines(timeline, history, issue, options)
-          append_relations(lines, issue)
+          ---@type louiselm.ui.provenance.DecisionPresentation
+          local presentation = {
+            timeline = timeline,
+            status = history.status or issue.status or "unknown",
+            transcripts = resolve_transcripts(timeline.sessions, options),
+            relations = decision_relations(issue),
+          }
+          local function render()
+            local rendered, render_error = open_provenance(name, Render.decision(presentation))
+            if not rendered then
+              report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
+            end
+          end
           local closed = history.milestones.closed
           if issue.status == "closed" and closed ~= nil then
             local vintage_started, vintage_error = Vintage.load(
@@ -731,44 +453,21 @@ local function show_decision(issue_id, options)
                 if options.is_active ~= nil and not options.is_active() then
                   return
                 end
-                if vintage == nil or historical_error ~= nil then
-                  append_missing_vintage(
-                    lines,
-                    issue_id,
-                    closed.commit_sha,
-                    historical_error and historical_error.message or "unknown error"
-                  )
-                  local rendered, render_error = open_provenance(name, lines)
-                  if not rendered then
-                    report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
-                  end
-                  return
-                end
-                append_vintage(lines, issue_id, closed.commit_sha, vintage)
-                local rendered, render_error = open_provenance(name, lines)
-                if not rendered then
-                  report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
-                end
+                presentation.historical = {
+                  ref = closed.commit_sha,
+                  vintage = historical_error == nil and vintage or nil,
+                  error = historical_error and historical_error.message or nil,
+                }
+                render()
               end
             )
             if not vintage_started then
-              append_missing_vintage(
-                lines,
-                issue_id,
-                closed.commit_sha,
-                vintage_error and vintage_error.message or "unknown error"
-              )
-              local rendered, render_error = open_provenance(name, lines)
-              if not rendered then
-                report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
-              end
+              presentation.historical = { ref = closed.commit_sha, error = vintage_error and vintage_error.message }
+              render()
             end
             return
           end
-          local rendered, render_error = open_provenance(name, lines)
-          if not rendered then
-            report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
-          end
+          render()
         end
       )
       if not actors_started then
@@ -808,8 +507,9 @@ local function show_session(session_id, options)
         report_error(options, "could not correlate Session " .. session_id)
         return
       end
+      local presentation = { id = session_id, edges = edges, transcript = resolve_transcript(session_id, options) }
       local opened, open_error =
-        open_provenance("louiselm://provenance/session/" .. session_id, session_lines(session_id, edges, options))
+        open_provenance("louiselm://provenance/session/" .. session_id, Render.session(presentation))
       if not opened then
         report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
       end
@@ -827,37 +527,6 @@ local function show_session(session_id, options)
     return false, start_error and start_error.message or "could not start git"
   end
   return true
-end
-
----@param anchor louiselm.provenance.DecisionAnchor
----@return string line
-local function decision_row(anchor)
-  local activity = anchor.updated_at ~= nil and (" · " .. anchor.updated_at) or ""
-  return string.format("- [%s] %s (%s)%s", anchor.state, anchor.title or anchor.id, anchor.id, activity)
-end
-
----@param graph louiselm.provenance.DecisionGraph
----@return string[] lines
----@return table<integer, string> id_by_line 1-based line number to Beads issue id.
-local function decisions_lines(graph)
-  local lines = { "# Provenance Decisions", "" }
-  local id_by_line = {}
-  if #graph.anchors == 0 then
-    lines[#lines + 1] = "No Decision anchors found."
-    return lines, id_by_line
-  end
-  for _, anchor in ipairs(graph.anchors) do
-    lines[#lines + 1] = decision_row(anchor)
-    id_by_line[#lines] = anchor.id
-  end
-  if #graph.diagnostics > 0 then
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "Diagnostics:"
-    for _, diagnostic in ipairs(graph.diagnostics) do
-      lines[#lines + 1] = "- " .. diagnostic.message
-    end
-  end
-  return lines, id_by_line
 end
 
 ---Show a read-only index of browsable Decisions derived from question issues.
@@ -894,7 +563,7 @@ function M.show_decisions(options)
       report_error(options, "could not derive Decisions")
       return
     end
-    local lines, id_by_line = decisions_lines(graph)
+    local lines, id_by_line = Render.decisions(graph)
     local opened, open_error = open_provenance("louiselm://provenance/decisions", lines, function(line)
       local issue_id = id_by_line[line]
       if issue_id == nil then

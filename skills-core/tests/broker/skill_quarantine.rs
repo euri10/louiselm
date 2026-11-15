@@ -84,6 +84,7 @@ fn supply() -> Supply {
             admitted_at_ms: 4000,
             configured_agents: None,
         },
+        None,
     )
     .unwrap();
     let witness = GitWitness::new(

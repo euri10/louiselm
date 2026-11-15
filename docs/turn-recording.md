@@ -490,3 +490,89 @@ coverage and source references, and separates hypotheses from measured facts.
 It does not change configuration, authorize actions, or access transcript/tool
 content. Its source and installation belong to the maintainer's skill catalog;
 collection and exploration remain independent of it.
+
+## Historical ACP import preview
+
+Historical import starts with an explicit dry run. It reads only selected ACP
+wire JSONL files and never opens or changes the usage store. There is no apply
+operation. Native-only histories, including Codex rollouts, are reported as
+unsupported. Source selection does not establish that older or evicted data is
+complete.
+
+For each connection, select its `connections/<connection-id>.jsonl` file and
+the inclusive line range belonging to that connection in the paired Session's
+`log.jsonl`. The Session range must start with the `session/new` response or
+the `session/load` request. A range starting after line 1 requires the preceding
+line to be an observed exit. When selecting multiple connections from the same
+Session file, the selected ranges must also be adjacent, and the next binding
+must follow that exit. A missing or ambiguous
+boundary is excluded rather than assigned by request ID or timestamp alone.
+Use exact paths and line ranges already identified by the operator; the preview
+does not discover or scan histories. The connection ID is the selected filename
+without `.jsonl`; it is not a claim about a renamed file's origin.
+
+The selection requires an inclusive `from`, an exclusive `until_time`, and
+explicit file and byte limits. Timestamps are UTC with up to millisecond
+precision. Full file bytes count against the limit even when only a line range
+is selected; the digest covers those bytes and the complete selection. Values
+before `from` can establish starting options and the cost baseline for a
+selected dispatch. A response at or after `until_time` is outside the preview,
+so that dispatch remains without an observed outcome. Agent and Provider are
+human proposals, always marked `unconfirmed`; no Model name or current
+configuration establishes them.
+
+The report contains the exact selection, a proposed attribution batch for each
+ACP source segment, per-file status and digest, candidate dispatches and option
+replacements, source/line references, bounded exclusions and counts, and a
+selection digest. Supported option tuples are taken from full
+validated `configOptions`; missing, malformed, or unsupported options do not
+become a guessed tuple. Matched responses identify their request, but do not
+attribute other changes to it. Missing completion and token fields stay absent;
+cost readings retain explicit clearing, resets, and currency changes without
+calculating a price. A malformed or truncated cost stream has `telemetry_gap`;
+do not derive a complete cost from it. The report omits prompt, tool,
+environment, replay-content and error-message payloads.
+
+The preview limits a selection to 16 source segments, 32 distinct files, 8 MiB
+total, 10,000 Session lines per segment, 50,000 lines per file, and 256 KiB per
+record. At most 1,000 candidates, 1,000 transitions, 128 cost readings per turn
+and 256 exclusion details are returned; the exclusion count includes reasons beyond the detail
+limit. Limits and incomplete, changed, unreadable, missing, or unsupported
+sources are visible in the report. Each read checks file identity, size and
+timestamps before and after reading. A five-second operation bound and
+scheduled parsing keep the editor responsive. Re-run the same selection and
+compare its digest before any future confirmation: the digest describes the
+bytes read, not a continuing watch on the source files.
+
+For example, after substituting an actual connection ID, exact paths and line
+range, run the explicit JSON report consumer:
+
+```sh
+selection='{
+  "from":"2026-08-31T17:00:00Z",
+  "until_time":"2026-08-31T18:00:00Z",
+  "max_files":2,
+  "max_bytes":1048576,
+  "sources":[{
+    "kind":"acp",
+    "session_id":"SESSION_ID",
+    "connection_id":"CONNECTION_ID",
+    "connection_path":"/absolute/path/connections/CONNECTION_ID.jsonl",
+    "session_path":"/absolute/path/sessions/SESSION_ID/log.jsonl",
+    "first_line":1,
+    "last_line":30,
+    "proposal":{"agent":"my-agent","provider":"my-provider"}
+  }]
+}'
+scripts/preview-acp-usage "$selection"
+```
+
+The same selection is available to a headless Lua consumer:
+
+```lua
+local preview = require("louiselm.session.usage_import")
+local cancel = preview.preview(selection, function(report, err)
+  -- Main-loop callback: examine report or the sanitized err.code / err.message.
+end)
+-- cancel() suppresses delivery; any already-started read still closes its file.
+```

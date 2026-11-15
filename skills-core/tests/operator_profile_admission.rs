@@ -70,8 +70,15 @@ impl World {
         members: &[(&Digest, &[&str])],
         configured: Option<&[&str]>,
     ) -> Result<louiselm_skills::GenerationRecord, AdmissionError> {
+        let store = self.fixture.store();
+        let review = members.iter().find_map(|(digest, _)| {
+            let package = store.open_package(digest, &Policy::embedded()).unwrap();
+            (louiselm_skills::inspect::PackageKind::of(&package.manifest)
+                == louiselm_skills::inspect::PackageKind::OperatorProfile)
+                .then(|| support::reviewed_profile(&store, digest, None))
+        });
         admission::admit(
-            &self.fixture.store(),
+            &store,
             &Policy::embedded(),
             &AdmissionRequest {
                 members: members
@@ -87,6 +94,7 @@ impl World {
                 configured_agents: configured
                     .map(|agents| agents.iter().map(|agent| (*agent).to_owned()).collect()),
             },
+            review.as_ref(),
         )
     }
 }

@@ -587,7 +587,6 @@ struct SessionOwner {
     guard_resume: Option<crate::launch_protocol::GuardResumeRequest>,
     resume_capability_result: Option<Result<(), SupervisorError>>,
     deferred: VecDeque<DeferredReceipt>,
-    completed: VecDeque<CompletedRequest>,
     failed: VecDeque<FailedRequest>,
     saturated_failed_park: Option<FailedRequest>,
     failure_cache_saturation: Option<ProtocolError>,
@@ -663,7 +662,6 @@ impl SessionOwner {
             guard_resume: None,
             resume_capability_result: None,
             deferred: VecDeque::new(),
-            completed: VecDeque::new(),
             failed: VecDeque::new(),
             saturated_failed_park: None,
             failure_cache_saturation: None,
@@ -1120,12 +1118,7 @@ impl SessionOwner {
         if cancels_check || cancels_preparation {
             status.pending_operation = None;
         }
-        if let Some(completed) = self
-            .completed
-            .iter()
-            .find(|completed| completed.request_id == request.request_id)
-            .cloned()
-        {
+        if let Some(completed) = self.completed_request(&request.request_id) {
             match evaluate_request(&status, Some(&completed), &request) {
                 Ok(RequestDisposition::Replay(receipt)) => {
                     let finish = (request.action == LifecycleAction::Disposal
@@ -1159,7 +1152,7 @@ impl SessionOwner {
             self.reject_at_failure_cache_bound(request.request_id);
             return;
         }
-        if self.failed.len() == FAILED_REQUEST_CAPACITY
+        if self.failed.len() >= FAILED_REQUEST_CAPACITY
             && request.action != LifecycleAction::Disposal
             && !(request.action == LifecycleAction::Park && self.saturated_failed_park.is_none())
         {
@@ -2248,9 +2241,6 @@ impl SessionOwner {
         let receipt = pending
             .receipt
             .expect("an acknowledged operation owns its receipt");
-        if pending.respond {
-            self.remember_completed(CompletedRequest::new(&pending.request, receipt.clone()));
-        }
         if pending.request.action != LifecycleAction::Resume {
             self.last_failure = None;
             if pending.request.action == LifecycleAction::Park
@@ -2675,7 +2665,13 @@ impl SessionOwner {
             response: response.clone(),
             finish: finish.clone(),
         };
-        if self.failed.len() < FAILED_REQUEST_CAPACITY {
+        // Disposal can still narrow at saturation. Once it reaches Terminal,
+        // no later Disposal can be admitted, so one extra failure is bounded.
+        if self.failed.len() < FAILED_REQUEST_CAPACITY
+            || (self.failed.len() == FAILED_REQUEST_CAPACITY
+                && request.action == LifecycleAction::Disposal
+                && self.state == SessionState::Terminal)
+        {
             self.failed.push_back(failed);
         } else if request.action == LifecycleAction::Park && self.saturated_failed_park.is_none() {
             self.saturated_failed_park = Some(failed);
@@ -3646,8 +3642,36 @@ impl SessionOwner {
             .is_some_and(|pending| pending.epoch == operation_epoch && pending.phase == phase)
     }
 
-    fn remember_completed(&mut self, completed: CompletedRequest) {
-        self.completed.push_back(completed);
+    fn completed_request(&self, request_id: &str) -> Option<CompletedRequest> {
+        // Callers check retained failures first. A pending signed receipt is
+        // not yet a success, even when its Resume ACK preceded activation.
+        self.receipts.iter().find_map(|receipt| {
+            if receipt.payload.request_id != request_id
+                || self.pending.as_ref().is_some_and(|pending| {
+                    pending.receipt.as_ref().is_some_and(|pending_receipt| {
+                        pending_receipt.payload.sequence == receipt.payload.sequence
+                    })
+                })
+            {
+                return None;
+            }
+            let (ReceiptOutcome::Park {
+                authority: ReceiptAuthority::Authorized(authorization),
+            }
+            | ReceiptOutcome::Disposal {
+                authority: ReceiptAuthority::Authorized(authorization),
+            }
+            | ReceiptOutcome::Resume { authorization }
+            | ReceiptOutcome::Interrupt { authorization }) = &receipt.payload.outcome
+            else {
+                return None;
+            };
+            Some(CompletedRequest {
+                request_id: authorization.request_id.clone(),
+                request_digest: authorization.request_digest.clone(),
+                receipt: receipt.clone(),
+            })
+        })
     }
 
     fn status(&self) -> SupervisorStatus {

@@ -139,6 +139,7 @@ impl Supply {
                 admitted_at_ms: at,
                 configured_agents: None,
             },
+            None,
         )
         .unwrap();
         let witness = GitWitness::new(

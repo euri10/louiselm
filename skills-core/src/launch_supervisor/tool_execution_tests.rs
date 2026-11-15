@@ -10,7 +10,7 @@ use super::*;
 use crate::{
     launch_protocol::{STATUS_REQUEST_SCHEMA, StatusRequest},
     launch_transport::{CredentialPin, KernelCredentials, SeqpacketListener, TransportError},
-    sandbox::IdentityPlan,
+    sandbox::{Backend, IdentityPlan},
 };
 use std::{fs, io::IoSlice, mem::MaybeUninit, os::unix::net::UnixListener, path::Path, sync::mpsc};
 
@@ -263,8 +263,106 @@ fn command_with_plan(
         timeout,
         &AtomicBool::new(false),
         || Ok(true),
-        |prepared| prepared.start().map_err(super::super::system::map_sandbox),
+        |prepared| {
+            let tracing = std::env::var_os("LOUISELM_TEST_CLEANUP_TRACE").is_some()
+                && command == "(sleep 1; touch escaped) & sleep 10";
+            let snapshot = tracing
+                .then(|| cleanup_snapshot(prepared.monitor_pid(), prepared.sandbox_leader_pid()));
+            prepared.start().map_err(|error| {
+                if let Some(snapshot) = snapshot {
+                    snapshot.report("start", &error);
+                }
+                super::super::system::map_sandbox(error)
+            })
+        },
     )
+}
+
+pub(super) struct CleanupSnapshot {
+    processes: Vec<(u32, std::os::fd::OwnedFd)>,
+    observations: Vec<String>,
+}
+
+pub(super) fn cleanup_snapshot(monitor: u32, leader: Option<u32>) -> CleanupSnapshot {
+    use rustix::process::{Pid, PidfdFlags, pidfd_open};
+
+    let mut processes = Vec::new();
+    let mut observations = Vec::new();
+    let mut pending = vec![(monitor, None)];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some((pid, expected_parent)) = pending.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        if visited.len() > 32 {
+            observations.push("process snapshot reached its limit".to_owned());
+            break;
+        }
+        let pin = i32::try_from(pid)
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or_else(|| "invalid pid".to_owned())
+            .and_then(|pid| pidfd_open(pid, PidfdFlags::empty()).map_err(|e| e.to_string()));
+        let pin = match pin {
+            Ok(pin) => pin,
+            Err(error) => {
+                observations.push(format!("pin {pid}: {error}"));
+                continue;
+            }
+        };
+        let read_children = || -> std::io::Result<Vec<u32>> {
+            if !snapshot_events(&pin)?.is_empty() {
+                return Err(std::io::Error::other("process exited before observation"));
+            }
+            let status = fs::read_to_string(format!("/proc/{pid}/status"))?;
+            let parent = status
+                .lines()
+                .find_map(|line| line.strip_prefix("PPid:"))
+                .and_then(|value| value.trim().parse::<u32>().ok());
+            if expected_parent.is_some() && parent != expected_parent {
+                return Err(std::io::Error::other("parent changed during observation"));
+            }
+            let children = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))?
+                .split_whitespace()
+                .map(|child| child.parse::<u32>().map_err(std::io::Error::other))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            if !snapshot_events(&pin)?.is_empty() {
+                return Err(std::io::Error::other("process exited during observation"));
+            }
+            Ok(children)
+        };
+        match read_children() {
+            Ok(children) => {
+                pending.extend(children.into_iter().map(|child| (child, Some(pid))));
+                processes.push((pid, pin));
+            }
+            Err(error) => observations.push(format!("children {pid}: {error}")),
+        }
+    }
+    observations.push(format!("namespace leader: {leader:?}"));
+    CleanupSnapshot {
+        processes,
+        observations,
+    }
+}
+
+fn snapshot_events(pin: &std::os::fd::OwnedFd) -> std::io::Result<rustix::event::PollFlags> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let mut fds = [PollFd::new(pin, PollFlags::IN)];
+    poll(&mut fds, Some(&Timespec::default()))?;
+    Ok(fds[0].revents())
+}
+
+impl CleanupSnapshot {
+    pub(super) fn report(&self, phase: &str, error: &crate::sandbox::SandboxError) {
+        eprintln!(
+            "tool {phase} failed: {error}; snapshot: {:?}",
+            self.observations
+        );
+        for (pid, pin) in &self.processes {
+            eprintln!("pinned process {pid}: events={:?}", snapshot_events(pin));
+        }
+    }
 }
 
 #[test]
@@ -436,6 +534,92 @@ fn tool_output_and_descendant_lifetime_are_bounded() {
     assert!(output.timed_out);
     thread::sleep(Duration::from_millis(1_100));
     assert!(!root.path().join("workspace/escaped").exists());
+}
+
+#[test]
+fn cleanup_trace_distinguishes_dead_descendants_from_an_unreaped_leader() {
+    use rustix::{
+        event::PollFlags,
+        process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal},
+    };
+
+    struct SessionGuard(SandboxedSession);
+    impl Drop for SessionGuard {
+        fn drop(&mut self) {
+            // A failing assertion must still attempt to dispose the owned tree.
+            let _ = self.0.dispose();
+        }
+    }
+    struct ResumeMonitor(std::os::fd::OwnedFd);
+    impl Drop for ResumeMonitor {
+        fn drop(&mut self) {
+            let _ = pidfd_send_signal(&self.0, Signal::CONT);
+        }
+    }
+
+    let (root, executor) = fixture();
+    let mut plan = executor.plan.clone();
+    plan.session_id = "trace-cleanup-test".to_owned();
+    plan.arguments = vec!["-c".to_owned(), "sleep 30 & touch ready; wait".to_owned()];
+    let mut session = SessionGuard(executor.backend.spawn(&plan).unwrap());
+    let monitor = session.0.monitor_pid();
+    let leader = session.0.sandbox_leader_pid().unwrap();
+    let monitor_pid = Pid::from_raw(i32::try_from(monitor).unwrap()).unwrap();
+    let resume = ResumeMonitor(pidfd_open(monitor_pid, PidfdFlags::empty()).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !root.path().join("workspace/ready").exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(root.path().join("workspace/ready").exists());
+    let snapshot = cleanup_snapshot(monitor, Some(leader));
+    assert!(
+        snapshot.processes.len() >= 4,
+        "expected monitor, init, shell, and child"
+    );
+    pidfd_send_signal(&resume.0, Signal::STOP).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = fs::read_to_string(format!("/proc/{monitor}/status")).unwrap();
+        if status.lines().any(|line| line.starts_with("State:\tT")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "monitor did not stop");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let error = session.0.dispose().unwrap_err();
+    snapshot.report("disposal", &error);
+    let events: Vec<_> = snapshot
+        .processes
+        .iter()
+        .map(|(pid, pin)| (*pid, snapshot_events(pin).unwrap()))
+        .collect();
+    drop(resume);
+    let cleanup = session.0.dispose();
+
+    assert!(matches!(
+        error,
+        crate::sandbox::SandboxError::CleanupUnproven { .. }
+    ));
+    assert_eq!(cleanup.unwrap().survivors, 0);
+    assert!(
+        !events
+            .iter()
+            .find(|(pid, _)| *pid == monitor)
+            .unwrap()
+            .1
+            .contains(PollFlags::IN)
+    );
+    let leader_events = events.iter().find(|(pid, _)| *pid == leader).unwrap().1;
+    assert!(leader_events.contains(PollFlags::IN));
+    assert!(!leader_events.contains(PollFlags::HUP));
+    for (pid, state) in events {
+        if pid != monitor {
+            assert!(
+                state.contains(PollFlags::IN),
+                "descendant {pid} is still running"
+            );
+        }
+    }
 }
 
 #[test]

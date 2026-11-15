@@ -123,6 +123,7 @@ impl World {
                 admitted_at_ms: NOW,
                 configured_agents: None,
             },
+            None,
         )
         .unwrap()
     }

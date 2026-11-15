@@ -179,6 +179,15 @@ pub enum AdmissionError {
         /// Configured Agents missing from its scope.
         missing: Vec<String>,
     },
+    /// A linked profile update would remove or re-scope already active Skills.
+    #[error("linked profile Admission must preserve every existing Skill and its Agent scope")]
+    ProfileWouldChangeSkills,
+    /// A new profile Admission needs an explicit review of its exact Dossier.
+    #[error("profile Admission requires the reviewed profile Dossier digest")]
+    ProfileReviewRequired,
+    /// The profile Dossier no longer matches the operator's review.
+    #[error("profile Dossier changed since review; review it again before signing")]
+    ProfileReviewChanged,
     /// The witness could not be reached or refused.
     #[error(transparent)]
     Witness(#[from] WitnessError),
@@ -270,6 +279,7 @@ pub struct GenerationStatus {
 }
 
 /// Runs the Admission ceremony and stores the signed Generation.
+/// A profile requires the digest of its reviewed Dossier.
 ///
 /// # Errors
 /// Returns trust/signature, package review, predecessor-loading, or record-write errors.
@@ -277,8 +287,9 @@ pub fn admit(
     store: &Store,
     policy: &Policy,
     request: &AdmissionRequest<'_>,
+    reviewed_profile: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
-    admit_inner(store, policy, request, None, None)
+    admit_inner(store, policy, request, None, None, reviewed_profile)
 }
 
 /// Admits a freshly reviewed `/3` successor to the exact current `/2` history.
@@ -296,16 +307,29 @@ pub fn admit_transition(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
     expected_predecessor: &Digest,
+    reviewed_profile: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
-    admit_inner(store, policy, request, None, Some(expected_predecessor))
+    admit_inner(
+        store,
+        policy,
+        request,
+        None,
+        Some(expected_predecessor),
+        reviewed_profile,
+    )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One trust lock owns predecessor verification, review, signing, and durable publication."
+)]
 fn admit_inner(
     store: &Store,
     policy: &Policy,
     request: &AdmissionRequest<'_>,
     operation: Option<&str>,
     transition: Option<&Digest>,
+    reviewed_profile: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
     let locked = transaction::lock(store)?;
     let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
@@ -341,11 +365,28 @@ fn admit_inner(
                     .to_owned(),
             });
         }
-        let dossier = Dossier::build(
-            store,
-            policy,
-            &DossierRequest::new(digest).with_review_depth(*depth),
-        )?;
+        let package = store.open_package(digest, policy)?;
+        let mut review = DossierRequest::new(digest).with_review_depth(*depth);
+        let is_profile = PackageKind::of(&package.manifest) == PackageKind::OperatorProfile;
+        let mut replay = false;
+        let base = if is_profile {
+            let (base, found) =
+                profile_review_base(store, policy, previous.as_ref(), operation, &trust)?;
+            replay = found;
+            if operation.is_some()
+                && !replay
+                && let Some(current) = previous.as_ref()
+            {
+                preserve_linked_skills(store, policy, current, request)?;
+            }
+            base
+        } else {
+            None
+        };
+        if let Some(base) = &base {
+            review = review.against(base);
+        }
+        let dossier = Dossier::build(store, policy, &review)?;
         refuse_unreviewable(digest, &dossier)?;
         if dossier.inspection.package_kind == PackageKind::OperatorProfile {
             check_profile(
@@ -356,6 +397,12 @@ fn admit_inner(
             )?;
             has_profile = true;
             profile_digest = Some(digest.to_string());
+            if !replay || reviewed_profile.is_some() {
+                let expected = reviewed_profile.ok_or(AdmissionError::ProfileReviewRequired)?;
+                if *expected != dossier.portable_digest() {
+                    return Err(AdmissionError::ProfileReviewChanged);
+                }
+            }
         }
         members.push(Member {
             package_digest: digest.to_string(),
@@ -364,6 +411,12 @@ fn admit_inner(
             agents: agents.clone(),
             relied_on: focus.evaluate(store, policy, digest, None)?.relied_on,
         });
+    }
+
+    if reviewed_profile.is_some() && !has_profile {
+        return Err(AdmissionError::Chain(
+            "profile Dossier digest supplied without a profile".into(),
+        ));
     }
 
     let mut payload = GenerationPayload::new(
@@ -559,6 +612,108 @@ pub(crate) fn locked_current(
         verify_record(store, record, &trust)?;
     }
     Ok((locked, current))
+}
+
+/// Hold activation's lock through the caller's Dossier recomputation.
+pub(crate) fn locked_current_profile(
+    store: &Store,
+    policy: &Policy,
+) -> Result<(crate::trust::persistence::LockedTrust, Option<Digest>), AdmissionError> {
+    let locked = transaction::lock(store)?;
+    let record = current_unlocked(store)?;
+    if let Some(record) = &record {
+        let trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
+        // Historical supply is never a diff base, but a witnessed, verified
+        // predecessor can be followed by a freshly reviewed profile.
+        let transition = (record.payload.schema == HISTORICAL_SCHEMA).then(|| record.digest());
+        verification::admission_predecessor(store, Some(record), &trust, transition.as_ref())?;
+    }
+    let profile = profile_in_generation(store, policy, record.as_ref())?;
+    Ok((locked, profile))
+}
+
+fn profile_review_base(
+    store: &Store,
+    policy: &Policy,
+    previous: Option<&GenerationRecord>,
+    operation: Option<&str>,
+    trust: &TrustStore,
+) -> Result<(Option<Digest>, bool), AdmissionError> {
+    // Retrying a signed ceremony uses its original predecessor, even after
+    // the new Generation becomes current.
+    if let Some(record) = operation
+        .map(|id| linked::find(store, id))
+        .transpose()?
+        .flatten()
+    {
+        verify_record(store, &record, trust)?;
+        let predecessor = record
+            .payload
+            .predecessor
+            .as_deref()
+            .map(Digest::parse)
+            .transpose()?
+            .map(|digest| load_unlocked(store, &digest))
+            .transpose()?;
+        Ok((
+            profile_in_generation(store, policy, predecessor.as_ref())?,
+            true,
+        ))
+    } else {
+        Ok((profile_in_generation(store, policy, previous)?, false))
+    }
+}
+
+fn profile_in_generation(
+    store: &Store,
+    policy: &Policy,
+    record: Option<&GenerationRecord>,
+) -> Result<Option<Digest>, AdmissionError> {
+    let Some(record) = record.filter(|record| record.payload.schema != HISTORICAL_SCHEMA) else {
+        return Ok(None);
+    };
+    let mut profile = None;
+    for member in &record.payload.members {
+        let digest = Digest::parse(&member.package_digest)?;
+        let package = store.open_package(&digest, policy)?;
+        if !store.verify(&digest, policy)?.is_intact() {
+            return Err(AdmissionError::Chain(
+                "profile review predecessor package is damaged".into(),
+            ));
+        }
+        if PackageKind::of(&package.manifest) == PackageKind::OperatorProfile {
+            if profile.is_some() {
+                return Err(AdmissionError::ProfileTwice);
+            }
+            profile = Some(digest);
+        }
+    }
+    Ok(profile)
+}
+
+fn preserve_linked_skills(
+    store: &Store,
+    policy: &Policy,
+    current: &GenerationRecord,
+    request: &AdmissionRequest<'_>,
+) -> Result<(), AdmissionError> {
+    for member in &current.payload.members {
+        let digest = Digest::parse(&member.package_digest)?;
+        let package = store.open_package(&digest, policy)?;
+        if PackageKind::of(&package.manifest) != PackageKind::Skill {
+            continue;
+        }
+        let preserved = request.members.iter().any(|candidate| {
+            let mut agents = candidate.agents.clone();
+            agents.sort();
+            agents.dedup();
+            candidate.package == digest && agents == member.agents
+        });
+        if !preserved {
+            return Err(AdmissionError::ProfileWouldChangeSkills);
+        }
+    }
+    Ok(())
 }
 
 /// Refuses a member whose stored bytes do not verify or whose Inspection is fatal.

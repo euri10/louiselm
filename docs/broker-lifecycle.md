@@ -1228,6 +1228,19 @@ it. The operation UUID is covered by the Generation signature. Repeating the sam
 linked ceremony recovers those signed bytes and completes uncertain registration
 without signing again; changing its members or review depth refuses.
 
+For an Operator profile, review its Dossier before Admission and pass the actual
+configured Agent registry using `--registry DIR`; the profile must reach every
+Agent in that registry. Pass the Dossier's `review_digest` as
+`--reviewed-profile-dossier DIGEST` for the initial ceremony. A changed Dossier
+is refused under the Admission lock; review it again before signing. A retry of
+an already signed ceremony does not require this digest. The Dossier must use
+the ceremony's review depth and policy, with no optional Assessment selection.
+A request is the complete new Generation, not an automatic merge: all requested
+packages currently share one Agent scope. A profile request
+is refused if it would remove an existing Skill or change that Skill's Agent
+scope. It therefore cannot preserve an existing Skill whose scope differs; the
+mixed-scope design is tracked by `louiselm-d6fv.15.10` and `louiselm-d6fv.15.11`.
+
 The broker's independent reconciliation worker reads the configured evidence under
 a shared read-only trust lock. It verifies the signature, persisted approval index,
 exact packaged bytes and Agent scope, and confirms file/directory durability. It

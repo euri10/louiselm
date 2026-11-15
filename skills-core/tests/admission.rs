@@ -50,7 +50,8 @@ fn linked_admission_is_signed_replayable_and_read_only_verifiable() {
         admitted_at_ms: 1_756_800_000_000,
         configured_agents: None,
     };
-    let record = admission::admit_linked(&store, &Policy::embedded(), &request, operation).unwrap();
+    let record =
+        admission::admit_linked(&store, &Policy::embedded(), &request, operation, None).unwrap();
     assert_eq!(record.state, GenerationState::PendingWitness);
     let replay = admission::admit_linked(
         &store,
@@ -60,6 +61,7 @@ fn linked_admission_is_signed_replayable_and_read_only_verifiable() {
             ..request
         },
         operation,
+        None,
     )
     .unwrap();
     assert_eq!(record, replay);
@@ -188,7 +190,8 @@ fn linked_partial_registration_stays_pending_until_tool_recovery_without_signing
         admitted_at_ms: 1000,
         configured_agents: None,
     };
-    let record = admission::admit_linked(&store, &Policy::embedded(), &request, operation).unwrap();
+    let record =
+        admission::admit_linked(&store, &Policy::embedded(), &request, operation, None).unwrap();
     let verify = || {
         admission::verify_linked(
             &store,
@@ -218,6 +221,7 @@ fn linked_partial_registration_stays_pending_until_tool_recovery_without_signing
             ..request
         },
         operation,
+        None,
     )
     .unwrap();
     assert_eq!(recovered, record);
@@ -304,6 +308,7 @@ impl Ceremony {
                 admitted_at_ms: 1_756_800_000_000,
                 configured_agents: None,
             },
+            None,
         )
     }
 
@@ -1146,6 +1151,7 @@ fn key_retirement_cannot_overtake_an_admission_waiting_for_hardware() {
                     admitted_at_ms: 2,
                     configured_agents: None,
                 },
+                None,
             )
         });
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1201,6 +1207,7 @@ fn failed_approval_registration_never_becomes_retired_key_history() {
             admitted_at_ms: 2,
             configured_agents: None,
         },
+        None,
     );
     assert!(matches!(
         result,

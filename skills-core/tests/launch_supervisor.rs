@@ -4477,6 +4477,35 @@ fn failed_interrupt_retry_remains_idempotent_at_the_receipt_backlog_bound() {
         event_count(&setup.events, "agent.interrupt"),
         ordinary_intent_capacity
     );
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(first_request.clone()));
+    let replay_after_repair = setup
+        .broker
+        .wait_for_session_response(&first_request.request_id, 2);
+    assert_eq!(
+        replay_after_repair.canonical_bytes(),
+        first_response.canonical_bytes(),
+        "a retained receipt must not replace the original error"
+    );
+    let mut conflict = first_request.clone();
+    conflict.authorization_id.push_str("-changed");
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(conflict));
+    let conflict = setup
+        .broker
+        .wait_for_session_response(&first_request.request_id, 3);
+    let ResponseResult::Error { error } = conflict.result else {
+        panic!("a changed failed request must conflict after receipt repair");
+    };
+    assert_eq!(error.code, ErrorCode::RequestIdConflict);
+    assert_eq!(
+        event_count(&setup.events, "agent.interrupt"),
+        ordinary_intent_capacity
+    );
     finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
 }
 
@@ -10932,7 +10961,129 @@ fn failed_terminal_response_send_finishes_only_after_exact_reconnect_retry() {
 }
 
 #[test]
-fn evicted_successful_request_id_remains_a_conflict_without_repeating_its_mechanic() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "The saturated failure cache, terminal receipt repair and retries are one ordering scenario."
+)]
+fn failed_disposal_replays_its_error_when_failure_history_is_full() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior {
+            park_fails: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
+    );
+    setup.platform.hold_relay_quiescence();
+    let session = complete_launch(&setup);
+    let initial_head = ReceiptHead {
+        sequence: session.receipt().payload.sequence,
+        digest: Digest::of(&session.receipt().canonical_bytes()).to_string(),
+    };
+    let (controller_input, relay_receiver, relay_worker) = begin_session_relay(session);
+    for index in 0..65 {
+        let id = format!("failure-history-park-{index}");
+        let park = lifecycle_request(&setup, &id, &format!("{id}-auth"), 1);
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::Lifecycle(park.clone()));
+        let response = setup.broker.wait_for_session_response(&park.request_id, 0);
+        let ResponseResult::Error { error } = response.result else {
+            panic!("failed Park fills the bounded failure history");
+        };
+        assert_eq!(error.code, ErrorCode::LifecycleMechanicUnavailable);
+    }
+
+    setup
+        .broker
+        .set_session_receipt_send_behavior(SessionReceiptSendBehavior::Reject);
+    let disposal = disposal_request(&setup, "failure-history-terminal-disposal");
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
+    setup.broker.wait_for_session_receipt(0);
+    setup.platform.wait_for_relay_quiescence();
+    let failed = setup
+        .broker
+        .wait_for_session_response(&disposal.request_id, 0);
+    let ResponseResult::Error { error } = &failed.result else {
+        panic!("failed terminal receipt delivery returns an error");
+    };
+    assert_eq!(error.code, ErrorCode::DurabilityUnavailable);
+
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
+    let before_repair = setup
+        .broker
+        .wait_for_session_response(&disposal.request_id, 1);
+    let mut changed = disposal.clone();
+    changed.authorization_id.push_str("-changed");
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(changed));
+    let conflict = setup
+        .broker
+        .wait_for_session_response(&disposal.request_id, 2);
+
+    setup
+        .broker
+        .set_session_receipt_send_behavior(SessionReceiptSendBehavior::Complete);
+    setup.broker.wait_for_session_request();
+    setup.broker.disconnect_session();
+    setup.broker.wait_for_reconnect(0);
+    let mut reconnect = setup.broker.reconnect(0);
+    reconnect.sequence = initial_head.sequence;
+    reconnect.receipt_digest = initial_head.digest;
+    setup.broker.complete_reconnect(reconnect);
+    setup.broker.wait_for_session_receipt(1);
+    assert_eq!(
+        setup.broker.session_receipt_bytes(1),
+        setup.broker.session_receipt_bytes(0)
+    );
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(1),
+        ));
+    let repaired = request_supervisor_status(&setup, "terminal-failure-repaired");
+    assert_eq!(repaired.pending_receipt_count, 0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
+    let after_repair = setup
+        .broker
+        .wait_for_session_response(&disposal.request_id, 3);
+    setup.platform.complete_relay_quiescence();
+    drop(controller_input);
+    assert_eq!(
+        relay_receiver
+            .recv_timeout(CALLBACK_TIMEOUT)
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    relay_worker.join().expect("terminal relay worker finishes");
+
+    assert_eq!(before_repair.canonical_bytes(), failed.canonical_bytes());
+    assert_eq!(after_repair.canonical_bytes(), failed.canonical_bytes());
+    let ResponseResult::Error { error } = conflict.result else {
+        panic!("a changed failed Disposal must conflict");
+    };
+    assert_eq!(error.code, ErrorCode::RequestIdConflict);
+    assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+}
+
+#[test]
+fn signed_lifecycle_receipts_remain_pending_until_completion() {
     let setup = setup(
         true,
         |_| {},
@@ -10942,19 +11093,117 @@ fn evicted_successful_request_id_remains_a_conflict_without_repeating_its_mechan
     );
     let session = complete_launch(&setup);
     let (controller_input, relay_receiver, relay_worker) = begin_session_relay(session);
-    let mut first_request = None;
-    let successful_requests = 65usize;
+    let park = lifecycle_request(&setup, "pending-park", "pending-park-auth", 1);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(park.clone()));
+    setup.broker.wait_for_session_receipt(0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(park.clone()));
+    let pending_park = setup.broker.wait_for_session_response(&park.request_id, 0);
+    let ResponseResult::Error { error } = pending_park.result else {
+        panic!("a signed but unacknowledged Park is still pending");
+    };
+    assert_eq!(error.code, ErrorCode::OperationPending);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(0),
+        ));
+    let parked = setup.broker.wait_for_session_response(&park.request_id, 1);
+    assert!(matches!(parked.result, ResponseResult::Receipt { .. }));
+
+    lock(&setup.platform.agent).hold_guard_activation = true;
+    let resume = resume_request(&setup, "pending-resume-activation");
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(resume.clone()));
+    setup.broker.wait_for_session_receipt(1);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(1),
+        ));
+    let activating = request_supervisor_status(&setup, "resume-activation-pending");
+    assert_eq!(
+        activating.pending_operation.unwrap().phase,
+        PendingPhase::Activating
+    );
+    for index in 0..2 {
+        let mut request = resume.clone();
+        if index == 1 {
+            request.authorization_id.push_str("-changed");
+        }
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::Lifecycle(request));
+        let pending = setup
+            .broker
+            .wait_for_session_response(&resume.request_id, index);
+        let ResponseResult::Error { error } = pending.result else {
+            panic!("an acknowledged Resume remains pending during activation");
+        };
+        assert_eq!(error.code, ErrorCode::OperationPending);
+    }
+    let (result, complete) = lock(&setup.platform.agent)
+        .guard_activation
+        .take()
+        .expect("Resume activation callback is held");
+    complete(result);
+    let completed = setup
+        .broker
+        .wait_for_session_response(&resume.request_id, 2);
+    assert!(matches!(completed.result, ResponseResult::Receipt { .. }));
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(resume.clone()));
+    let replay = setup
+        .broker
+        .wait_for_session_response(&resume.request_id, 3);
+    assert_eq!(replay.canonical_bytes(), completed.canonical_bytes());
+    assert_eq!(event_count(&setup.events, "agent.park"), 1);
+    assert_eq!(event_count(&setup.events, "agent.resume"), 1);
+    assert_eq!(setup.broker.session_receipt_count(), 2);
+    finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One long chain checks original receipts, old retries and conflicts against the same lifecycle owner."
+)]
+fn long_lifecycle_history_replays_exactly_and_rejects_conflicts() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    let (controller_input, relay_receiver, relay_worker) = begin_session_relay(session);
+    let mut checkpoints = Vec::new();
+    let successful_requests = 90usize;
 
     for index in 0..successful_requests {
-        let request = interrupt_request(
-            &setup,
-            &format!("successful-cache-pressure-{index}"),
-            SessionState::Running,
-            u64::try_from(index).expect("bounded test index fits u64") + 1,
-        );
-        if index == 0 {
-            first_request = Some(request.clone());
-        }
+        let request_id = format!("successful-history-{index}");
+        let sequence = u64::try_from(index).expect("bounded test index fits u64") + 1;
+        let request = match index % 3 {
+            0 => lifecycle_request(&setup, &request_id, &format!("{request_id}-auth"), sequence),
+            1 => interrupt_request(&setup, &request_id, SessionState::Parked, sequence),
+            _ => LifecycleRequest {
+                expected_receipt_sequence: Some(sequence),
+                ..resume_request(&setup, &request_id)
+            },
+        };
         setup.broker.wait_for_session_request();
         setup
             .broker
@@ -10969,34 +11218,60 @@ fn evicted_successful_request_id_remains_a_conflict_without_repeating_its_mechan
         let response = setup
             .broker
             .wait_for_session_response(&request.request_id, 0);
-        assert!(matches!(response.result, ResponseResult::Receipt { .. }));
+        let ResponseResult::Receipt { receipt } = &response.result else {
+            panic!("each lifecycle operation completes with a receipt");
+        };
+        assert_eq!(
+            receipt.canonical_bytes(),
+            setup.broker.session_receipt_bytes(index)
+        );
+        if index < 3 || index + 1 == successful_requests {
+            checkpoints.push((request, response));
+        }
     }
 
-    let interrupt_count = event_count(&setup.events, "agent.interrupt");
-    let sign_count = setup.signer.payloads().len();
-    assert_eq!(interrupt_count, successful_requests);
-    let mut conflict =
-        first_request.expect("the first successful request was retained by the test");
-    conflict.expected_receipt_sequence =
-        Some(u64::try_from(successful_requests).expect("bounded test count fits u64") + 1);
-    setup.signer.fail_on_call(sign_count);
-    setup.broker.wait_for_session_request();
-    setup
-        .broker
-        .deliver_session_request(ProtocolMessage::Lifecycle(conflict.clone()));
-    let response = setup
-        .broker
-        .wait_for_session_response(&conflict.request_id, 1);
-    let ResponseResult::Error { error } = response.result else {
-        panic!("a reused successful request ID is permanently conflicting");
-    };
-    assert_eq!(error.code, ErrorCode::RequestIdConflict);
-    assert_eq!(
+    let effects = (
+        event_count(&setup.events, "agent.park"),
+        event_count(&setup.events, "agent.resume"),
         event_count(&setup.events, "agent.interrupt"),
-        interrupt_count
+        setup.signer.payloads().len(),
     );
-    assert_eq!(setup.signer.payloads().len(), sign_count);
-    assert_eq!(setup.broker.session_receipt_count(), successful_requests,);
+    assert_eq!((effects.0, effects.1, effects.2), (30, 30, 30));
+    setup.signer.fail_on_call(effects.3);
+    for (request, original) in checkpoints {
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::Lifecycle(request.clone()));
+        let replay = setup
+            .broker
+            .wait_for_session_response(&request.request_id, 1);
+        assert_eq!(replay.canonical_bytes(), original.canonical_bytes());
+
+        let mut conflict = request.clone();
+        conflict.authorization_id.push_str("-changed");
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::Lifecycle(conflict));
+        let response = setup
+            .broker
+            .wait_for_session_response(&request.request_id, 2);
+        let ResponseResult::Error { error } = response.result else {
+            panic!("a reused successful request ID is permanently conflicting");
+        };
+        assert_eq!(error.code, ErrorCode::RequestIdConflict);
+    }
+    assert_eq!(
+        (
+            event_count(&setup.events, "agent.park"),
+            event_count(&setup.events, "agent.resume"),
+            event_count(&setup.events, "agent.interrupt"),
+            setup.signer.payloads().len(),
+        ),
+        effects
+    );
+    assert_eq!(setup.broker.session_receipt_count(), successful_requests);
 
     let mut chain = vec![
         SignedReceipt::parse_canonical(&setup.broker.receipt_bytes(0))

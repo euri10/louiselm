@@ -5,7 +5,7 @@
 //! every other reviewer-facing surface: a hostile line in an incoming update is
 //! exactly the line most likely to be crafted to act on a terminal.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fs::File, io::Read};
 
 use serde::Serialize;
 
@@ -80,8 +80,8 @@ pub struct DiffEntry {
 /// Every difference between two packages, ordered by path.
 #[derive(Clone, Debug, Serialize)]
 pub struct PackageDiff {
-    /// Digest of the package being replaced.
-    pub base_digest: String,
+    /// Digest of the package being replaced, or none for a first profile.
+    pub base_digest: Option<String>,
     /// Digest of the package under review.
     pub target_digest: String,
     /// One entry per changed path.
@@ -89,6 +89,58 @@ pub struct PackageDiff {
 }
 
 impl PackageDiff {
+    /// Shows a first profile against the absence of admitted profile supply.
+    ///
+    /// # Errors
+    /// Returns a package-read error when the profile cannot be read.
+    pub fn initial_profile(target: &Package) -> Result<Self, StoreError> {
+        let mut entries = Vec::new();
+        for file in &target.manifest.entries {
+            let mut entry = DiffEntry {
+                path: file.path.clone(),
+                change: Change::Added,
+                became_executable: file.executable,
+                lines: Vec::new(),
+                note: Some("added".into()),
+            };
+            if file.path == "PROFILE.md" {
+                let path = target.file_path(&file.path);
+                let mut bytes = Vec::new();
+                File::open(&path)
+                    .and_then(|file| {
+                        file.take(crate::inspect::MAX_PROFILE_BYTES as u64 + 1)
+                            .read_to_end(&mut bytes)
+                    })
+                    .map_err(|source| StoreError::Io {
+                        path: path.display().to_string(),
+                        source,
+                    })?;
+                if bytes.len() > crate::inspect::MAX_PROFILE_BYTES {
+                    entry.note = Some("profile exceeds the size limit".into());
+                } else if let Some(text) = as_text(&bytes) {
+                    entry.lines = text
+                        .lines()
+                        .enumerate()
+                        .map(|(index, line)| DiffLine {
+                            kind: LineKind::Added,
+                            base_line: None,
+                            target_line: Some(index as u64 + 1),
+                            text: scan::escape(line),
+                        })
+                        .collect();
+                } else {
+                    entry.note = Some("profile is not UTF-8 text".into());
+                }
+            }
+            entries.push(entry);
+        }
+        Ok(Self {
+            base_digest: None,
+            target_digest: target.digest.to_string(),
+            entries,
+        })
+    }
+
     /// Compares `base` against `target`, reading both packages' bytes.
     ///
     /// # Errors
@@ -168,7 +220,7 @@ impl PackageDiff {
         }
 
         Ok(Self {
-            base_digest: base.digest.to_string(),
+            base_digest: Some(base.digest.to_string()),
             target_digest: target.digest.to_string(),
             entries,
         })

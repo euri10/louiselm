@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  printf '%s\n' 'Usage: preview-acp-usage <selection-json>' >&2
+  exit 2
+fi
+
+preview_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+export LOUISELM_USAGE_PREVIEW_ROOT="$preview_root"
+export LOUISELM_USAGE_PREVIEW_SELECTION="$1"
+exec nvim --headless --noplugin -u NONE -i NONE -n \
+  --cmd 'lua vim.opt.rtp:prepend(vim.env.LOUISELM_USAGE_PREVIEW_ROOT)' \
+  -c 'lua dofile(vim.env.LOUISELM_USAGE_PREVIEW_ROOT .. "/scripts/preview-acp-usage.lua")'

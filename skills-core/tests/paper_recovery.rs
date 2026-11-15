@@ -565,7 +565,7 @@ fn paper_recovery_preserves_history_but_old_keys_cannot_make_new_admissions() {
         admitted_at_ms: 3,
         configured_agents: None,
     };
-    let record = admission::admit(&fixture.store(), &Policy::embedded(), &request).unwrap();
+    let record = admission::admit(&fixture.store(), &Policy::embedded(), &request, None).unwrap();
     let trust = TrustStore::load(&fixture.store()).unwrap().unwrap();
     let replacement = SshKey::generate(&fixture, "replacement");
     let next = phrase(1);
@@ -595,13 +595,13 @@ fn paper_recovery_preserves_history_but_old_keys_cannot_make_new_admissions() {
     )
     .unwrap();
     admission::verify_record(&fixture.store(), &record, &trust).unwrap();
-    assert!(admission::admit(&fixture.store(), &Policy::embedded(), &request).is_err());
+    assert!(admission::admit(&fixture.store(), &Policy::embedded(), &request, None).is_err());
     let replacement_signer = SshKeygenSigner::new(replacement.private_key_path());
     let request = AdmissionRequest {
         signer: &replacement_signer,
         ..request
     };
-    admission::admit(&fixture.store(), &Policy::embedded(), &request).unwrap();
+    admission::admit(&fixture.store(), &Policy::embedded(), &request, None).unwrap();
 }
 
 #[test]

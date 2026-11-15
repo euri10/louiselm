@@ -19,6 +19,7 @@ use std::{
 use louiselm_skills::{
     Digest, Policy, ReviewDepth, Signer, SshKeygenSigner, TrustStore,
     admission::{self, AdmissionMember, AdmissionRequest},
+    dossier::{Dossier, DossierRequest},
     signer::SignerError,
     sshsig::SkPolicy,
     witness::GitWitness,
@@ -73,8 +74,15 @@ impl World {
         members: &[&Digest],
         signer: &dyn Signer,
     ) -> Result<louiselm_skills::GenerationRecord, admission::AdmissionError> {
+        let store = self.fixture.store();
+        let review = members.iter().find_map(|digest| {
+            let package = store.open_package(digest, &Policy::embedded()).unwrap();
+            (louiselm_skills::inspect::PackageKind::of(&package.manifest)
+                == louiselm_skills::inspect::PackageKind::OperatorProfile)
+                .then(|| support::reviewed_profile(&store, digest, None))
+        });
         admission::admit(
-            &self.fixture.store(),
+            &store,
             &Policy::embedded(),
             &AdmissionRequest {
                 members: members
@@ -89,6 +97,7 @@ impl World {
                 admitted_at_ms: 2,
                 configured_agents: Some(vec!["agent".into()]),
             },
+            review.as_ref(),
         )
     }
 
@@ -415,6 +424,13 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
     let mirror = root.join("profile.md");
     assert!(world.configure(&mirror).status.success());
     let profile = world.capture("first", "PROFILE.md", FIRST);
+    let reviewed = Dossier::build(
+        &world.fixture.store(),
+        &Policy::embedded(),
+        &DossierRequest::new(&profile).with_review_depth(ReviewDepth::Read),
+    )
+    .unwrap()
+    .portable_digest();
     let member = AdmissionMember {
         package: profile,
         depth: ReviewDepth::Read,
@@ -427,6 +443,7 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
         &Policy::embedded(),
         &linked_request(&member, &signer),
         operation,
+        Some(&reviewed),
     )
     .unwrap();
     assert_eq!(fs::read(&mirror).unwrap(), FIRST.as_bytes());
@@ -436,6 +453,7 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
         &Policy::embedded(),
         &linked_request(&member, &RefuseSigning),
         operation,
+        None,
     )
     .unwrap();
     assert_eq!(recovered.generation, first.generation);

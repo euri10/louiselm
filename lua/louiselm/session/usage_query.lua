@@ -1,5 +1,6 @@
 ---@diagnostic disable-next-line: undefined-global -- JSON and input validation use Neovim facilities.
 local nvim = vim
+local Validation = require("louiselm.session.validation")
 local M = {}
 
 -- Shared by the options picker and explorer. Callers populate cohort_turns
@@ -142,39 +143,6 @@ local function dimension(value)
   return type(value) == "string" and (dimensions[value] ~= nil or value:match("^option:.+") ~= nil)
 end
 
-local function timestamp(value)
-  if type(value) ~= "string" then
-    return false
-  end
-  local year, month, day, hour, minute, second, fraction =
-    value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.-)Z$")
-  if not year or (fraction ~= "" and not fraction:match("^%.%d%d?%d?$")) then
-    return false
-  end
-  year, month, day = tonumber(year), tonumber(month), tonumber(day)
-  local days = {
-    31,
-    (year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0)) and 29 or 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  }
-  return month >= 1
-    and month <= 12
-    and day >= 1
-    and day <= days[month]
-    and tonumber(hour) < 24
-    and tonumber(minute) < 60
-    and tonumber(second) < 60
-end
-
 ---@param query louiselm.session.UsageQuery
 ---@return boolean
 local function valid(query)
@@ -208,18 +176,15 @@ local function valid(query)
     end
   end
   if
-    (query.from ~= nil and not timestamp(query.from))
-    or (query.until_time ~= nil and not timestamp(query.until_time))
+    (query.from ~= nil and not Validation.timestamp_key(query.from))
+    or (query.until_time ~= nil and not Validation.timestamp_key(query.until_time))
     or (query.turn_id ~= nil and not nonempty(query.turn_id))
   then
     return false
   end
   -- Canonical seconds plus a normalized fractional suffix compare chronologically.
   if query.from and query.until_time then
-    local function key(value)
-      return value:sub(1, 19) .. ((value:match("%.(%d+)Z$") or "") .. "000"):sub(1, 3)
-    end
-    if key(query.from) >= key(query.until_time) then
+    if Validation.timestamp_key(query.from) >= Validation.timestamp_key(query.until_time) then
       return false
     end
   end

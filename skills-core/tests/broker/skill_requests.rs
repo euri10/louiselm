@@ -112,7 +112,7 @@ fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Out
         Policy, Store,
         admission::{self, AdmissionMember, AdmissionRequest},
         broker::admission_source::AdmissionSource,
-        dossier::ReviewDepth,
+        dossier::{Dossier, DossierRequest, ReviewDepth},
         signer::SshKeygenSigner,
         sshsig::SkPolicy,
         trust::TrustStore,
@@ -153,6 +153,31 @@ fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Out
     let (package, _) = store
         .capture(&candidate, &Policy::embedded(), 1000)
         .unwrap();
+    let mut packages = vec![package.digest];
+    let mut reviewed_profile = None;
+    if subject == SkillSubject::Supply {
+        let candidate = key_fixture.candidate("profile");
+        support::write_file(
+            &candidate.join("PROFILE.md"),
+            "---\ntype: louiselm/operator-profile\n---\nPrivate profile fixture.\nSecond proposed change.\n",
+        );
+        let digest = store
+            .capture(&candidate, &Policy::embedded(), 1000)
+            .unwrap()
+            .0
+            .digest;
+        reviewed_profile = Some(
+            Dossier::build(
+                &store,
+                &Policy::embedded(),
+                &DossierRequest::new(&digest).with_review_depth(ReviewDepth::Read),
+            )
+            .unwrap()
+            .portable_digest(),
+        );
+        packages.push(digest);
+    }
+    packages.sort_by_key(ToString::to_string);
     let source = AdmissionSource {
         store: store.root().into(),
         trust_domain: "louiselm/skills".into(),
@@ -163,7 +188,7 @@ fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Out
     let CommandOperation::SkillRequest { request } = &mut message.operation else {
         unreachable!()
     };
-    request.packages = vec![package.digest.to_string()];
+    request.packages = packages.iter().map(ToString::to_string).collect();
     request.subject = subject;
     let first = accepted(exchange(&service, &mut session, &peer, &message, true));
     assert_eq!(first.subject, subject);
@@ -171,11 +196,12 @@ fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Out
     assert_eq!(first.run_id, session.authorization().run_id);
     let projection = outbox.next().unwrap().unwrap();
     let encoded_projection = projection.wire().to_string();
-    for private in [
-        package.digest.to_string(),
+    for private in packages.iter().map(ToString::to_string).chain([
         store.root().display().to_string(),
         "codex".into(),
-    ] {
+        "Private profile fixture".into(),
+        "Second proposed change".into(),
+    ]) {
         assert!(!encoded_projection.contains(&private));
     }
     let ProjectionChange::Upsert(condition) = projection.change else {
@@ -209,18 +235,26 @@ fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Out
     );
     let signer = SshKeygenSigner::new(key.private_key_path());
     let ceremony = AdmissionRequest {
-        members: vec![AdmissionMember {
-            package: package.digest,
-            depth: ReviewDepth::Read,
-            agents: vec!["codex".into()],
-        }],
+        members: packages
+            .into_iter()
+            .map(|package| AdmissionMember {
+                package,
+                depth: ReviewDepth::Read,
+                agents: vec!["codex".into()],
+            })
+            .collect(),
         signer: &signer,
         admitted_at_ms: 4000,
-        configured_agents: None,
+        configured_agents: (subject == SkillSubject::Supply).then(|| vec!["codex".into()]),
     };
-    let record =
-        admission::admit_linked(&store, &Policy::embedded(), &ceremony, &first.operation_id)
-            .unwrap();
+    let record = admission::admit_linked(
+        &store,
+        &Policy::embedded(),
+        &ceremony,
+        &first.operation_id,
+        reviewed_profile.as_ref(),
+    )
+    .unwrap();
     protect_fixture_directories(store.root());
     for ancestor in store.root().ancestors() {
         use std::os::unix::fs::MetadataExt;
@@ -277,6 +311,7 @@ fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Out
             &Policy::embedded(),
             &ceremony,
             &pending.operation_id,
+            reviewed_profile.as_ref(),
         )
         .unwrap();
         service
@@ -372,6 +407,7 @@ fn assert_verified_admission(subject: SkillSubject, observe: &mut dyn FnMut(&Out
         &Policy::embedded(),
         &ceremony,
         &pending.operation_id,
+        reviewed_profile.as_ref(),
     )
     .unwrap();
     service
@@ -433,7 +469,7 @@ fn installed_linked_admission_server() {
         .unwrap();
     let (service, operation) = if root.join("operation").exists() {
         let service = BrokerService::bind(
-            &root.join("restarted.sock"),
+            &root.join(format!("restarted-{}.sock", std::process::id())),
             AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap(),
             ReceiptStore::open(&root.join("receipts"), trusted_release()).unwrap(),
             AuditLog::open(&root.join("audit")).unwrap(),
@@ -442,12 +478,19 @@ fn installed_linked_admission_server() {
         .unwrap();
         (service, fs::read_to_string(root.join("operation")).unwrap())
     } else {
-        let (service, mut session, peer) = fixture_for(&root, true, false, false, uid);
+        let supply = std::env::var_os("LOUISELM_ADMISSION_SUPPLY").is_some();
+        let (service, mut session, peer) = fixture_for(&root, true, false, supply, uid);
         let mut message = query(session.authorization());
         let CommandOperation::SkillRequest { request } = &mut message.operation else {
             unreachable!()
         };
-        request.packages = vec![std::env::var("LOUISELM_ADMISSION_PACKAGE").unwrap()];
+        request.packages = match std::env::var("LOUISELM_ADMISSION_PACKAGES") {
+            Ok(packages) => serde_json::from_str(&packages).unwrap(),
+            Err(_) => vec![std::env::var("LOUISELM_ADMISSION_PACKAGE").unwrap()],
+        };
+        if supply {
+            request.subject = SkillSubject::Supply;
+        }
         let accepted = accepted(exchange(&service, &mut session, &peer, &message, true));
         fs::write(root.join("operation"), &accepted.operation_id).unwrap();
         peer.close();

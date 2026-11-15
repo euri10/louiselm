@@ -130,7 +130,10 @@ fn an_update_dossier_carries_the_diff_and_the_lineage() {
     .expect("dossier builds");
 
     let diff = dossier.diff.as_ref().expect("an update carries its diff");
-    assert_eq!(diff.base_digest, base_package.digest.to_string());
+    assert_eq!(
+        diff.base_digest.as_deref(),
+        Some(base_package.digest.to_string().as_str())
+    );
     assert_eq!(diff.entries.len(), 1);
     assert_eq!(dossier.review_depth, ReviewDepth::Read);
     assert_eq!(dossier.lineage.captures.len(), 1);

@@ -32,7 +32,10 @@ fn a_diff_names_every_kind_of_change_and_shows_the_lines() {
     let (target_package, _) = fixture.capture(&target).expect("target capture succeeds");
     let diff = PackageDiff::between(&base_package, &target_package).expect("diff runs");
 
-    assert_eq!(diff.base_digest, base_package.digest.to_string());
+    assert_eq!(
+        diff.base_digest.as_deref(),
+        Some(base_package.digest.to_string().as_str())
+    );
     assert_eq!(diff.target_digest, target_package.digest.to_string());
     assert_eq!(
         diff.entries

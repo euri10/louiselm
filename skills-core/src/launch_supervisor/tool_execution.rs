@@ -260,10 +260,22 @@ pub(super) fn run(
     alive: impl Fn() -> Result<bool, SupervisorError>,
     start: impl FnOnce(PreparedSession) -> Result<SandboxedSession, SupervisorError>,
 ) -> Result<ToolExecutionResult, SupervisorError> {
+    #[cfg(test)]
+    let trace_cleanup = std::env::var_os("LOUISELM_TEST_CLEANUP_TRACE").is_some()
+        && plan
+            .arguments
+            .get(1)
+            .is_some_and(|command| command == "(sleep 1; touch escaped) & sleep 10");
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or(SupervisorError::WorkerUnavailable)?;
-    let mut prepared = backend.prepare(plan).map_err(super::system::map_sandbox)?;
+    let mut prepared = backend.prepare(plan).map_err(|error| {
+        #[cfg(test)]
+        if trace_cleanup {
+            eprintln!("tool prepare failed: {error}");
+        }
+        super::system::map_sandbox(error)
+    })?;
     let ready = alive();
     let refusal = if cancelled.load(Ordering::Acquire) || ready != Ok(true) {
         Some(SupervisorError::AgentIdentityRejected)
@@ -273,17 +285,38 @@ pub(super) fn run(
         None
     };
     if let Some(error) = refusal {
-        prepared
-            .dispose()
-            .map_err(|_| SupervisorError::CleanupUnproven)?;
+        #[cfg(test)]
+        let snapshot = trace_cleanup.then(|| {
+            tests::cleanup_snapshot(prepared.monitor_pid(), prepared.sandbox_leader_pid())
+        });
+        let disposal = prepared.dispose();
+        #[cfg(test)]
+        if let (Some(snapshot), Err(error)) = (snapshot, &disposal) {
+            snapshot.report("pre-start disposal", error);
+        }
+        disposal.map_err(|_| SupervisorError::CleanupUnproven)?;
         return Err(error);
     }
     let mut session = start(prepared)?;
     drop(session.take_stdin());
     let result = collect(&mut session, deadline, cancelled, &alive);
-    session
-        .dispose()
-        .map_err(|_| SupervisorError::CleanupUnproven)?;
+    #[cfg(test)]
+    // A timed-out monitor has not been reaped by collect(), so its PID cannot
+    // have been recycled before the diagnostic pins its tree.
+    let snapshot = (trace_cleanup && result.as_ref().is_ok_and(|output| output.timed_out))
+        .then(|| tests::cleanup_snapshot(session.monitor_pid(), session.sandbox_leader_pid()));
+    let disposal = session.dispose();
+    #[cfg(test)]
+    if let Err(error) = &disposal
+        && trace_cleanup
+    {
+        if let Some(snapshot) = snapshot {
+            snapshot.report("disposal", error);
+        } else {
+            eprintln!("tool disposal failed before a timed-out snapshot: {error}");
+        }
+    }
+    disposal.map_err(|_| SupervisorError::CleanupUnproven)?;
     result
 }
 
