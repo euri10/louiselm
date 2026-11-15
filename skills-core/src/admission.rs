@@ -27,6 +27,7 @@ pub(crate) mod mirror;
 mod transaction;
 mod verification;
 mod withdrawals;
+pub(crate) use linked::has_linked_record;
 pub(crate) use linked::verified_generation;
 pub use linked::{admit_linked, linked_generation_members, verify_linked};
 pub use verification::verify_record;
@@ -151,6 +152,9 @@ pub enum AdmissionError {
     /// The signer failed.
     #[error(transparent)]
     Signer(#[from] SignerError),
+    /// The broker could not reserve the linked request and its sources.
+    #[error("broker did not reserve signing; inspect the request")]
+    SigningReservation,
     /// The signature does not authorize this payload.
     #[error(transparent)]
     Signature(#[from] sshsig::SignatureError),
@@ -289,7 +293,7 @@ pub fn admit(
     request: &AdmissionRequest<'_>,
     reviewed_profile: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
-    admit_inner(store, policy, request, None, None, reviewed_profile)
+    admit_inner(store, policy, request, None, None, reviewed_profile, None)
 }
 
 /// Admits a freshly reviewed `/3` successor to the exact current `/2` history.
@@ -316,6 +320,7 @@ pub fn admit_transition(
         None,
         Some(expected_predecessor),
         reviewed_profile,
+        None,
     )
 }
 
@@ -330,6 +335,7 @@ fn admit_inner(
     operation: Option<&str>,
     transition: Option<&Digest>,
     reviewed_profile: Option<&Digest>,
+    reserve: Option<&dyn Fn() -> Result<(), AdmissionError>>,
 ) -> Result<GenerationRecord, AdmissionError> {
     let locked = transaction::lock(store)?;
     let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
@@ -437,6 +443,22 @@ fn admit_inner(
     }
 
     mirror::preflight(store, profile_digest.as_deref())?;
+    if let Some(reserve) = reserve {
+        // The broker must independently read signed evidence without contending
+        // with this trust lock. Recompute everything under a fresh lock after
+        // the reservation, before the signer is invoked.
+        drop(locked);
+        reserve()?;
+        return admit_inner(
+            store,
+            policy,
+            request,
+            operation,
+            transition,
+            reviewed_profile,
+            None,
+        );
+    }
     let signature = request
         .signer
         .sign(ADMISSION_NAMESPACE, &payload.canonical_bytes())?;

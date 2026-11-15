@@ -50,8 +50,15 @@ fn linked_admission_is_signed_replayable_and_read_only_verifiable() {
         admitted_at_ms: 1_756_800_000_000,
         configured_agents: None,
     };
-    let record =
-        admission::admit_linked(&store, &Policy::embedded(), &request, operation, None).unwrap();
+    let record = admission::admit_linked(
+        &store,
+        &Policy::embedded(),
+        &request,
+        operation,
+        None,
+        &|| Ok(()),
+    )
+    .unwrap();
     assert_eq!(record.state, GenerationState::PendingWitness);
     let replay = admission::admit_linked(
         &store,
@@ -62,6 +69,7 @@ fn linked_admission_is_signed_replayable_and_read_only_verifiable() {
         },
         operation,
         None,
+        &|| Err(admission::AdmissionError::SigningReservation),
     )
     .unwrap();
     assert_eq!(record, replay);
@@ -190,8 +198,15 @@ fn linked_partial_registration_stays_pending_until_tool_recovery_without_signing
         admitted_at_ms: 1000,
         configured_agents: None,
     };
-    let record =
-        admission::admit_linked(&store, &Policy::embedded(), &request, operation, None).unwrap();
+    let record = admission::admit_linked(
+        &store,
+        &Policy::embedded(),
+        &request,
+        operation,
+        None,
+        &|| Ok(()),
+    )
+    .unwrap();
     let verify = || {
         admission::verify_linked(
             &store,
@@ -222,6 +237,7 @@ fn linked_partial_registration_stays_pending_until_tool_recovery_without_signing
         },
         operation,
         None,
+        &|| Err(admission::AdmissionError::SigningReservation),
     )
     .unwrap();
     assert_eq!(recovered, record);

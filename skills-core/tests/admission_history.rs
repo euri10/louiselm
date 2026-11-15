@@ -463,6 +463,7 @@ fn transition_requires_exact_legacy_current_and_refuses_ordinary_or_linked_admis
             &request,
             "12345678-1234-4234-8234-123456789abc",
             None,
+            &|| Ok(()),
         )
         .is_err()
     );

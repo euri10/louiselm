@@ -157,6 +157,13 @@ impl AdmissionSource {
         request: &SkillRequest,
     ) -> Result<Option<String>, BrokerError> {
         let store = self.trusted_store()?;
+        // A request may refer to unavailable candidate bytes. Their absence
+        // cannot prevent rejection when no linked signed record exists.
+        if !admission::has_linked_record(&store, &self.trust_domain, operation)
+            .map_err(BrokerError::AdmissionEvidence)?
+        {
+            return Ok(None);
+        }
         self.check(&self.store.join("packages"), true)?;
         for package in &request.packages {
             let digest = crate::Digest::parse(package).map_err(|_| BrokerError::InvalidGrant)?;

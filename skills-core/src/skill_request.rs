@@ -92,6 +92,8 @@ pub enum SkillRequestOutcome {
     Pending,
     /// Exact signed Admission persisted; not witnessed, activated or usable supply.
     Approved,
+    /// A separately reviewed batch superseded this source request.
+    Superseded,
     /// Explicit operator rejection.
     Rejected,
     /// Operator cancellation or authoritative subject end.
@@ -118,7 +120,7 @@ pub struct SkillRequestStatus {
     pub packages: Vec<String>,
     /// Exact literal Agent scope for every requested package.
     pub agents: Vec<String>,
-    /// Verified signed Generation, present only for approved outcomes.
+    /// Verified signed Generation for approved or superseded outcomes.
     pub admission: Option<String>,
 }
 
@@ -139,10 +141,11 @@ impl SkillRequestStatus {
                 .iter()
                 .all(|value| Digest::parse(value).is_ok_and(|digest| digest.to_string() == *value))
             && match (&self.outcome, &self.admission) {
-                (SkillRequestOutcome::Approved, Some(digest)) => {
+                (SkillRequestOutcome::Approved | SkillRequestOutcome::Superseded, Some(digest)) => {
                     Digest::parse(digest).is_ok_and(|parsed| parsed.to_string() == *digest)
                 }
-                (SkillRequestOutcome::Approved, None) | (_, Some(_)) => false,
+                (SkillRequestOutcome::Approved | SkillRequestOutcome::Superseded, None)
+                | (_, Some(_)) => false,
                 (_, None) => true,
             }
             && canonical_uuid(&self.operation_id)

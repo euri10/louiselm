@@ -181,6 +181,291 @@ fn supply_batch_outlives_origin_and_restarts_until_explicit_outcome() {
 }
 
 #[test]
+fn subject_end_is_ordered_with_one_or_many_requested_packages() {
+    for subject in [SkillSubject::Session, SkillSubject::Run] {
+        for batch in [false, true] {
+            for signing_first in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("requests");
+                let store = SkillRequests::open(&path).unwrap();
+                let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
+                let mut item = request();
+                item.subject = subject;
+                if batch {
+                    item.packages
+                        .push(crate::Digest::of(b"another").to_string());
+                    item.packages.sort();
+                }
+                if subject == SkillSubject::Run {
+                    store
+                        .observe_run(
+                            &RunLifecycle {
+                                run_id: binding().run_id,
+                                revision: 1,
+                                state: RunState::Active,
+                            },
+                            &outbox,
+                        )
+                        .unwrap();
+                }
+                let pending = store
+                    .accept(&binding(), &item, Some(&permission()), 1000, &outbox)
+                    .unwrap();
+                if signing_first {
+                    store
+                        .reserve_signing(1000, &pending.operation_id, &[], None)
+                        .unwrap();
+                }
+                if subject == SkillSubject::Session {
+                    store
+                        .end_subject(&AttentionSubject::Session(binding().session_id), &outbox)
+                        .unwrap();
+                } else {
+                    store
+                        .observe_run(
+                            &RunLifecycle {
+                                run_id: binding().run_id,
+                                revision: 2,
+                                state: RunState::Disposed,
+                            },
+                            &outbox,
+                        )
+                        .unwrap();
+                }
+                drop(store);
+                let store = SkillRequests::open(&path).unwrap();
+                store.reconcile(&outbox).unwrap();
+                assert_eq!(
+                    store.status(&pending.operation_id).unwrap().outcome,
+                    if signing_first {
+                        SkillRequestOutcome::Pending
+                    } else {
+                        SkillRequestOutcome::Cancelled
+                    }
+                );
+                assert!(matches!(
+                    store.reserve_signing(1000, &pending.operation_id, &[], None),
+                    Err(BrokerError::RequestMismatch)
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn uncertain_reservation_bytes_never_authorize_signing_or_cancellation() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("requests");
+    let store = SkillRequests::open(&path).unwrap();
+    let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
+    let pending = store
+        .accept(&binding(), &request(), Some(&permission()), 1000, &outbox)
+        .unwrap();
+    // Corrupt evidence never authorizes a retry or terminal decision.
+    fs::write(
+        path.join("signing")
+            .join(format!("{}.json", pending.operation_id)),
+        b"\"",
+    )
+    .unwrap();
+    drop(store);
+    let store = SkillRequests::open(&path).unwrap();
+    assert!(matches!(
+        store.reserve_signing(1000, &pending.operation_id, &[], None),
+        Err(BrokerError::Storage(_))
+    ));
+    assert!(matches!(
+        store.finish(
+            1000,
+            &pending.operation_id,
+            SkillRequestOutcome::Cancelled,
+            &outbox
+        ),
+        Err(BrokerError::Storage(_))
+    ));
+    assert_eq!(
+        store.status(&pending.operation_id).unwrap().outcome,
+        SkillRequestOutcome::Pending
+    );
+}
+
+#[test]
+fn an_unpublished_reservation_cannot_block_a_terminal_decision() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("requests");
+    let store = SkillRequests::open(&path).unwrap();
+    let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
+    let pending = store
+        .accept(&binding(), &request(), Some(&permission()), 1000, &outbox)
+        .unwrap();
+    // A crash before publication may leave its private staging file behind.
+    fs::write(path.join(".orphaned-reservation-fixture"), b"{").unwrap();
+    drop(store);
+    let store = SkillRequests::open(&path).unwrap();
+    assert_eq!(
+        store
+            .finish(
+                1000,
+                &pending.operation_id,
+                SkillRequestOutcome::Cancelled,
+                &outbox
+            )
+            .unwrap()
+            .outcome,
+        SkillRequestOutcome::Cancelled
+    );
+    assert!(matches!(
+        store.reserve_signing(1000, &pending.operation_id, &[], None),
+        Err(BrokerError::RequestMismatch)
+    ));
+}
+
+#[test]
+fn a_source_decision_and_a_batch_signing_reservation_are_atomic() {
+    for source_first in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("requests");
+        let store = SkillRequests::open(&path).unwrap();
+        let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
+        let source = store
+            .accept(
+                &binding(),
+                &supply_request(),
+                Some(&supply_permission()),
+                1000,
+                &outbox,
+            )
+            .unwrap();
+        let mut batch = supply_request();
+        batch.request_id = "batch".into();
+        let batch = store
+            .accept(
+                &binding(),
+                &batch,
+                Some(&supply_permission()),
+                1000,
+                &outbox,
+            )
+            .unwrap();
+        let sources = vec![source.operation_id.clone()];
+        if source_first {
+            assert_eq!(
+                store
+                    .finish(
+                        1000,
+                        &source.operation_id,
+                        SkillRequestOutcome::Cancelled,
+                        &outbox
+                    )
+                    .unwrap()
+                    .outcome,
+                SkillRequestOutcome::Cancelled
+            );
+            assert!(matches!(
+                store.reserve_signing(1000, &batch.operation_id, &sources, None),
+                Err(BrokerError::RequestMismatch)
+            ));
+        } else {
+            store
+                .reserve_signing(1000, &batch.operation_id, &sources, None)
+                .unwrap();
+            assert_eq!(
+                store
+                    .finish(
+                        1000,
+                        &source.operation_id,
+                        SkillRequestOutcome::Cancelled,
+                        &outbox
+                    )
+                    .unwrap()
+                    .outcome,
+                SkillRequestOutcome::Pending
+            );
+            drop(store);
+            let store = SkillRequests::open(&path).unwrap();
+            store.reconcile(&outbox).unwrap();
+            assert_eq!(
+                store.status(&source.operation_id).unwrap().outcome,
+                SkillRequestOutcome::Pending
+            );
+            assert!(matches!(
+                store.reserve_signing(1000, &batch.operation_id, &sources, None),
+                Err(BrokerError::RequestMismatch)
+            ));
+        }
+    }
+}
+
+#[test]
+fn batch_reservation_refuses_foreign_duplicate_and_non_supply_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SkillRequests::open(&root.path().join("requests")).unwrap();
+    let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
+    let source = store
+        .accept(
+            &binding(),
+            &supply_request(),
+            Some(&supply_permission()),
+            1000,
+            &outbox,
+        )
+        .unwrap();
+    let mut target_request = supply_request();
+    target_request.request_id = "target".into();
+    let target = store
+        .accept(
+            &binding(),
+            &target_request,
+            Some(&supply_permission()),
+            1000,
+            &outbox,
+        )
+        .unwrap();
+    let mut foreign_binding = binding();
+    foreign_binding.session_id = "foreign".into();
+    foreign_binding.controller_uid = 2000;
+    let foreign = store
+        .accept(
+            &foreign_binding,
+            &supply_request(),
+            Some(&supply_permission()),
+            1000,
+            &outbox,
+        )
+        .unwrap();
+    let mut session_request = request();
+    session_request.request_id = "session-source".into();
+    let session = store
+        .accept(
+            &binding(),
+            &session_request,
+            Some(&permission()),
+            1000,
+            &outbox,
+        )
+        .unwrap();
+    for sources in [
+        vec![target.operation_id.clone()],
+        vec![source.operation_id.clone(), source.operation_id.clone()],
+        vec!["invalid".into()],
+        vec![foreign.operation_id],
+        vec![session.operation_id],
+    ] {
+        assert!(matches!(
+            store.reserve_signing(1000, &target.operation_id, &sources, None),
+            Err(BrokerError::RequestMismatch)
+        ));
+        assert_eq!(
+            store.status(&target.operation_id).unwrap().outcome,
+            SkillRequestOutcome::Pending
+        );
+    }
+    store
+        .reserve_signing(1000, &target.operation_id, &[source.operation_id], None)
+        .unwrap();
+}
+
+#[test]
 fn concurrent_supply_retries_create_one_request_and_one_projection() {
     let root = tempfile::tempdir().unwrap();
     let store = SkillRequests::open(&root.path().join("requests")).unwrap();

@@ -9,18 +9,21 @@ use crate::{
 };
 use std::{fs, path::Path};
 
-/// Performs or recovers one broker-linked Admission without repeating its signature.
-/// The caller must authenticate and match the broker request before invoking this.
-/// New profile Admissions additionally require the Dossier digest the operator reviewed;
-/// a retry of an already signed ceremony may omit it.
+/// Validates a linked ceremony, orders it with the broker, then revalidates and signs.
+/// The reservation callback must durably order all linked requests against their
+/// terminal outcomes, and must not grant a second attempt after an uncertain reply.
+/// Existing signed evidence is recovered without calling the reservation callback.
+/// New profile Admissions require the operator-reviewed Dossier digest; an
+/// already signed retry may omit it.
 /// # Errors
-/// Refuses malformed operation IDs, changed requests, invalid evidence or persistence failure.
+/// Refuses stale review, unavailable reservation, signing and persistence failures.
 pub fn admit_linked(
     store: &Store,
     policy: &Policy,
     request: &AdmissionRequest<'_>,
     operation: &str,
     reviewed_profile: Option<&Digest>,
+    reserve: &dyn Fn() -> Result<(), AdmissionError>,
 ) -> Result<GenerationRecord, AdmissionError> {
     if !crate::broker::attention::canonical_uuid(operation) {
         return Err(AdmissionError::Chain("invalid approval operation".into()));
@@ -32,6 +35,7 @@ pub fn admit_linked(
         Some(operation),
         None,
         reviewed_profile,
+        Some(reserve),
     )
 }
 
@@ -107,6 +111,31 @@ pub fn verify_linked(
     confirm_record(store, &record)?;
     locked.confirm()?;
     Ok(Some(record.generation))
+}
+
+pub(crate) fn has_linked_record(
+    store: &Store,
+    domain: &str,
+    operation: &str,
+) -> Result<bool, AdmissionError> {
+    let locked = LockedTrust::read_only(store)?;
+    if store
+        .root()
+        .join("activation.pending.json")
+        .try_exists()
+        .map_err(|source| io_error(store.root(), source))?
+    {
+        return Err(AdmissionError::Chain("activation recovery required".into()));
+    }
+    let trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
+    if trust.trust_domain != domain {
+        return Err(AdmissionError::Chain(
+            "Admission trust domain mismatch".into(),
+        ));
+    }
+    let found = find(store, operation)?.is_some();
+    locked.confirm()?;
+    Ok(found)
 }
 
 /// Reads the verified package members of one stored Generation without writing.

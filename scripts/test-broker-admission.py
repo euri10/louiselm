@@ -119,7 +119,7 @@ class LinkedAdmission(unittest.TestCase):
                 as_user(broker, "test", "-r", store / "packages" / subsequent / "files/SKILL.md")
                 as_user(broker, "test", "!", "-w", store / "packages" / subsequent)
 
-                def start(calls, packages=None, supply=False):
+                def start(calls, packages=None, supply=False, source_packages=None, cancel_source=False):
                     env = {"PATH": "/usr/bin:/bin", "HOME": str(state), "LOUISELM_ADMISSION_STATE": str(state),
                            "LOUISELM_ADMISSION_OPERATOR": str(operator.pw_uid), "LOUISELM_ADMISSION_PACKAGE": package,
                            "LOUISELM_ADMISSION_CALLS": str(calls)}
@@ -127,6 +127,10 @@ class LinkedAdmission(unittest.TestCase):
                         env["LOUISELM_ADMISSION_PACKAGES"] = json.dumps(packages)
                     if supply:
                         env["LOUISELM_ADMISSION_SUPPLY"] = "1"
+                    if source_packages is not None:
+                        env["LOUISELM_ADMISSION_SOURCES"] = json.dumps(source_packages)
+                    if cancel_source:
+                        env["LOUISELM_ADMISSION_CANCEL_SOURCE"] = "1"
                     child = subprocess.Popen(["setpriv", "--reuid", str(broker.pw_uid), "--regid", str(broker.pw_gid),
                                               "--clear-groups", str(root / "broker-test"), "--ignored", "--exact",
                                               "skill_requests::installed_linked_admission_server", "--nocapture"], env=env)
@@ -140,8 +144,14 @@ class LinkedAdmission(unittest.TestCase):
                     return child
 
                 self.phase("start broker before signing")
-                server = start(1)  # Lose broker after preflight, before signing finishes.
+                before = set((store / "generations").glob("*.json"))
+                server = start(1)  # Lose broker after inspection, before reservation.
                 operation = (state / "operation").read_text()
+                with self.assertRaisesRegex(RuntimeError, "broker did not reserve signing"):
+                    cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "primary", "--skill-request", operation)
+                self.assertEqual(server.wait(timeout=10), 0)
+                self.assertEqual(set((store / "generations").glob("*.json")), before)
+                server = start(2)  # Reserve, then lose delivery after signing.
                 self.phase("admit with broker loss")
                 linked = cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "primary", "--skill-request", operation)
                 self.assertEqual(server.wait(timeout=10), 0)
@@ -150,12 +160,19 @@ class LinkedAdmission(unittest.TestCase):
                 self.assertEqual(linked["resolution_error"], "broker_unavailable")
                 self.assertEqual(json.loads((state / "status").read_bytes())["outcome"], "pending")
                 self.phase("restart broker for durable evidence")
-                server = start(2)  # Startup reconciles actual durable evidence; no new signature.
+                server = start(3)  # Startup reconciles actual durable evidence; no new signature.
                 self.phase("retry durable admission")
                 retry = cli("generation", "admit", "--member", package + ":read=codex", "--key", private / "missing-key", "--skill-request", operation)
                 self.assertEqual(server.wait(timeout=10), 0)
                 self.assertEqual(retry["admission"], linked["admission"])
                 self.assertEqual(retry["broker_status"]["outcome"], "approved")
+                server = start(1)
+                replay_without_broker = cli("generation", "admit", "--member", package + ":read=codex",
+                                            "--key", private / "missing-key", "--skill-request", operation)
+                self.assertEqual(server.wait(timeout=10), 0)
+                self.assertEqual(replay_without_broker["admission"], linked["admission"])
+                self.assertIsNone(replay_without_broker["broker_status"])
+                self.assertEqual(replay_without_broker["resolution_error"], "broker_unavailable")
                 as_user(broker, "test", "-r", store / "trust/roles.json")
                 as_user(broker, "test", "!", "-w", store / "generations")
                 self.assertFalse((store / "pins.jsonl").exists(), "approval never activates supply")
@@ -202,20 +219,78 @@ class LinkedAdmission(unittest.TestCase):
                     cli("generation", "admit", *members, "--key", private / "primary",
                         "--skill-request", operation, "--registry", registry)
                 self.assertEqual(server.wait(timeout=10), 0)
-                server = start(1, packages, True)
+                server = start(2, packages, True)
                 linked_profile = cli("generation", "admit", *members, "--key", private / "primary",
                                      "--skill-request", operation, "--registry", registry,
                                      "--reviewed-profile-dossier", reviewed_profile)
                 self.assertEqual(server.wait(timeout=10), 0)
                 self.assertEqual(len(linked_profile["admission"]["payload"]["members"]), 2)
                 self.assertEqual(linked_profile["admission"]["state"], "pending_witness")
-                server = start(2, packages, True)
+                server = start(3, packages, True)
                 replay = cli("generation", "admit", *members, "--key", private / "missing-key",
                              "--skill-request", operation, "--registry", registry)
                 self.assertEqual(server.wait(timeout=10), 0)
                 self.assertEqual(replay["broker_status"]["outcome"], "approved")
                 self.assertEqual(replay["admission"], linked_profile["admission"])
                 self.assertFalse((store / "pins.jsonl").exists())
+
+                self.phase("prepare independently submitted profile sources")
+                source_packages = []
+                for index in range(2):
+                    source_candidate = private / f"source-profile-{index}"
+                    source_candidate.mkdir(mode=0o755)
+                    os.chown(source_candidate, operator.pw_uid, operator.pw_gid)
+                    (source_candidate / "PROFILE.md").write_text(
+                        f"---\ntype: louiselm/operator-profile\n---\nSource preference {index}.\n")
+                    source_packages.append(cli("package", source_candidate)["digest"])
+
+                state = root / "cancelled-source-state"
+                state.mkdir(mode=0o700)
+                os.chown(state, broker.pw_uid, broker.pw_gid)
+                server = start(2, packages, True, source_packages, True)
+                operation = (state / "operation").read_text()
+                sources = json.loads((state / "sources").read_bytes())
+                source_args = [item for source_id in sources for item in ("--source-request", source_id)]
+                before = set((store / "generations").glob("*.json"))
+                with self.assertRaisesRegex(RuntimeError, "broker did not reserve signing"):
+                    cli("generation", "admit", *members, "--key", private / "primary",
+                        "--skill-request", operation, "--registry", registry,
+                        "--reviewed-profile-dossier", reviewed_profile, *source_args)
+                self.assertEqual(server.wait(timeout=10), 0)
+                self.assertEqual(set((store / "generations").glob("*.json")), before)
+                self.assertIn("cancelled", [item["outcome"] for item in json.loads((state / "source-statuses").read_bytes())])
+
+                state = root / "signed-sources-state"
+                state.mkdir(mode=0o700)
+                os.chown(state, broker.pw_uid, broker.pw_gid)
+                server = start(2, packages, True, source_packages)
+                operation = (state / "operation").read_text()
+                sources = json.loads((state / "sources").read_bytes())
+                source_args = [item for source_id in sources for item in ("--source-request", source_id)]
+                linked_sources = cli("generation", "admit", *members, "--key", private / "primary",
+                                     "--skill-request", operation, "--registry", registry,
+                                     "--reviewed-profile-dossier", reviewed_profile, *source_args)
+                self.assertEqual(server.wait(timeout=10), 0)
+                server = start(3, packages, True, source_packages)
+                replay = cli("generation", "admit", *members, "--key", private / "missing-key",
+                             "--skill-request", operation, "--registry", registry,
+                             "--reviewed-profile-dossier", reviewed_profile, *source_args)
+                self.assertEqual(server.wait(timeout=10), 0)
+                self.assertEqual(replay["admission"], linked_sources["admission"])
+                self.assertEqual(replay["broker_status"]["outcome"], "approved")
+                statuses = json.loads((state / "source-statuses").read_bytes())
+                self.assertEqual([item["outcome"] for item in statuses], ["superseded", "superseded"])
+                self.assertTrue(all(item["admission"] == linked_sources["admission"]["generation"] for item in statuses))
+                before = set((store / "generations").glob("*.json"))
+                for changed_sources in ([], sources[:1]):
+                    server = start(2, packages, True, source_packages)
+                    changed_args = [item for source_id in changed_sources for item in ("--source-request", source_id)]
+                    with self.assertRaisesRegex(RuntimeError, "Admission already signed; source requests could not be confirmed"):
+                        cli("generation", "admit", *members, "--key", private / "missing-key",
+                            "--skill-request", operation, "--registry", registry,
+                            "--reviewed-profile-dossier", reviewed_profile, *changed_args)
+                    self.assertEqual(server.wait(timeout=10), 0)
+                    self.assertEqual(set((store / "generations").glob("*.json")), before)
 
                 self.phase("prepare separately activated withdrawal supply")
                 store = root / "withdrawal-store"

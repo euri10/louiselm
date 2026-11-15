@@ -53,7 +53,7 @@ fn extension_reply_must_answer_the_exact_request_and_session() {
                     |_, _| panic!("not dependencies"),
                     |_, _| panic!("not status"),
                     |_| panic!("not conformance"),
-                    |_, _| panic!("not Skill control"),
+                    |_, _, _| panic!("not Skill control"),
                     |_, _| panic!("not Beads control"),
                     |_, _| panic!("not retention"),
                     |_, _, _| panic!("not waiver"),

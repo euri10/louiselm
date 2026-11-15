@@ -444,6 +444,7 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
         &linked_request(&member, &signer),
         operation,
         Some(&reviewed),
+        &|| Ok(()),
     )
     .unwrap();
     assert_eq!(fs::read(&mirror).unwrap(), FIRST.as_bytes());
@@ -454,6 +455,7 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
         &linked_request(&member, &RefuseSigning),
         operation,
         None,
+        &|| Err(admission::AdmissionError::SigningReservation),
     )
     .unwrap();
     assert_eq!(recovered.generation, first.generation);

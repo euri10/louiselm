@@ -250,6 +250,13 @@ pub fn run() -> Result<i32, CliError> {
 }
 
 fn validate_admission_options(command: &str, options: &Options) -> Result<(), CliError> {
+    if !options.source_requests.is_empty()
+        && (options.skill_request.is_none() || options.reviewed_profile_dossier.is_none())
+    {
+        return Err(CliError::Invalid(
+            "--source-request requires --skill-request and --reviewed-profile-dossier".into(),
+        ));
+    }
     if options.skill_request.is_some()
         && (command != "generation" || options.subject("generation")? != "admit")
     {
@@ -319,6 +326,8 @@ struct Options {
     key: Option<String>,
     #[arg(long)]
     skill_request: Option<String>,
+    #[arg(long = "source-request")]
+    source_requests: Vec<String>,
     #[arg(long)]
     reviewed_profile_dossier: Option<String>,
     /// Exact current generation/2 to follow with a freshly reviewed generation/3.

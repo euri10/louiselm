@@ -96,7 +96,7 @@ fn operator_reads_exact_large_report_or_absence_without_a_live_supervisor() {
                                 .map_err(|_| InspectError::StatusUnavailable)?
                                 .ok_or(InspectError::UnknownSession)
                         },
-                        |_, _| panic!("inspection changes no authority"),
+                        |_, _, _| panic!("inspection changes no authority"),
                         |_, _| panic!("inspection changes no Beads state"),
                         |_, _| panic!("inspection changes no retention state"),
                         |_, _, _| panic!("inspection changes no waiver"),

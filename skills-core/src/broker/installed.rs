@@ -437,6 +437,40 @@ impl InstalledBroker {
             .skill_request_control(operator_uid, operation_id, outcome)
     }
 
+    /// Reserves one linked signing attempt and its source requests.
+    /// # Errors
+    /// Refuses invalid, foreign, ended or already reserved requests.
+    pub fn reserve_skill_signing(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        sources: &[String],
+    ) -> Result<crate::skill_request::SkillRequestStatus, BrokerError> {
+        let source = super::admission_source::AdmissionSource::installed()
+            .map_err(BrokerError::Storage)?
+            .ok_or(BrokerError::InvalidGrant)?;
+        if source.operator_uid != self.verifier.config().operator_uid
+            || source.broker_uid != self.verifier.config().broker_uid
+        {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        self.service
+            .reserve_skill_signing(operator_uid, operation_id, sources, &source)
+    }
+
+    /// Confirms the source set of one existing signing reservation.
+    /// # Errors
+    /// Refuses absent, foreign or mismatched reservations.
+    pub fn inspect_skill_signing(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        sources: &[String],
+    ) -> Result<crate::skill_request::SkillRequestStatus, BrokerError> {
+        self.service
+            .inspect_skill_signing(operator_uid, operation_id, sources)
+    }
+
     /// Inspects or settles one Beads operation for its authenticated operator.
     /// The original mutation outcome and spent budget never change.
     /// # Errors

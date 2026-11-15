@@ -275,7 +275,14 @@ fn linked_profile_admission_can_be_recovered_after_it_becomes_current() {
     };
     let operation = "12345678-1234-4234-8234-123456789abc";
     assert!(matches!(
-        admission::admit_linked(&store, &Policy::embedded(), &request, operation, None),
+        admission::admit_linked(
+            &store,
+            &Policy::embedded(),
+            &request,
+            operation,
+            None,
+            &|| Err(admission::AdmissionError::SigningReservation)
+        ),
         Err(admission::AdmissionError::ProfileReviewRequired)
     ));
     let record = admission::admit_linked(
@@ -284,6 +291,7 @@ fn linked_profile_admission_can_be_recovered_after_it_becomes_current() {
         &request,
         operation,
         Some(&reviewed),
+        &|| Ok(()),
     )
     .unwrap();
     let witness = GitWitness::new(
@@ -302,8 +310,15 @@ fn linked_profile_admission_can_be_recovered_after_it_becomes_current() {
         signer: &NoSigning,
         ..request
     };
-    let error = admission::admit_linked(&store, &Policy::embedded(), &changed, operation, None)
-        .unwrap_err();
+    let error = admission::admit_linked(
+        &store,
+        &Policy::embedded(),
+        &changed,
+        operation,
+        None,
+        &|| Err(admission::AdmissionError::SigningReservation),
+    )
+    .unwrap_err();
     assert!(
         matches!(error, admission::AdmissionError::Chain(message) if message == "linked Admission request changed")
     );
@@ -320,6 +335,7 @@ fn linked_profile_admission_can_be_recovered_after_it_becomes_current() {
         },
         operation,
         None,
+        &|| Err(admission::AdmissionError::SigningReservation),
     )
     .unwrap();
     assert_eq!(retry.generation, record.generation);
@@ -406,6 +422,7 @@ fn profile_review_must_be_repeated_if_the_active_profile_changes_before_signing(
         &request(&proposed),
         operation,
         Some(&reviewed_digest),
+        &|| Err(admission::AdmissionError::SigningReservation),
     )
     .unwrap_err();
     assert!(matches!(
@@ -446,6 +463,7 @@ fn profile_review_must_be_repeated_if_the_active_profile_changes_before_signing(
         &request(&proposed),
         operation,
         Some(&updated_digest),
+        &|| Ok(()),
     )
     .unwrap();
     assert_eq!(
@@ -521,6 +539,7 @@ fn a_profile_batch_can_preserve_a_skill_with_the_same_scope() {
         &request,
         operation,
         Some(&reviewed),
+        &|| Ok(()),
     )
     .unwrap();
     let mut packages = [proposed.to_string(), skill.to_string()];
@@ -611,6 +630,7 @@ fn a_linked_profile_update_cannot_silently_drop_existing_skills() {
         &request,
         "12345678-1234-4234-8234-123456789abc",
         None,
+        &|| Err(admission::AdmissionError::SigningReservation),
     )
     .unwrap_err();
     assert!(matches!(error, AdmissionError::ProfileWouldChangeSkills));
@@ -635,6 +655,7 @@ fn a_linked_profile_update_cannot_silently_drop_existing_skills() {
         &widened,
         "12345678-1234-4234-8234-123456789abc",
         None,
+        &|| Err(admission::AdmissionError::SigningReservation),
     )
     .unwrap_err();
     assert!(matches!(error, AdmissionError::ProfileWouldChangeSkills));

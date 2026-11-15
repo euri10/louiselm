@@ -35,7 +35,7 @@ fn dependency_operator_requires_exact_durable_batch_acknowledgement() {
                     },
                     |_, _| panic!("not Session lookup"),
                     |_| panic!("not conformance lookup"),
-                    |_, _| panic!("not Skill control"),
+                    |_, _, _| panic!("not Skill control"),
                     |_, _| panic!("not Beads control"),
                     |_, _| panic!("not retention control"),
                     |_, _, _| panic!("not waiver control"),

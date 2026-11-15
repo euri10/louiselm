@@ -148,6 +148,12 @@ enum Request {
         operation_id: String,
         outcome: Option<SkillRequestOutcome>,
     },
+    #[serde(rename = "louiselm.operator-skill-signing/1")]
+    SkillSigning {
+        operation_id: String,
+        sources: Vec<String>,
+        inspect: bool,
+    },
 }
 
 /// Opens an authenticated stream that the broker hands to the producing Session.
@@ -861,11 +867,88 @@ pub fn skill_request(
         serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
     if !status.valid()
         || status.operation_id != operation_id
-        || outcome.is_some_and(|expected| status.outcome != expected)
+        || outcome.is_some_and(|expected| {
+            status.outcome != expected
+                && !matches!(
+                    status.outcome,
+                    SkillRequestOutcome::Pending
+                        | SkillRequestOutcome::Approved
+                        | SkillRequestOutcome::Superseded
+                )
+        })
     {
         return Err(InspectError::StatusUnavailable);
     }
     Ok(status)
+}
+
+/// Reserves a single linked signing attempt through the authenticated broker.
+/// A lost reply or failed signing leaves the request pending for reconciliation;
+/// retrying the reservation cannot authorize another signature.
+/// # Errors
+/// Refuses ended, already reserved, unauthenticated or unavailable requests.
+pub fn reserve_skill_signing(
+    path: &Path,
+    broker_uid: u32,
+    operation_id: &str,
+    sources: &[String],
+    timeout: Duration,
+) -> Result<SkillRequestStatus, InspectError> {
+    signing_request(path, broker_uid, operation_id, sources, false, timeout)
+}
+
+/// Confirms the source set of an existing linked signing reservation.
+/// # Errors
+/// Refuses absent, mismatched, unauthenticated or unavailable reservations.
+pub fn inspect_skill_signing(
+    path: &Path,
+    broker_uid: u32,
+    operation_id: &str,
+    sources: &[String],
+    timeout: Duration,
+) -> Result<SkillRequestStatus, InspectError> {
+    signing_request(path, broker_uid, operation_id, sources, true, timeout)
+}
+
+fn signing_request(
+    path: &Path,
+    broker_uid: u32,
+    operation_id: &str,
+    sources: &[String],
+    inspect: bool,
+    timeout: Duration,
+) -> Result<SkillRequestStatus, InspectError> {
+    if !valid_signing_sources(operation_id, sources) {
+        return Err(InspectError::InvalidRequest);
+    }
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::SkillSigning {
+            operation_id: operation_id.into(),
+            sources: sources.to_vec(),
+            inspect,
+        },
+        timeout,
+    )?;
+    let status: SkillRequestStatus =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if !status.valid()
+        || status.operation_id != operation_id
+        || (!inspect && status.outcome != SkillRequestOutcome::Pending)
+    {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(status)
+}
+
+fn valid_signing_sources(operation_id: &str, sources: &[String]) -> bool {
+    super::attention::canonical_uuid(operation_id)
+        && sources.len() <= 32
+        && sources.windows(2).all(|pair| pair[0] < pair[1])
+        && sources
+            .iter()
+            .all(|source| source != operation_id && super::attention::canonical_uuid(source))
 }
 
 fn exchange(
@@ -1049,6 +1132,7 @@ impl OperatorServer {
         skill: impl FnOnce(
             &str,
             Option<SkillRequestOutcome>,
+            &[String],
         ) -> Result<SkillRequestStatus, InspectError>,
         beads: impl FnOnce(&str, Option<&BeadsControlDecision>) -> Result<BeadsInspection, InspectError>,
         retention: impl FnOnce(
@@ -1172,7 +1256,23 @@ impl OperatorServer {
                     {
                         return Err(InspectError::InvalidRequest);
                     }
-                    serde_json::to_vec(&skill(&operation_id, outcome)?)
+                    serde_json::to_vec(&skill(&operation_id, outcome, &[])?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
+                Request::SkillSigning {
+                    operation_id,
+                    sources,
+                    inspect,
+                } => {
+                    if !valid_signing_sources(&operation_id, &sources) {
+                        return Err(InspectError::InvalidRequest);
+                    }
+                    let action = if inspect {
+                        SkillRequestOutcome::Approved
+                    } else {
+                        SkillRequestOutcome::Pending
+                    };
+                    serde_json::to_vec(&skill(&operation_id, Some(action), &sources)?)
                         .map_err(|_| InspectError::StatusUnavailable)
                 }
             }

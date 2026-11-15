@@ -14,6 +14,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -34,6 +35,24 @@ pub(super) struct Record {
     pub request: SkillRequest,
     pub operation_id: String,
     pub created_at_ms: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SigningReservation {
+    operation_id: String,
+    sources: Vec<String>,
+}
+
+impl SigningReservation {
+    fn valid(&self) -> bool {
+        super::attention::canonical_uuid(&self.operation_id)
+            && self.sources.len() <= 32
+            && self.sources.windows(2).all(|pair| pair[0] < pair[1])
+            && self.sources.iter().all(|source| {
+                source != &self.operation_id && super::attention::canonical_uuid(source)
+            })
+    }
 }
 
 impl Record {
@@ -76,7 +95,14 @@ pub(super) struct SkillRequests {
 
 impl SkillRequests {
     pub(super) fn open(root: &Path) -> Result<Self, BrokerError> {
-        for directory in ["requests", "outcomes", "ended", "runs", "admissions"] {
+        for directory in [
+            "requests",
+            "outcomes",
+            "ended",
+            "runs",
+            "admissions",
+            "signing",
+        ] {
             fs::create_dir_all(root.join(directory)).map_err(BrokerError::Storage)?;
         }
         sync_directory(root)?;
@@ -155,9 +181,102 @@ impl SkillRequests {
         {
             return Err(BrokerError::ControllerMismatch);
         }
-        self.finish_record(&record, outcome)?;
+        self.finish_pending(&record, outcome)?;
         self.project(&record, outbox)?;
         self.result(&record)
+    }
+
+    pub(super) fn reserve_signing(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        sources: &[String],
+        admission_source: Option<&super::admission_source::AdmissionSource>,
+    ) -> Result<SkillRequestStatus, BrokerError> {
+        let _guard = lock(&self.writing);
+        let record = self.record(operation_id)?;
+        if operator_uid != record.binding.controller_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        let reservation = SigningReservation {
+            operation_id: operation_id.into(),
+            sources: sources.to_vec(),
+        };
+        if !reservation.valid()
+            || (!sources.is_empty() && record.request.subject != SkillSubject::Supply)
+            || self.result(&record)?.outcome != SkillRequestOutcome::Pending
+            || self.ended(&record.subject())?
+            || self.signing(&record)?.is_some()
+        {
+            return Err(BrokerError::RequestMismatch);
+        }
+        if let Some(source) = admission_source {
+            if source.operator_uid != operator_uid {
+                return Err(BrokerError::ControllerMismatch);
+            }
+            if source
+                .verify(&record.operation_id, &record.request)?
+                .is_some()
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+        }
+        for operation in sources {
+            let source = self.record(operation)?;
+            if source.binding.controller_uid != operator_uid
+                || source.request.subject != SkillSubject::Supply
+                || self.result(&source)?.outcome != SkillRequestOutcome::Pending
+                || self.signing(&source)?.is_some()
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+            if let Some(admission_source) = admission_source
+                && admission_source
+                    .verify(&source.operation_id, &source.request)?
+                    .is_some()
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+        }
+        // Publish the complete source set atomically. A lost reply or uncertain
+        // directory sync cannot authorize a second attempt after restart.
+        let bytes = serde_json::to_vec(&reservation).map_err(|_| BrokerError::InvalidGrant)?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(&self.root).map_err(BrokerError::Storage)?;
+        temporary.write_all(&bytes).map_err(BrokerError::Storage)?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(BrokerError::Storage)?;
+        temporary
+            .persist_noclobber(self.signing_path(&record.operation_id))
+            .map_err(|error| BrokerError::Storage(error.error))?;
+        sync_directory(&self.root.join("signing"))?;
+        self.result(&record)
+    }
+
+    pub(super) fn inspect_signing(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        sources: &[String],
+    ) -> Result<SkillRequestStatus, BrokerError> {
+        let _guard = lock(&self.writing);
+        let record = self.record(operation_id)?;
+        if operator_uid != record.binding.controller_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        match self.signing(&record)? {
+            Some(reservation)
+                if reservation.operation_id == operation_id && reservation.sources == sources =>
+            {
+                self.result(&record)
+            }
+            // Older signed operations may predate reservations; they cannot
+            // acquire a new source set during recovery.
+            None if sources.is_empty() => self.result(&record),
+            _ => Err(BrokerError::RequestMismatch),
+        }
     }
 
     pub(super) fn status(&self, operation_id: &str) -> Result<SkillRequestStatus, BrokerError> {
@@ -246,7 +365,10 @@ impl SkillRequests {
             outcome,
             packages: record.request.packages.clone(),
             agents: record.request.agents.clone(),
-            admission: if outcome == SkillRequestOutcome::Approved {
+            admission: if matches!(
+                outcome,
+                SkillRequestOutcome::Approved | SkillRequestOutcome::Superseded
+            ) {
                 let path = self.root.join("admissions").join(&record.operation_id);
                 let digest: String = read_record(&path)?.ok_or(BrokerError::InvalidGrant)?;
                 if Digest::parse(&digest).is_err() {
@@ -270,18 +392,109 @@ impl SkillRequests {
         if self.result(record)?.outcome != SkillRequestOutcome::Pending {
             return self.project(record, outbox);
         }
-        if self.ended(&record.subject())? {
-            self.finish_record(record, SkillRequestOutcome::Cancelled)?;
-        } else if let Some(generation) = source.verify(&record.operation_id, &record.request)? {
-            let path = self.root.join("admissions").join(&record.operation_id);
-            match read_record::<String>(&path)? {
-                Some(prior) if prior == generation => sync_file(&path)?,
-                Some(_) => return Err(BrokerError::RequestMismatch),
-                None => write_new_record(&path, &generation)?,
+        let reservation = self.signing(record)?;
+        let target = match &reservation {
+            Some(reservation) if reservation.operation_id != record.operation_id => {
+                let target = self.record(&reservation.operation_id)?;
+                if target.binding.controller_uid != record.binding.controller_uid
+                    || target.request.subject != SkillSubject::Supply
+                    || record.request.subject != SkillSubject::Supply
+                {
+                    return Err(BrokerError::RequestMismatch);
+                }
+                target
             }
-            self.finish_record(record, SkillRequestOutcome::Approved)?;
+            _ => record.clone(),
+        };
+        if let Some(generation) = source.verify(&target.operation_id, &target.request)? {
+            if target.operation_id == record.operation_id {
+                self.admit_result(record, &generation, SkillRequestOutcome::Approved)?;
+            } else {
+                let target_status = self.result(&target)?;
+                if target_status.outcome == SkillRequestOutcome::Pending {
+                    self.admit_result(&target, &generation, SkillRequestOutcome::Approved)?;
+                    self.project(&target, outbox)?;
+                } else if target_status.outcome != SkillRequestOutcome::Approved
+                    || target_status.admission.as_deref() != Some(generation.as_str())
+                {
+                    return Err(BrokerError::RequestMismatch);
+                }
+                self.admit_result(record, &generation, SkillRequestOutcome::Superseded)?;
+            }
+        } else if self.ended(&record.subject())? && reservation.is_none() {
+            self.finish_record(record, SkillRequestOutcome::Cancelled)?;
         }
         self.project(record, outbox)
+    }
+
+    fn admit_result(
+        &self,
+        record: &Record,
+        generation: &str,
+        outcome: SkillRequestOutcome,
+    ) -> Result<(), BrokerError> {
+        let path = self.root.join("admissions").join(&record.operation_id);
+        match read_record::<String>(&path)? {
+            Some(prior) if prior == generation => sync_file(&path)?,
+            Some(_) => return Err(BrokerError::RequestMismatch),
+            None => write_new_record(&path, &generation)?,
+        }
+        self.finish_record(record, outcome)
+    }
+
+    fn finish_pending(
+        &self,
+        record: &Record,
+        outcome: SkillRequestOutcome,
+    ) -> Result<(), BrokerError> {
+        if self.result(record)?.outcome != SkillRequestOutcome::Pending {
+            return self.finish_record(record, outcome);
+        }
+        if self.signing(record)?.is_some() {
+            return Ok(());
+        }
+        let source =
+            super::admission_source::AdmissionSource::installed().map_err(BrokerError::Storage)?;
+        if let Some(source) = source {
+            if source.operator_uid != record.binding.controller_uid {
+                return Err(BrokerError::ControllerMismatch);
+            }
+            if let Some(generation) = source.verify(&record.operation_id, &record.request)? {
+                return self.admit_result(record, &generation, SkillRequestOutcome::Approved);
+            }
+        }
+        self.finish_record(record, outcome)
+    }
+
+    fn signing(&self, record: &Record) -> Result<Option<SigningReservation>, BrokerError> {
+        // ponytail: bounded linear scan; add a durable index if request volume warrants it.
+        let entries = fs::read_dir(self.root.join("signing"))
+            .map_err(BrokerError::Storage)?
+            .take(4097)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(BrokerError::Storage)?;
+        if entries.len() > 4096 {
+            return Err(corrupt("signing reservation bound exceeded"));
+        }
+        let mut found = None;
+        for entry in entries {
+            let reservation: SigningReservation =
+                read_record(&entry.path())?.ok_or(BrokerError::InvalidGrant)?;
+            if !reservation.valid() || entry.path() != self.signing_path(&reservation.operation_id)
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+            if reservation.operation_id == record.operation_id
+                || reservation.sources.contains(&record.operation_id)
+            {
+                if found.is_some() {
+                    return Err(BrokerError::RequestMismatch);
+                }
+                sync_file(&entry.path())?;
+                found = Some(reservation);
+            }
+        }
+        Ok(found)
     }
 
     fn finish_record(
@@ -354,7 +567,7 @@ impl SkillRequests {
             .filter(|record| record.subject() == *subject)
         {
             if self.result(record)?.outcome == SkillRequestOutcome::Pending {
-                self.finish_record(record, SkillRequestOutcome::Cancelled)?;
+                self.finish_pending(record, SkillRequestOutcome::Cancelled)?;
             }
             self.project(record, outbox)?;
         }
@@ -386,7 +599,7 @@ impl SkillRequests {
             if self.ended(&record.subject())?
                 && self.result(&record)?.outcome == SkillRequestOutcome::Pending
             {
-                self.finish_record(&record, SkillRequestOutcome::Cancelled)?;
+                self.finish_pending(&record, SkillRequestOutcome::Cancelled)?;
             }
             self.project(&record, outbox)?;
         }
@@ -437,6 +650,9 @@ impl SkillRequests {
     }
     fn outcome_path(&self, operation: &str) -> PathBuf {
         self.root.join("outcomes").join(format!("{operation}.json"))
+    }
+    fn signing_path(&self, operation: &str) -> PathBuf {
+        self.root.join("signing").join(format!("{operation}.json"))
     }
     fn run_path(&self, run: &str) -> PathBuf {
         self.root.join("runs").join(format!("{run}.json"))

@@ -113,6 +113,37 @@ impl BrokerService {
         }
     }
 
+    /// Reserves one trusted signing attempt and all source requests atomically.
+    /// # Errors
+    /// Refuses ended, foreign, mismatched or previously reserved requests.
+    pub fn reserve_skill_signing(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        sources: &[String],
+        admission_source: &super::admission_source::AdmissionSource,
+    ) -> Result<SkillRequestStatus, BrokerError> {
+        self.skill_requests.reserve_signing(
+            operator_uid,
+            operation_id,
+            sources,
+            Some(admission_source),
+        )
+    }
+
+    /// Confirms the exact source set of an existing signing reservation.
+    /// # Errors
+    /// Refuses absent, mismatched or foreign reservations.
+    pub fn inspect_skill_signing(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        sources: &[String],
+    ) -> Result<SkillRequestStatus, BrokerError> {
+        self.skill_requests
+            .inspect_signing(operator_uid, operation_id, sources)
+    }
+
     pub(super) fn refresh_run(
         &self,
         endpoint: &AttentionEndpoint,

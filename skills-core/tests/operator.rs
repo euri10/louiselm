@@ -85,7 +85,7 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("not Session lookup"),
                     |_| panic!("not conformance lookup"),
-                    |_, _| panic!("not skill control"),
+                    |_, _, _| panic!("not skill control"),
                     |id, received| {
                         assert!(received.is_some());
                         Ok(BeadsInspection {
@@ -159,7 +159,7 @@ fn beads_operator_request_reaches_authenticated_control() {
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| panic!("not Session lookup"),
                 |_| panic!("not conformance lookup"),
-                |_, _| panic!("not skill control"),
+                |_, _, _| panic!("not skill control"),
                 |id, decision| {
                     use louiselm_skills::beads_mutation::{
                         BeadsInspection, BeadsInspectionDetail, BeadsMutationOutcome,
@@ -231,7 +231,7 @@ fn wrong_uid_is_refused_before_session_lookup() {
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| panic!("unauthenticated lookup"),
                 |_| panic!("unauthenticated conformance lookup"),
-                |_, _| panic!("unauthenticated skill control"),
+                |_, _, _| panic!("unauthenticated skill control"),
                 |_, _| panic!("unauthenticated Beads control"),
                 |_, _| panic!("unexpected retention control"),
                 |_, _, _| panic!("not waiver control"),
@@ -265,7 +265,7 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
                     Err(InspectError::UnknownSession)
                 },
                 |_| panic!("unexpected conformance lookup"),
-                |_, _| panic!("unexpected skill control"),
+                |_, _, _| panic!("unexpected skill control"),
                 |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
                 |_, _, _| panic!("not waiver control"),
@@ -331,14 +331,33 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
     let uid = rustix::process::geteuid().as_raw();
     let id = "12345678-1234-4234-8234-123456789abc";
     let server = OperatorServer::bind(&path, uid).unwrap();
-    let worker =
-        thread::spawn(move || {
-            for expected in [
-                None,
-                Some(SkillRequestOutcome::Rejected),
-                Some(SkillRequestOutcome::Cancelled),
-            ] {
-                server
+    let cases = [
+        (None, SkillRequestOutcome::Pending),
+        (
+            Some(SkillRequestOutcome::Rejected),
+            SkillRequestOutcome::Rejected,
+        ),
+        (
+            Some(SkillRequestOutcome::Cancelled),
+            SkillRequestOutcome::Cancelled,
+        ),
+        (
+            Some(SkillRequestOutcome::Cancelled),
+            SkillRequestOutcome::Pending,
+        ),
+        (
+            Some(SkillRequestOutcome::Cancelled),
+            SkillRequestOutcome::Approved,
+        ),
+        (
+            Some(SkillRequestOutcome::Cancelled),
+            SkillRequestOutcome::Superseded,
+        ),
+    ];
+    let server_cases = cases;
+    let worker = thread::spawn(move || {
+        for (expected, reply) in server_cases {
+            server
                 .serve_once(
                     |_, _| Err(InspectError::UnknownSession),
                     |_| panic!("not launch-input staging"),
@@ -347,39 +366,42 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("not Session inspection"),
                     |_| panic!("not conformance inspection"),
-                    |operation, outcome| {
+                    |operation, outcome, sources| {
                         assert_eq!(operation, id);
                         assert_eq!(outcome, expected);
+                        assert_eq!(sources, &[] as &[String]);
                         Ok(SkillRequestStatus {
                             request_id: "request".into(),
                             operation_id: operation.into(),
                             subject: louiselm_skills::skill_request::SkillSubject::Session,
                             session_id: "session-1".into(),
                             run_id: "run-1".into(),
-                            outcome: outcome.unwrap_or(SkillRequestOutcome::Pending),
+                            outcome: reply,
                             packages: vec![louiselm_skills::Digest::of(b"skill").to_string()],
                             agents: vec!["codex".into()],
-                            admission: None,
+                            admission: matches!(
+                                reply,
+                                SkillRequestOutcome::Approved | SkillRequestOutcome::Superseded
+                            )
+                            .then(|| louiselm_skills::Digest::of(b"result").to_string()),
                         })
                     },
                     |_, _| panic!("unexpected Beads control"),
                     |_, _| panic!("unexpected retention control"),
                     |_, _, _| panic!("not waiver control"),
-|_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
-)
+                    |_, _, _| {
+                        Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown)
+                    },
+                )
                 .unwrap();
-            }
-        });
-    for outcome in [
-        None,
-        Some(SkillRequestOutcome::Rejected),
-        Some(SkillRequestOutcome::Cancelled),
-    ] {
+        }
+    });
+    for (outcome, expected) in cases {
         assert_eq!(
             skill_request(&path, uid, id, outcome, Duration::from_secs(2))
                 .unwrap()
                 .outcome,
-            outcome.unwrap_or(SkillRequestOutcome::Pending)
+            expected
         );
     }
     worker.join().unwrap();
@@ -421,7 +443,7 @@ fn conformance_inspection_distinguishes_an_unknown_session() {
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| Err(InspectError::UnknownSession),
                 |_| Err(InspectError::UnknownSession),
-                |_, _| panic!("not a skill decision"),
+                |_, _, _| panic!("not a skill decision"),
                 |_, _| panic!("not a Beads decision"),
                 |_, _| panic!("not a retention decision"),
                 |_, _, _| panic!("not waiver control"),
@@ -469,7 +491,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("invalid lookup"),
                     |_| panic!("invalid conformance lookup"),
-                    |_, _| panic!("invalid skill control"),
+                    |_, _, _| panic!("invalid skill control"),
                     |_, _| panic!("invalid Beads control"),
                     |_, _| panic!("unexpected retention control"),
                     |_, _, _| panic!("not waiver control"),
@@ -488,7 +510,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| Err(InspectError::UnknownSession),
                 |_| panic!("unexpected conformance lookup"),
-                |_, _| panic!("unexpected skill control"),
+                |_, _, _| panic!("unexpected skill control"),
                 |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
                 |_, _, _| panic!("not waiver control"),

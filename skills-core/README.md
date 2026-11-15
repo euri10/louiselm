@@ -150,6 +150,7 @@ recovery reset --store PATH
 generation admit --member DIGEST[:DEPTH][=AGENT,...] ... --key PRIVKEY
                  [--all-agents --registry DIR]
                  [--skill-request OPERATION_UUID]
+                 [--source-request OPERATION_UUID ...]
                  [--reviewed-profile-dossier DOSSIER_DIGEST]
                  [--transition-from CURRENT_GENERATION_2_DIGEST]
 generation witness DIGEST --remote URL [--branch B]
@@ -172,6 +173,11 @@ refuses it as the current predecessor until the operator explicitly names its
 exact digest with `generation admit --transition-from DIGEST` and supplies the
 complete, freshly reviewed member set. This flag is exclusive to standalone
 Admission; it cannot be combined with `--skill-request`.
+
+For a reviewed, broker-linked Operator profile batch, `--source-request`
+identifies each pending Supply request the operator associates with the candidate. The
+broker orders those requests against signing and reports them as superseded only
+after independently verifying the signed batch. See [broker lifecycle](../docs/broker-lifecycle.md).
 
 The transition verifies the signed history under the existing trust domain and
 enrolled/retired-key rules, requires the current predecessor's witness evidence,

@@ -97,7 +97,7 @@ fn serve(
                 |_, _| panic!("not dependencies"),
                 |_, _| panic!("not inspection"),
                 |_| panic!("not conformance"),
-                |_, _| panic!("not skill"),
+                |_, _, _| panic!("not skill"),
                 |_, _| panic!("not Beads"),
                 |_, _| panic!("not retention"),
                 |_, _, _| panic!("not waiver"),

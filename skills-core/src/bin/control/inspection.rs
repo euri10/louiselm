@@ -413,10 +413,17 @@ impl Queries {
                                 .map_err(|_| InspectError::StatusUnavailable)?
                                 .ok_or(InspectError::UnknownSession)
                         },
-                        |id, outcome| {
-                            broker
-                                .skill_request_control(owner.operator_uid, id, outcome)
-                                .map_err(|_| InspectError::StatusUnavailable)
+                        |id, outcome, sources| {
+                            let result = match outcome {
+                                Some(
+                                    louiselm_skills::skill_request::SkillRequestOutcome::Pending,
+                                ) => broker.reserve_skill_signing(owner.operator_uid, id, sources),
+                                Some(
+                                    louiselm_skills::skill_request::SkillRequestOutcome::Approved,
+                                ) => broker.inspect_skill_signing(owner.operator_uid, id, sources),
+                                _ => broker.skill_request_control(owner.operator_uid, id, outcome),
+                            };
+                            result.map_err(|_| InspectError::StatusUnavailable)
                         },
                         |id, decision| {
                             broker

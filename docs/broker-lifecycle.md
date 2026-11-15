@@ -1118,10 +1118,11 @@ louiselm-control skill-request cancel OPERATION_UUID --json
 ```
 
 Reject/cancel persist an immutable terminal outcome and enqueue an exact clear
-before replying. Contradictory terminal decisions refuse; explicit resubmission
-uses a fresh operation. Signed Session termination cancels only that Session's
-requests. Capture-service's durable `disposed` Run fact cancels only that Run's
-requests; Session termination never substitutes for Run termination. Supply
+before replying when no linked signing attempt has been reserved. Contradictory
+terminal decisions refuse; explicit resubmission uses a fresh operation. Signed
+Session termination cancels only that Session's requests. Capture-service's durable
+`disposed` Run fact cancels only that Run's requests; Session termination never
+substitutes for Run termination. Supply
 requests survive both terminations, editor exit and broker restart, settling only
 through exact signed Admission or explicit operator rejection/cancellation. New
 requests still require a live authorized origin. Park retains all scopes.
@@ -1241,14 +1242,34 @@ is refused if it would remove an existing Skill or change that Skill's Agent
 scope. It therefore cannot preserve an existing Skill whose scope differs; the
 mixed-scope design is tracked by `louiselm-d6fv.15.10` and `louiselm-d6fv.15.11`.
 
+Immediately before a new linked signature, trusted Admission asks the broker to
+durably reserve that single attempt. The reservation and terminal decisions use
+the same broker lock: an earlier rejection, cancellation or applicable subject
+end prevents signing. Once the reservation wins, later terminal decisions leave
+the request pending while the broker checks independent signed evidence. A lost
+reservation reply, failed signer, crash or uncertain write does not authorize a
+second signature or a cancellation; it stays pending until evidence is reconciled.
+An already persisted signed Admission can be recovered without signing again.
+This ordering applies to the installed linked CLI for Session, Run and Supply
+requests, including one request containing multiple packages. For an explicitly
+composed profile candidate, repeat `--source-request OPERATION_UUID` to reserve
+its independently submitted Supply requests along with the batch request. A
+source rejected or cancelled before reservation invalidates that batch; after the
+reservation wins, each source remains pending until the broker verifies the signed
+batch and records it as `superseded` with the resulting Generation. Profile bytes
+and paths do not enter Attention or push payloads. Preparing and
+transferring candidate bytes remains separate work (`louiselm-d6fv.15.12`).
+Standalone Admission has no broker request to settle.
+
 The broker's independent reconciliation worker reads the configured evidence under
 a shared read-only trust lock. It verifies the signature, persisted approval index,
 exact packaged bytes and Agent scope, and confirms file/directory durability. It
 refuses an activation recovery journal; only the skills tool can repair supply.
 It then persists the approved Generation identity, terminal outcome and exact
 Attention clear intent before reporting approval. Delivery outages leave the clear
-queued, and restart reconciles the same operation. Reject/cancel and authoritative
-subject-end records remain terminal even if Admission subsequently finishes.
+queued, and restart reconciles the same operation. A verified signature wins over
+later rejection, cancellation and subject termination; completed supply is never
+rolled back by delivery failure.
 
 `approved` means signed and persisted, including `pending_witness`; it does **not**
 mean witnessed, activated, usable or fully Verified. Existing Instruction views,
