@@ -18,6 +18,20 @@ bench = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bench)
 
 
+class BenchmarkSuccessTest(unittest.TestCase):
+    def test_small_dataset_repeats_with_reused_connection(self):
+        result = subprocess.run(
+            [sys.executable, str(HARNESS), "--sizes", "63"],
+            capture_output=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        queries = json.loads(result.stdout)["datasets"]["synthetic-63"]["queries"]
+        self.assertEqual(len(queries), 8)
+        for query in queries.values():
+            self.assertEqual(len(query["sqlite_fresh_connection_ms"]["runs"]), bench.REPEATS)
+            self.assertEqual(len(query["sqlite_reused_connection_ms"]["runs"]), bench.REPEATS - 1)
+
+
 class CaptureFailureTest(unittest.TestCase):
     def test_capture_retains_safe_evidence(self):
         for action, state, code, child_signal, wrapper_signal in [
@@ -89,6 +103,7 @@ class CaptureFailureTest(unittest.TestCase):
                         capture_output=True, timeout=60,
                     )
                     self.assertEqual(result.returncode, 1, result.stderr.decode())
+                    self.assertNotEqual(result.stdout, b"", result.stderr.decode())
                     artifact = json.loads(result.stdout)
                     self.assertEqual(artifact["failure"]["dataset"], "synthetic-126")
                     self.assertEqual(artifact["failure"]["case"], "summary")
@@ -109,14 +124,11 @@ class MeasureFailureTest(unittest.TestCase):
                 sqlite_bin = directory / "sqlite-bin"
                 sqlite_bin.mkdir()
                 fake = sqlite_bin / "sqlite3"
-                counter = directory / "calls"
                 fake.write_text(
-                    "#!/usr/bin/env python3\nimport os, signal, sys\nfrom pathlib import Path\n"
+                    "#!/usr/bin/env python3\nimport json, os, signal, sys\nfrom pathlib import Path\n"
                     "if os.environ.get('LOUISELM_BENCH_CASE') == 'summary':\n"
-                    f" counter = Path({str(counter)!r})\n"
-                    " count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
-                    " counter.write_text(str(count))\n"
-                    " if count == 4:\n"
+                    " progress = json.loads((Path(sys.argv[-1]).parent / 'measure-progress.json').read_text())\n"
+                    " if progress.get('step') == 'api' and progress.get('iteration') == 3:\n"
                     "  print('SECRET PAYLOAD', file=sys.stderr, flush=True)\n"
                     f"  {action}\n"
                     f"os.execv({shutil.which('sqlite3')!r}, ['sqlite3', *sys.argv[1:]])\n"
@@ -138,6 +150,7 @@ class MeasureFailureTest(unittest.TestCase):
                     capture_output=True, timeout=60,
                 )
                 self.assertEqual(result.returncode, 1, result.stderr.decode())
+                self.assertNotEqual(result.stdout, b"", result.stderr.decode())
                 artifact = json.loads(result.stdout)
                 evidence = artifact["failure"]
                 self.assertEqual(evidence["dataset"], "synthetic-126")

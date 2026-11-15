@@ -277,8 +277,10 @@ def measure(directory, sqlite, capture_env, profile=False):
             rows, ms = elapsed(lambda: execute(connection, sql))
             assert normalized(rows) == reference, "warm SQLite changed cohort/coverage"
             warm.append(ms)
-            for (table,) in connection.execute("SELECT name FROM sqlite_temp_master WHERE type='table'").fetchall():
-                connection.execute('DROP TABLE "' + table.replace('"', '""') + '"')
+            for kind, object_name in connection.execute(
+                "SELECT type,name FROM sqlite_temp_master WHERE type IN ('view','table') ORDER BY type DESC"
+            ).fetchall():
+                connection.execute('DROP ' + kind.upper() + ' temp."' + object_name.replace('"', '""') + '"')
             _, ms = elapsed(lambda: run(["cat", str(directory / f"{name}.out")]))
             transfer.append(ms)
         connection.close()
