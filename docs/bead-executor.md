@@ -296,6 +296,15 @@ for bead_case in 1 2 3 4 5 6 7 8; do
       launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor \
       --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable
 done
+./scripts/launcher-vm exec sudo -n env \
+  LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE=1 \
+  LOUISELM_TEST_LUA_ROOT=/home/vm \
+  LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+  LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim \
+  timeout 120 unshare --mount --propagation private -- \
+  /bin/bash -c 'umask 022; exec "$1" \
+    launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor_failure_cleanup \
+    --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable
 ```
 
 The guest must contain the current Rust build, `lua/`,
@@ -314,6 +323,10 @@ against the exact sorted permission set, three separately promoted commits,
 next-HEAD snapshots and six durable terminal cleanup receipts. Its ACP peer and verification
 plan remain offline fixtures, not live acceptance. Live Codex/Provider acceptance remains the
 persistent-VM Run's responsibility.
+The separate failure-cleanup case interrupts case 1 during its tracker import,
+then checks that the original failure survives, the broker is reaped, the
+tracker exits and the fixture account is removed. It also forces a secondary
+account-removal error during unwinding and checks that the original panic survives.
 Cases 6–7 inject a captured durable Provider hold after worker completion and
 after a clear status check, respectively. They use the real operator exchange,
 child authorization, Lua controller and terminal cleanup, proving that neither

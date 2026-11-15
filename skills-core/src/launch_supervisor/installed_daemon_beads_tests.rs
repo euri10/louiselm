@@ -100,6 +100,9 @@ if 'BEADS_DIR' in os.environ:
     assert 'FSQLITE_TRUSTED_UNIX_DATABASE' not in os.environ
     assert 'FSQLITE_TRUSTED_UNIX_GID' not in os.environ
     if Path(__file__).with_name('slow-replica-import').is_file():
+        marker = Path(__file__).with_name('slow-replica-import-running')
+        if marker.is_file():
+            marker.write_text(str(os.getpid()))
         time.sleep(6)
     Path(os.environ['BEADS_DIR'], 'beads.db').write_bytes(b'fixture')
 else:

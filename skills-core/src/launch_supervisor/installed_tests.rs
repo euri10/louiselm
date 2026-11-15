@@ -122,30 +122,42 @@ impl BrokerAccount {
         );
         Self
     }
+
+    fn cleanup() -> Result<(), String> {
+        let status = Command::new("/usr/sbin/userdel")
+            .arg(ACCOUNT)
+            .status()
+            .map_err(|error| format!("userdel failed: {error}"))?;
+        if !status.success() {
+            return Err(format!("userdel failed: {status}"));
+        }
+        let status = Command::new("/usr/bin/getent")
+            .args(["group", ACCOUNT])
+            .status()
+            .map_err(|error| format!("group lookup failed: {error}"))?;
+        if status.success() {
+            let status = Command::new("/usr/sbin/groupdel")
+                .arg(ACCOUNT)
+                .status()
+                .map_err(|error| format!("groupdel failed: {error}"))?;
+            if !status.success() {
+                return Err(format!("groupdel failed: {status}"));
+            }
+        } else if status.code() != Some(2) {
+            return Err(format!("group lookup failed: {status}"));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for BrokerAccount {
     fn drop(&mut self) {
-        assert!(
-            Command::new("/usr/sbin/userdel")
-                .arg(ACCOUNT)
-                .status()
-                .unwrap()
-                .success()
-        );
-        if Command::new("/usr/bin/getent")
-            .args(["group", ACCOUNT])
-            .status()
-            .unwrap()
-            .success()
-        {
-            assert!(
-                Command::new("/usr/sbin/groupdel")
-                    .arg(ACCOUNT)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
+        if let Err(error) = Self::cleanup() {
+            if std::thread::panicking() {
+                eprintln!("fixture account cleanup failed: {error}");
+            } else {
+                panic!("fixture account cleanup failed: {error}");
+            }
         }
     }
 }

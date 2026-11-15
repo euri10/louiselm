@@ -1,5 +1,12 @@
 //! Installed broker/launcher and real Lua Sessions; offline measured ACP peer.
 use super::*;
+use std::cell::Cell;
+
+#[derive(Default)]
+struct FailureObservation {
+    daemon_pid: Cell<Option<i32>>,
+    tracker_pid: Cell<Option<i32>>,
+}
 
 fn own(path: &Path, uid: u32) {
     if path.is_dir() {
@@ -10,12 +17,126 @@ fn own(path: &Path, uid: u32) {
     chown(path, Some(uid), Some(uid)).unwrap();
 }
 
+struct FixtureBrokerGroup(crate::sandbox::Cgroup);
+
+impl FixtureBrokerGroup {
+    fn new() -> Self {
+        Self(
+            crate::sandbox::Cgroup::create(
+                Path::new("/sys/fs/cgroup"),
+                &format!("bead-fixture-{}", std::process::id()),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn cleanup(&self) -> Result<(), String> {
+        self.0.kill_all().map_err(|error| error.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if self
+                .0
+                .processes()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("fixture broker cgroup did not become empty".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        fs::remove_dir(self.0.path()).map_err(|error| error.to_string())
+    }
+}
+
+impl Drop for FixtureBrokerGroup {
+    fn drop(&mut self) {
+        if let Err(error) = self.cleanup() {
+            if std::thread::panicking() {
+                eprintln!("fixture broker cleanup failed: {error}");
+            } else {
+                panic!("fixture broker cleanup failed: {error}");
+            }
+        }
+    }
+}
+
 #[test]
+fn privileged_installed_lua_bead_executor_failure_cleanup() {
+    if std::env::var_os("LOUISELM_REQUIRE_BEAD_EXECUTOR").is_none() {
+        eprintln!("skipping: requires disposable VM, Neovim and private mounts");
+        return;
+    }
+    assert_eq!(std::env::var("LOUISELM_BEAD_EXECUTOR_CASE").unwrap(), "1");
+    assert!(std::env::var_os("LOUISELM_TEST_BR").is_none());
+    let previous_maps = super::super::guard_cleanup::policy_maps();
+    let observation = FailureObservation::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        installed_lua_bead_executor(Some(&observation));
+    }));
+    let failure = result.unwrap_err();
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied());
+    assert_eq!(message, Some("installed Lua Bead executor case 1 failed"));
+    let daemon = rustix::process::Pid::from_raw(observation.daemon_pid.get().unwrap()).unwrap();
+    assert!(matches!(
+        rustix::process::waitpid(Some(daemon), rustix::process::WaitOptions::NOHANG),
+        Err(rustix::io::Errno::CHILD)
+    ));
+    let tracker = observation.tracker_pid.get().unwrap();
+    assert!(
+        !Path::new(&format!("/proc/{tracker}")).exists(),
+        "fixture tracker process {tracker} survived teardown"
+    );
+    for database in ["passwd", "group"] {
+        let entry = Command::new("/usr/bin/getent")
+            .args([database, ACCOUNT])
+            .output()
+            .unwrap();
+        assert_eq!(
+            entry.status.code(),
+            Some(2),
+            "fixture {database} entry survived teardown"
+        );
+    }
+    assert!(
+        !Path::new("/sys/fs/cgroup")
+            .join(format!(
+                "louiselm-session-bead-fixture-{}",
+                std::process::id()
+            ))
+            .exists(),
+        "fixture broker cgroup survived teardown"
+    );
+    super::super::launcher_cleanup::assert_exited(&previous_maps);
+    // A secondary account-removal error must also preserve an earlier panic.
+    eprintln!("forcing an expected cleanup error for the already removed fixture account");
+    let secondary = std::panic::catch_unwind(|| {
+        let _already_removed = BrokerAccount;
+        panic!("original fixture failure");
+    })
+    .unwrap_err();
+    assert_eq!(
+        secondary.downcast_ref::<&str>().copied(),
+        Some("original fixture failure")
+    );
+    eprintln!("fixture failure preserved; broker reaped, tracker exited and account removed");
+}
+
+#[test]
+fn privileged_installed_lua_bead_executor() {
+    installed_lua_bead_executor(None);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "One installed transaction provisions exact child grants and runs the real Lua controller under the operator identity."
 )]
-fn privileged_installed_lua_bead_executor() {
+fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     if std::env::var_os("LOUISELM_REQUIRE_BEAD_EXECUTOR").is_none() {
         eprintln!("skipping: requires disposable VM, Neovim and private mounts");
         return;
@@ -48,6 +169,11 @@ fn privileged_installed_lua_bead_executor() {
         // Replay that ordering beyond the old 5s launcher wait, within the
         // replica import's existing 10s bound. No Provider or real Agent runs.
         fs::write(root.path().join("slow-replica-import"), b"").unwrap();
+    }
+    let import_running = root.path().join("slow-replica-import-running");
+    if failure.is_some() {
+        fs::write(&import_running, b"").unwrap();
+        chown(&import_running, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
     }
     let (program, tracker, bead_id) = beads::provision(root.path());
     let manifest = workspace::fixture_manifest();
@@ -258,8 +384,23 @@ fn privileged_installed_lua_bead_executor() {
     };
     write_json(&input, &selected);
     let state = operator;
-    let mut daemon = process(&manager, BROKER_UID, false);
+    // The broker's bounded tracker runner creates its own process group. Keep
+    // every fixture broker descendant in one owned cgroup, even on unwind.
+    let broker_group = FixtureBrokerGroup::new();
+    let mut daemon = process_with_cgroup(
+        &manager,
+        BROKER_UID,
+        false,
+        &BROKER_UID.to_string(),
+        Some(broker_group.0.path()),
+    );
+    if let Some(observation) = failure {
+        observation
+            .daemon_pid
+            .set(Some(i32::try_from(daemon.0.id()).unwrap()));
+    }
     ready(&config);
+    assert!(broker_group.0.processes().unwrap().contains(&daemon.0.id()));
     let hold_injector = (index >= 6).then(|| inject_provider_hold(&state, index, now));
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit stable Neovim executable");
@@ -268,7 +409,8 @@ fn privileged_installed_lua_bead_executor() {
     } else {
         vec!["--clear-groups".to_owned()]
     };
-    let status = Command::new("/usr/bin/setpriv")
+    let mut command = Command::new("/usr/bin/setpriv");
+    command
         .args([
             "--reuid",
             &config.operator_uid.to_string(),
@@ -300,9 +442,39 @@ fn privileged_installed_lua_bead_executor() {
         .env(
             "LOUISELM_TEST_PROMOTION_DELAY",
             if delayed_promotion { "1" } else { "0" },
-        )
-        .status()
-        .unwrap();
+        );
+    let status = if let Some(observation) = failure {
+        let mut neovim = BrokerChild(command.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let marker = fs::read_to_string(&import_running).unwrap();
+            if !marker.is_empty() {
+                let pid = marker.parse::<i32>().unwrap();
+                assert!(Path::new(&format!("/proc/{pid}")).exists());
+                assert!(
+                    broker_group
+                        .0
+                        .processes()
+                        .unwrap()
+                        .contains(&u32::try_from(pid).unwrap()),
+                    "tracker import escaped the fixture broker cgroup"
+                );
+                observation.tracker_pid.set(Some(pid));
+                eprintln!("forcing fixture failure during tracker import {pid}");
+                break;
+            }
+            assert!(
+                neovim.0.try_wait().unwrap().is_none(),
+                "Neovim exited before tracker import"
+            );
+            assert!(Instant::now() < deadline, "tracker import did not start");
+            thread::sleep(Duration::from_millis(10));
+        }
+        neovim.0.kill().unwrap();
+        neovim.0.wait().unwrap()
+    } else {
+        command.status().unwrap()
+    };
     if let Some(injector) = hold_injector {
         injector.join().unwrap();
         let store = crate::broker::AuthorizationStore::open(

@@ -177,7 +177,30 @@ fn process(manager: &OwnedFd, uid: u32, seed: bool) -> BrokerChild {
 }
 
 fn process_with_groups(manager: &OwnedFd, uid: u32, seed: bool, groups: &str) -> BrokerChild {
-    let mut command = Command::new("/usr/bin/setpriv");
+    process_with_cgroup(manager, uid, seed, groups, None)
+}
+
+fn process_with_cgroup(
+    manager: &OwnedFd,
+    uid: u32,
+    seed: bool,
+    groups: &str,
+    cgroup: Option<&Path>,
+) -> BrokerChild {
+    let mut command = if let Some(cgroup) = cgroup {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "set -e; printf '%s' \"$$\" > \"$1/cgroup.procs\"; shift; exec \"$@\"",
+                "fixture-broker",
+            ])
+            .arg(cgroup)
+            .arg("/usr/bin/setpriv");
+        command
+    } else {
+        Command::new("/usr/bin/setpriv")
+    };
     command
         .args([
             "--reuid",
