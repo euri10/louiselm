@@ -5,8 +5,9 @@ Android are optional companions; core chat requires none of them. Capture has it
 own Cargo release and Linux download. Trusted-tool and Android release automation
 belongs to separate implementation slices. GitHub
 [`euri10/louiselm`](https://github.com/euri10/louiselm) is public and is the
-release authority. GitLab synchronization is tracked in
-`louiselm-component-releases-oa0d.5`; it is not implemented by this slice.
+release authority. The release workflow can copy published release commits and
+tags to the existing GitLab repository; hosted synchronization has not yet been
+accepted with its dedicated credentials.
 
 ## Status and first release
 
@@ -157,12 +158,77 @@ GitHub connection during history scanning. A second failure fails the job;
 successful, skipped or cancelled proposals do not retry. Both attempts retain
 the full history scan and only create/update proposals, never publish releases.
 
-Companion and GitLab-sync slices can consume GitHub release metadata:
+Companion and GitLab-sync slices consume GitHub release metadata:
 `tag_name=plugin-v<version>`, `target_commitish=<full SHA>`, release `id`,
 `immutable=true`, and VERSION plus the plugin `.` manifest entry at that SHA.
 The publisher also emits JSON `{component, version, tag, sha, release_id}` records.
 Reserve distinct prefixes for companions; do not publish a global `v0.1.0` tag
 or rely on GitHub's repository-wide “latest” release for plugin selection.
+
+## GitLab release synchronization
+
+The release job passes the publisher's `{component, version, tag, sha,
+release_id}` records to a separate **GitLab release synchronization** job. It
+runs only when publication returned records, including already-published
+releases recovered for that exact CI run. Plugin and capture emit records today;
+the trusted-tool and Android publishers are separate unfinished slices and must
+pass their records through the same output when implemented. The sync accepts
+the component-prefixed `-v0.x.y` format and checks each tag against its record;
+it does not choose a component's name or version. Empty publication results
+skip synchronization.
+
+The job fetches each named tag from GitHub, checks that it resolves to the
+approved commit, and compares the complete tag object ID with GitLab. It checks
+GitLab `main` against that commit before one atomic, non-forced push of only
+`main` and the named tags. Git supplies missing ancestors. A GitLab `main`
+already descended from the release is left intact; identical tags are no-ops.
+Other branches, tags, GitLab pipelines, and any GitLab-only commits already on
+that history are preserved. The job rechecks destination refs after the push.
+GitLab must support atomic pushes. Synchronization creates no GitLab Release or
+artifact and never changes either repository's visibility.
+
+For future activation, provision a dedicated GitLab deploy key with only the
+write access needed for `oss-public/louiselm`, including the existing protected
+`main` and release-tag rules. Store its private key in the GitHub Actions secret
+`GITLAB_RELEASE_SYNC_SSH_KEY`; put the independently verified SSH host-key entry
+for `gitlab.bartab.fr` in the Actions variable
+`GITLAB_RELEASE_SYNC_KNOWN_HOSTS`. Review project protections and key access
+without changing visibility. The job fails explicitly if either setting is
+missing; neither value is printed. No credential provisioning or hosted sync is
+performed by the local implementation or its tests.
+
+Use reviewed GitHub PRs and the existing protected `main` process for ordinary
+development. GitHub publication remains authoritative; the GitLab job runs
+afterward and may start the existing GitLab pipeline when `main` advances. A
+failed or skipped GitLab job does not revoke a GitHub release. Check both job
+statuses, the immutable GitHub release and the exact GitLab refs separately.
+Do not use the local `origin` remote as a generic mirror: it has multiple push
+destinations. Never force-push or move a release tag to make a retry pass.
+
+For an interrupted or unavailable GitLab update, inspect its failed job, confirm
+the GitHub release and tag are still immutable, repair only the missing
+credential/host or availability issue, then rerun the release workflow with
+the original successful main-push `ci_run_id`. The publisher verifies the
+existing release before emitting the same metadata; the GitLab job completes
+only missing refs. A dispatch also runs the existing draft/proposal steps, so
+review that scope before dispatching. If publication failed before metadata was
+emitted, repair that failure first. If GitLab has a conflicting tag, stop and
+investigate its exact object ID; do not delete or replace it. If histories
+diverge, preserve both and use a separately reviewed reconciliation that makes
+the GitLab history an ancestor of an approved GitHub commit. A later approved
+release can advance GitLab to that descendant; the older release can then be
+retried to add its unchanged tag. Squashing or cherry-picking GitLab-only
+commits does not preserve their ancestry. Do not resolve a real conflict inside
+the synchronization job.
+
+For hosted acceptance, after a separately authorized release and key setup,
+record the exact GitHub release ID, tag, commit, successful CI run and release
+workflow run; compare both hosts' raw tag IDs and `main` ancestry, then confirm
+the existing GitLab pipeline behavior. A failed GitLab job is not hosted
+acceptance. Local disposable-repository checks prove no hosted credentials,
+event delivery, branch protection or pipeline behavior. The exact candidate
+retry and its authorization limits are recorded in
+`louiselm-component-releases-oa0d.6`.
 
 ## Installation and pinning
 
