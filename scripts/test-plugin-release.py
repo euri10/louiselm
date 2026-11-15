@@ -129,6 +129,17 @@ class Publication(unittest.TestCase):
                     release.main()
             self.assertEqual(len(self.writes), 1)
 
+    def test_cli_writes_the_published_metadata_for_downstream_sync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / "release.json"
+            with patch.object(release, "github_api", self.api), contextlib.redirect_stdout(io.StringIO()):
+                with patch.object(sys, "argv", ["publish", "--repository", "euri10/louiselm", "--run-id", "10",
+                                               "--metadata-file", str(metadata)]):
+                    release.main()
+            self.assertEqual(json.loads(metadata.read_text()), [
+                dict(component="plugin", version="0.1.0", tag=TAG, sha=SHA, release_id=7),
+            ])
+
     def test_publish_then_retry_never_changes_published_bytes_or_tag(self):
         self.publish()
         self.assertEqual(len(self.writes), 1)
