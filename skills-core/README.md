@@ -196,14 +196,13 @@ runtime and reports paths without printing profile content.
 diff base. With no current profile it shows the proposed lines as additions;
 the robot diff has a null `base_digest`. An explicit `--against` must name the
 current profile. Admission recomputes the same profile Dossier and binds its
-digest into the signed Generation. For a new linked profile Admission, pass the
-`review_digest` reported by that Dossier as `--reviewed-profile-dossier`; review
-depth and policy must match the ceremony, and optional Assessment selection must
-be omitted. A changed profile or Dossier requires fresh review. Retrying an
-already signed linked ceremony uses its original predecessor and does not require
-the flag. Review output contains private profile content and paths and is not an
-Attention or push payload. Standalone profile Admission does not yet bind an
-earlier reviewed Dossier; its stale-review gap is tracked by `louiselm-d6fv.15.14`.
+digest into the signed Generation. For a new standalone or linked profile
+Admission, pass the `review_digest` reported by that Dossier as
+`--reviewed-profile-dossier`; review depth and policy must match the ceremony,
+and optional Assessment selection must be omitted. A changed profile or Dossier
+requires fresh review. Retrying an already signed linked ceremony uses its
+original predecessor and does not require the flag. Review output contains
+private profile content and paths and is not an Attention or push payload.
 
 `quarantine all` binds the Generation that is current when the command runs.
 Sessions pinned to that Generation remain quarantined, while a newly witnessed

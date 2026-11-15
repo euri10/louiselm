@@ -78,7 +78,9 @@ fn a_profile_proposal_diffs_the_current_profile_and_binds_the_same_dossier() {
         admitted_at_ms: 2,
         configured_agents: Some(vec!["codex".into()]),
     };
-    let initial = admission::admit(&store, &Policy::embedded(), &admit(&old)).unwrap();
+    let old_review = support::reviewed_profile(&store, &old, None);
+    let initial =
+        admission::admit(&store, &Policy::embedded(), &admit(&old), Some(&old_review)).unwrap();
     let witness = GitWitness::new(
         &fixture.witness_remote(),
         "generations",
@@ -162,7 +164,13 @@ fn a_profile_proposal_diffs_the_current_profile_and_binds_the_same_dossier() {
             .with_review_depth(ReviewDepth::Read),
     )
     .unwrap();
-    let next = admission::admit(&store, &Policy::embedded(), &admit(&proposed)).unwrap();
+    let next = admission::admit(
+        &store,
+        &Policy::embedded(),
+        &admit(&proposed),
+        Some(&expected.portable_digest()),
+    )
+    .unwrap();
     assert_eq!(
         next.payload.members[0].dossier_digest,
         expected.portable_digest().to_string()
@@ -176,7 +184,13 @@ fn a_profile_proposal_diffs_the_current_profile_and_binds_the_same_dossier() {
         .join("files/PROFILE.md");
     fs::set_permissions(&old_file, fs::Permissions::from_mode(0o600)).unwrap();
     fs::write(&old_file, "changed after Admission").unwrap();
-    let error = admission::admit(&store, &Policy::embedded(), &admit(&proposed)).unwrap_err();
+    let error = admission::admit(
+        &store,
+        &Policy::embedded(),
+        &admit(&proposed),
+        Some(&expected.portable_digest()),
+    )
+    .unwrap_err();
     assert!(
         matches!(error, admission::AdmissionError::Chain(message) if message == "profile review predecessor package is damaged")
     );
@@ -353,7 +367,14 @@ fn profile_review_must_be_repeated_if_the_active_profile_changes_before_signing(
         "generations",
         &fixture.path("witness"),
     );
-    let first = admission::admit(&store, &Policy::embedded(), &request(&old)).unwrap();
+    let old_review = support::reviewed_profile(&store, &old, None);
+    let first = admission::admit(
+        &store,
+        &Policy::embedded(),
+        &request(&old),
+        Some(&old_review),
+    )
+    .unwrap();
     admission::witness(&store, &first.digest(), &witness, 3).unwrap();
     admission::activate(&store, &first.digest(), 4).unwrap();
     let reviewed = cli(
@@ -368,7 +389,14 @@ fn profile_review_must_be_repeated_if_the_active_profile_changes_before_signing(
     );
     assert_eq!(reviewed["diff"]["base_digest"], old.to_string());
     let reviewed_digest = Digest::parse(reviewed["review_digest"].as_str().unwrap()).unwrap();
-    let second = admission::admit(&store, &Policy::embedded(), &request(&middle)).unwrap();
+    let middle_review = support::reviewed_profile(&store, &middle, Some(&old));
+    let second = admission::admit(
+        &store,
+        &Policy::embedded(),
+        &request(&middle),
+        Some(&middle_review),
+    )
+    .unwrap();
     admission::witness(&store, &second.digest(), &witness, 5).unwrap();
     admission::activate(&store, &second.digest(), 6).unwrap();
     let operation = "12345678-1234-4234-8234-123456789abc";
@@ -462,6 +490,7 @@ fn a_profile_batch_can_preserve_a_skill_with_the_same_scope() {
             admitted_at_ms: 2,
             configured_agents: None,
         },
+        None,
     )
     .unwrap();
     let witness = GitWitness::new(
@@ -555,7 +584,9 @@ fn a_linked_profile_update_cannot_silently_drop_existing_skills() {
         admitted_at_ms: 2,
         configured_agents: Some(agents.clone()),
     };
-    let record = admission::admit(&store, &Policy::embedded(), &initial).unwrap();
+    let old_review = support::reviewed_profile(&store, &initial.members[0].package, None);
+    let record =
+        admission::admit(&store, &Policy::embedded(), &initial, Some(&old_review)).unwrap();
     let witness = GitWitness::new(
         &fixture.witness_remote(),
         "generations",

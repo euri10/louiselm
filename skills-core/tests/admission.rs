@@ -308,6 +308,7 @@ impl Ceremony {
                 admitted_at_ms: 1_756_800_000_000,
                 configured_agents: None,
             },
+            None,
         )
     }
 
@@ -1150,6 +1151,7 @@ fn key_retirement_cannot_overtake_an_admission_waiting_for_hardware() {
                     admitted_at_ms: 2,
                     configured_agents: None,
                 },
+                None,
             )
         });
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1205,6 +1207,7 @@ fn failed_approval_registration_never_becomes_retired_key_history() {
             admitted_at_ms: 2,
             configured_agents: None,
         },
+        None,
     );
     assert!(matches!(
         result,

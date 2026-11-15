@@ -161,6 +161,25 @@ pub fn policy_with(replacements: &[(&str, &str)]) -> Policy {
     Policy::from_bytes(text.as_bytes()).expect("edited policy is valid")
 }
 
+/// Builds the profile Dossier a fixture reviewer approves before Admission.
+pub fn reviewed_profile(
+    store: &Store,
+    profile: &louiselm_skills::Digest,
+    base: Option<&louiselm_skills::Digest>,
+) -> louiselm_skills::Digest {
+    use louiselm_skills::{
+        ReviewDepth,
+        dossier::{Dossier, DossierRequest},
+    };
+    let mut request = DossierRequest::new(profile).with_review_depth(ReviewDepth::Read);
+    if let Some(base) = base {
+        request = request.against(base);
+    }
+    Dossier::build(store, &Policy::embedded(), &request)
+        .unwrap()
+        .portable_digest()
+}
+
 /// A software SSH key generated for a test, used to make real signatures.
 ///
 /// Hardware-backed keys cannot be produced in an automated test, so the

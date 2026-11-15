@@ -64,6 +64,9 @@ impl World {
                 agents: agents.clone(),
             })
             .collect();
+        let reviewed = profile
+            .as_ref()
+            .map(|profile| support::reviewed_profile(&fixture.store(), profile, None));
         let record = admission::admit(
             &fixture.store(),
             &Policy::embedded(),
@@ -73,6 +76,7 @@ impl World {
                 admitted_at_ms: 2,
                 configured_agents: Some(agents),
             },
+            reviewed.as_ref(),
         )
         .unwrap();
         let witness = GitWitness::new(

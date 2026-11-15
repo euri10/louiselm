@@ -182,8 +182,8 @@ pub enum AdmissionError {
     /// A linked profile update would remove or re-scope already active Skills.
     #[error("linked profile Admission must preserve every existing Skill and its Agent scope")]
     ProfileWouldChangeSkills,
-    /// A new linked profile needs an explicit review of its exact Dossier.
-    #[error("linked profile Admission requires the reviewed profile Dossier digest")]
+    /// A new profile Admission needs an explicit review of its exact Dossier.
+    #[error("profile Admission requires the reviewed profile Dossier digest")]
     ProfileReviewRequired,
     /// The profile Dossier no longer matches the operator's review.
     #[error("profile Dossier changed since review; review it again before signing")]
@@ -279,6 +279,7 @@ pub struct GenerationStatus {
 }
 
 /// Runs the Admission ceremony and stores the signed Generation.
+/// A profile requires the digest of its reviewed Dossier.
 ///
 /// # Errors
 /// Returns trust/signature, package review, predecessor-loading, or record-write errors.
@@ -286,8 +287,9 @@ pub fn admit(
     store: &Store,
     policy: &Policy,
     request: &AdmissionRequest<'_>,
+    reviewed_profile: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
-    admit_inner(store, policy, request, None, None, None)
+    admit_inner(store, policy, request, None, None, reviewed_profile)
 }
 
 /// Admits a freshly reviewed `/3` successor to the exact current `/2` history.
@@ -305,6 +307,7 @@ pub fn admit_transition(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
     expected_predecessor: &Digest,
+    reviewed_profile: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
     admit_inner(
         store,
@@ -312,7 +315,7 @@ pub fn admit_transition(
         request,
         None,
         Some(expected_predecessor),
-        None,
+        reviewed_profile,
     )
 }
 
@@ -385,12 +388,6 @@ fn admit_inner(
         }
         let dossier = Dossier::build(store, policy, &review)?;
         refuse_unreviewable(digest, &dossier)?;
-        if is_profile && operation.is_some() && (!replay || reviewed_profile.is_some()) {
-            let expected = reviewed_profile.ok_or(AdmissionError::ProfileReviewRequired)?;
-            if *expected != dossier.portable_digest() {
-                return Err(AdmissionError::ProfileReviewChanged);
-            }
-        }
         if dossier.inspection.package_kind == PackageKind::OperatorProfile {
             check_profile(
                 digest,
@@ -400,6 +397,12 @@ fn admit_inner(
             )?;
             has_profile = true;
             profile_digest = Some(digest.to_string());
+            if !replay || reviewed_profile.is_some() {
+                let expected = reviewed_profile.ok_or(AdmissionError::ProfileReviewRequired)?;
+                if *expected != dossier.portable_digest() {
+                    return Err(AdmissionError::ProfileReviewChanged);
+                }
+            }
         }
         members.push(Member {
             package_digest: digest.to_string(),
@@ -410,7 +413,7 @@ fn admit_inner(
         });
     }
 
-    if operation.is_some() && reviewed_profile.is_some() && !has_profile {
+    if reviewed_profile.is_some() && !has_profile {
         return Err(AdmissionError::Chain(
             "profile Dossier digest supplied without a profile".into(),
         ));
@@ -616,7 +619,15 @@ pub(crate) fn locked_current_profile(
     store: &Store,
     policy: &Policy,
 ) -> Result<(crate::trust::persistence::LockedTrust, Option<Digest>), AdmissionError> {
-    let (locked, record) = locked_current(store)?;
+    let locked = transaction::lock(store)?;
+    let record = current_unlocked(store)?;
+    if let Some(record) = &record {
+        let trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
+        // Historical supply is never a diff base, but a witnessed, verified
+        // predecessor can be followed by a freshly reviewed profile.
+        let transition = (record.payload.schema == HISTORICAL_SCHEMA).then(|| record.digest());
+        verification::admission_predecessor(store, Some(record), &trust, transition.as_ref())?;
+    }
     let profile = profile_in_generation(store, policy, record.as_ref())?;
     Ok((locked, profile))
 }

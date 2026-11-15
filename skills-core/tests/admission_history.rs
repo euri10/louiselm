@@ -258,17 +258,145 @@ fn explicit_successor_preserves_old_signature_and_witness_history() {
             &store,
             &Policy::embedded(),
             &history.request(&NeverSign),
-            &history.generation
+            &history.generation,
+            None,
         )
         .is_err()
     );
     assert!(admission::activate(&store, &history.generation, 23).is_err());
     // Normal Admission continues the mixed-version history, without a flag.
     let signer = louiselm_skills::SshKeygenSigner::new(history.primary.private_key_path());
-    let third = admission::admit(&store, &Policy::embedded(), &history.request(&signer)).unwrap();
+    let third =
+        admission::admit(&store, &Policy::embedded(), &history.request(&signer), None).unwrap();
     assert_eq!(third.payload.sequence, 3);
     assert_eq!(third.payload.predecessor, Some(successor.generation));
     admission::verify_record(&store, &third, &TrustStore::load(&store).unwrap().unwrap()).unwrap();
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The scenario checks historical verification, profile review, and successor signing."
+)]
+fn a_historical_successor_can_review_and_admit_a_profile() {
+    let history = History::new();
+    let candidate = history.fixture.candidate("profile");
+    write_file(
+        &candidate.join("PROFILE.md"),
+        "---\ntype: louiselm/operator-profile\n---\nPrivate fixture.\n",
+    );
+    let profile = history.fixture.capture(&candidate).unwrap().0.digest;
+    let store = history.fixture.store();
+    let path = admission::record_path(&store, &history.generation);
+    let original = fs::read(&path).unwrap();
+    let mut invalid: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    invalid["witness"] = serde_json::Value::Null;
+    fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    let unwitnessed = history.cli(&["dossier", &profile.to_string(), "--review-depth", "read"]);
+    assert!(!unwitnessed.status.success());
+    assert!(String::from_utf8_lossy(&unwitnessed.stderr).contains("has not been witnessed"));
+    invalid["witness"] =
+        serde_json::from_slice::<serde_json::Value>(&original).unwrap()["witness"].clone();
+    invalid["signature"] = serde_json::Value::String("invalid".into());
+    fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    let unsigned = history.cli(&["dossier", &profile.to_string(), "--review-depth", "read"]);
+    assert!(!unsigned.status.success());
+    assert!(String::from_utf8_lossy(&unsigned.stderr).contains("signature"));
+    fs::write(&path, &original).unwrap();
+    let status = admission::status(&store).unwrap();
+    assert_eq!(status.state, Some(GenerationState::Invalid));
+    assert_eq!(status.effective_members, Vec::<String>::new());
+    let dossier = history.cli(&[
+        "dossier",
+        &profile.to_string(),
+        "--review-depth",
+        "read",
+        "--robot-json",
+    ]);
+    assert!(
+        dossier.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dossier.stderr)
+    );
+    let dossier: serde_json::Value = serde_json::from_slice(&dossier.stdout).unwrap();
+    assert!(dossier["diff"]["base_digest"].is_null());
+    let reviewed = dossier["review_digest"].as_str().unwrap();
+    write_file(&history.fixture.path("registry/agents.json"), &serde_json::json!({
+        "schema":"louiselm.launch.registry/1", "entries":[{
+            "id":"codex", "provider":"test", "runtime_id":"test", "arguments":[], "environment":{}
+        }]
+    }).to_string());
+    let signer = louiselm_skills::SshKeygenSigner::new(history.primary.private_key_path());
+    let request = AdmissionRequest {
+        members: vec![AdmissionMember {
+            package: profile.clone(),
+            depth: ReviewDepth::Read,
+            agents: vec!["codex".into()],
+        }],
+        signer: &NeverSign,
+        admitted_at_ms: 2,
+        configured_agents: Some(vec!["codex".into()]),
+    };
+    assert!(matches!(
+        admission::admit_transition(
+            &store,
+            &Policy::embedded(),
+            &request,
+            &history.generation,
+            None
+        ),
+        Err(AdmissionError::ProfileReviewRequired)
+    ));
+    assert!(matches!(
+        admission::admit_transition(
+            &store,
+            &Policy::embedded(),
+            &request,
+            &history.generation,
+            Some(&Digest::of(b"stale"))
+        ),
+        Err(AdmissionError::ProfileReviewChanged)
+    ));
+    let request = AdmissionRequest {
+        signer: &signer,
+        ..request
+    };
+    let record = admission::admit_transition(
+        &store,
+        &Policy::embedded(),
+        &request,
+        &history.generation,
+        Some(&Digest::parse(reviewed).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(record.payload.members[0].dossier_digest, reviewed);
+    assert_eq!(
+        record.payload.predecessor,
+        Some(history.generation.to_string())
+    );
+    let cli_record = history.cli(&[
+        "generation",
+        "admit",
+        "--transition-from",
+        &history.generation.to_string(),
+        "--member",
+        &format!("{profile}:read=codex"),
+        "--key",
+        history.primary.private_key_path().to_str().unwrap(),
+        "--registry",
+        history.fixture.path("registry").to_str().unwrap(),
+        "--reviewed-profile-dossier",
+        reviewed,
+        "--robot-json",
+    ]);
+    assert!(
+        cli_record.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_record.stderr)
+    );
+    let cli_record: GenerationRecord = serde_json::from_slice(&cli_record.stdout).unwrap();
+    assert_eq!(cli_record.payload.members[0].dossier_digest, reviewed);
+    assert_eq!(fs::read(path).unwrap(), original);
 }
 
 #[test]
@@ -323,7 +451,7 @@ fn transition_requires_exact_legacy_current_and_refuses_ordinary_or_linked_admis
     let policy = Policy::embedded();
     let request = history.request(&NeverSign);
     assert!(
-        admission::admit(&store, &policy, &request)
+        admission::admit(&store, &policy, &request, None)
             .unwrap_err()
             .to_string()
             .contains("--transition-from")
@@ -338,13 +466,17 @@ fn transition_requires_exact_legacy_current_and_refuses_ordinary_or_linked_admis
         )
         .is_err()
     );
-    assert!(admission::admit_transition(&store, &policy, &request, &Digest::of(b"stale")).is_err());
+    assert!(
+        admission::admit_transition(&store, &policy, &request, &Digest::of(b"stale"), None)
+            .is_err()
+    );
     assert!(
         admission::admit_transition(
             &Fixture::new().store(),
             &policy,
             &request,
-            &history.generation
+            &history.generation,
+            None,
         )
         .is_err()
     );
@@ -392,7 +524,13 @@ fn legacy_history_without_a_current_pointer_cannot_silently_start_a_new_chain() 
         )
         .unwrap();
         assert!(
-            admission::admit(&store, &Policy::embedded(), &history.request(&NeverSign)).is_err()
+            admission::admit(
+                &store,
+                &Policy::embedded(),
+                &history.request(&NeverSign),
+                None
+            )
+            .is_err()
         );
         let status = admission::status(&store).unwrap();
         assert_eq!(status.next_action.id, "inspect_generation_history");
@@ -436,7 +574,8 @@ fn corrupted_or_unwitnessed_history_fails_before_signing_and_without_rewriting()
                 &store,
                 &Policy::embedded(),
                 &history.request(&NeverSign),
-                &record.digest()
+                &record.digest(),
+                None,
             )
             .is_err(),
             "mutation {mutation}"
@@ -468,7 +607,8 @@ fn duplicate_current_and_changed_predecessor_never_get_hidden_by_history_loading
             &store,
             &Policy::embedded(),
             &history.request(&NeverSign),
-            &history.generation
+            &history.generation,
+            None,
         )
         .is_err()
     );
@@ -526,6 +666,7 @@ fn transition_recomputes_reliance_instead_of_inventing_it_for_old_members() {
         &Policy::embedded(),
         &history.request(&signer),
         &history.generation,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -592,6 +733,7 @@ fn legacy_history_may_not_follow_a_newer_schema() {
         &Policy::embedded(),
         &history.request(&NeverSign),
         &old.digest(),
+        None,
     )
     .unwrap_err();
     assert!(

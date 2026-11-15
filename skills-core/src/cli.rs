@@ -257,9 +257,11 @@ fn validate_admission_options(command: &str, options: &Options) -> Result<(), Cl
             "--skill-request requires generation admit".into(),
         ));
     }
-    if options.reviewed_profile_dossier.is_some() && options.skill_request.is_none() {
+    if options.reviewed_profile_dossier.is_some()
+        && (command != "generation" || options.subject("generation")? != "admit")
+    {
         return Err(CliError::Invalid(
-            "--reviewed-profile-dossier requires --skill-request".into(),
+            "--reviewed-profile-dossier requires generation admit".into(),
         ));
     }
     if options.transition_from.is_some()
@@ -961,11 +963,20 @@ fn generation(options: &Options) -> Result<i32, CliError> {
                     .then(|| options.registered_agents())
                     .transpose()?,
             };
+            let reviewed_profile = options
+                .reviewed_profile_dossier
+                .as_deref()
+                .map(Digest::parse)
+                .transpose()?;
             let record = match &options.transition_from {
-                Some(digest) => {
-                    admission::admit_transition(&store, &policy, &request, &Digest::parse(digest)?)?
-                }
-                None => admission::admit(&store, &policy, &request)?,
+                Some(digest) => admission::admit_transition(
+                    &store,
+                    &policy,
+                    &request,
+                    &Digest::parse(digest)?,
+                    reviewed_profile.as_ref(),
+                )?,
+                None => admission::admit(&store, &policy, &request, reviewed_profile.as_ref())?,
             };
             report(options, &record, |record| {
                 let relied: usize = record
