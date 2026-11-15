@@ -3564,24 +3564,45 @@ mod tests {
 
     #[test]
     fn bounded_system_runner_shares_one_deadline_across_commands() {
-        let deadline = Instant::now() + Duration::from_millis(20);
-        let runner = BoundedSystemCommandRunner { deadline };
         let invocation = CommandInvocation {
             program: PathBuf::from("/usr/bin/true"),
             arguments: Vec::new(),
             stdin: Vec::new(),
             current_dir: None,
         };
-        runner.run(&invocation).expect("first command completes");
-        while Instant::now() < deadline {
-            thread::yield_now();
+        let temp = TempDir::new().unwrap();
+        let refused = CommandInvocation {
+            program: temp.path().join("must-not-run"),
+            ..invocation.clone()
+        };
+
+        // A scheduled delay may consume the budget before the first command starts.
+        for expired_before_first in [false, true] {
+            let deadline = if expired_before_first {
+                Instant::now()
+            } else {
+                Instant::now() + Duration::from_millis(20)
+            };
+            let runner = BoundedSystemCommandRunner { deadline };
+            match runner.run(&invocation) {
+                Ok(output) => {
+                    assert!(!expired_before_first);
+                    assert!(output.success);
+                }
+                Err(error) => assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}"),
+            }
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
+
+            let error = runner
+                .run(&refused)
+                .expect_err("the exhausted operation deadline must reject a second command");
+
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(
+                error.to_string(),
+                "command operation exceeded its fixed deadline"
+            );
         }
-
-        let error = runner
-            .run(&invocation)
-            .expect_err("the exhausted operation deadline must reject a second command");
-
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
     #[test]
