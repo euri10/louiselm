@@ -590,6 +590,155 @@ string
 fun(page?: louiselm.session.UsagePage, error?: louiselm.session.RecordingError)
 ```
 
+### louiselm.session.ImportProposal
+
+- `agent: string` -- Proposed configured Agent; never inferred from the log.
+- `provider: string` -- Proposed access/quota Provider; never inferred from the Model.
+
+### louiselm.session.ImportSource
+
+- `connection_id: string?` -- Identifier of one connection observation stream.
+- `connection_path: string?` -- Absolute path of its connection JSONL.
+- `first_line: integer?` -- First Session record in this connection segment, inclusive.
+- `kind: "acp"|"native"`
+- `last_line: integer?` -- Last Session record in this connection segment, inclusive.
+- `path: string?` -- Explicit unsupported native source path.
+- `proposal: (louiselm.session.ImportProposal)?` -- Unconfirmed human proposal.
+- `session_id: string?` -- ACP Session identifier for an ACP source.
+- `session_path: string?` -- Absolute path of the paired Session JSONL.
+
+### louiselm.session.ImportSelection
+
+- `from: string` -- Inclusive UTC dispatch time.
+- `max_bytes: integer` -- Maximum combined file bytes, at most 8388608.
+- `max_files: integer` -- Maximum distinct files, at most 32.
+- `sources: louiselm.session.ImportSource[]` -- Explicit file and line selections, at most 16.
+- `until_time: string` -- Exclusive UTC dispatch time.
+
+### louiselm.session.ImportError
+
+- `code: "invalid"|"timeout"|"unavailable"`
+- `message: string` -- Sanitized error; no source contents.
+
+### louiselm.session.ImportEvidence
+
+- `file: "connection"|"session"` -- Which selected file contains this observation.
+- `line: integer` -- One-based JSONL line number.
+- `source: integer` -- One-based index into the selected sources.
+
+### louiselm.session.ImportFile
+
+- `bytes: integer?` -- Bytes read, when available.
+- `path: string` -- Explicit selected path.
+- `sha256: string?` -- Digest of the entire file as read, when available.
+- `status: string` -- Read status, including missing, changed, unreadable, unsupported, or byte_limit.
+
+### louiselm.session.ImportSourceResult
+
+- `connection: (louiselm.session.ImportFile)?` -- Connection file evidence.
+- `connection_id: string?` -- Selected connection file identity.
+- `first_line: integer?` -- Selected inclusive Session line.
+- `kind: "acp"|"native"`
+- `last_line: integer?` -- Selected inclusive Session line.
+- `path: string?` -- Explicit unsupported native source.
+- `proposal: (louiselm.session.ImportAttribution)?` -- Unconfirmed proposed Agent and Provider.
+- `session: (louiselm.session.ImportFile)?` -- Session file evidence.
+- `session_id: string?` -- Selected ACP Session.
+- `status: string` -- Source status; excluded sources have a reason in the exclusions list.
+
+### louiselm.session.ImportAttribution
+
+- `agent: string` -- Proposed configured Agent; never inferred from the log.
+- `confirmation: "unconfirmed"` -- Always unconfirmed in this preview.
+- `provider: string` -- Proposed access/quota Provider; never inferred from the Model.
+
+### louiselm.session.ImportCostObservation
+
+- `cost: louiselm.session.Cost|userdata` -- Cumulative amount or explicit JSON null clearing.
+- `evidence: louiselm.session.ImportEvidence` -- Source observation.
+- `observed_at: string` -- UTC source timestamp.
+
+### louiselm.session.ImportCandidateEvidence
+
+- `binding: louiselm.session.ImportEvidence` -- Connection-to-Session binding.
+- `cost_baseline: (louiselm.session.ImportEvidence)?` -- Last cumulative cost before dispatch.
+- `dispatch: louiselm.session.ImportEvidence` -- Prompt dispatch.
+- `options: louiselm.session.ImportEvidence` -- Last complete starting options.
+- `outcome: (louiselm.session.ImportEvidence)?` -- Valid terminal response.
+- `previous_exit: (louiselm.session.ImportEvidence)?` -- Preceding connection's exit, when resuming a Session file.
+- `response: (louiselm.session.ImportEvidence)?` -- Received response, even when malformed.
+
+### louiselm.session.ImportCandidate
+
+- `connection_id: string` -- Selected connection file identity.
+- `cost_baseline: (louiselm.session.Cost)?` -- Last observed cumulative cost before dispatch.
+- `costs: louiselm.session.ImportCostObservation[]` -- Observed cumulative readings and clearings.
+- `costs_truncated: boolean?` -- The per-turn cost observation limit was reached.
+- `dispatched_at: string` -- UTC prompt-dispatch timestamp.
+- `evidence: louiselm.session.ImportCandidateEvidence` -- Source references.
+- `mixed: boolean` -- A confirmed option replacement occurred during this turn.
+- `model: (boolean|string)?` -- Observed model-category value.
+- `options: table<string, boolean|string>` -- Complete supported starting tuple.
+- `options_uncertain: boolean?` -- A malformed option update prevented a complete tuple.
+- `outcome: ("cancelled"|"completed"|"failed")?` -- Absent when completion was not established.
+- `peer_response: boolean?` -- A matching terminal response was observed.
+- `proposal: louiselm.session.ImportAttribution` -- Unconfirmed human attribution.
+- `request_id: string|number` -- Request ID scoped to this connection and dispatch evidence.
+- `session_id: string` -- Observed ACP Session identifier.
+- `stop_reason: string?` -- Valid observed ACP stop reason, when supplied.
+- `telemetry_gap: boolean?` -- Some cost telemetry was malformed or omitted by a report bound.
+- `usage: (louiselm.session.TurnUsage)?` -- Reported fields only; never estimated.
+
+### louiselm.session.ImportTransition
+
+- `connection_id: string` -- Selected connection file identity.
+- `evidence: louiselm.session.ImportEvidence` -- Replacement location.
+- `observed_at: string` -- UTC source timestamp.
+- `options: table<string, boolean|string>` -- Complete tuple after replacement.
+- `previous_options: table<string, boolean|string>` -- Complete tuple before replacement.
+- `request: { id: string|number, option: string, value: boolean|string }?` -- Matched request, only for a response.
+- `request_evidence: (louiselm.session.ImportEvidence)?` -- Matched request location.
+- `session_id: string` -- Observed ACP Session identifier.
+- `source: "notification"|"response"` -- Observed source; does not assert causation.
+
+### louiselm.session.ImportExclusion
+
+- `evidence: (louiselm.session.ImportEvidence)?` -- Offending source record, when known.
+- `reason: string` -- Fixed, payload-free reason code.
+- `source: integer` -- One-based index into the selected sources.
+
+### louiselm.session.ImportBatch
+
+- `binding: (louiselm.session.ImportEvidence)?` -- Observed binding, when validated.
+- `candidates: integer` -- Admitted preview candidates in this segment.
+- `connection_id: string` -- Selected connection file identity.
+- `exclusions: integer` -- Number of exclusion reasons in this segment.
+- `from: string` -- Inclusive UTC dispatch bound.
+- `proposal: louiselm.session.ImportAttribution` -- Unconfirmed human attribution.
+- `session_id: string` -- Selected ACP Session identifier.
+- `source: integer` -- One-based index of the exact selected source segment.
+- `status: string` -- Source status for this proposed batch.
+- `transitions: integer` -- Confirmed option replacements in this segment.
+- `until_time: string` -- Exclusive UTC dispatch bound.
+
+### louiselm.session.ImportReport
+
+- `attribution_confirmation: "unconfirmed"` -- All selected attribution remains unconfirmed.
+- `batches: louiselm.session.ImportBatch[]` -- Proposed attribution batches with exact source scope.
+- `candidates: louiselm.session.ImportCandidate[]` -- Observed dispatches with normalized, sparse facts.
+- `counts: { candidates: integer, exclusions: integer, transitions: integer }` -- Exclusions counts all reasons, including omitted ones.
+- `digest: string` -- SHA-256 binding selection, source statuses and selected file bytes.
+- `exclusions: louiselm.session.ImportExclusion[]` -- At most 256 bounded reasons and locations.
+- `selection: louiselm.session.ImportSelection` -- Frozen explicit selection.
+- `sources: louiselm.session.ImportSourceResult[]` -- Per-source status and file evidence.
+- `transitions: louiselm.session.ImportTransition[]` -- Confirmed option replacements, without inferred causality.
+
+### louiselm.session.ImportCallback
+
+```lua
+fun(report?: louiselm.session.ImportReport, error?: louiselm.session.ImportError)
+```
+
 ### louiselm.session.SelectedContentLimits
 
 - `input_bytes: integer` -- 1..131072, complete encoded prompt bytes.

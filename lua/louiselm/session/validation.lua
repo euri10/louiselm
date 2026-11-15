@@ -55,6 +55,47 @@ local function non_empty_string(value)
   return type(value) == "string" and value ~= ""
 end
 
+---Validate a UTC timestamp and return its millisecond-sortable key.
+---@param value unknown UTC timestamp with at most millisecond precision.
+---@return string? key Nil for malformed dates or times.
+function M.timestamp_key(value)
+  if type(value) ~= "string" then
+    return nil
+  end
+  local year, month, day, hour, minute, second, fraction =
+    value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.-)Z$")
+  if not year or (fraction ~= "" and not fraction:match("^%.%d%d?%d?$")) then
+    return nil
+  end
+  year, month, day = tonumber(year), tonumber(month), tonumber(day)
+  local days = {
+    31,
+    (year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0)) and 29 or 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  }
+  if
+    month < 1
+    or month > 12
+    or day < 1
+    or day > days[month]
+    or tonumber(hour) >= 24
+    or tonumber(minute) >= 60
+    or tonumber(second) >= 60
+  then
+    return nil
+  end
+  return value:sub(1, 19) .. ((value:match("%.(%d+)Z$") or "") .. "000"):sub(1, 3)
+end
+
 ---@param value unknown
 ---@return string? normalized
 ---@return boolean valid
