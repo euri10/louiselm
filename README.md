@@ -405,6 +405,8 @@ graph without operator decisions.
 - [API appendix](doc/api.md): headless Session API and public Lua types.
 - [Example workflow](docs/example-workflow.md): the maintainer's configuration,
   not a product contract.
+- [Private previews](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/private-preview.md): an optional SSH recipe for reviewing
+  two unmanaged-Session dev servers, with exposure and cleanup requirements.
 - [ACP log backups](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/acp-log-backups.md): opt-in encrypted snapshots, cloud
   copy, staged restore and reviewed retention. The maintainer accepted scheduled
   local/cloud recovery on 2026-09-10; new installations remain opt-in, and retention
