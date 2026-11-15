@@ -333,7 +333,8 @@ fn transition_requires_exact_legacy_current_and_refuses_ordinary_or_linked_admis
             &store,
             &policy,
             &request,
-            "12345678-1234-4234-8234-123456789abc"
+            "12345678-1234-4234-8234-123456789abc",
+            None,
         )
         .is_err()
     );

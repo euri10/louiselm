@@ -228,22 +228,7 @@ pub fn run() -> Result<i32, CliError> {
             .ok_or_else(|| CliError::Invalid("missing command subject; use --help".into()))?;
         options.positional.extend(subjects.cloned());
     }
-    if options.skill_request.is_some()
-        && (command != "generation" || options.subject("generation")? != "admit")
-    {
-        return Err(CliError::Invalid(
-            "--skill-request requires generation admit".into(),
-        ));
-    }
-    if options.transition_from.is_some()
-        && (command != "generation"
-            || options.subject("generation")? != "admit"
-            || options.skill_request.is_some())
-    {
-        return Err(CliError::Invalid(
-            "--transition-from requires generation admit without --skill-request".into(),
-        ));
-    }
+    validate_admission_options(command, &options)?;
 
     match command {
         "package" => package(&options),
@@ -262,6 +247,32 @@ pub fn run() -> Result<i32, CliError> {
         "launcher" => launcher_command(&options),
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
+}
+
+fn validate_admission_options(command: &str, options: &Options) -> Result<(), CliError> {
+    if options.skill_request.is_some()
+        && (command != "generation" || options.subject("generation")? != "admit")
+    {
+        return Err(CliError::Invalid(
+            "--skill-request requires generation admit".into(),
+        ));
+    }
+    if options.reviewed_profile_dossier.is_some() && options.skill_request.is_none() {
+        return Err(CliError::Invalid(
+            "--reviewed-profile-dossier requires --skill-request".into(),
+        ));
+    }
+    if options.transition_from.is_some()
+        && (command != "generation"
+            || options.subject("generation")? != "admit"
+            || options.skill_request.is_some())
+    {
+        return Err(CliError::Invalid(
+            "--transition-from requires generation admit without --skill-request".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Only missing-required context is rendered: these labels come from our schema,
@@ -306,6 +317,8 @@ struct Options {
     key: Option<String>,
     #[arg(long)]
     skill_request: Option<String>,
+    #[arg(long)]
+    reviewed_profile_dossier: Option<String>,
     /// Exact current generation/2 to follow with a freshly reviewed generation/3.
     #[arg(long)]
     transition_from: Option<String>,
@@ -695,14 +708,32 @@ fn inspect(options: &Options) -> Result<i32, CliError> {
 
 fn dossier(options: &Options) -> Result<i32, CliError> {
     let digest = Digest::parse(options.subject("dossier")?)?;
-    let base = options.against.as_deref().map(Digest::parse).transpose()?;
     let policy = options.policy()?;
     let store = options.store()?;
+    let requested_base = options.against.as_deref().map(Digest::parse).transpose()?;
+    let package = store.open_package(&digest, &policy)?;
+    let (locked, base) = if crate::inspect::PackageKind::of(&package.manifest)
+        == crate::inspect::PackageKind::OperatorProfile
+    {
+        let (locked, current) = admission::locked_current_profile(&store, &policy)?;
+        if requested_base.is_some() && requested_base != current {
+            return Err(CliError::Invalid(
+                "profile Dossier base must be the current admitted profile".into(),
+            ));
+        }
+        (Some(locked), current)
+    } else {
+        (None, requested_base)
+    };
     let dossier = Dossier::build(
         &store,
         &policy,
         &options.dossier_request(&digest, base.as_ref()),
     )?;
+    drop(locked);
+    let review_digest = (dossier.inspection.package_kind
+        == crate::inspect::PackageKind::OperatorProfile)
+        .then(|| dossier.portable_digest().to_string());
     // Focus sits beside the portable Dossier, never inside it: what this
     // machine trusts must not change the bytes a reviewer approves from.
     let admitted = admission::status(&store)?
@@ -716,10 +747,19 @@ fn dossier(options: &Options) -> Result<i32, CliError> {
         let mut value = serde_json::to_value(&dossier)?;
         if let Some(object) = value.as_object_mut() {
             object.insert("focus".to_owned(), serde_json::to_value(&focus)?);
+            if let Some(digest) = &review_digest {
+                object.insert(
+                    "review_digest".to_owned(),
+                    serde_json::Value::String(digest.clone()),
+                );
+            }
         }
         println!("{}", robot::payload(&value)?);
     } else {
         print!("{}", render::human(&dossier));
+        if let Some(digest) = &review_digest {
+            println!("Profile review digest: {digest}");
+        }
         print!("{}", render::focus(&focus));
     }
     Ok(if dossier.reviewable() {

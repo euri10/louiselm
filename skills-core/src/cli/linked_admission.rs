@@ -79,6 +79,11 @@ pub(super) fn run(
         return Err(CliError::Invalid("Admission trust domain mismatch".into()));
     }
     let signer = SshKeygenSigner::new(&options.signing_key()?);
+    let reviewed_profile = options
+        .reviewed_profile_dossier
+        .as_deref()
+        .map(crate::Digest::parse)
+        .transpose()?;
     let admission = admission::admit_linked(
         store,
         policy,
@@ -86,9 +91,14 @@ pub(super) fn run(
             members,
             signer: &signer,
             admitted_at_ms: now_ms(),
-            configured_agents: None,
+            configured_agents: options
+                .registry
+                .is_some()
+                .then(|| options.registered_agents())
+                .transpose()?,
         },
         operation,
+        reviewed_profile.as_ref(),
     )?;
     let (broker_status, resolution_error) = match inspect() {
         Ok(status) => (Some(status), None),

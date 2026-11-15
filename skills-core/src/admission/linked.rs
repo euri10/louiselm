@@ -11,6 +11,8 @@ use std::{fs, path::Path};
 
 /// Performs or recovers one broker-linked Admission without repeating its signature.
 /// The caller must authenticate and match the broker request before invoking this.
+/// New profile Admissions additionally require the Dossier digest the operator reviewed;
+/// a retry of an already signed ceremony may omit it.
 /// # Errors
 /// Refuses malformed operation IDs, changed requests, invalid evidence or persistence failure.
 pub fn admit_linked(
@@ -18,11 +20,19 @@ pub fn admit_linked(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
     operation: &str,
+    reviewed_profile: Option<&Digest>,
 ) -> Result<GenerationRecord, AdmissionError> {
     if !crate::broker::attention::canonical_uuid(operation) {
         return Err(AdmissionError::Chain("invalid approval operation".into()));
     }
-    admit_inner(store, policy, request, Some(operation), None)
+    admit_inner(
+        store,
+        policy,
+        request,
+        Some(operation),
+        None,
+        reviewed_profile,
+    )
 }
 
 /// Independently verifies exact signed Admission and confirms its durability.

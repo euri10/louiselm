@@ -119,10 +119,14 @@ class LinkedAdmission(unittest.TestCase):
                 as_user(broker, "test", "-r", store / "packages" / subsequent / "files/SKILL.md")
                 as_user(broker, "test", "!", "-w", store / "packages" / subsequent)
 
-                def start(calls):
+                def start(calls, packages=None, supply=False):
                     env = {"PATH": "/usr/bin:/bin", "HOME": str(state), "LOUISELM_ADMISSION_STATE": str(state),
                            "LOUISELM_ADMISSION_OPERATOR": str(operator.pw_uid), "LOUISELM_ADMISSION_PACKAGE": package,
                            "LOUISELM_ADMISSION_CALLS": str(calls)}
+                    if packages is not None:
+                        env["LOUISELM_ADMISSION_PACKAGES"] = json.dumps(packages)
+                    if supply:
+                        env["LOUISELM_ADMISSION_SUPPLY"] = "1"
                     child = subprocess.Popen(["setpriv", "--reuid", str(broker.pw_uid), "--regid", str(broker.pw_gid),
                                               "--clear-groups", str(root / "broker-test"), "--ignored", "--exact",
                                               "skill_requests::installed_linked_admission_server", "--nocapture"], env=env)
@@ -155,6 +159,63 @@ class LinkedAdmission(unittest.TestCase):
                 as_user(broker, "test", "-r", store / "trust/roles.json")
                 as_user(broker, "test", "!", "-w", store / "generations")
                 self.assertFalse((store / "pins.jsonl").exists(), "approval never activates supply")
+
+                self.phase("prepare batched profile request")
+                profile = private / "profile"
+                profile.mkdir(mode=0o755)
+                os.chown(profile, operator.pw_uid, operator.pw_gid)
+                (profile / "PROFILE.md").write_text(
+                    "---\ntype: louiselm/operator-profile\n---\nPrivate preference.\nSecond change.\n")
+                profile_package = cli("package", profile)["digest"]
+                reviewed_profile = cli("dossier", profile_package, "--review-depth", "read")["review_digest"]
+                packages = sorted([package, profile_package])
+                state = root / "profile-state"
+                state.mkdir(mode=0o700)
+                os.chown(state, broker.pw_uid, broker.pw_gid)
+                registry = root / "registry"
+                registry.mkdir(mode=0o755)
+                registry_file = registry / "agents.json"
+
+                def registry_agents(names):
+                    entries = [{"id": name, "provider": "fixture", "runtime_id": "fixture",
+                                "arguments": [], "environment": {}} for name in names]
+                    registry_file.write_text(json.dumps({"schema": "louiselm.launch.registry/1", "entries": entries}))
+                    registry_file.chmod(0o644)
+
+                members = [item for digest in packages for item in ("--member", digest + ":read=codex")]
+                server = start(1, packages, True)
+                operation = (state / "operation").read_text()
+                with self.assertRaisesRegex(RuntimeError, "needs the configured Agent list"):
+                    cli("generation", "admit", *members, "--key", private / "primary", "--skill-request", operation,
+                        "--reviewed-profile-dossier", reviewed_profile)
+                self.assertEqual(server.wait(timeout=10), 0)
+                registry_agents(["codex", "opencode"])
+                server = start(1, packages, True)
+                with self.assertRaisesRegex(RuntimeError, "does not reach configured Agents: opencode"):
+                    cli("generation", "admit", *members, "--key", private / "primary",
+                        "--skill-request", operation, "--registry", registry,
+                        "--reviewed-profile-dossier", reviewed_profile)
+                self.assertEqual(server.wait(timeout=10), 0)
+                registry_agents(["codex"])
+                server = start(1, packages, True)
+                with self.assertRaisesRegex(RuntimeError, "requires the reviewed profile Dossier digest"):
+                    cli("generation", "admit", *members, "--key", private / "primary",
+                        "--skill-request", operation, "--registry", registry)
+                self.assertEqual(server.wait(timeout=10), 0)
+                server = start(1, packages, True)
+                linked_profile = cli("generation", "admit", *members, "--key", private / "primary",
+                                     "--skill-request", operation, "--registry", registry,
+                                     "--reviewed-profile-dossier", reviewed_profile)
+                self.assertEqual(server.wait(timeout=10), 0)
+                self.assertEqual(len(linked_profile["admission"]["payload"]["members"]), 2)
+                self.assertEqual(linked_profile["admission"]["state"], "pending_witness")
+                server = start(2, packages, True)
+                replay = cli("generation", "admit", *members, "--key", private / "missing-key",
+                             "--skill-request", operation, "--registry", registry)
+                self.assertEqual(server.wait(timeout=10), 0)
+                self.assertEqual(replay["broker_status"]["outcome"], "approved")
+                self.assertEqual(replay["admission"], linked_profile["admission"])
+                self.assertFalse((store / "pins.jsonl").exists())
 
                 self.phase("prepare separately activated withdrawal supply")
                 store = root / "withdrawal-store"

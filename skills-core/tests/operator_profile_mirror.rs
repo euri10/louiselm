@@ -19,6 +19,7 @@ use std::{
 use louiselm_skills::{
     Digest, Policy, ReviewDepth, Signer, SshKeygenSigner, TrustStore,
     admission::{self, AdmissionMember, AdmissionRequest},
+    dossier::{Dossier, DossierRequest},
     signer::SignerError,
     sshsig::SkPolicy,
     witness::GitWitness,
@@ -415,6 +416,13 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
     let mirror = root.join("profile.md");
     assert!(world.configure(&mirror).status.success());
     let profile = world.capture("first", "PROFILE.md", FIRST);
+    let reviewed = Dossier::build(
+        &world.fixture.store(),
+        &Policy::embedded(),
+        &DossierRequest::new(&profile).with_review_depth(ReviewDepth::Read),
+    )
+    .unwrap()
+    .portable_digest();
     let member = AdmissionMember {
         package: profile,
         depth: ReviewDepth::Read,
@@ -427,6 +435,7 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
         &Policy::embedded(),
         &linked_request(&member, &signer),
         operation,
+        Some(&reviewed),
     )
     .unwrap();
     assert_eq!(fs::read(&mirror).unwrap(), FIRST.as_bytes());
@@ -436,6 +445,7 @@ fn linked_admission_recovery_does_not_overwrite_an_unchanged_profile_edit() {
         &Policy::embedded(),
         &linked_request(&member, &RefuseSigning),
         operation,
+        None,
     )
     .unwrap();
     assert_eq!(recovered.generation, first.generation);

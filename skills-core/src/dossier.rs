@@ -14,7 +14,7 @@ use crate::{
     assessment::{Assessment, AssessmentKey},
     canonical::Digest,
     diff::PackageDiff,
-    inspect::Inspection,
+    inspect::{Inspection, PackageKind},
     lineage::SupplyLineage,
     policy::Policy,
     scan,
@@ -228,6 +228,9 @@ impl Dossier {
             Some(base) => {
                 let base = store.open_package(base, policy)?;
                 Some(PackageDiff::between(&base, &package)?)
+            }
+            None if inspection.package_kind == PackageKind::OperatorProfile => {
+                Some(PackageDiff::initial_profile(&package)?)
             }
             None => None,
         };

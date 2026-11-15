@@ -279,7 +279,7 @@ fn push_diff(out: &mut String, heading: &str, diff: &PackageDiff) {
         out,
         &format!(
             "{heading} from {}: {} added, {} removed, {} changed, {} mode-only",
-            diff.base_digest,
+            diff.base_digest.as_deref().unwrap_or("no admitted profile"),
             diff.count(Change::Added),
             diff.count(Change::Removed),
             diff.count(Change::ContentChanged),
