@@ -81,9 +81,8 @@ impl SessionOwner {
                 .chain(self.saturated_failed_park.iter())
                 .any(|failed| failed.request_id == authority.request.request_id)
             || self
-                .completed
-                .iter()
-                .any(|completed| completed.request_id == authority.request.request_id);
+                .completed_request(&authority.request.request_id)
+                .is_some();
         if valid && recorded_or_busy {
             self.handle_lifecycle(authority.request);
             return;

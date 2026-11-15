@@ -297,15 +297,18 @@ fn networking_activation_failure_revokes_capability_and_a_fresh_resume_can_succe
     lock(&setup.platform.agent).guard_activation_fails = false;
     let mut fresh = resume_request(&setup, "fresh-after-activation-failure");
     fresh.expected_receipt_sequence = Some(park.payload.sequence);
-    setup.broker.wait_for_session_request();
-    setup.broker.deliver_session_request(guarded(
+    let fresh_authority = guarded(
         fresh.clone(),
         ReceiptHead {
             sequence: park.payload.sequence,
             digest: park.digest().to_string(),
         },
         3,
-    ));
+    );
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(fresh_authority.clone());
     setup.broker.wait_for_session_receipt(3);
     assert!(!lock(&setup.platform.agent).guard_active);
     assert!(!lock(&setup.platform.gate_state()).enabled);
@@ -315,15 +318,16 @@ fn networking_activation_failure_revokes_capability_and_a_fresh_resume_can_succe
         .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
             setup.broker.session_receipt_acknowledgement(3),
         ));
-    assert!(matches!(
-        setup
-            .broker
-            .wait_for_session_response(&fresh.request_id, 0)
-            .result,
-        ResponseResult::Receipt { .. }
-    ));
+    let completed = setup.broker.wait_for_session_response(&fresh.request_id, 0);
+    assert!(matches!(completed.result, ResponseResult::Receipt { .. }));
     assert!(lock(&setup.platform.agent).guard_active);
     assert!(lock(&setup.platform.gate_state()).enabled);
     assert_eq!(event_count(&setup.events, "agent.resume"), 2);
+    setup.broker.wait_for_session_request();
+    setup.broker.deliver_session_request(fresh_authority);
+    let replay = setup.broker.wait_for_session_response(&fresh.request_id, 1);
+    assert_eq!(replay.canonical_bytes(), completed.canonical_bytes());
+    assert_eq!(event_count(&setup.events, "agent.resume"), 2);
+    assert_eq!(event_count(&setup.events, "agent.guard_activate"), 2);
     finish_session_relay(&setup, input, receiver, worker);
 }
