@@ -114,6 +114,32 @@ local function finish_call(calls, index, output)
   scheduled[1]()
 end
 
+local function finish_failure(calls, index)
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  calls[index].on_exit({ code = 1, stdout = "", stderr = "source unavailable" })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+end
+
+local function transcript_fixture()
+  local root = nvim.fn.tempname()
+  MiniTest.finally(function()
+    nvim.fn.delete(root, "rf")
+  end)
+  local directory = nvim.fs.joinpath(root, "sessions", "session-1")
+  assert(nvim.fn.mkdir(directory, "p") == 1)
+  local path = nvim.fs.joinpath(directory, "history.jsonl")
+  assert(nvim.fn.writefile({ "{}" }, path) == 0)
+  return {
+    definitions = { test = { transcript_layout = "openai-compatible" } },
+    locator_options = { roots = { ["openai-compatible"] = root } },
+  },
+    path
+end
+
 T["commit Provenance"] = MiniTest.new_set()
 
 T["commit Provenance"]["renders commit references and unresolved Sessions"] = function()
@@ -167,6 +193,30 @@ T["commit Provenance"]["renders a partial answer when the commit has no trailers
     "Sessions:",
     "- none recorded",
   })
+end
+
+T["commit Provenance"]["renders a resolved Session transcript"] = function()
+  local options, path = transcript_fixture()
+  local buffer = source_buffer("0123456789abcdef0123456789abcdef01234567", 10)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer, options))
+  finish(calls, "fix: work\n\nRefs codex/session-1\n")
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(lines[#lines], "- codex/session-1 → " .. path)
+end
+
+T["commit Provenance"]["reports source errors without opening a view"] = function()
+  local buffer = source_buffer("0123456789abcdef0123456789abcdef01234567", 10)
+  local calls = fake_system()
+  local errors = {}
+  assert(Provenance.inspect(buffer, {
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  }))
+  finish_failure(calls, 1)
+  MiniTest.expect.equality(errors, { "git returned malformed commit data" })
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
 end
 
 T["commit Provenance"]["ignores a scheduled result after the view becomes inactive"] = function()
@@ -374,6 +424,55 @@ T["issue Provenance"]["renders an issue with no correlated commits"] = function(
   })
 end
 
+T["issue Provenance"]["renders resolved actor transcripts"] = function()
+  local options, path = transcript_fixture()
+  options.beads = true
+  local buffer = source_buffer("louiselm-kpod", 5)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer, options))
+  finish_bvr(calls, '{"histories":{}}')
+  finish_br(calls, '[{"id":"louiselm-kpod","assignee":"codex/session-1"}]')
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(lines[13], "- codex/session-1 → " .. path)
+end
+
+T["issue Provenance"]["ignores an actor lookup failure after the source becomes inactive"] = function()
+  local buffer = source_buffer("louiselm-kpod", 5)
+  local calls = fake_system()
+  local active = true
+  local errors = {}
+  assert(Provenance.inspect(buffer, {
+    beads = true,
+    is_active = function()
+      return active
+    end,
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  }))
+  finish_bvr(calls, '{"histories":{}}')
+  active = false
+  finish_failure(calls, 2)
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+end
+
+T["issue Provenance"]["reports actor lookup failures before opening a view"] = function()
+  local buffer = source_buffer("louiselm-kpod", 5)
+  local calls = fake_system()
+  local errors = {}
+  assert(Provenance.inspect(buffer, {
+    beads = true,
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  }))
+  finish_bvr(calls, '{"histories":{}}')
+  finish_failure(calls, 2)
+  MiniTest.expect.equality(errors, { "could not read issue actors" })
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+end
+
 T["Session Provenance"] = MiniTest.new_set()
 
 T["Session Provenance"]["keeps Git-only lookup available while Beads is disabled"] = function()
@@ -469,6 +568,16 @@ T["Session Provenance"]["renders reverse commit and issue edges"] = function()
     nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
     "louiselm://provenance/session/codex/session-1"
   )
+end
+
+T["Session Provenance"]["renders a resolved transcript"] = function()
+  local options, path = transcript_fixture()
+  local buffer = source_buffer("codex/session-1", 5)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer, options))
+  finish(calls, "chore: unrelated\n")
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(lines[6], "- " .. path)
 end
 
 T["Session Provenance"]["renders empty sides for a Session with no work"] = function()
@@ -743,6 +852,121 @@ T["Decision index"]["opens a read-only evidence timeline with recorded and infer
     nvim.api.nvim_get_option_value("modifiable", { buf = nvim.api.nvim_get_current_buf() }),
     false
   )
+end
+
+T["Decision index"]["renders a resolved Session transcript"] = function()
+  local options, path = transcript_fixture()
+  options.beads = true
+  local calls = fake_system()
+  assert(Provenance.show_decisions(options))
+  finish_beads_questions(calls, '{"issues":[{"id":"louiselm-decision","issue_type":"question","status":"open"}]}')
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
+  finish_call(calls, 2, '{"histories":{}}')
+  finish_call(
+    calls,
+    3,
+    '[{"id":"louiselm-decision","issue_type":"question","status":"open","assignee":"codex/session-1","description":"Decision relation: supersedes louiselm-old","comments":[]}]'
+  )
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(lines[11], "- codex/session-1 → " .. path .. " · recorded · 100% confidence")
+  MiniTest.expect.equality(lines[#lines - 1], "Relations:")
+  MiniTest.expect.equality(lines[#lines], "- supersedes louiselm-old · recorded")
+end
+
+local function start_historical_decision(calls, options)
+  assert(Provenance.show_decisions(options))
+  finish_beads_questions(calls, '{"issues":[{"id":"louiselm-decision","issue_type":"question","status":"closed"}]}')
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
+  finish_call(
+    calls,
+    2,
+    '{"histories":{"louiselm-decision":{"bead_id":"louiselm-decision","status":"closed","milestones":{"closed":{"timestamp":"now","commit_sha":"close-sha"}},"commits":[]}}}'
+  )
+  finish_call(calls, 3, '[{"id":"louiselm-decision","issue_type":"question","status":"closed","comments":[]}]')
+end
+
+local function historical_fixture()
+  local root = nvim.fn.tempname()
+  MiniTest.finally(function()
+    nvim.fn.delete(root, "rf")
+  end)
+  assert(nvim.fn.mkdir(nvim.fs.joinpath(root, ".beads"), "p") == 1)
+  assert(
+    nvim.fn.writefile(
+      { '{"id":"louiselm-decision","status":"closed"}' },
+      nvim.fs.joinpath(root, ".beads", "issues.jsonl")
+    ) == 0
+  )
+  return root
+end
+
+T["Decision index"]["renders a failed historical lookup as missing evidence"] = function()
+  local root = historical_fixture()
+  local calls = fake_system()
+  local errors = {}
+  start_historical_decision(calls, {
+    beads = true,
+    cwd = root,
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  })
+  finish_failure(calls, 4)
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(lines[#lines - 2], "Historical backlog:")
+  MiniTest.expect.equality(lines[#lines - 1], "- ref: close-sha")
+  MiniTest.expect.equality(lines[#lines], "- unavailable: git ref has no Beads snapshot")
+  MiniTest.expect.equality(errors, {})
+end
+
+T["Decision index"]["renders a historical lookup that cannot start as missing evidence"] = function()
+  local root = nvim.fn.tempname()
+  local calls = fake_system()
+  local errors = {}
+  start_historical_decision(calls, {
+    beads = true,
+    cwd = root,
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  })
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(#calls, 3)
+  MiniTest.expect.equality(lines[#lines - 1], "- ref: close-sha")
+  MiniTest.expect.equality(
+    lines[#lines],
+    "- unavailable: current Beads snapshot is missing: " .. root .. "/.beads/issues.jsonl"
+  )
+  MiniTest.expect.equality(errors, {})
+end
+
+T["Decision index"]["ignores historical evidence after the source becomes inactive"] = function()
+  local root = historical_fixture()
+  local calls = fake_system()
+  local active = true
+  local errors = {}
+  start_historical_decision(calls, {
+    beads = true,
+    cwd = root,
+    is_active = function()
+      return active
+    end,
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  })
+  local buffer = nvim.api.nvim_get_current_buf()
+  active = false
+  finish_failure(calls, 4)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), {
+    "# Decision louiselm-decision",
+    "",
+    "Loading Provenance evidence...",
+  })
+  MiniTest.expect.equality(errors, {})
 end
 
 T["Decision index"]["keeps missing evidence explicit"] = function()
