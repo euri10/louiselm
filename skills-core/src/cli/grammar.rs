@@ -36,7 +36,7 @@ fn operation(name: &str, verb: &'static str) -> Command {
         ("generation", "witness") => &["remote"],
         ("view", "materialize") => &["registry"],
         ("quarantine", "all" | "exclude") => &["reason"],
-        ("release", "build") | ("endorsement", "export") => &["output"],
+        ("generation", "mirror") | ("release", "build") | ("endorsement", "export") => &["output"],
         ("release", "sign") => &["bundle", "key"],
         ("release", "verify" | "install") => &["bundle"],
         ("launcher", "install") => &[
@@ -83,7 +83,7 @@ pub(super) fn command() -> Command {
         ),
         (
             "generation",
-            &["admit", "witness", "activate", "status", "list"],
+            &["admit", "witness", "activate", "status", "list", "mirror"],
         ),
         ("view", &["materialize", "empty"]),
         ("quarantine", &["exclude", "all", "show", "clear"]),

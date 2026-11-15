@@ -23,6 +23,7 @@
 //! to confirm the final commit is reported separately as uncertain durability.
 
 mod linked;
+pub(crate) mod mirror;
 mod transaction;
 mod verification;
 mod withdrawals;
@@ -95,6 +96,20 @@ pub struct ProfileDelivery {
 /// An Admission or lifecycle step that was refused.
 #[derive(Debug, Error)]
 pub enum AdmissionError {
+    /// The configured private mirror or its safety checks failed.
+    #[error("operator profile mirror: {reason}")]
+    Mirror {
+        /// Stable, content-free refusal reason.
+        reason: String,
+    },
+    /// Admission succeeded, but the subsequent private mirror did not settle.
+    #[error("generation {generation} was admitted; operator profile mirror needs repair: {reason}")]
+    MirrorAfterAdmission {
+        /// The already admitted Generation.
+        generation: String,
+        /// Content-free mirror failure.
+        reason: String,
+    },
     /// A filesystem operation failed.
     #[error("admission I/O failed at '{path}': {source}")]
     Io {
@@ -312,6 +327,7 @@ fn admit_inner(
     let focus = FocusContext::load_with(store, Some(&trust), &admitted, request.admitted_at_ms)?;
     let mut members = Vec::with_capacity(request.members.len());
     let mut has_profile = false;
+    let mut profile_digest = None;
     for AdmissionMember {
         package: digest,
         depth,
@@ -339,6 +355,7 @@ fn admit_inner(
                 has_profile,
             )?;
             has_profile = true;
+            profile_digest = Some(digest.to_string());
         }
         members.push(Member {
             package_digest: digest.to_string(),
@@ -358,9 +375,15 @@ fn admit_inner(
     );
     payload.approval_operation = operation.map(str::to_owned);
     if let Some(record) = linked::recover(store, &payload, &locked, &mut trust)? {
+        mirror_after_admission(
+            &record,
+            mirror::prepare(store, &record, profile_digest.as_deref())
+                .and_then(|()| mirror::finish(store, policy, &record)),
+        )?;
         return Ok(record);
     }
 
+    mirror::preflight(store, profile_digest.as_deref())?;
     let signature = request
         .signer
         .sign(ADMISSION_NAMESPACE, &payload.canonical_bytes())?;
@@ -382,10 +405,22 @@ fn admit_inner(
         admitted_at_ms: request.admitted_at_ms,
         invalid_reason: None,
     };
+    mirror::prepare(store, &record, profile_digest.as_deref())?;
     write_record(store, &record)?;
     trust.approved_admissions.insert(record.generation.clone());
     locked.write(&trust)?;
+    mirror_after_admission(&record, mirror::finish(store, policy, &record))?;
     Ok(record)
+}
+
+fn mirror_after_admission(
+    record: &GenerationRecord,
+    result: Result<(), AdmissionError>,
+) -> Result<(), AdmissionError> {
+    result.map_err(|error| AdmissionError::MirrorAfterAdmission {
+        generation: record.generation.clone(),
+        reason: error.to_string(),
+    })
 }
 
 /// Publishes and confirms a Generation's exact bytes on the witness remote.

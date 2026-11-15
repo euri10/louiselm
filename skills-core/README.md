@@ -439,6 +439,41 @@ destination; files and directories are read-only and every reuse checks their
 contents, modes and complete inventory. The store owner must still protect its
 root from untrusted writers.
 
+The Operator profile can also have one private backup mirror, configured before
+Admission with the trusted tool:
+
+```sh
+louiselm-skills generation mirror --store DIR --output /absolute/private/PROFILE.md
+```
+
+The path is literal, its parent must already exist, and its directories and any
+existing file must be owned and protected from other writers. Symlink ancestors,
+linked files, the skill store, and Git worktrees or checkouts with configured
+remotes or included/rewrite configuration are refused. The tool checks local,
+global and system Git configuration without printing its values; injected or
+uninspectable configuration is refused. A normal checkout with no remote is
+supported. Git URLs do not establish repository visibility, so even a remote
+believed to be private is refused; the operator must keep any later explicit
+push private. The check is repeated when a changed profile is admitted.
+
+The mirror is optional. When configured, a successful signed Admission of a
+changed profile atomically replaces the file with its exact admitted bytes at
+mode `0600`. This happens before the separate witness and activation steps and
+does not make the pending Generation active. An Admission with the same profile
+does not overwrite hand edits. If a later Admission omits the profile, the last
+backup is retained and status reports `no_profile`.
+
+`generation status --robot-json` reports `operator_profile_mirror.state` as
+`unconfigured`, `no_profile`, `current`, `drift`, `unsafe`, or `unsettled`; its
+optional `generation` identifies the last profile-changing Admission, which can
+be pending rather than current. Neither output form prints profile content.
+`drift` means the backup is missing, changed, or not durably settled; `unsafe`
+means its path no longer passes the safety checks. Inspect these conditions
+before proceeding. Repeating the mirror command after fixing the path restores
+the last admitted bytes and discards edits at that destination. An `unsettled`
+Admission must be retried or inspected before mirror repair. A failure after
+Admission explicitly reports the already-signed Generation; it is not a rollback.
+
 An Agent registration may declare `"always_on_path": "/absolute/native/file"`
 for ordinary Operator profile delivery. This is the effective native instruction
 file, verified against that installed Agent; paths are literal, with no tilde or

@@ -242,6 +242,15 @@ fn checked_packages<'a>(
     record: &'a GenerationRecord,
 ) -> Result<BTreeMap<&'a str, Package>, ViewError> {
     validate_generation(store, policy, record)?;
+    checked_package_contents(store, policy, record)
+}
+
+// Also used for signed, pending Admissions; the caller verifies authority.
+pub(crate) fn checked_package_contents<'a>(
+    store: &Store,
+    policy: &Policy,
+    record: &'a GenerationRecord,
+) -> Result<BTreeMap<&'a str, Package>, ViewError> {
     require_directory(&store.root().join("packages"), false)?;
     let mut packages = BTreeMap::new();
     for member in &record.payload.members {

@@ -814,6 +814,7 @@ fn trust(options: &Options) -> Result<i32, CliError> {
 
 fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> {
     let status = admission::status(store)?;
+    let mirror = admission::mirror::status(store, &options.policy()?)?;
     let admissible = status.state == Some(crate::generation::GenerationState::Current);
     let alerts = endorsement::current_alerts(store)?;
     // Delivery needs the configured Agents, so it is reported only
@@ -856,6 +857,10 @@ fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> 
         let mut value = serde_json::to_value(&status)?;
         if let Some(object) = value.as_object_mut() {
             object.insert(
+                "operator_profile_mirror".to_owned(),
+                serde_json::to_value(&mirror)?,
+            );
+            object.insert(
                 "withdrawn_endorsements".to_owned(),
                 serde_json::to_value(&alerts)?,
             );
@@ -875,6 +880,7 @@ fn generation_status(options: &Options, store: &Store) -> Result<i32, CliError> 
         println!("{}", robot::payload(&value)?);
     } else {
         println!("{}", render::generation_status(&status));
+        println!("operator profile mirror: {}", mirror.state);
         if let Some(delivery) = &delivery {
             match &delivery.profile {
                 Some(profile) if delivery.undelivered.is_empty() => {
@@ -952,6 +958,17 @@ fn generation(options: &Options) -> Result<i32, CliError> {
             })
         }
         "status" => generation_status(options, &store),
+        "mirror" => {
+            let path = options.output.as_deref().ok_or_else(|| {
+                CliError::Invalid("generation mirror needs --output <absolute path>".into())
+            })?;
+            admission::mirror::configure(&store, &policy, path)?;
+            report(
+                options,
+                &admission::mirror::status(&store, &policy)?,
+                |status| format!("operator profile mirror: {}", status.state),
+            )
+        }
         "list" => {
             let records = admission::list(&store)?;
             if options.robot {

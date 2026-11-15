@@ -47,27 +47,9 @@ pub(super) fn from_packages(
         if !member.agents.iter().any(|id| id == agent) {
             continue;
         }
-        let entry = package
-            .manifest
-            .entry(PROFILE_FILE)
-            .ok_or(ViewError::Refused("missing_profile_file"))?;
-        if package.manifest.entries.len() != 1
-            || entry.executable
-            || entry.size > MAX_PROFILE_BYTES as u64
-        {
-            return Err(ViewError::Refused("invalid_profile_shape"));
-        }
         selected = Some(super::OperatorProfile {
             package: package.digest.clone(),
-            bytes: read_file(
-                &package.file_path(PROFILE_FILE),
-                &Entry::File {
-                    digest: Digest::parse(&entry.sha256).map_err(crate::StoreError::from)?,
-                    size: entry.size,
-                    executable: false,
-                },
-                false,
-            )?,
+            bytes: bytes(package)?,
         });
     }
     Ok(selected)
@@ -103,25 +85,7 @@ pub(super) fn delivery(
         return Err(ViewError::Refused("multiple_operator_profiles"));
     }
     let package = &packages[member.package_digest.as_str()];
-    let entry = package
-        .manifest
-        .entry(PROFILE_FILE)
-        .ok_or(ViewError::Refused("missing_profile_file"))?;
-    if package.manifest.entries.len() != 1
-        || entry.executable
-        || entry.size > MAX_PROFILE_BYTES as u64
-    {
-        return Err(ViewError::Refused("invalid_profile_shape"));
-    }
-    let bytes = read_file(
-        &package.file_path(PROFILE_FILE),
-        &Entry::File {
-            digest: Digest::parse(&entry.sha256).map_err(crate::StoreError::from)?,
-            size: entry.size,
-            executable: false,
-        },
-        false,
-    )?;
+    let bytes = bytes(package)?;
     result.profile = Some(member.package_digest.clone());
     let mut undelivered = Vec::new();
     for id in &result.undelivered {
@@ -140,6 +104,28 @@ pub(super) fn delivery(
     }
     result.undelivered = undelivered;
     Ok(result)
+}
+
+pub(crate) fn bytes(package: &Package) -> Result<Vec<u8>, ViewError> {
+    let entry = package
+        .manifest
+        .entry(PROFILE_FILE)
+        .ok_or(ViewError::Refused("missing_profile_file"))?;
+    if package.manifest.entries.len() != 1
+        || entry.executable
+        || entry.size > MAX_PROFILE_BYTES as u64
+    {
+        return Err(ViewError::Refused("invalid_profile_shape"));
+    }
+    read_file(
+        &package.file_path(PROFILE_FILE),
+        &Entry::File {
+            digest: Digest::parse(&entry.sha256).map_err(crate::StoreError::from)?,
+            size: entry.size,
+            executable: false,
+        },
+        false,
+    )
 }
 
 const DIRECTORY: OFlags = OFlags::RDONLY
@@ -184,8 +170,12 @@ fn name(path: &Path) -> Result<&std::ffi::OsStr, ViewError> {
 
 fn replace(path: &Path, bytes: &[u8]) -> Result<(), ViewError> {
     let directory = parent(path, true)?;
+    replace_in(path, &directory, bytes)
+}
+
+pub(crate) fn replace_in(path: &Path, directory: &File, bytes: &[u8]) -> Result<(), ViewError> {
     let name = name(path)?;
-    match rustix::fs::statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+    match rustix::fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => (),
         Ok(_) => return Err(tree_error(path, "profile_destination_not_regular")),
         Err(rustix::io::Errno::NOENT) => (),
@@ -218,8 +208,16 @@ fn matches(path: &Path, expected: &[u8]) -> Result<bool, ViewError> {
         Err(ViewError::Io { source, .. }) if unavailable(&source) => return Ok(false),
         Err(error) => return Err(error),
     };
+    matches_in(path, &directory, expected)
+}
+
+pub(crate) fn matches_in(
+    path: &Path,
+    directory: &File,
+    expected: &[u8],
+) -> Result<bool, ViewError> {
     let file = match rustix::fs::openat(
-        &directory,
+        directory,
         name(path)?,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
