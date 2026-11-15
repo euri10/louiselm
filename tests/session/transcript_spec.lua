@@ -168,6 +168,34 @@ T["record"]["merges consecutive assistant chunks into one block"] = function()
   })
 end
 
+T["record"]["snapshots stay independent as streamed blocks and tools change"] = function()
+  local transcript = Transcript.new()
+  local function record(kind, data)
+    transcript:record(event({ type = kind, session_id = "session-1", data = data }))
+  end
+
+  record("chunk", { text = "first" })
+  record("tool_call_started", { toolCallId = "tool", status = "in_progress", rawInput = { value = "before" } })
+  record("chunk", { text = "second" })
+  local before = transcript:snapshot()
+  record("chunk", { text = " continued" })
+  record("tool_call_finished", { toolCallId = "tool", status = "completed", rawInput = { value = "after" } })
+
+  MiniTest.expect.equality(before, {
+    { kind = "assistant", text = "first" },
+    {
+      kind = "tool_call",
+      id = "tool",
+      raw = { toolCallId = "tool", status = "in_progress", rawInput = { value = "before" } },
+    },
+    { kind = "assistant", text = "second" },
+  })
+  before[2].raw.rawInput.value = "changed by caller"
+  local after = transcript:snapshot()
+  MiniTest.expect.equality(after[2].raw.rawInput.value, "after")
+  MiniTest.expect.equality(after[3], { kind = "assistant", text = "second continued" })
+end
+
 T["record"]["merges consecutive user_chunk events into one block, separate from assistant text"] = function()
   local transcript = Transcript.new()
   transcript:record(event({

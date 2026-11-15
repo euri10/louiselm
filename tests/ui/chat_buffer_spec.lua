@@ -28,6 +28,40 @@ local function new_buffer(options)
   return owner
 end
 
+T["terminal echoes match across chunks and reset on the next replayed prompt"] = function()
+  local owner = new_buffer()
+  owner:render({ type = "chunk", session_id = "buffer-test", data = { text = "prefix shared " } })
+  owner:render({ type = "chunk", session_id = "buffer-test", data = { text = "answer suffix" } })
+  owner:finish_turn()
+  owner:render({
+    type = "tool_call_finished",
+    session_id = "buffer-test",
+    data = {
+      toolCallId = "late",
+      title = "task_complete",
+      status = "completed",
+      rawOutput = { content = "shared answer" },
+    },
+  })
+  local _, first_count = table.concat(buffer_lines(owner.buffer), "\n"):gsub("shared answer", "")
+  MiniTest.expect.equality(first_count, 1)
+
+  owner:render({ type = "user_chunk", session_id = "buffer-test", data = { text = "new request" } }, true)
+  owner:render({
+    type = "tool_call_finished",
+    session_id = "buffer-test",
+    data = {
+      toolCallId = "next",
+      title = "task_complete",
+      status = "completed",
+      rawOutput = { content = "shared answer" },
+    },
+  })
+  owner:finish_turn()
+  local _, next_count = table.concat(buffer_lines(owner.buffer), "\n"):gsub("shared answer", "")
+  MiniTest.expect.equality(next_count, 2)
+end
+
 T["long standalone completed tool folds its full title"] = function()
   local owner = new_buffer()
   local title = ("long command "):rep(30)
