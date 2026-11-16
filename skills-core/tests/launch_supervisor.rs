@@ -9367,6 +9367,48 @@ fn authorization_timeout_closes_the_broker_without_entering_root_mechanics_or_re
 }
 
 #[test]
+fn longer_authorization_wait_does_not_extend_receipt_deadline() {
+    let timeout = Duration::from_millis(200);
+    let setup = setup(
+        true,
+        |authorization| authorization.expires_at_ms = NOW_MS + 10_000,
+        AppendBehavior::NeverComplete,
+        PlatformBehavior::default(),
+        timeout,
+    );
+    let supervisor = LaunchSupervisor::new_with_authorization_timeout(
+        setup.broker.clone(),
+        setup.signer.clone(),
+        setup.platform.clone(),
+        Arc::clone(&setup.registry),
+        setup.sessions_root.clone(),
+        timeout,
+        Duration::from_secs(5),
+    );
+    setup.broker.hold_authorization();
+    let (receiver, completion_count) =
+        begin_launch_on(&supervisor, &setup.request, &setup.events, CONTROLLER_UID);
+    setup.broker.wait_for_authorization();
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_millis(500)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    setup.broker.release_authorization();
+    setup.broker.wait_for_append(0);
+    assert_eq!(
+        receiver
+            .recv_timeout(CALLBACK_TIMEOUT)
+            .expect("receipt deadline completes")
+            .err()
+            .expect("held receipt must time out"),
+        SupervisorError::BrokerTimeout,
+    );
+    setup.broker.acknowledge();
+    assert_eq!(completion_count.load(Ordering::SeqCst), 1);
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn broker_identity_exhaustion_propagates_typed_evidence_without_entering_root_mechanics() {
     let setup = setup(
         true,

@@ -190,24 +190,26 @@ impl RunningAgent for TestProcess {
     }
 }
 
+type ScheduledTimer = (Duration, Box<dyn FnOnce() + Send>);
+
 #[derive(Default)]
-struct Timer(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+struct Timer(Mutex<Vec<ScheduledTimer>>);
 impl SupervisorTimer for Timer {
     fn now(&self) -> Instant {
         Instant::now()
     }
     fn schedule(
         &self,
-        _delay: Duration,
+        delay: Duration,
         complete: Box<dyn FnOnce() + Send>,
     ) -> Result<(), SupervisorError> {
-        self.0.lock().unwrap().push(complete);
+        self.0.lock().unwrap().push((delay, complete));
         Ok(())
     }
 }
 impl Timer {
     fn expire(&self) {
-        for complete in std::mem::take(&mut *self.0.lock().unwrap()) {
+        for (_, complete) in std::mem::take(&mut *self.0.lock().unwrap()) {
             std::thread::spawn(complete).join().unwrap();
         }
     }
@@ -531,6 +533,10 @@ fn agent_status_crosses_the_authenticated_capability_relay() {
             .send(serde_json::to_vec(&query).unwrap(), complete)
     });
     harness.tick();
+    assert_eq!(
+        harness.timer.0.lock().unwrap().last().unwrap().0,
+        Duration::from_mins(1)
+    );
     assert!(
         !harness.owner.commands.closed,
         "read-only status must keep the Agent channel open"
@@ -875,6 +881,10 @@ fn beads_relay_correlates_results_and_refuses_after_deadline() {
     );
     settle(|complete| harness.agent.send(query.canonical_bytes(), complete));
     harness.tick();
+    assert_eq!(
+        harness.timer.0.lock().unwrap().last().unwrap().0,
+        Duration::from_secs(75)
+    );
     assert!(harness.owner.commands.status.is_some());
     let mut forwarded = receive(&harness.broker);
     assert_eq!(forwarded.operation, query.operation);

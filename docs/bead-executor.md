@@ -157,10 +157,12 @@ their command and environment; ordinary configured Agents retain their selected 
 Run ledger token or Provider credential is passed to a worker environment.
 
 Worker and verifier startup has a 60-second deadline, including the installed
-supervisor and ACP initialization. The supervisor allows 30 seconds per broker
-transaction: authorization must retain source inputs and build the native Beads
-replica before replying. Authority acquisition, signing and platform waits keep
-their five-second bounds. These waits do not extend the approved Run expiry or
+supervisor and ACP initialization. The supervisor allows 40 seconds for broker
+authorization: it must retain source inputs and build the native Beads replica
+before replying. Other launcher broker and Session lifecycle callbacks retain
+their 30-second bound; the Beads mutation relay has 75 seconds to allow mutation
+and replica refresh. Signing and platform operations keep their separate
+five-second bounds. These waits do not extend the approved Run expiry or
 Provider budget, and ordinary Sessions retain their existing startup timeout.
 
 `dispose()` cancels active turns and closes each launcher's controller input.

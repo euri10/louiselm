@@ -45,10 +45,16 @@ impl SessionOwner {
         let id = format!("agent-status-{sequence}");
         let sender = self.sender.clone();
         let deadline_id = id.clone();
+        let timeout = if matches!(&query.operation, CommandOperation::BeadsMutation { .. }) {
+            // A mutation may consume 30s before the bounded replica export/import.
+            Duration::from_secs(75)
+        } else {
+            Duration::from_mins(1)
+        };
         if self
             .timer
             .schedule(
-                Duration::from_mins(1),
+                timeout,
                 Box::new(move || {
                     let _ = sender.send(OwnerEvent::AgentStatusDeadline {
                         request_id: deadline_id,

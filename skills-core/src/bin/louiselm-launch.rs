@@ -28,10 +28,9 @@ use louiselm_skills::{
 };
 
 const BROKER_TIMEOUT: Duration = Duration::from_secs(5);
-// Authorization retains source inputs and runs two bounded 10s tracker steps
-// before replying. Keep authority/signing/platform waits separate from this
-// broker transaction budget (louiselm-3hdk7).
 const BROKER_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(30);
+// Only initial authorization includes the bounded 10s/20s tracker steps.
+const BROKER_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(40);
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
@@ -257,13 +256,14 @@ fn run() -> Result<i32, &'static str> {
     );
     let broker = connect_control_broker(&config, BROKER_TIMEOUT)
         .map_err(|_| "Control broker unavailable")?;
-    let supervisor = LaunchSupervisor::new(
+    let supervisor = LaunchSupervisor::new_with_authorization_timeout(
         broker,
         signer,
         platform,
         registry,
         Path::new(SYSTEM_SESSIONS_ROOT).to_owned(),
         BROKER_TRANSACTION_TIMEOUT,
+        BROKER_AUTHORIZATION_TIMEOUT,
     );
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -331,4 +331,15 @@ fn canonical_sudo_uid() -> Option<u32> {
     let raw = std::env::var("SUDO_UID").ok()?;
     let parsed = raw.parse::<u32>().ok()?;
     (parsed != 0 && parsed.to_string() == raw).then_some(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_lifecycle_keeps_original_deadline() {
+        assert_eq!(BROKER_TRANSACTION_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(BROKER_AUTHORIZATION_TIMEOUT, Duration::from_secs(40));
+    }
 }

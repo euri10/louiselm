@@ -60,6 +60,14 @@ The real-upstream regression is
 `broker::beads_replica::tests::real_br_replica_preserves_native_reads_after_refresh`.
 Run it through `scripts/test-skills-core` outside an ACP subreaper, with explicit
 `LOUISELM_TEST_BR` and optional `LOUISELM_TEST_BVR` paths and `--ignored`.
+For representative-scale coverage, run the ignored
+`broker::beads_replica::tests::real_br_replica_preserves_representative_tracker_history`
+in the disposable VM under the broker UID. Set `LOUISELM_TEST_BR`,
+`LOUISELM_TEST_TRACKER_SNAPSHOT` to a private, checkpointed tracker copy, and
+`LOUISELM_TEST_TRACKER_ISSUE` to an issue in that copy. The fixture copies its
+inputs again before invoking `br`; it compares native issue views except the
+machine-local `source_repo_path`, and uses `/usr/bin/sqlite3` to compare event
+counts. Do not point this test at a live tracker.
 The existing required installed tracker gate additionally probes actual file
 opens inside the measured Agent's namespace and native reads under its assigned
 UID. Automated acceptance uses disposable projects and no credentials or network;

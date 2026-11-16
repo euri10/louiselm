@@ -97,6 +97,7 @@ import sys
 import time
 from pathlib import Path
 if 'BEADS_DIR' in os.environ:
+    assert sys.argv[1:3] == ['sync', '--import-only']
     assert 'FSQLITE_TRUSTED_UNIX_DATABASE' not in os.environ
     assert 'FSQLITE_TRUSTED_UNIX_GID' not in os.environ
     if Path(__file__).with_name('slow-replica-import').is_file():

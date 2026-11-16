@@ -198,7 +198,7 @@ fn export(tracker: &TrackerConfig, actor: &str) -> Result<Files, BrokerError> {
     let directory = staging.path().join(".beads");
     fs::create_dir(&directory).map_err(BrokerError::Storage)?;
     let root = directory.as_path();
-    // Mutation (30s) plus both replica processes fit the relay's 60s deadline.
+    // Mutation (30s), export (10s), and import (20s) fit the Beads relay budget.
     let runner = SystemTrackerRunner::new(Duration::from_secs(10));
     let mut environment = tracker.canonical_environment();
     environment.extend([
@@ -245,9 +245,8 @@ fn export(tracker: &TrackerConfig, actor: &str) -> Result<Files, BrokerError> {
     )?;
     let invocation = TrackerInvocation {
         arguments: vec![
-            "list".into(),
-            "--limit".into(),
-            "1".into(),
+            "sync".into(),
+            "--import-only".into(),
             "--json".into(),
             "--actor".into(),
             actor.into(),
@@ -260,7 +259,12 @@ fn export(tracker: &TrackerConfig, actor: &str) -> Result<Files, BrokerError> {
         current_dir: root.into(),
         ..invocation
     };
-    if runner.run(&invocation)?.exit_code != Some(0) || !root.join("beads.db").is_file() {
+    if SystemTrackerRunner::new(Duration::from_secs(20))
+        .run(&invocation)?
+        .exit_code
+        != Some(0)
+        || !root.join("beads.db").is_file()
+    {
         return Err(BrokerError::TrackerConfiguration(
             "cannot build local tracker replica",
         ));

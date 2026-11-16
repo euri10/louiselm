@@ -5,7 +5,7 @@ local Service = require("louiselm.workflow.service")
 local Ledger = require("louiselm.workflow.ledger")
 local Session = require("louiselm.session")
 local Launch = require("louiselm.acp.launch")
--- Broker preparation can consume its 30s transaction budget before ACP starts.
+-- Broker preparation can consume its 40s transaction budget before ACP starts.
 -- This Run-only bound leaves room for initialization; ordinary Sessions keep theirs.
 local START_TIMEOUT_MS = 60000
 ---@diagnostic disable-next-line: undefined-global -- Neovim runtime API.

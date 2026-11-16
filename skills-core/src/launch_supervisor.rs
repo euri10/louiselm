@@ -1000,6 +1000,7 @@ struct SupervisorInner {
     registry: Arc<Registry>,
     sessions_root: PathBuf,
     timeout: Duration,
+    authorization_timeout: Duration,
     timer: Arc<dyn SupervisorTimer>,
     launched: AtomicBool,
 }
@@ -1031,6 +1032,30 @@ impl LaunchSupervisor {
         )
     }
 
+    /// Creates a coordinator with a separate initial-authorization deadline.
+    ///
+    /// Only consuming the launch authorization uses `authorization_timeout`;
+    /// receipt acknowledgements and Session lifecycle operations use `timeout`.
+    pub fn new_with_authorization_timeout(
+        broker: Arc<dyn LaunchBroker>,
+        signer: Arc<dyn LaunchSigner>,
+        platform: Arc<dyn LaunchPlatform>,
+        registry: Arc<Registry>,
+        sessions_root: PathBuf,
+        timeout: Duration,
+        authorization_timeout: Duration,
+    ) -> Self {
+        Self::new_with_limits(
+            broker,
+            signer,
+            platform,
+            registry,
+            sessions_root,
+            (timeout, authorization_timeout),
+            Arc::new(ThreadSupervisorTimer),
+        )
+    }
+
     /// Creates a coordinator with an explicit monotonic callback scheduler.
     ///
     /// This keeps lifecycle deadline tests deterministic without weakening the
@@ -1044,6 +1069,26 @@ impl LaunchSupervisor {
         timeout: Duration,
         timer: Arc<dyn SupervisorTimer>,
     ) -> Self {
+        Self::new_with_limits(
+            broker,
+            signer,
+            platform,
+            registry,
+            sessions_root,
+            (timeout, timeout),
+            timer,
+        )
+    }
+
+    fn new_with_limits(
+        broker: Arc<dyn LaunchBroker>,
+        signer: Arc<dyn LaunchSigner>,
+        platform: Arc<dyn LaunchPlatform>,
+        registry: Arc<Registry>,
+        sessions_root: PathBuf,
+        (timeout, authorization_timeout): (Duration, Duration),
+        timer: Arc<dyn SupervisorTimer>,
+    ) -> Self {
         Self {
             inner: Arc::new(SupervisorInner {
                 broker,
@@ -1052,6 +1097,7 @@ impl LaunchSupervisor {
                 registry,
                 sessions_root,
                 timeout,
+                authorization_timeout,
                 timer,
                 launched: AtomicBool::new(false),
             }),
@@ -1152,7 +1198,7 @@ fn run_launch(
     receiver
         .recv_timeout(inner.timeout)
         .map_err(|_| SupervisorError::ToolIsolationUnproven)??;
-    let authorization = await_broker(inner, |complete| {
+    let authorization = await_broker(inner, inner.authorization_timeout, |complete| {
         inner
             .broker
             .consume_authorization(request.clone(), complete)
@@ -1681,7 +1727,7 @@ fn transact_receipt(
         sequence: receipt.payload.sequence,
         digest: Digest::of(&receipt_bytes).to_string(),
     };
-    let acknowledgement = await_broker(inner, |complete| {
+    let acknowledgement = await_broker(inner, inner.timeout, |complete| {
         inner
             .broker
             .append_receipt(receipt_bytes, report_bytes, complete)
@@ -1700,6 +1746,7 @@ fn transact_receipt(
 
 fn await_broker<T>(
     inner: &SupervisorInner,
+    timeout: Duration,
     initiate: impl FnOnce(SupervisorCompletion<T>) -> Result<(), SupervisorError>,
 ) -> Result<T, SupervisorError>
 where
@@ -1709,7 +1756,7 @@ where
     initiate(Box::new(move |result| {
         let _ = sender.try_send(result);
     }))?;
-    match receiver.recv_timeout(inner.timeout) {
+    match receiver.recv_timeout(timeout) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
             inner.broker.close();
