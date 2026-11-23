@@ -125,6 +125,55 @@ local function permission_prompt(data)
   return "louiselm permission (" .. kind .. ", details unavailable): "
 end
 
+---@param data table ACP permission request.
+---@return string? reason Agent-provided explanation, never inferred from the tool input.
+local function permission_reason(data)
+  local meta = type(data._meta) == "table" and data._meta or {}
+  local jetbrains = type(meta.jetbrains) == "table" and meta.jetbrains or {}
+  local air = type(jetbrains.air) == "table" and jetbrains.air or {}
+  local permission = type(air.permission) == "table" and air.permission or {}
+  if air.version == 1 and permission.version == 1 then
+    return field(permission, "description")
+  end
+end
+
+---@param session louiselm.session.Session
+---@param data table ACP permission request.
+---@return string[] lines Display-only explanation and tool details.
+local function permission_details(session, data)
+  local lines = {}
+  local reason = permission_reason(data)
+  if reason ~= nil then
+    lines[#lines + 1] = "Agent requested approval"
+    for _, option in ipairs(session:inspect().config_options or {}) do
+      if option.category == "mode" then
+        local name = tostring(option.current_value)
+        for _, value in ipairs(option.options or {}) do
+          if value.value == option.current_value then
+            name = value.name
+            break
+          end
+        end
+        lines[#lines + 1] = "Mode: " .. (name:gsub("%c", " "))
+      end
+    end
+    lines[#lines + 1] = ""
+    for _, line in ipairs(nvim.split(reason, "\n", { plain = true })) do
+      lines[#lines + 1] = (line:gsub("%c", " "))
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "q/Esc: review approval choices (does not answer the request)"
+    lines[#lines + 1] = ""
+  end
+  local tool_call = data.toolCall or data.tool_call
+  if type(tool_call) == "table" then
+    for _, line in ipairs(nvim.split(nvim.inspect(tool_call), "\n", { plain = true })) do
+      lines[#lines + 1] = line
+    end
+  end
+  return lines
+end
+
 ---@class louiselm.ui.ChatDecision
 ---@field session louiselm.session.Session Session that asked for a decision.
 ---@field data table ACP permission or interaction request data.
@@ -133,6 +182,7 @@ end
 ---@field ui? louiselm.ui.DecisionPrompt|louiselm.ui.Diff Presentation retained while its Session is hidden.
 ---@field interaction? louiselm.session.InteractionData Validated question or plan request.
 ---@field cancel_interaction? fun() Retire interaction state without responding.
+---@field explanation_seen? boolean Whether the Agent's reason has been presented before the choices.
 
 ---@type fun(self: louiselm.ui.Decisions)
 local pump_decisions
@@ -258,7 +308,7 @@ local function prompt_permission(self, decision, prompt, respond)
   end
   local tool_call = data.toolCall or data.tool_call
   local details = {}
-  if type(tool_call) == "table" then
+  if type(tool_call) == "table" or permission_reason(data) ~= nil then
     options[#options + 1] = details
   end
   return prompt:select(options, {
@@ -276,7 +326,7 @@ local function prompt_permission(self, decision, prompt, respond)
     end
     if choice == details then
       local opened, err = prompt:inspect(
-        nvim.split(nvim.inspect(tool_call), "\n", { plain = true }),
+        permission_details(decision.session, data),
         session_label(decision.session) .. " · Request details · q/Esc: back to choices",
         function()
           if decision.answered or self.active ~= decision or not is_visible(self, decision) then
@@ -307,6 +357,33 @@ local function open_decision(self, decision)
   end
   local respond = decision_responder(self, decision)
   local data = decision.data
+  if decision.interaction == nil and not decision.explanation_seen and permission_reason(data) ~= nil then
+    local options = permission_options(data.options)
+    if options == nil or #options == 0 then
+      respond(cancellation(decision))
+      return true
+    end
+    local prompt = DecisionPrompt.new(function()
+      return is_visible(self, decision)
+    end)
+    decision.ui = prompt
+    decision.explanation_seen = true
+    return prompt:inspect(
+      permission_details(decision.session, data),
+      session_label(decision.session) .. " · Agent approval · q/Esc: choices",
+      function()
+        if decision.answered or self.active ~= decision or not is_visible(self, decision) then
+          return
+        end
+        decision.ui = nil
+        prompt:dispose()
+        local opened, err = open_decision(self, decision)
+        if not opened then
+          presentation_failed(self, decision)
+        end
+      end
+    )
+  end
   if decision.interaction == nil and type(data.operation) == "table" and data.operation.kind == "file_edit" then
     local diff = Diff.new(function()
       return is_visible(self, decision)

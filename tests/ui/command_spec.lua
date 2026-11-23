@@ -1967,6 +1967,106 @@ end
 T["command"]["inline permission controls"] =
   MiniTest.new_set({ parametrize = { { "allow" }, { "deny", 2000 }, { "dismiss" }, { "cancel" } } })
 
+T["command"]["explains an upstream safety request in a bypass Session before offering choices"] = function()
+  -- Captured frame/order: proxy/sessions/85539299-3199-44e3-b221-6eaa94054b7f/log.jsonl,
+  -- 2026-11-23 06:16:02.777Z tool_call_update then 06:16:02.793Z request_permission.
+  -- The command is a display-only substitute; the original request touched secrets.
+  local process, original_system = fake_process()
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "old" })
+  nvim.api.nvim_set_current_buf(buffer)
+  MiniTest.finally(function()
+    Command.register()
+    Command.configure(nil)
+    rawset(nvim, "system", original_system)
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end)
+  assert(Command.configure({ agents = { mock = { provider = "test-service", command = "mock-agent" } } }))
+  Command.register()
+  nvim.api.nvim_feedkeys(":LouiselmInline\rrewrite\r", "xt", false)
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, {
+    sessionId = "inline-acp",
+    configOptions = {
+      {
+        id = "mode",
+        name = "Mode",
+        category = "mode",
+        type = "select",
+        currentValue = "bypassPermissions",
+        options = { { value = "bypassPermissions", name = "Bypass Permissions" } },
+      },
+    },
+  })
+  local session = Session.exit_verdict()[1].session
+  wait_for_prompt(process, session)
+  local command = 'rm -f "$scratch"/*.json'
+  local reason = 'Reason: Dangerous rm operation on possibly-empty variable path.\nUse "${scratch:?}"/*.json.'
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    if not timer:is_closing() then
+      timer:close()
+    end
+  end)
+  timer:start(0, 0, function()
+    process.options.stdout(nil, assert(Protocol.encode(assert(Protocol.notification("session/update", {
+      sessionId = "inline-acp",
+      update = { sessionUpdate = "tool_call_update", toolCallId = "tool", rawInput = { command = command } },
+    })))) .. "\n")
+    process.options.stdout(nil, assert(Protocol.encode(assert(Protocol.request(9, "session/request_permission", {
+      sessionId = "inline-acp",
+      toolCall = { toolCallId = "tool", title = command, rawInput = { command = command } },
+      options = {
+        { optionId = "allow-once", name = "Yes", kind = "allow_once" },
+        { optionId = "reject", name = "No", kind = "reject_once" },
+      },
+      _meta = {
+        jetbrains = {
+          air = {
+            version = 1,
+            permission = {
+              version = 1,
+              title = command,
+              description = reason,
+            },
+          },
+        },
+      },
+    })))) .. "\n")
+  end)
+  assert(nvim.wait(1000, function()
+    return session:inspect().status == "waiting_permission" and current_decision_title() ~= ""
+  end, 1))
+  local text = table.concat(nvim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+  MiniTest.expect.equality(text:find("Agent requested approval", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("Mode: Bypass Permissions", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find(reason, 1, true) ~= nil, true)
+  MiniTest.expect.equality(session:inspect().config_options[1].current_value, "bypassPermissions")
+  local function permission_responses()
+    local responses = {}
+    for _, encoded in ipairs(process.writes) do
+      local message = assert(Protocol.decode(encoded:sub(1, -2)))
+      if message.id == 9 then
+        responses[#responses + 1] = message.result
+      end
+    end
+    return responses
+  end
+  MiniTest.expect.equality(permission_responses(), {})
+  decision_mapping("q")()
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, -1, false), { "No", "Yes", "View request details" })
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  decision_mapping("<CR>")()
+  MiniTest.expect.equality(table.concat(nvim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"), text)
+  decision_mapping("<Esc>")()
+  MiniTest.expect.equality(permission_responses(), {})
+  nvim.api.nvim_win_set_cursor(0, { 2, 0 })
+  decision_mapping("<CR>")()
+  MiniTest.expect.equality(permission_responses(), { { outcome = { outcome = "selected", optionId = "allow-once" } } })
+end
+
 T["command"]["inline permission controls"]["answer the request without an open Chat"] = function(
   choice,
   sqlite_delay_ms

@@ -86,6 +86,86 @@ local function choose(index)
   key(buffer, "<CR>")()
 end
 
+local function explained_permission()
+  -- Claude frame captured in proxy/sessions/85539299-3199-44e3-b221-6eaa94054b7f/log.jsonl
+  -- at 2026-11-23T06:16:02.793Z. Text is a non-sensitive substitute.
+  return {
+    toolCall = { title = "Cleanup scratch files" },
+    _meta = {
+      jetbrains = {
+        air = {
+          version = 1,
+          permission = {
+            version = 1,
+            description = "Reason: potentially empty cleanup path.\nUse an explicit path.\027",
+          },
+        },
+      },
+    },
+  }
+end
+
+T["upstream explanation survives hiding and is retired with its permission"] = function()
+  local owner, session, show, request, responses = harness()
+  local first, second = session("session-1"), session("session-2")
+  show(first)
+  request(first, "explained", nil, explained_permission())
+  local explanation = nvim.api.nvim_get_current_buf()
+  local text = table.concat(nvim.api.nvim_buf_get_lines(explanation, 0, -1, false), "\n")
+  MiniTest.expect.equality(
+    text:find("Reason: potentially empty cleanup path.\nUse an explicit path. ", 1, true) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(text:find("Mode:", 1, true), nil) -- No advertised mode means no invented mode.
+  local stale = key(explanation, "q")
+  show(second)
+  MiniTest.expect.equality(responses, {})
+  show(first)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), explanation)
+  owner:cancel(first, { "explained" })
+  stale()
+  MiniTest.expect.equality(responses, {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(explanation), false)
+  MiniTest.expect.equality(owner:is_active(), false)
+  request(first, "disposed", nil, explained_permission())
+  local disposed = nvim.api.nvim_get_current_buf()
+  local late = key(disposed, "<Esc>")
+  owner:dispose()
+  late()
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(disposed), false)
+  MiniTest.expect.equality(responses, { { id = "disposed", result = { outcome = { outcome = "cancelled" } } } })
+end
+
+T["unrecognized permission metadata leaves ordinary choices intact"] = function()
+  for _, meta in ipairs({
+    false,
+    { jetbrains = false },
+    { jetbrains = { air = false } },
+    { jetbrains = { air = { version = 2, permission = { version = 1, description = "Future format" } } } },
+    { jetbrains = { air = { version = 1, permission = { version = 2, description = "Future format" } } } },
+    { jetbrains = { air = { version = 1, permission = { version = 1, description = false } } } },
+  }) do
+    local _, session, show, request, responses = harness()
+    local first = session("session-1")
+    show(first)
+    request(first, "ordinary", nil, { _meta = meta })
+    MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, -1, false), { "Reject", "Allow" })
+    choose(1)
+    MiniTest.expect.equality(responses, {
+      { id = "ordinary", result = { outcome = { outcome = "selected", optionId = "deny" } } },
+    })
+  end
+end
+
+T["a reason without usable permission choices is cancelled without requiring attendance"] = function()
+  local owner, session, show, request, responses = harness()
+  local first = session("session-1")
+  show(first)
+  request(first, "invalid", {}, explained_permission())
+  MiniTest.expect.equality(owner:is_active(), false)
+  MiniTest.expect.equality(responses, { { id = "invalid", result = { outcome = { outcome = "cancelled" } } } })
+end
+
 T["interaction and Diff response failures are reported once by their decision owner"] = function()
   for _, kind in ipairs({ "interaction", "diff" }) do
     local owner, session, show, _, _, errors = harness()

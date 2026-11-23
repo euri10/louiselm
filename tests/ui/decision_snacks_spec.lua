@@ -119,6 +119,63 @@ T["uses the configured Snacks select provider"] = function()
   MiniTest.expect.equality(child.lua_get("snacks_decision_test.owner:contains_current()"), true)
 end
 
+T["upstream reason precedes Snacks choices without selecting or changing their layout"] = function()
+  local child = start()
+  child.lua([[
+    -- Metadata shape captured in Claude Session 85539299-3199-44e3-b221-6eaa94054b7f,
+    -- proxy/sessions/<id>/log.jsonl at 2026-11-23T06:16:02.793Z; text substituted.
+    local state = snacks_decision_test
+    state.session = { inspect = function()
+      return { id = "reason-session", agent = "claude", config_options = {} }
+    end }
+    state.decisions = require("louiselm.ui.chat.decisions").new({
+      is_live = function() return true end,
+      is_visible = function() return vim.api.nvim_get_current_buf() == state.buffer end,
+      report_error = function(_, message) error(message) end,
+      resolved = function() end,
+    })
+    state.decisions:request(state.session, {
+      request_id = 9,
+      operation = { kind = "unknown" },
+      options = {
+        { optionId = "allow-once", kind = "allow_once", name = "Yes" },
+        { optionId = "reject", kind = "reject_once", name = "No" },
+      },
+      _meta = { jetbrains = { air = { version = 1, permission = {
+        version = 1, description = "Reason: potentially empty cleanup path.",
+      } } } },
+    }, function(result)
+      state.responses[#state.responses + 1] = result
+      return true
+    end)
+  ]])
+  MiniTest.expect.equality(child.lua_get("#Snacks.picker.get()"), 0)
+  MiniTest.expect.equality(
+    child.lua_get(
+      'table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\\n"):find("Reason: potentially empty cleanup path.", 1, true) ~= nil'
+    ),
+    true
+  )
+  MiniTest.expect.equality(child.lua_get("snacks_decision_test.responses"), {})
+  child.type_keys("q")
+  child.lua([[
+    assert(vim.wait(1000, function()
+      local picker = Snacks.picker.get()[1]
+      return picker and picker.shown and picker:is_focused() and not picker:is_active()
+    end))
+    local picker = Snacks.picker.get()[1]
+    assert(picker.resolved_layout.layout.width == 72)
+    assert(picker:items()[1].text:find("No", 1, true))
+    picker.list:move(2, true, true)
+  ]])
+  child.type_keys("<CR>")
+  child.lua("assert(vim.wait(1000, function() return #snacks_decision_test.responses == 1 end))")
+  MiniTest.expect.equality(child.lua_get("snacks_decision_test.responses"), {
+    { outcome = { outcome = "selected", optionId = "allow-once" } },
+  })
+  child.lua("snacks_decision_test.decisions:dispose()")
+end
+
 T["loaded Snacks without ui_select preserves the native fallback"] = function()
   local child = start(false)
   child.lua("snacks_decision_test.open()")

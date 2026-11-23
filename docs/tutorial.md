@@ -69,9 +69,13 @@ choose deliberately. A permission decision is not the same as accepting the
 Agent's answer. You remain responsible for allowing effects in your project.
 
 The picker shows the command or the Agent's request title when available.
+When the Agent supplies a permission reason, LouiseLM first shows that
+explanation with the Agent-reported mode. Press `q` or `Esc` to continue to
+the approval choices; this does not approve or decline the request. An Agent
+may require a safety check even in Bypass Permissions mode.
 Choose **View request details** to scroll through the complete request,
-including long commands and directory or pattern scope. Press `q` or `Esc`
-in the details window to return to the approval choices; viewing details
+including the reason, long commands and directory or pattern scope. Press `q`
+or `Esc` in the details window to return to the approval choices; viewing details
 does not approve the request.
 
 Inspect or revoke remembered choices with:

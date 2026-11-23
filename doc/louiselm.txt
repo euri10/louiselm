@@ -261,6 +261,11 @@ Permissions                                             *louiselm-permissions*
   approvals, are forwarded to the Agent without creating a local rule; the
   Agent owns their lifetime and persistence.
 
+  An Agent-supplied permission reason is shown before the approval choices,
+  alongside the Agent-reported mode when available. q/Esc continues to the
+  choices without answering; View request details retains the explanation.
+  Bypass Permissions mode may still require an upstream safety check.
+
   Use |:LouiselmPermissions| to inspect and revoke locally remembered
   decisions.
 
