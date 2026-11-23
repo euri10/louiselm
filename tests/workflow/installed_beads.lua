@@ -9,6 +9,13 @@ local input = nvim.json.decode(table.concat(nvim.fn.readfile(nvim.env.LOUISELM_B
 local index = assert(tonumber(nvim.env.LOUISELM_BEADS_CASE), "explicit installed case")
 local case = assert(input.cases[index], "selected installed case")
 local delayed_promotion = nvim.env.LOUISELM_TEST_PROMOTION_DELAY == "1"
+local startup_failure = nvim.env.LOUISELM_TEST_STARTUP_FAILURE == "1"
+if startup_failure then
+  case.envelope.bead_scope.issue_ids = { case.bead_id, "startup-successor" }
+  table.sort(case.envelope.bead_scope.issue_ids)
+  case.envelope.bead_scope.max_mutations = 2
+  case.envelope.max_sessions = 4
+end
 local function now_ms()
   local seconds, micros = nvim.uv.gettimeofday()
   return seconds * 1000 + math.floor(micros / 1000)
@@ -23,9 +30,10 @@ local completed, failure, observed = false, nil, false
 local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
   envelope = case.envelope,
-  bead_ids = delayed_promotion and { case.bead_id, "promotion-successor" }
-    or index >= 6 and { case.bead_id, "held-successor" }
-    or { case.bead_id },
+  bead_ids = startup_failure and { case.bead_id, "startup-successor" } or delayed_promotion and {
+    case.bead_id,
+    "promotion-successor",
+  } or index >= 6 and { case.bead_id, "held-successor" } or { case.bead_id },
   worktree = index == 4 and { path = case.worktree, journal_parent = case.journal_parent, head = case.base_commit }
     or nil,
   on_promotion = index == 4 and function(preview, decide)
@@ -170,6 +178,17 @@ local controller = assert(Workflow.new_bead_executor({
   end,
 }))
 assert(controller:start(function(ok, err, summary)
+  if startup_failure then
+    assert(not ok and err:find("worker startup failed", 1, true), err)
+    assert(summary.startup_failure.session_id == case.grant.request.session_id)
+    assert(summary.startup_failure.phase == "workspace_prepare")
+    assert(summary.startup_failure.code == "unavailable")
+    assert(summary.text:find("workspace_prepare/unavailable", 1, true))
+    assert(#controller.run.workers == 1, "no successor worker or verifier may launch")
+    assert(#summary.accepted == 0 and #summary.failed == 0 and not observed)
+    completed = true
+    return
+  end
   if delayed_promotion then
     assert(not ok and controller.status == "failed")
     assert(err == "Run promotion commit refused: promotion preview expired; no changes applied", err)
@@ -209,5 +228,8 @@ local disposed, dispose_error = controller:dispose()
 assert(disposed, dispose_error)
 assert(finished, "installed Lua controller timed out")
 assert(not failure, failure)
-assert(index >= 6 or observed, "installed Lua controller did not report worker result for case " .. index)
+assert(
+  startup_failure or index >= 6 or observed,
+  "installed Lua controller did not report worker result for case " .. index
+)
 print("installed Lua Bead executor case " .. index .. " complete")

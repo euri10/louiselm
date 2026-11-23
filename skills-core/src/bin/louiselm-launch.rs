@@ -272,6 +272,8 @@ fn run() -> Result<i32, &'static str> {
         .try_into()
         .map_err(|_| "system clock unavailable")?;
     let (sender, receiver) = mpsc::sync_channel(1);
+    let run_id = request.run_id.clone();
+    let session_id = request.session_id.clone();
     supervisor
         .launch(
             request,
@@ -286,6 +288,17 @@ fn run() -> Result<i32, &'static str> {
         .recv()
         .map_err(|_| "launch supervisor unavailable")?
         .map_err(|error| {
+            let (phase, code) = error.diagnostic_parts();
+            eprintln!(
+                "LOUISELM_LAUNCH_FAILURE {}",
+                serde_json::json!({
+                    "schema": "louiselm.launch-failure/1",
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "phase": phase,
+                    "code": code,
+                })
+            );
             // SupervisorError Display is deliberately payload-free; preserve its
             // actionable category instead of hiding every failed launch alike.
             eprintln!("louiselm-launch: {error}");

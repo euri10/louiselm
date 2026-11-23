@@ -4,6 +4,38 @@ local Transport = require("louiselm.acp.transport")
 local nvim = vim
 local T = MiniTest.new_set()
 
+T["launcher diagnostics retain only matching closed payload-free categories"] = function()
+  local Launch = require("louiselm.acp.launch")
+  local selected = { run_id = "run-1", session_id = "worker-1" }
+  local record = {
+    schema = "louiselm.launch-failure/1",
+    run_id = selected.run_id,
+    session_id = selected.session_id,
+    phase = "bootstrap_handoff",
+    code = "timeout",
+  }
+  local function message(value)
+    return "agent process exited: LOUISELM_LAUNCH_FAILURE " .. nvim.json.encode(value) .. "\nprivate process prose"
+  end
+  MiniTest.expect.equality(Launch.decode_failure(message(record), selected), {
+    phase = "bootstrap_handoff",
+    code = "timeout",
+  })
+  for _, changed in ipairs({
+    { run_id = "other-run" },
+    { session_id = "other-session" },
+    { phase = "private process prose" },
+    { code = "private process prose" },
+    { payload = "private process prose" },
+    { schema = "unknown" },
+  }) do
+    MiniTest.expect.equality(Launch.decode_failure(message(nvim.tbl_extend("force", record, changed)), selected), nil)
+  end
+  MiniTest.expect.equality(Launch.decode_failure(message(record) .. "\n" .. message(record), selected), nil)
+  MiniTest.expect.equality(Launch.decode_failure("LOUISELM_LAUNCH_FAILURE invalid JSON", selected), nil)
+  MiniTest.expect.equality(Launch.decode_failure(string.rep("x", 32769), selected), nil)
+end
+
 local function request()
   return {
     schema = "louiselm.launch.request/3",

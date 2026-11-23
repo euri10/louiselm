@@ -654,12 +654,19 @@ fn installed_guard_case_for(
         return;
     }
     assert!(rustix::process::geteuid().is_root());
-    let _account = BrokerAccount::create();
     let root = tempfile::Builder::new()
         .prefix("louiselm-broker-guard-")
         .tempdir_in("/var/lib")
         .unwrap();
+    if std::env::var_os("LOUISELM_TEST_BR").is_some() {
+        super::daemon::mounts(root.path());
+    }
+    let _account = BrokerAccount::create();
     let (paths, mut config, registry_root) = install_fixture_with_slots(root.path(), 3);
+    if std::env::var_os("LOUISELM_TEST_BR").is_some() {
+        let permission = super::daemon::beads::provision_guard(root.path(), &config);
+        write_json(&root.path().join("native-beads.json"), &permission);
+    }
     if warm_resume {
         fs::write(root.path().join("guard-warm-resume"), b"").unwrap();
     }
@@ -785,13 +792,17 @@ fn installed_guard_case_for(
         warm_resume,
     ));
     let previous_guard_maps = guard_cleanup::policy_maps();
-    let supervisor = LaunchSupervisor::new(
+    // Native tracker export/import uses the production launcher's distinct
+    // authorization deadline; the ordinary tiny fixture keeps its short bound.
+    let native_tracker = std::env::var_os("LOUISELM_TEST_BR").is_some();
+    let supervisor = LaunchSupervisor::new_with_authorization_timeout(
         connect_control_broker(&config, Duration::from_secs(5)).unwrap(),
         signer.clone(),
         Arc::new(platform),
         Arc::new(Registry::open_trusted(&registry_root).unwrap()),
         sessions.clone(),
         Duration::from_secs(5),
+        Duration::from_secs(if native_tracker { 40 } else { 5 }),
     );
     let (sent, result) = mpsc::channel();
     let now_ms = u64::try_from(
@@ -812,7 +823,7 @@ fn installed_guard_case_for(
             Box::new(move |outcome| sent.send(outcome).unwrap()),
         )
         .unwrap();
-    let launched = result.recv_timeout(Duration::from_secs(30)).unwrap();
+    let launched = result.recv_timeout(Duration::from_secs(90)).unwrap();
     if no_permission {
         assert!(matches!(
             launched,

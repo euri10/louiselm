@@ -183,6 +183,16 @@ pub enum SandboxError {
         /// What it reported.
         reason: String,
     },
+    /// A named pre-execution operation failed after complete process cleanup.
+    #[error("sandbox startup failed during {phase}: {reason}")]
+    StartupFailed {
+        /// Fixed trusted operation name, not derived from process output.
+        phase: &'static str,
+        /// Typed underlying I/O category, retained for sanitized presentation.
+        kind: io::ErrorKind,
+        /// Detailed internal cause; never copied into operator diagnostics.
+        reason: String,
+    },
     /// A post-fork failure could not prove the blocked process tree gone.
     #[error("cleanup of session {session_id} was not proven: {reason}")]
     CleanupUnproven {
@@ -1288,6 +1298,8 @@ fn startup_failed(
     session_id: &str,
     child: &mut Child,
     cgroup: Option<&Cgroup>,
+    phase: &'static str,
+    kind: io::ErrorKind,
     failure: &str,
 ) -> SandboxError {
     let deadline = Instant::now() + DISPOSAL_TIMEOUT;
@@ -1313,8 +1325,9 @@ fn startup_failed(
             if let Some(cgroup) = cgroup {
                 cgroup.remove();
             }
-            return SandboxError::SpawnFailed {
-                backend,
+            return SandboxError::StartupFailed {
+                phase,
+                kind,
                 reason: failure.to_owned(),
             };
         }
@@ -1866,6 +1879,8 @@ impl BubblewrapBackend {
                         &plan.session_id,
                         &mut child,
                         cgroup.as_ref(),
+                        "trace_attach",
+                        error.kind(),
                         &format!("Agent creation trace failed: {error}"),
                     ));
                 }
@@ -1899,6 +1914,8 @@ impl BubblewrapBackend {
                     &plan.session_id,
                     &mut child,
                     cgroup.as_ref(),
+                    "namespace_trace",
+                    error.kind(),
                     &format!("Agent namespace trace failed: {error}"),
                 ));
             }
@@ -1918,6 +1935,8 @@ impl BubblewrapBackend {
                             &plan.session_id,
                             &mut child,
                             Some(cgroup),
+                            "host_identity",
+                            error.kind(),
                             &format!("host identity verification failed: {error}"),
                         ));
                     }
@@ -1929,6 +1948,8 @@ impl BubblewrapBackend {
                         &plan.session_id,
                         &mut child,
                         Some(cgroup),
+                        "namespace_identity",
+                        io::ErrorKind::InvalidData,
                         "kernel namespace creation disagrees with Bubblewrap status",
                     ));
                 }
@@ -1946,6 +1967,8 @@ impl BubblewrapBackend {
                             &plan.session_id,
                             &mut child,
                             None,
+                            "namespace_identity",
+                            error.kind(),
                             &format!("namespace leader observation failed: {error}"),
                         )
                     })?;
@@ -2007,6 +2030,8 @@ impl BubblewrapBackend {
                     session_id,
                     child,
                     Some(cgroup),
+                    "cgroup_admission",
+                    io::ErrorKind::Other,
                     &format!("cgroup admission failed: {error}"),
                 ));
             }
@@ -2017,6 +2042,8 @@ impl BubblewrapBackend {
                 session_id,
                 child,
                 cgroup,
+                "bootstrap_handoff",
+                error.kind(),
                 &format!("bootstrap handoff failed: {error}"),
             )
         })

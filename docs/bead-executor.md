@@ -73,6 +73,17 @@ The two callbacks are controller responsibilities:
   quarantined verification outcomes stop the Run regardless of the continuation;
   no outcome is retried automatically.
 
+A worker that cannot initialize is an infrastructure failure, not a failed Bead.
+The Run stops before a successor, verifier, promotion or task-failure comment.
+Its `summary.startup_failure` retains the Bead and broker Session identities plus
+a normalized phase/code. The installed launcher emits a bounded
+`louiselm.launch-failure/1` diagnostic prefixed by `LOUISELM_LAUNCH_FAILURE` on
+stderr; the controller accepts only its closed fields, known categories and exact
+Run/Session binding. Missing or invalid diagnostics become
+`worker_startup/initialization_failed`; raw stderr is never copied to the summary.
+This observation does not prove terminal cleanup or permit a new launch. Inspect
+the consumed authorization and real receipts before any separately approved Run.
+
 When `worktree` is supplied, the controller requires the snapshot's `base_commit`
 to match the current committed HEAD; the broker also validates that field in
 the digest-selected snapshot before staging. The dedicated checkout must be clean and on
@@ -302,7 +313,7 @@ policy, ledger admission, cancellation and fast-event callbacks. The installed
 gate is required in the `sender-guard-vm` CI job:
 
 ```sh
-for bead_case in 1 2 3 4 5 6 7 8; do
+for bead_case in 1 2 3 4 5 6 7 8 9; do
   ./scripts/launcher-vm exec sudo -n env \
     LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
     LOUISELM_TEST_LUA_ROOT=/home/vm \
@@ -350,6 +361,30 @@ after a clear status check, respectively. They use the real operator exchange,
 child authorization, Lua controller and terminal cleanup, proving that neither
 a successor worker nor verifier receives authority. The hold is an explicit
 offline spending double; these cases make no Provider calls.
+Case 9 removes only the private fixture's staged source before startup. It
+requires the real launcher's matching `workspace_prepare/unavailable` diagnostic
+in the stopped Lua Run, one consumed authorization and no successor, verifier,
+task-failure comment or invented terminal receipt. The wrapper must exit.
+For source-sized stock-runtime diagnosis, the installed workspace fixture accepts
+`LOUISELM_TEST_WORKSPACE_SNAPSHOT` naming a native frozen snapshot; it copies and
+validates every included file and binds the seven project instruction documents.
+Unset retains the ordinary empty fixture. This diagnostic variant does not by
+itself establish the complete operator/capture/native-tracker composition.
+The guarded stock-runtime fixture also accepts `LOUISELM_TEST_BR` naming the
+qualified native tracker. It then provisions the canonical tracker in private
+mounts and exercises native replica export/import before launch, with the
+production launcher's forty-second authorization deadline. Optionally,
+`LOUISELM_TEST_BEADS_JSONL` imports a LouiseLM tracker export through native `br`,
+and `LOUISELM_TEST_AGENT_GID_START` selects a separate Agent GID range. These
+diagnostic inputs do not change the default fixture or authorize a paid Run.
+Case 5 also accepts the source snapshot: its checkout must have exactly the
+selected source-base digest before the operator starts. CI retains the empty
+case and additionally runs both stock startup and the real operator/capture
+case against a snapshot of the tracked repository. Capture uses the installed
+`/usr/local/lib/louiselm-tools` layout, not the release's `bin` directory.
+The source-sized operator case has a bounded three-minute aggregate wait and
+five-minute fixture approval, based on measured complete three-task cycles;
+all production per-operation deadlines and spending caps remain unchanged.
 Case 8 reuses the passing promotion fixture with an explicit thirty-second
 preview deadline and accepts only after it passes. The real CLI reports expiry,
 the Run starts no successor, HEAD and checkout stay unchanged, no journal is

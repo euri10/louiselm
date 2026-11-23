@@ -17,7 +17,7 @@ mod attention;
 mod inspection;
 
 #[path = "installed_daemon_beads_tests.rs"]
-mod beads;
+pub(super) mod beads;
 
 #[path = "installed_daemon_state_tests.rs"]
 mod state;
@@ -130,7 +130,7 @@ fn seed_authorizations() {
     attention::enqueue("before-start");
 }
 
-fn mounts(root: &Path) {
+pub(super) fn mounts(root: &Path) {
     assert_ne!(
         fs::read_link("/proc/self/ns/mnt").unwrap(),
         fs::read_link("/proc/1/ns/mnt").unwrap(),

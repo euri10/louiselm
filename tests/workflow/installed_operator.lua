@@ -3,6 +3,7 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim standalone fixture.
 local nvim = vim
 nvim.opt.rtp:prepend(nvim.fn.getcwd())
+assert(nvim.fn.exepath("louiselm-capture") == "/usr/local/lib/louiselm-tools/louiselm-capture")
 local selection = nvim.json.decode(table.concat(nvim.fn.readfile(nvim.env.LOUISELM_BEADS_FIXTURE), "\n"))
 assert(nvim.deep_equal(selection.envelope.bead_scope.issue_ids, { "operator-1", "operator-2", "operator-3" }))
 assert(nvim.deep_equal(
@@ -15,9 +16,16 @@ local completed, failure = false, nil
 ---@type louiselm.workflow.BeadRunSummary?
 local summary
 local approvals, heads = 0, { selection.worktree.head }
+local started = nvim.uv.hrtime()
+local function progress(phase)
+  io.stderr:write(
+    "INSTALLED_OPERATOR phase=" .. phase .. " elapsed_ms=" .. math.floor((nvim.uv.hrtime() - started) / 1000000) .. "\n"
+  )
+end
 local controller = assert(require("louiselm.workflow.operator").new(selection, {
   on_promotion = function(preview, decide)
     approvals = approvals + 1
+    progress("promotion-" .. approvals)
     assert(preview.selection.expected_head == heads[approvals])
     assert(nvim.deep_equal(preview.changes.added, { "accepted-" .. approvals .. ".txt" }))
     assert(#preview.changes.modified == 0 and #preview.changes.deleted == 0)
@@ -26,7 +34,10 @@ local controller = assert(require("louiselm.workflow.operator").new(selection, {
   end,
   system = function(argv, options, done)
     assert(nvim.fn.executable(argv[1]) == 1, "missing installed operator executable: " .. argv[1])
+    local operation = table.concat({ argv[1], argv[2] or "", argv[3] or "" }, "/")
+    progress("start-" .. operation)
     return nvim.system(argv, options, function(result)
+      progress("end-" .. operation .. "-code-" .. result.code)
       if argv[1] == "louiselm-control" and argv[2] == "promotion" and argv[3] == "commit" and result.code == 0 then
         heads[#heads + 1] = nvim.json.decode(result.stdout).commit
       end
@@ -36,16 +47,18 @@ local controller = assert(require("louiselm.workflow.operator").new(selection, {
 }))
 local on_worker = controller.options.on_worker
 controller.options.on_worker = function(result, continue)
+  progress("worker-result")
   if result.error then
     print("offline worker startup: " .. result.error)
   end
   on_worker(result, continue)
 end
 assert(controller:start(function(ok, err, result)
+  progress(ok and "complete" or "failed")
   failure, summary, completed = not ok and err or nil, result, true
 end))
 assert(
-  nvim.wait(90000, function()
+  nvim.wait(nvim.env.LOUISELM_TEST_SOURCE_SIZED == "1" and 180000 or 90000, function()
     return completed
   end, 10),
   "operator Run timed out"

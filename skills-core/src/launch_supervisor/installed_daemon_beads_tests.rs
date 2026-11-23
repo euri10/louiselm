@@ -196,8 +196,48 @@ pub(super) fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
     (program, workspace, issue)
 }
 
+// The guarded stock-runtime fixture uses its own installed authority, while
+// sharing the same native tracker and replica protocol as the installed daemon.
+pub(in super::super) fn provision_guard(
+    root: &Path,
+    config: &LauncherConfig,
+) -> ApprovedBeadsMutations {
+    assert!(std::env::var_os("LOUISELM_TEST_BR").is_some());
+    let program = provision_program(root);
+    let workspace = root.join("beads-project");
+    fs::create_dir(&workspace).unwrap();
+    chown(
+        &workspace,
+        Some(config.operator_uid),
+        Some(config.operator_uid),
+    )
+    .unwrap();
+    let issue = seed_tracker(&program, &workspace, config.operator_uid);
+    shared_permissions(&workspace.join(".beads"), config.operator_uid);
+    chown(&workspace, Some(0), Some(0)).unwrap();
+    write_json(
+        Path::new(TRACKER_CONFIG),
+        &serde_json::json!({
+            "workspace": workspace,
+            "program": program,
+            "program_digest": Digest::of(&fs::read(&program).unwrap()).to_string(),
+            "shared_group": true,
+        }),
+    );
+    ApprovedBeadsMutations {
+        project_digest: Digest::of(workspace.as_os_str().as_encoded_bytes()).to_string(),
+        role: BeadsRole::Worker,
+        issue_ids: vec![issue],
+        effects: vec![BeadsEffect::CommentAdd],
+        max_mutations: 1,
+        // The broker worker sets the same fresh expiry as its launch grant.
+        expires_at_ms: 0,
+    }
+}
+
 fn seed_tracker(program: &Path, workspace: &Path, operator: u32) -> String {
     if std::env::var_os("LOUISELM_TEST_BR").is_some() {
+        let snapshot = std::env::var_os("LOUISELM_TEST_BEADS_JSONL");
         upstream_as(
             program,
             workspace,
@@ -206,12 +246,35 @@ fn seed_tracker(program: &Path, workspace: &Path, operator: u32) -> String {
             &[
                 "init",
                 "--prefix",
-                "fixture",
+                if snapshot.is_some() {
+                    "louiselm"
+                } else {
+                    "fixture"
+                },
                 "--actor",
                 "fixture/setup",
                 "--json",
             ],
         );
+        if let Some(snapshot) = snapshot {
+            // Import via the qualified native tracker, never reinterpret JSONL.
+            let jsonl = workspace.join(".beads/issues.jsonl");
+            fs::copy(snapshot, &jsonl).unwrap();
+            chown(&jsonl, Some(operator), Some(operator)).unwrap();
+            upstream_as(
+                program,
+                workspace,
+                operator,
+                false,
+                &[
+                    "sync",
+                    "--import-only",
+                    "--actor",
+                    "fixture/setup",
+                    "--json",
+                ],
+            );
+        }
         let created: serde_json::Value = serde_json::from_slice(&upstream_as(
             program,
             workspace,

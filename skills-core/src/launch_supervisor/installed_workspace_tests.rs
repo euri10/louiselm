@@ -4,12 +4,51 @@ use super::*;
 use crate::{
     cache::CacheBase,
     registry::{AgentRegistration, Provider, RuntimeMeasurement},
-    session_manifest::{SessionInputManifest, SessionInputs},
+    session_manifest::{MeasuredInput, SessionInputManifest, SessionInputs},
     workspace::launch_inputs,
 };
 
-fn snapshot_bytes() -> Vec<u8> {
+pub(super) fn snapshot_bytes() -> Vec<u8> {
+    if let Some(snapshot) = std::env::var_os("LOUISELM_TEST_WORKSPACE_SNAPSHOT") {
+        return fs::read(Path::new(&snapshot).join("snapshot.json")).unwrap();
+    }
     format!("{{\"schema\":\"louiselm.workspace.snapshot/1\",\"base_commit\":\"{}\",\"files\":[],\"selected\":[],\"changes\":[]}}", "a".repeat(40)).into_bytes()
+}
+
+fn snapshot_entries(snapshot: &[u8]) -> Vec<crate::ManifestEntry> {
+    let record: serde_json::Value = serde_json::from_slice(snapshot).unwrap();
+    serde_json::from_value(record["files"].clone()).unwrap()
+}
+
+fn source_inputs() -> (String, String, Vec<MeasuredInput>) {
+    let snapshot = snapshot_bytes();
+    let entries = snapshot_entries(&snapshot);
+    let instructions = entries
+        .iter()
+        .filter(|entry| {
+            [
+                "AGENTS.md",
+                "CLAUDE.md",
+                "android/AGENTS.md",
+                "docs/agent-workflow.md",
+                "docs/agent-lua.md",
+                "docs/agent-rust.md",
+                "docs/agent-testing.md",
+            ]
+            .contains(&entry.path.as_str())
+        })
+        .map(|entry| MeasuredInput {
+            path: entry.path.clone(),
+            executable: entry.executable,
+            size: entry.size,
+            sha256: entry.sha256.clone(),
+        })
+        .collect();
+    (
+        Digest::of(&snapshot).to_string(),
+        Digest::of(&serde_json::to_vec(&entries).unwrap()).to_string(),
+        instructions,
+    )
 }
 
 pub(in crate::launch_supervisor) fn fixture_manifest() -> SessionInputManifest {
@@ -29,6 +68,7 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
         .unwrap()
         .to_owned();
     let mut cache_bytes = b"louiselm.cache.base/1\n".to_vec();
+    let (snapshot_digest, base_digest, instructions) = source_inputs();
     cache_bytes.extend(
         crate::Manifest::new(vec![], false)
             .unwrap()
@@ -92,11 +132,11 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
                 }
             },
         ),
-        project_instructions: Some(vec![]),
+        project_instructions: Some(instructions),
         tool_schemas: Some(vec![]),
         plugin_schemas: Some(vec![]),
-        source_snapshot_digest: Some(Digest::of(&snapshot_bytes()).to_string()),
-        source_base_digest: Some(Digest::of(b"[]").to_string()),
+        source_snapshot_digest: Some(snapshot_digest),
+        source_base_digest: Some(base_digest),
         cache_base_digest: Some(Digest::of(&cache_bytes).to_string()),
         policy_digest: Some(crate::Policy::embedded().digest().to_string()),
         isolation: Some(crate::session_manifest::IsolationIntent::new(network)),
@@ -126,6 +166,7 @@ pub(in crate::launch_supervisor) fn stage_manifest_with_snapshot(
     let staging = tempfile::tempdir().unwrap();
     fs::create_dir_all(staging.path().join("snapshot/files")).unwrap();
     fs::write(staging.path().join("snapshot/snapshot.json"), snapshot).unwrap();
+    let _copied = copy_snapshot_files(snapshot, &staging.path().join("snapshot/files"));
     fs::create_dir(staging.path().join("cache")).unwrap();
     assert_eq!(
         CacheBase::capture(&staging.path().join("cache"))
@@ -150,6 +191,33 @@ pub(in crate::launch_supervisor) fn stage_manifest_with_snapshot(
     )
     .unwrap();
     own(&root, config.broker_uid, config.broker_gid);
+}
+
+pub(super) fn copy_snapshot_files(snapshot: &[u8], destination: &Path) -> Vec<String> {
+    let mut copied = Vec::new();
+    if let Some(source) = std::env::var_os("LOUISELM_TEST_WORKSPACE_SNAPSHOT") {
+        let files = crate::workspace::filesystem::open_directory(&Path::new(&source).join("files"))
+            .unwrap();
+        for entry in snapshot_entries(snapshot) {
+            let captured = crate::workspace::filesystem::read_source(
+                &files,
+                &entry.path,
+                crate::workspace::MAX_FILE_BYTES,
+            )
+            .unwrap()
+            .unwrap();
+            let destination = destination.join(&entry.path);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            crate::workspace::filesystem::write_file(
+                &destination,
+                &captured.bytes,
+                if entry.executable { 0o500 } else { 0o400 },
+            )
+            .unwrap();
+            copied.push(entry.path);
+        }
+    }
+    copied
 }
 
 pub(super) fn own(path: &Path, uid: u32, gid: u32) {

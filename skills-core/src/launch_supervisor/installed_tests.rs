@@ -357,7 +357,8 @@ fn install_fixture_at(
             broker_gid: BROKER_UID,
             pool: IdentityPool {
                 uid_start: AGENT_UID,
-                gid_start: AGENT_UID,
+                gid_start: std::env::var("LOUISELM_TEST_AGENT_GID_START")
+                    .map_or(AGENT_UID, |value| value.parse().unwrap()),
                 slots,
             },
         },
@@ -441,7 +442,12 @@ fn installed_broker_worker() {
                 expires_at_ms: fixture_expiry(&root, now),
             }
         }),
-        beads_mutations: None,
+        beads_mutations: root.join("native-beads.json").is_file().then(|| {
+            let mut permission: crate::beads_mutation::ApprovedBeadsMutations =
+                serde_json::from_slice(&fs::read(root.join("native-beads.json")).unwrap()).unwrap();
+            permission.expires_at_ms = fixture_expiry(&root, now);
+            permission
+        }),
         provider_requests: root.join("brokered").exists().then(|| {
             let mut approval = guard::approval(now);
             if root.join("stock-codex").exists() {

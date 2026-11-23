@@ -3,6 +3,64 @@ local M = {}
 ---@diagnostic disable-next-line: undefined-global -- Neovim runtime API.
 local nvim = vim
 
+local failure_phases = {
+  "launcher",
+  "authorization",
+  "workspace_prepare",
+  "integration_measure",
+  "tracker_prepare",
+  "sandbox_prepare",
+  "trace_attach",
+  "bootstrap_handoff",
+  "namespace_trace",
+  "host_identity",
+  "namespace_identity",
+  "cgroup_admission",
+  "conformance",
+  "receipt",
+}
+local failure_codes = { "timeout", "io", "refused", "unavailable", "spawn_failed", "cleanup_unproven" }
+
+---Read only a closed, bounded launcher diagnostic matching this exact child.
+---Arbitrary stderr and ambiguous/malformed records yield no diagnostic.
+---@param message string? Local startup error, possibly containing process stderr.
+---@param request { run_id: string, session_id: string } Exact child binding.
+---@return { phase: string, code: string }? diagnostic No process-provided prose.
+function M.decode_failure(message, request)
+  if type(message) ~= "string" or #message > 32768 then
+    return nil
+  end
+  local diagnostic
+  for line in (message .. "\n"):gmatch("([^\n]*)\n") do
+    local bytes = line:match("LOUISELM_LAUNCH_FAILURE (.+)$")
+    if bytes then
+      if diagnostic or #bytes > 1024 then
+        return nil
+      end
+      local ok, record = pcall(nvim.json.decode, bytes)
+      if not ok or type(record) ~= "table" then
+        return nil
+      end
+      for key in pairs(record) do
+        if not nvim.tbl_contains({ "schema", "run_id", "session_id", "phase", "code" }, key) then
+          return nil
+        end
+      end
+      if
+        record.schema ~= "louiselm.launch-failure/1"
+        or record.run_id ~= request.run_id
+        or record.session_id ~= request.session_id
+        or not nvim.tbl_contains(failure_phases, record.phase)
+        or not nvim.tbl_contains(failure_codes, record.code)
+      then
+        return nil
+      end
+      diagnostic = { phase = record.phase, code = record.code }
+    end
+  end
+  return diagnostic
+end
+
 ---@class louiselm.acp.LaunchRequest
 ---@field schema string
 ---@field protocol_version integer

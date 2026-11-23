@@ -147,11 +147,18 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=8).contains(&index));
+    assert!((1..=9).contains(&index));
+    let startup_failure = index == 9;
     // Case 8 reuses the passing promotion fixture, with an actual human-review
     // delay crossing its selected expiry before Accept reaches the real CLI.
     let delayed_promotion = index == 8;
-    let index = if delayed_promotion { 4 } else { index };
+    let index = if startup_failure {
+        1
+    } else if delayed_promotion {
+        4
+    } else {
+        index
+    };
     let root = tempfile::Builder::new()
         .prefix("louiselm-lua-beads-")
         .tempdir_in("/var/lib")
@@ -188,6 +195,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     .unwrap();
     let checkout = operator.join("run");
     fs::create_dir(&checkout).unwrap();
+    let source_files = workspace::copy_snapshot_files(&workspace::snapshot_bytes(), &checkout);
     for arguments in [
         vec!["init", "--quiet", "--initial-branch=run/lua-run-4"],
         vec![
@@ -204,6 +212,17 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             "Base",
         ],
     ] {
+        if arguments.contains(&"commit") && !source_files.is_empty() {
+            assert!(
+                Command::new("/usr/bin/git")
+                    .args(["add", "--force", "--"])
+                    .args(&source_files)
+                    .current_dir(&checkout)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
         assert!(
             Command::new("/usr/bin/git")
                 .args(arguments)
@@ -215,6 +234,10 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     }
     let promotion_snapshot = operator.join("snapshot-4");
     let promotion_preview = crate::workspace::prepare(&checkout, &[], &promotion_snapshot).unwrap();
+    assert_eq!(
+        promotion_preview.base_digest, manifest.source_base_digest,
+        "operator checkout must contain the selected fixture source, not an empty repository"
+    );
     let mut promotion_manifest = manifest.clone();
     promotion_manifest.source_snapshot_digest = promotion_preview.snapshot_digest.clone();
     promotion_manifest.source_base_digest = promotion_preview.base_digest.clone();
@@ -383,6 +406,20 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         serde_json::json!({"cases":cases})
     };
     write_json(&input, &selected);
+    if startup_failure {
+        // Exact private fixture input, never system or retained live storage.
+        // The broker may consume the grant, but privileged preparation must
+        // refuse missing staged source before any Agent can start.
+        fs::remove_dir_all(
+            config
+                .broker_socket_path
+                .parent()
+                .unwrap()
+                .join("workspace-inputs")
+                .join(manifest.digest().hex()),
+        )
+        .unwrap();
+    }
     let state = operator;
     // The broker's bounded tracker runner creates its own process group. Keep
     // every fixture broker descendant in one owned cgroup, even on unwind.
@@ -433,12 +470,27 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         ])
         .current_dir(&project)
         .env_clear()
-        .env("PATH", "/usr/local/lib/louiselm/current/bin:/usr/bin:/bin")
+        .env(
+            "PATH",
+            "/usr/local/lib/louiselm/current/bin:/usr/local/lib/louiselm-tools:/usr/bin:/bin",
+        )
         .env("XDG_STATE_HOME", &state)
         .env("XDG_CONFIG_HOME", state.join("config"))
         .env("XDG_DATA_HOME", state.join("data"))
         .env("LOUISELM_BEADS_FIXTURE", &input)
         .env("LOUISELM_BEADS_CASE", index.to_string())
+        .env(
+            "LOUISELM_TEST_SOURCE_SIZED",
+            if std::env::var_os("LOUISELM_TEST_WORKSPACE_SNAPSHOT").is_some() {
+                "1"
+            } else {
+                "0"
+            },
+        )
+        .env(
+            "LOUISELM_TEST_STARTUP_FAILURE",
+            if startup_failure { "1" } else { "0" },
+        )
         .env(
             "LOUISELM_TEST_PROMOTION_DELAY",
             if delayed_promotion { "1" } else { "0" },
@@ -585,7 +637,29 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         let issue = read(&["show", &bead_id, "--json"]);
         assert_eq!(issue[0]["status"], "open");
     }
-    if index == 5 {
+    if startup_failure {
+        let store = crate::broker::AuthorizationStore::open(
+            &Path::new(STATE).join("authorizations"),
+            config.pool.clone(),
+        )
+        .unwrap();
+        assert_eq!(store.session_count_for_run("lua-run-1").unwrap(), 1);
+        assert!(
+            store
+                .consumed_for_session("lua-worker-1")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            fs::read_dir(Path::new(STATE).join("receipts/sessions"))
+                .unwrap()
+                .count(),
+            0
+        );
+        eprintln!(
+            "startup cause preserved; one consumed authorization; no successor or fabricated terminal receipt"
+        );
+    } else if index == 5 {
         let run_id = selected["envelope"]["run_id"].as_str().unwrap();
         for bead in 1..=3 {
             wait_terminal(&format!("{run_id}-worker-{bead}"));
@@ -598,7 +672,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         }
     }
     super::super::launcher_cleanup::assert_exited(&previous_maps);
-    eprintln!("installed Lua workers and verifiers: terminal receipts and launcher exit");
+    eprintln!("installed Lua launcher exit and guard cleanup proven");
     terminate(&mut daemon);
 }
 
@@ -650,7 +724,8 @@ fn operator_selection(
     case: &serde_json::Value,
 ) -> serde_json::Value {
     let capture = std::env::var_os("LOUISELM_TEST_CAPTURE").expect("explicit real capture CLI");
-    let destination = Path::new("/usr/local/lib/louiselm/current/bin/louiselm-capture");
+    let destination = Path::new("/usr/local/lib/louiselm-tools/louiselm-capture");
+    fs::create_dir_all(destination.parent().unwrap()).unwrap();
     fs::copy(capture, destination).unwrap();
     fs::set_permissions(destination, fs::Permissions::from_mode(0o755)).unwrap();
     // Failed fixtures may retain poisoned kernel cgroups beyond their private
@@ -695,12 +770,19 @@ fn operator_selection(
     envelope["bead_scope"]["issue_ids"] =
         serde_json::json!(["operator-1", "operator-2", "operator-3"]);
     envelope["bead_scope"]["max_mutations"] = serde_json::json!(3);
+    let now = envelope["expires_at_ms"].as_u64().unwrap() - 120_000;
+    if std::env::var_os("LOUISELM_TEST_WORKSPACE_SNAPSHOT").is_some() {
+        // Measured full-source cycles exceed the tiny fixture's 90s aggregate
+        // wait. Keep all production operation deadlines unchanged, but give this
+        // explicit offline approval enough lifetime for three complete cycles.
+        let expires = serde_json::json!(now + 300_000);
+        envelope["expires_at_ms"] = expires.clone();
+        envelope["bead_scope"]["expires_at_ms"] = expires;
+    }
     // This operator workflow really uses Provider authority. The generic Run
     // fixture now denies it, so select the full positive scope explicitly here.
-    envelope["provider_requests"] = serde_json::to_value(guard::approval(
-        envelope["expires_at_ms"].as_u64().unwrap() - 120_000,
-    ))
-    .unwrap();
+    envelope["provider_requests"] = serde_json::to_value(guard::approval(now)).unwrap();
+    envelope["provider_requests"]["expires_at_ms"] = envelope["expires_at_ms"].clone();
     envelope["provider_requests"]["models"] = serde_json::json!(["gpt-5.6-luna"]);
     envelope["provider_requests"]["max_effort"] = serde_json::json!("high");
     envelope["provider_requests"]["max_run_requests"] = serde_json::json!(6);

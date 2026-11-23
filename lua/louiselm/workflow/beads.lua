@@ -50,6 +50,7 @@ local advance, next_bead
 ---@field branch? string Fetchable Run branch for VM to host handoff.
 ---@field failed louiselm.workflow.BeadFailure[]
 ---@field provider_hold? { run_id: string, reason: "exhausted"|"expired", held_at_ms: integer } Authenticated Run-wide hold; no automatic extension or retry.
+---@field startup_failure? { bead_id: string, session_id: string, phase: string, code: string } Local infrastructure failure; no task failure or successor is recorded.
 ---@field text string Human-readable host handoff, with no worker output.
 
 ---@class louiselm.workflow.BeadProgress
@@ -164,6 +165,18 @@ local function finish(self, ok, err)
     if summary.provider_hold then
       lines[#lines + 1] = "Provider budget held: " .. summary.provider_hold.reason
     end
+    local startup_failure = summary.startup_failure
+    if startup_failure then
+      lines[#lines + 1] = "Startup failed: "
+        .. startup_failure.bead_id
+        .. "; Session: "
+        .. startup_failure.session_id
+        .. "; diagnostic: "
+        .. startup_failure.phase
+        .. "/"
+        .. startup_failure.code
+      lines[#lines + 1] = "No successor started. Inspect launcher diagnostics and cleanup before another Run."
+    end
     for _, id in ipairs(summary.accepted) do
       if summary.commits[id] then
         lines[#lines + 1] = "Commit " .. id .. ": " .. summary.commits[id]
@@ -189,6 +202,31 @@ local function finish(self, ok, err)
       callback(ok, err, nvim.deepcopy(summary))
     end)
   end
+end
+
+---@param self louiselm.workflow.BeadExecutor
+---@param launch louiselm.acp.LaunchRequest
+---@param error_message string?
+local function stop_startup(self, launch, error_message)
+  local diagnostic = Launch.decode_failure(error_message, launch)
+  local failure = {
+    bead_id = self.options.bead_ids[self.index],
+    session_id = launch.session_id,
+    phase = diagnostic and diagnostic.phase or "worker_startup",
+    code = diagnostic and diagnostic.code or "initialization_failed",
+  }
+  self.summary.startup_failure = failure
+  finish(
+    self,
+    false,
+    "worker startup failed at "
+      .. failure.phase
+      .. "/"
+      .. failure.code
+      .. "; Session: "
+      .. failure.session_id
+      .. "; no successor will start"
+  )
 end
 
 local function valid_hold(self, hold)
@@ -938,7 +976,7 @@ next_bead = function(self)
               },
               response(self, function(ready, ready_error)
                 if not ready then
-                  return completed(nil, ready_error or "worker startup failed")
+                  return stop_startup(self, launch, ready_error)
                 end
                 result.session = ready
                 local function prompt()
@@ -976,7 +1014,7 @@ next_bead = function(self)
               end)
             )
             if not session then
-              completed(nil, start_error or "worker startup failed")
+              stop_startup(self, launch, start_error)
             end
           end
         )

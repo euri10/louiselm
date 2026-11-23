@@ -241,6 +241,9 @@ local function fixture()
     session_api = {
       create_session = function(_, name, options, ready)
         MiniTest.expect.equality(nvim.in_fast_event(), false)
+        if f.create_error then
+          return nil, f.create_error
+        end
         local worker = { status = "starting", options = options, agent = name, cancelled = 0, disposed = 0 }
         function worker:inspect()
           return { status = self.status, agent = name, acp_session_id = "acp-" .. #f.workers, working_dir = options.cwd }
@@ -269,6 +272,11 @@ local function fixture()
           f.workers[#f.workers + 1] = worker
         end
         later(function()
+          if f.startup_error then
+            worker.status = "error"
+            ready(nil, f.startup_error)
+            return
+          end
           worker.status = "ready"
           ready(worker)
         end)
@@ -291,6 +299,74 @@ end
 
 local function wait(predicate)
   MiniTest.expect.equality(nvim.wait(2000, predicate, 1), true)
+end
+
+T["worker startup failure stops before another authorization without exposing process prose"] = function()
+  local f = fixture()
+  f.startup_error = "private startup stderr and credential"
+  f.options.on_worker = function(_, continue)
+    continue(false)
+  end
+  f:start()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.ok, false)
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(#f.workers, 1)
+  MiniTest.expect.equality(#f.verifiers, 0)
+  MiniTest.expect.equality(#(f.failure_requests or {}), 0)
+  MiniTest.expect.equality(f.workers[1].prompt_text, nil)
+  MiniTest.expect.equality(f.summary.startup_failure, {
+    bead_id = "b-1",
+    session_id = "worker-1",
+    phase = "worker_startup",
+    code = "initialization_failed",
+  })
+  MiniTest.expect.equality(f.error:find("worker startup failed", 1, true) ~= nil, true)
+  MiniTest.expect.equality(f.summary.text:find("worker_startup/initialization_failed", 1, true) ~= nil, true)
+  MiniTest.expect.equality(nvim.inspect(f.summary):find(f.startup_error, 1, true), nil)
+  MiniTest.expect.equality(f.error:find(f.startup_error, 1, true), nil)
+  assert(f.runner:dispose())
+  MiniTest.expect.equality(f.workers[1].disposed, 1)
+end
+
+T["worker startup diagnostic survives in the stopped Run handoff"] = function()
+  local f = fixture()
+  f.startup_error = "LOUISELM_LAUNCH_FAILURE "
+    .. nvim.json.encode({
+      schema = "louiselm.launch-failure/1",
+      run_id = f.options.envelope.run_id,
+      session_id = "worker-1",
+      phase = "bootstrap_handoff",
+      code = "timeout",
+    })
+    .. "\nprivate process prose"
+  f:start()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.ok, false)
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(f.summary.startup_failure.phase, "bootstrap_handoff")
+  MiniTest.expect.equality(f.summary.startup_failure.code, "timeout")
+  MiniTest.expect.equality(f.summary.text:find("bootstrap_handoff/timeout", 1, true) ~= nil, true)
+  MiniTest.expect.equality(f.summary.text:find("private process prose", 1, true), nil)
+end
+
+T["immediate worker creation refusal stops without a successor or task failure comment"] = function()
+  local f = fixture()
+  f.create_error = "private immediate startup failure"
+  f:start()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.ok, false)
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(#f.workers, 0)
+  MiniTest.expect.equality(#(f.failure_requests or {}), 0)
+  MiniTest.expect.equality(f.summary.startup_failure.session_id, "worker-1")
+  MiniTest.expect.equality(f.error:find(f.create_error, 1, true), nil)
 end
 
 T["payload-free progress follows real worker and verifier boundaries"] = function()

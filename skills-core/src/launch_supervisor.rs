@@ -941,6 +941,14 @@ pub enum SupervisorError {
     /// The process tree could not be prepared or started.
     #[error("confined Agent startup failed")]
     SpawnFailed,
+    /// A local preparation boundary failed, with payload-free phase and cause.
+    #[error("launch preparation failed during {phase}: {code}")]
+    PreparationFailed {
+        /// Fixed trusted operation name, never process-provided text.
+        phase: &'static str,
+        /// Fixed trusted cause category, never paths or process output.
+        code: &'static str,
+    },
     /// Prepared isolation evidence did not satisfy the complete contract.
     #[error("isolation evidence rejected")]
     IsolationRejected,
@@ -991,6 +999,38 @@ pub enum SupervisorError {
     /// The fixed coordinator worker could not be started.
     #[error("launch supervisor worker unavailable")]
     WorkerUnavailable,
+}
+
+impl SupervisorError {
+    /// Payload-free startup diagnostic categories for the operator handoff.
+    /// They explain a failure, never authorize recovery or identity reuse.
+    #[must_use]
+    pub fn diagnostic_parts(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::PreparationFailed { phase, code } => (phase, code),
+            Self::BrokerTimeout => ("authorization", "timeout"),
+            Self::AuthorizationRejected | Self::LaunchDocumentRejected => {
+                ("authorization", "refused")
+            }
+            Self::ConformanceUnavailable | Self::ConformanceRefused(_) => {
+                ("conformance", "unavailable")
+            }
+            Self::SigningUnavailable | Self::ReceiptInvalid | Self::AcknowledgementMismatch => {
+                ("receipt", "unavailable")
+            }
+            Self::CleanupUnproven => ("launcher", "cleanup_unproven"),
+            Self::SpawnFailed => ("sandbox_prepare", "spawn_failed"),
+            _ => ("launcher", "unavailable"),
+        }
+    }
+
+    fn during(self, phase: &'static str) -> Self {
+        if matches!(self, Self::CleanupUnproven | Self::PreparationFailed { .. }) {
+            return self;
+        }
+        let (_, code) = self.diagnostic_parts();
+        Self::PreparationFailed { phase, code }
+    }
 }
 
 struct SupervisorInner {

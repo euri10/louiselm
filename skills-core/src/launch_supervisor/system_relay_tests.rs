@@ -20,6 +20,39 @@ use crate::{
 
 use super::*;
 
+#[test]
+fn sandbox_timeout_keeps_a_payload_free_failure_category() {
+    let error = map_sandbox(SandboxError::Io {
+        path: "private source path".into(),
+        source: io::Error::new(io::ErrorKind::TimedOut, "private process output"),
+    });
+    assert_eq!(
+        error.to_string(),
+        "launch preparation failed during sandbox_prepare: timeout"
+    );
+}
+
+#[test]
+fn named_startup_failure_keeps_its_phase_and_does_not_hide_unproven_cleanup() {
+    let error = map_sandbox(SandboxError::StartupFailed {
+        phase: "bootstrap_handoff",
+        kind: io::ErrorKind::TimedOut,
+        reason: "private process output".into(),
+    });
+    assert_eq!(error.diagnostic_parts(), ("bootstrap_handoff", "timeout"));
+    assert!(!error.to_string().contains("private process output"));
+    let error = map_sandbox(SandboxError::CleanupUnproven {
+        session_id: "private identity".into(),
+        reason: "private process output".into(),
+    });
+    assert_eq!(error, SupervisorError::CleanupUnproven);
+    assert_eq!(error.diagnostic_parts(), ("launcher", "cleanup_unproven"));
+    assert_eq!(
+        error.during("workspace_prepare"),
+        SupervisorError::CleanupUnproven
+    );
+}
+
 fn running_agent() -> Option<(tempfile::TempDir, SystemRunningAgent)> {
     if std::env::var_os("LOUISELM_REQUIRE_SYSTEM_RELAY").is_none() {
         eprintln!("skipping: production relay acceptance requires the disposable VM");

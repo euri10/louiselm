@@ -1693,6 +1693,10 @@ impl LaunchPlatform for SystemLaunchPlatform {
             .map(|gate| Box::new(gate) as Box<dyn CapabilityGate>)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One preparation transaction owns workspace construction, phase failures and sealing on every failure."
+    )]
     fn prepare(
         &self,
         request: &LaunchRequest,
@@ -1704,7 +1708,9 @@ impl LaunchPlatform for SystemLaunchPlatform {
         if request.session_id != plan.session_id || plan.home.parent() != plan.workspace.parent() {
             return Err(SupervisorError::ResolutionFailed);
         }
-        let workspace = self.prepare_workspace(request, &plan)?;
+        let workspace = self
+            .prepare_workspace(request, &plan)
+            .map_err(|error| error.during("workspace_prepare"))?;
         plan.skill_masks.clone_from(&workspace.skill_masks);
         plan.operator_profile
             .clone_from(&workspace.operator_profile);
@@ -1715,8 +1721,9 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 .release_prefix
                 .join("releases")
                 .join(&self.config.release_id);
-            let (tool_isolation, descendant_runtime) =
-                self.measure_integration(request, &mut plan, &release_root)?;
+            let (tool_isolation, descendant_runtime) = self
+                .measure_integration(request, &mut plan, &release_root)
+                .map_err(|error| error.during("integration_measure"))?;
             // Registration is validated first; this derived private path is a
             // launcher-owned environment addition, shared with confined tools.
             plan.environment.insert(
@@ -1724,7 +1731,8 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 workspace.cache_path().display().to_string(),
             );
             plan.cache = Some(workspace.cache_path().to_owned());
-            self.prepare_tracker(request, &mut plan)?;
+            self.prepare_tracker(request, &mut plan)
+                .map_err(|error| error.during("tracker_prepare"))?;
             let mut tools = super::tool_execution::ToolExecutor::new(
                 self.backend
                     .within_session(&plan.session_id)
@@ -2901,16 +2909,38 @@ impl Drop for SystemRunningAgent {
     }
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "Result::map_err transfers ownership of the error into this conversion."
-)]
 pub(super) fn map_sandbox(error: SandboxError) -> SupervisorError {
     match error {
         SandboxError::CleanupUnproven { .. } | SandboxError::Survivors { .. } => {
             SupervisorError::CleanupUnproven
         }
-        _ => SupervisorError::SpawnFailed,
+        SandboxError::StartupFailed { phase, kind, .. } => SupervisorError::PreparationFailed {
+            phase,
+            code: if kind == io::ErrorKind::TimedOut {
+                "timeout"
+            } else {
+                "io"
+            },
+        },
+        SandboxError::Io { source, .. } => SupervisorError::PreparationFailed {
+            phase: "sandbox_prepare",
+            code: if source.kind() == io::ErrorKind::TimedOut {
+                "timeout"
+            } else {
+                "io"
+            },
+        },
+        SandboxError::Refused(_) => SupervisorError::PreparationFailed {
+            phase: "sandbox_prepare",
+            code: "refused",
+        },
+        SandboxError::NoCgroup(_) | SandboxError::BackendMissing { .. } => {
+            SupervisorError::PreparationFailed {
+                phase: "sandbox_prepare",
+                code: "unavailable",
+            }
+        }
+        SandboxError::SpawnFailed { .. } => SupervisorError::SpawnFailed,
     }
 }
 
