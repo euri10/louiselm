@@ -2,8 +2,9 @@
 //!
 //! The fixture chain needs no real Codex: "node" is the system shell,
 //! `codex-acp.js` runs `$CODEX_PATH` as a waited child (never `exec`), and
-//! "codex" is the deterministic test Agent. The stock chain copies the three
-//! hash-pinned files from `scripts/fetch-stock-codex-chain`. Either way the
+//! "codex" is the deterministic test Agent. The stock chain copies the four
+//! hash-pinned files and generated Skill-root inventory from
+//! `scripts/fetch-stock-codex-chain`. Either way the
 //! tree is exactly adapter plus one runtime child, as
 //! `louiselm.codex-acp-integration/1` requires.
 
@@ -26,12 +27,13 @@ fn digest(path: &Path) -> String {
 }
 
 /// The runtime measurement of an installed Codex-contract directory.
-pub(super) fn measurement(runtime: &Path) -> RuntimeMeasurement {
+pub(super) fn measurement(runtime: &Path, stock: bool) -> RuntimeMeasurement {
     RuntimeMeasurement {
         runtime_id: "runtime".into(),
         executable_sha256: digest(&runtime.join("node")),
         adapters: ["codex-acp.js", "codex", "codex-code-mode-host"]
             .into_iter()
+            .chain(stock.then_some(crate::discovery::INVENTORY_PATH))
             .map(|name| MeasuredFile {
                 path: name.into(),
                 sha256: digest(&runtime.join(name)),
@@ -67,6 +69,15 @@ pub(super) fn install(
         for name in ["node", "codex-acp.js", "codex", "codex-code-mode-host"] {
             fs::copy(stock.join(name), runtime.join(name)).unwrap();
         }
+        let mut inventory = crate::discovery::Inventory::parse(
+            &fs::read(stock.join(crate::discovery::INVENTORY_PATH)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inventory.schema, crate::discovery::SKILL_ROOTS_SCHEMA);
+        inventory.runtime_id = "runtime".into();
+        let path = runtime.join(crate::discovery::INVENTORY_PATH);
+        fs::write(&path, inventory.canonical_bytes()).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o444)).unwrap();
     } else {
         fs::copy(fs::canonicalize("/bin/sh").unwrap(), runtime.join("node")).unwrap();
         fs::write(
@@ -89,7 +100,10 @@ pub(super) fn install(
     ] {
         fs::set_permissions(runtime.join(name), fs::Permissions::from_mode(mode)).unwrap();
     }
-    let measured = measurement(&runtime);
+    let measured = measurement(&runtime, stock.is_some());
+    if stock.is_some() {
+        fs::write(root.join("stock-codex"), b"").unwrap();
+    }
     registry_record(
         &registry.join("agents.json"),
         &serde_json::json!([{
@@ -110,9 +124,6 @@ pub(super) fn install(
         &workspace::fixture_manifest_for(Some(&runtime), crate::registry::NetworkPolicy::Denied),
     );
     fs::write(root.join("codex-chain"), b"").unwrap();
-    if stock.is_some() {
-        fs::write(root.join("stock-codex"), b"").unwrap();
-    }
 }
 
 #[test]
@@ -121,7 +132,7 @@ fn stock_runtime_rejects_a_wrong_registered_hash() {
         return;
     };
     let stock = PathBuf::from(stock);
-    let measured = measurement(&stock);
+    let measured = measurement(&stock, true);
     let mut runtime = RuntimePackage {
         id: "runtime".into(),
         root: stock,
@@ -160,12 +171,8 @@ fn stock_tools_keep_neovim_logs_outside_source() {
     let workspace = root.path().join("workspace");
     fs::create_dir(&home).unwrap();
     fs::create_dir(&workspace).unwrap();
-    let (_, environment) = tool_integration::launch_values(
-        tool_integration::Integration::CodexAcp,
-        &stock,
-        &home,
-        None,
-    );
+    let (_, environment) =
+        tool_integration::launch_values(tool_integration::Integration::CodexAcp, &stock, &home);
     let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
     let mut arguments = vec!["sandbox".into(), "-P".into(), ":workspace".into()];
     // Exercise the real shell environment policy, not a pre-injected test env.

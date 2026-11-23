@@ -219,12 +219,14 @@ jobs:
           install -d -m 700 "${XDG_CACHE_HOME:-$HOME/.cache}"
           ./scripts/launcher-vm prepare
       - name: Fetch the hash-pinned stock Codex chain
-        run: python3 scripts/fetch-stock-codex-chain "$RUNNER_TEMP/louiselm-stock-chain"
+        run: |
+          python3 scripts/test-stock-codex-chain.py
+          python3 scripts/fetch-stock-codex-chain "$RUNNER_TEMP/louiselm-stock-chain"
       - name: Exercise the embedded object with restricted guest networking
         run: |
           ./scripts/launcher-vm start
           ./scripts/launcher-vm exec mkdir -p /var/tmp/louiselm-stock-chain
-          tar -C "$RUNNER_TEMP/louiselm-stock-chain" -c node codex-acp.js codex codex-code-mode-host |
+          tar -C "$RUNNER_TEMP/louiselm-stock-chain" -c node codex-acp.js codex codex-code-mode-host louiselm-discovery.json |
             ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-stock-chain
           git archive HEAD scripts/test-sender-guard.py scripts/test-sender-guard-loader.py scripts/test-sender-guard-handoff.py scripts/probes/codex-kernel-guard \
             skills-core/src/launch_supervisor/sender_guard/binding.bpf.c skills-core/src/launch_supervisor/sender_guard/lifecycle.bpf.c |
@@ -288,6 +290,8 @@ jobs:
               /bin/bash -c "$private_state" fixture "$library_test" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture
             sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain timeout 90 unshare --mount --net --propagation private -- \
               /bin/bash -c "$private_state" fixture "$library_test" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_completes_prompt --exact --nocapture
+            sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain timeout 90 unshare --mount --net --propagation private -- \
+              /bin/bash -c "$private_state" fixture "$library_test" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_skills_off_completes_prompt --exact --nocapture
             LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain "$library_test" launch_supervisor::system::installed_tests::codex_chain::stock_runtime_rejects_a_wrong_registered_hash --exact
             sudo -n env LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain timeout 60 unshare --net -- \
               "$library_test" launch_supervisor::system::installed_tests::codex_chain::stock_tools_keep_neovim_logs_outside_source --exact --nocapture

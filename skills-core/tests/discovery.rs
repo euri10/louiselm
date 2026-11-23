@@ -18,6 +18,49 @@ use louiselm_skills::{
 };
 
 #[test]
+fn skill_root_inventory_is_complete_for_masks_but_cannot_prove_native_supply() {
+    use louiselm_skills::discovery::{INVENTORY_PATH, INVENTORY_SCHEMA};
+    let mut fixture = DiscoveryFixture::new();
+    let path = fixture.runtime.root.join(INVENTORY_PATH);
+    let mut inventory = Inventory::parse(&std::fs::read(&path).unwrap()).unwrap();
+    inventory.schema = "louiselm.discovery.skill-roots/1".into();
+    inventory.sources.retain(|source| {
+        !matches!(
+            source.kind,
+            SourceKind::Plugins
+                | SourceKind::NativeMcp
+                | SourceKind::ToolSchemas
+                | SourceKind::PluginSchemas
+        )
+    });
+    let bytes = inventory.canonical_bytes();
+    Inventory::parse(&bytes).unwrap();
+    let mut incomplete = inventory.clone();
+    incomplete
+        .sources
+        .retain(|source| source.kind != SourceKind::SystemSkills);
+    assert!(Inventory::parse(&incomplete.canonical_bytes()).is_err());
+    let mut masquerading = inventory.clone();
+    masquerading.schema = INVENTORY_SCHEMA.into();
+    assert!(Inventory::parse(&masquerading.canonical_bytes()).is_err());
+    std::fs::write(path, &bytes).unwrap();
+    fixture.runtime.adapters[0].sha256 = louiselm_skills::Digest::of(&bytes).hex().into();
+    fixture.manifest.runtime = fixture.runtime.measure().unwrap();
+    let observations = fixture.isolation.native_sources.as_mut().unwrap();
+    observations.inventory_digest = louiselm_skills::Digest::of(&bytes).to_string();
+    observations
+        .sources
+        .retain(|entry| inventory.sources.contains(&entry.source));
+    fixture.sign();
+    assert_eq!(
+        DiscoveryProof::verify(&fixture.authenticate().unwrap(), &fixture.runtime)
+            .unwrap_err()
+            .code(),
+        "skill_roots_only"
+    );
+}
+
+#[test]
 fn authenticated_skills_off_requires_exact_empty_mask_and_measured_inventory() {
     use louiselm_skills::{
         discovery_source::SkillMaskEvidence, instruction_view, session_manifest::SkillInputs,

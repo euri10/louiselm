@@ -253,6 +253,22 @@ contains:
 The installed signed launcher/broker/runtime, canonical broker Beads tracker,
 trusted verifier tools, current supply and compatible `louiselm-capture` CLI are
 prerequisites. The caller installs none of them and reads no credential store.
+Skills-off preparation also requires a valid `louiselm-discovery.json` registered
+in the runtime measurement, so the launcher can mask its native Skill roots.
+Missing or invalid inventories refuse preparation before a proposal is published;
+the canonical empty view alone does not establish native-source masking.
+`scripts/fetch-stock-codex-chain` produces the pinned Codex inventory alongside
+its four public runtime files. Register `louiselm-discovery.json` as a measured
+adapter too; merely copying it into an already registered runtime is insufficient.
+Its `louiselm.discovery.skill-roots/1` scope lists actual Skill roots and instruction
+files, not fictitious filesystem slots for embedded schemas or disabled plugins.
+It cannot establish full native-supply verification. The Codex integration always
+sets `CODEX_HOME` to the private home: runtime state stays writable beside the
+read-only `skills` mask. Nested roots such as `skills/.system` remain in signed
+mask evidence but are hidden by the outer empty mount, not a second child mount.
+This changes the measured runtime configuration; prepare fresh inputs and obtain
+fresh authorization after installing the matching release. Do not retry consumed
+Run authorizations or relabel their old manifests.
 The Agent runtime must live outside the tool-visible system mounts (`/usr`,
 `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc/alternatives`), for example under
 `/var/lib/louiselm-runtimes`. A runtime under `/usr/local/lib` is inside `/usr`

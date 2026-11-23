@@ -517,6 +517,25 @@ fn privileged_installed_brokered_stock_codex_completes_prompt() {
 }
 
 #[test]
+fn privileged_installed_brokered_stock_codex_skills_off_completes_prompt() {
+    if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
+        eprintln!("requires disposable root and the pinned stock chain");
+        return;
+    }
+    let stock = std::env::var_os("LOUISELM_STOCK_CODEX_DIR")
+        .expect("CI must provide the hash-pinned stock Codex chain");
+    installed_guard_case_for(
+        false,
+        true,
+        false,
+        true,
+        false,
+        CodexCase::StockOff(Path::new(&stock)),
+        false,
+    );
+}
+
+#[test]
 #[ignore = "requires a dedicated hard-capped API project and private VM key"]
 fn privileged_installed_brokered_stock_codex_real_openai() {
     let address = live_openai_preconditions();
@@ -606,6 +625,7 @@ enum CodexCase<'a> {
     Missing,
     WrongAncestry,
     Stock(&'a Path),
+    StockOff(&'a Path),
     Live(&'a Path, IpAddr),
     /// Real-key broker aimed at the live Provider, driven by the raw fixture
     /// sender: refusals must precede any upstream attempt (louiselm-4j6lt).
@@ -649,7 +669,9 @@ fn installed_guard_case_for(
             &registry_root,
             &config,
             match codex {
-                CodexCase::Stock(path) | CodexCase::Live(path, _) => Some(path),
+                CodexCase::Stock(path) | CodexCase::StockOff(path) | CodexCase::Live(path, _) => {
+                    Some(path)
+                }
                 _ => None,
             },
             match codex {
@@ -659,6 +681,9 @@ fn installed_guard_case_for(
             },
         );
     }
+    if matches!(codex, CodexCase::StockOff(_)) {
+        fs::write(root.path().join("stock-skills-off"), b"").unwrap();
+    }
     if !no_permission {
         fs::write(root.path().join("brokered"), b"").unwrap();
     }
@@ -666,8 +691,12 @@ fn installed_guard_case_for(
         CodexCase::Live(_, address) | CodexCase::LiveFixture(address) => Some(address),
         _ => None,
     };
-    let tls_server = (provider && live_address.is_none())
-        .then(|| prepare_provider_upstream(root.path(), matches!(codex, CodexCase::Stock(_))));
+    let tls_server = (provider && live_address.is_none()).then(|| {
+        prepare_provider_upstream(
+            root.path(),
+            matches!(codex, CodexCase::Stock(_) | CodexCase::StockOff(_)),
+        )
+    });
     if provider {
         super::provider_credentials::provision_empty_state(root.path());
         if let Some((port, _)) = &tls_server {
@@ -711,6 +740,18 @@ fn installed_guard_case_for(
             crate::registry::NetworkPolicy::Brokered,
         ),
     );
+    if matches!(codex, CodexCase::StockOff(_)) {
+        let request = request_for(
+            super::codex_chain::runtime_directory(root.path()).as_deref(),
+            crate::registry::NetworkPolicy::Brokered,
+        );
+        fs::write(
+            root.path().join("skills-off.json"),
+            request.canonical_bytes(),
+        )
+        .unwrap();
+        fs::write(root.path().join("skills-off"), b"").unwrap();
+    }
     config.conformance = Enforcement::Enforced;
     write_json(&paths.state_root.join("config.json"), &config);
     write_json(&paths.state_root.join("public-config.json"), &config);
@@ -847,7 +888,10 @@ fn installed_guard_case_for(
             provider_ready.send(()).unwrap();
         }
     };
-    if matches!(codex, CodexCase::Stock(_) | CodexCase::Live(_, _)) {
+    if matches!(
+        codex,
+        CodexCase::Stock(_) | CodexCase::StockOff(_) | CodexCase::Live(_, _)
+    ) {
         if live_address.is_some() {
             stock_acp_live_prompts(
                 &mut controller_peer_input,
@@ -861,6 +905,7 @@ fn installed_guard_case_for(
                 &mut controller_peer_output,
                 &sessions,
                 mark_provider_ready,
+                matches!(codex, CodexCase::StockOff(_)),
             );
         }
     } else if !matches!(codex, CodexCase::None) {
@@ -901,7 +946,7 @@ fn installed_guard_case_for(
     // Run exhaustion reports its Park mid-test; teardown must not await a second.
     let mut parked_seen = false;
     if let Some(address) = provider_address {
-        if !matches!(codex, CodexCase::Stock(_)) {
+        if !matches!(codex, CodexCase::Stock(_) | CodexCase::StockOff(_)) {
             mark_provider_ready();
         }
         if warm_resume {
@@ -956,7 +1001,7 @@ fn installed_guard_case_for(
             super::provider_credentials::assert_records(root.path(), "openai");
             println!("LIVE_REQUESTS=2 EXHAUSTED=1 ATTENTION=run_parked");
             fs::write(root.path().join("guard-provider-done"), b"").unwrap();
-        } else if matches!(codex, CodexCase::Stock(_)) {
+        } else if matches!(codex, CodexCase::Stock(_) | CodexCase::StockOff(_)) {
             fs::write(root.path().join("guard-provider-done"), b"").unwrap();
             tls_server.unwrap().1.join().unwrap();
         } else {
@@ -1084,6 +1129,7 @@ fn stock_acp_prompt(
     output: &mut std::os::unix::net::UnixStream,
     sessions: &Path,
     provider_ready: impl FnOnce(),
+    skills_off: bool,
 ) {
     let started = Instant::now();
     output
@@ -1102,6 +1148,7 @@ fn stock_acp_prompt(
         )
         .unwrap();
         let mut line = String::new();
+        let mut text = String::new();
         loop {
             line.clear();
             assert!(
@@ -1111,6 +1158,12 @@ fn stock_acp_prompt(
                 "ACP closed before {method} replied"
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if let Some(chunk) = frame
+                .pointer("/params/update/content/text")
+                .and_then(serde_json::Value::as_str)
+            {
+                text.push_str(chunk);
+            }
             assert!(
                 !frame.to_string().contains("Code Mode is unavailable"),
                 "stock Codex started without its measured Code Mode host"
@@ -1124,7 +1177,7 @@ fn stock_acp_prompt(
                     "STOCK_ACP method={method} phase=reply elapsed_ms={}",
                     started.elapsed().as_millis()
                 );
-                return frame["result"].clone();
+                return (frame["result"].clone(), text);
             }
         }
     };
@@ -1137,7 +1190,7 @@ fn stock_acp_prompt(
             "clientInfo":{"name":"louiselm-stock-gate","version":"1"}
         }),
     );
-    assert_eq!(initialized["protocolVersion"], 1);
+    assert_eq!(initialized.0["protocolVersion"], 1);
     let created = request(
         2,
         "session/new",
@@ -1145,17 +1198,36 @@ fn stock_acp_prompt(
             "cwd":sessions.join("session/workspace"), "mcpServers":[]
         }),
     );
-    let session_id = created["sessionId"].as_str().unwrap();
+    let session_id = created.0["sessionId"].as_str().unwrap();
+    if skills_off {
+        let (listed, text) = request(
+            3,
+            "session/prompt",
+            serde_json::json!({
+                "sessionId":session_id,
+                "prompt":[{"type":"text","text":"/skills"}]
+            }),
+        );
+        assert_eq!(listed["stopReason"], "end_turn");
+        assert!(
+            text.contains("No skills configured."),
+            "stock skills were not empty: {text}"
+        );
+        assert!(
+            sessions.join("session/home/state_5.sqlite").is_file(),
+            "Codex must retain writable runtime state beside masked skills"
+        );
+    }
     provider_ready();
     let completed = request(
-        3,
+        4,
         "session/prompt",
         serde_json::json!({
             "sessionId":session_id,
             "prompt":[{"type":"text","text":"Reply with OFFLINE_STOCK_OK."}]
         }),
     );
-    assert_eq!(completed["stopReason"], "end_turn", "{completed}");
+    assert_eq!(completed.0["stopReason"], "end_turn", "{completed:?}");
 }
 
 fn stock_acp_live_prompts(

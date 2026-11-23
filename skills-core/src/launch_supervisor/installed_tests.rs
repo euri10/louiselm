@@ -197,6 +197,7 @@ fn request() -> LaunchRequest {
 }
 
 fn request_for(codex: Option<&Path>, network: crate::registry::NetworkPolicy) -> LaunchRequest {
+    let manifest = workspace::fixture_manifest_for(codex, network);
     LaunchRequest {
         schema: REQUEST_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
@@ -207,13 +208,8 @@ fn request_for(codex: Option<&Path>, network: crate::registry::NetworkPolicy) ->
         agent_id: "agent".into(),
         envelope_id: "envelope".into(),
         envelope_revision: 1,
-        skills: crate::session_manifest::SkillInputs::Enabled {
-            generation_digest: Digest::of(b"fixture-generation").to_string(),
-            view_digest: crate::Digest::of(b"fixture-view").to_string(),
-        },
-        session_input_manifest_id: workspace::fixture_manifest_for(codex, network)
-            .digest()
-            .to_string(),
+        skills: manifest.skills.clone(),
+        session_input_manifest_id: manifest.digest().to_string(),
     }
 }
 
@@ -513,9 +509,11 @@ fn installed_broker_worker() {
         ));
     }
     if root.join("skills-off").exists() {
+        assert!(run.skill_requests.is_none());
+    }
+    if root.join("skills-off").exists() && !root.join("brokered").exists() {
         assert!(run.bead_scope.is_none());
         assert!(run.provider_requests.is_none());
-        assert!(run.skill_requests.is_none());
         let mut widened = grant.clone();
         widened.provider_requests = Some(guard::approval(now));
         assert!(matches!(

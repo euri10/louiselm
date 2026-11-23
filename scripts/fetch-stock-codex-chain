@@ -3,7 +3,8 @@
 
 Downloads exactly four public artifacts, verifies each archive and each
 extracted file against the pins below, and writes `node`, `codex-acp.js`,
-`codex` and `codex-code-mode-host` into a new directory. Nothing is executed. Upgrading Codex, the
+`codex` and `codex-code-mode-host` plus a measured Skill-root inventory into a
+new directory. Nothing is executed. Upgrading Codex, the
 adapter or Node changes these pins and the broker disclosure profile together
 (louiselm-fkdv8, louiselm-98wr4).
 """
@@ -49,6 +50,33 @@ ARTIFACTS = {
 MAX_ARCHIVE = 256 * 1024 * 1024
 
 
+def discovery_inventory():
+    # Pinned rust-v0.156.1: ext/skills/src/host_roots.rs and skills/src/lib.rs.
+    # The integration fixes CODEX_HOME=HOME, disables plugins, passes no extra
+    # roots, starts at the repository root, and does not expose /etc/codex.
+    # This is deliberately NOT an all-category native-supply inventory.
+    roots = [
+        ("global-instructions", "global_instructions", "home", "AGENTS.md"),
+        ("global-override", "global_instructions", "home", "AGENTS.override.md"),
+        ("managed-skills", "managed_skills", "home", ".agents/skills"),
+        ("native-skills", "native_skills", "home", "skills"),
+        ("project-instructions", "project_instructions", "workspace", "AGENTS.md"),
+        ("project-override", "project_instructions", "workspace", "AGENTS.override.md"),
+        ("repository-agents", "repository_skills", "workspace", ".agents/skills"),
+        ("repository-codex", "repository_skills", "workspace", ".codex/skills"),
+        ("system-skills", "system_skills", "home", "skills/.system"),
+    ]
+    return json.dumps({
+        "schema": "louiselm.discovery.skill-roots/1",
+        "adapter_id": "codex-acp",
+        "version": "codex-0.156.1_acp-1.10.0",
+        "runtime_id": "codex-0-156-1",
+        "executable_sha256": ARTIFACTS["node"]["file"],
+        "sources": [dict(zip(("id", "kind", "root", "path"), source))
+                    for source in sorted(roots)],
+    }, separators=(",", ":")).encode()
+
+
 def fetch(url):
     with urllib.request.urlopen(url, timeout=120) as response:
         data = response.read(MAX_ARCHIVE + 1)
@@ -83,6 +111,11 @@ def main():
         path.write_bytes(data)
         path.chmod(pin["mode"])
         digests[name] = digest
+    inventory = discovery_inventory()
+    path = output / "louiselm-discovery.json"
+    path.write_bytes(inventory)
+    path.chmod(0o444)
+    digests[path.name] = hashlib.sha256(inventory).hexdigest()
     json.dump(digests, sys.stdout, sort_keys=True)
     print()
 

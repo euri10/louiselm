@@ -1,6 +1,9 @@
 //! Closed wire records; deserialization alone grants no evidence authority.
 
-use super::{DiscoveryError, INVENTORY_PATH, INVENTORY_SCHEMA, MAX_DISCOVERY_BYTES, identifier};
+use super::{
+    DiscoveryError, INVENTORY_PATH, INVENTORY_SCHEMA, MAX_DISCOVERY_BYTES, SKILL_ROOTS_SCHEMA,
+    identifier,
+};
 use crate::{
     CanonicalPath, Digest,
     discovery_source::{Source, SourceKind, SourceRoot},
@@ -23,7 +26,7 @@ pub struct Inventory {
     pub runtime_id: String,
     /// Bare lowercase executable SHA-256.
     pub executable_sha256: String,
-    /// Complete source set, sorted by source ID.
+    /// Complete source set for the declared schema, sorted by source ID.
     pub sources: Vec<Source>,
 }
 
@@ -46,15 +49,17 @@ impl Inventory {
     /// Parses a bounded, closed and canonical inventory.
     ///
     /// # Errors
-    /// Rejects missing categories, invalid/duplicate source paths and IDs,
-    /// unsupported schema, unknown fields and alternate encodings.
+    /// Rejects categories missing from the declared scope, invalid/duplicate
+    /// source paths and IDs, unsupported schema, unknown fields and alternate encodings.
     pub fn parse(bytes: &[u8]) -> Result<Self, DiscoveryError> {
         if bytes.len() > MAX_DISCOVERY_BYTES {
             return Err(DiscoveryError::Refused("inventory_too_large"));
         }
         let inventory: Self = serde_json::from_slice(bytes)?;
-        if inventory.schema != INVENTORY_SCHEMA
-            || !identifier(&inventory.adapter_id)
+        if !matches!(
+            inventory.schema.as_str(),
+            INVENTORY_SCHEMA | SKILL_ROOTS_SCHEMA
+        ) || !identifier(&inventory.adapter_id)
             || !identifier(&inventory.runtime_id)
             || inventory.version.trim().is_empty()
         {
@@ -84,7 +89,27 @@ impl Inventory {
             }
             kinds.insert(source.kind);
         }
-        if kinds != SourceKind::ALL.into_iter().collect() {
+        let skill_kinds = [
+            SourceKind::ManagedSkills,
+            SourceKind::RepositorySkills,
+            SourceKind::NativeSkills,
+            SourceKind::SystemSkills,
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let complete = if inventory.schema == INVENTORY_SCHEMA {
+            kinds == SourceKind::ALL.into_iter().collect()
+        } else {
+            skill_kinds.is_subset(&kinds)
+                && kinds.iter().all(|kind| {
+                    skill_kinds.contains(kind)
+                        || matches!(
+                            kind,
+                            SourceKind::GlobalInstructions | SourceKind::ProjectInstructions
+                        )
+                })
+        };
+        if !complete {
             return Err(DiscoveryError::Refused("incomplete_inventory"));
         }
         if inventory.canonical_bytes() != bytes {

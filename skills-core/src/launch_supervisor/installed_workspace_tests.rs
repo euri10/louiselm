@@ -61,7 +61,10 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
         ),
         agent: Some(agent),
         runtime: Some(if let Some(runtime) = codex {
-            super::codex_chain::measurement(runtime)
+            super::codex_chain::measurement(
+                runtime,
+                runtime.parent().unwrap().join("stock-codex").exists(),
+            )
         } else {
             RuntimeMeasurement {
                 runtime_id: "runtime".into(),
@@ -75,10 +78,20 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(
                 origin: "fixture".into(),
             }
         }),
-        skills: Some(crate::session_manifest::SkillInputs::Enabled {
-            generation_digest: Digest::of(b"fixture-generation").to_string(),
-            view_digest: Digest::of(b"fixture-view").to_string(),
-        }),
+        skills: Some(
+            if codex
+                .is_some_and(|runtime| runtime.parent().unwrap().join("stock-skills-off").exists())
+            {
+                crate::session_manifest::SkillInputs::Off {
+                    view_digest: crate::instruction_view::empty_digest().to_string(),
+                }
+            } else {
+                crate::session_manifest::SkillInputs::Enabled {
+                    generation_digest: Digest::of(b"fixture-generation").to_string(),
+                    view_digest: Digest::of(b"fixture-view").to_string(),
+                }
+            },
+        ),
         project_instructions: Some(vec![]),
         tool_schemas: Some(vec![]),
         plugin_schemas: Some(vec![]),

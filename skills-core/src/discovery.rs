@@ -23,6 +23,8 @@ use thiserror::Error;
 
 /// Versioned inventory packaged as a measured adapter file.
 pub const INVENTORY_SCHEMA: &str = "louiselm.discovery.inventory/1";
+/// Skill-root and instruction-file inventory only; never full native-supply proof.
+pub const SKILL_ROOTS_SCHEMA: &str = "louiselm.discovery.skill-roots/1";
 /// Required registered path inside each participating immutable runtime.
 pub const INVENTORY_PATH: &str = "louiselm-discovery.json";
 /// Versioned source observations covered by the launcher receipt.

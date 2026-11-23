@@ -31,7 +31,7 @@ pub(super) fn prepare(root: &Path, config: &LauncherConfig, registry_root: &Path
         .unwrap()
         .runtime("runtime")
         .unwrap();
-    let sources = SourceKind::ALL
+    let mut sources: Vec<_> = SourceKind::ALL
         .into_iter()
         .map(|kind| {
             let (namespace, path) = match kind {
@@ -50,6 +50,20 @@ pub(super) fn prepare(root: &Path, config: &LauncherConfig, registry_root: &Path
             }
         })
         .collect();
+    sources.extend([
+        Source {
+            id: "codex-native".into(),
+            kind: SourceKind::NativeSkills,
+            root: SourceRoot::Home,
+            path: "skills".into(),
+        },
+        Source {
+            id: "codex-system".into(),
+            kind: SourceKind::SystemSkills,
+            root: SourceRoot::Home,
+            path: "skills/.system".into(),
+        },
+    ]);
     let inventory = Inventory {
         schema: INVENTORY_SCHEMA.into(),
         adapter_id: "offline-test-agent".into(),

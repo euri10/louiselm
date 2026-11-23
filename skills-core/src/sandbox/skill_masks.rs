@@ -93,12 +93,6 @@ impl SkillMasks {
             }
         }
         for root in &roots {
-            if roots
-                .iter()
-                .any(|other| root != other && (root.starts_with(other) || other.starts_with(root)))
-            {
-                return Err(refused());
-            }
             // A mask must not erase instructions or tool/plugin schemas.
             for source in inventory.sources.iter().filter(|s| !is_skill_root(s.kind)) {
                 let other = target(source, plan)?;
@@ -177,6 +171,16 @@ impl SkillMasks {
             ]);
         }
         for root in &self.roots {
+            // A parent empty mount already hides every nested Skill root.
+            // Mounting its child would require creating a mountpoint in the
+            // immutable empty view, and would no longer be that measured view.
+            if self
+                .roots
+                .iter()
+                .any(|other| root != other && root.starts_with(other))
+            {
+                continue;
+            }
             arguments.extend([
                 "--ro-bind".into(),
                 self.view.display().to_string(),

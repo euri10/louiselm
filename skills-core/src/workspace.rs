@@ -60,6 +60,9 @@ pub enum WorkspaceError {
     /// Registered Agent/runtime or current witnessed supply could not be resolved.
     #[error("workspace trusted Session inputs unavailable")]
     Resolution(#[from] crate::session_manifest::InputResolutionError),
+    /// Skills-off launch preparation requires a measured native-source inventory.
+    #[error("workspace Skills off requires a valid registered discovery inventory")]
+    DiscoveryInventory(#[from] crate::discovery::DiscoveryError),
     /// A selected registry identity is unavailable.
     #[error("workspace registry input unavailable")]
     Registry(#[from] crate::registry::RegistryError),

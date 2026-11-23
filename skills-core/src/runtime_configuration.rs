@@ -45,9 +45,9 @@ pub fn resolve(agent: &AgentRegistration) -> Result<Digest, ConfigurationError> 
             let digest = codex_configuration_digest();
             match agent.contained_always_on_path.as_deref() {
                 None => Ok(digest),
-                Some(slot @ ("AGENTS.md" | "AGENTS.override.md")) => Ok(Digest::of(
-                    format!("{digest}\nCODEX_HOME=private-home\n{slot}").as_bytes(),
-                )),
+                Some(slot @ ("AGENTS.md" | "AGENTS.override.md")) => {
+                    Ok(Digest::of(format!("{digest}\n{slot}").as_bytes()))
+                }
                 Some(_) => Err(ConfigurationError::UnsupportedProfileSlot),
             }
         }
@@ -99,5 +99,5 @@ pub(crate) fn codex_configuration() -> (String, String) {
 
 pub(crate) fn codex_configuration_digest() -> Digest {
     let (config, authentication) = codex_configuration();
-    Digest::of(format!("{config}\n{authentication}").as_bytes())
+    Digest::of(format!("{config}\n{authentication}\nCODEX_HOME=private-home").as_bytes())
 }

@@ -16,7 +16,9 @@ pub enum SourceRoot {
     System,
 }
 
-/// Fixed inventory categories. Every category requires an explicit account.
+/// Fixed full-inventory categories. Skill-root inventories require the four
+/// Skill categories and may also describe instruction files; they prove no
+/// controls for embedded schemas, plugins, MCP or other native supply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {

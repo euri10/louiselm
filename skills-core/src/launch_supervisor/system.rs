@@ -1477,12 +1477,8 @@ impl SystemLaunchPlatform {
             .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
         // Measurement requires empty registered values; the contract then
         // supplies its exact launcher-owned arguments and environment.
-        (plan.arguments, plan.environment) = super::tool_integration::launch_values(
-            integration,
-            &plan.runtime_root,
-            &plan.home,
-            agent.contained_always_on_path.as_deref(),
-        );
+        (plan.arguments, plan.environment) =
+            super::tool_integration::launch_values(integration, &plan.runtime_root, &plan.home);
         Ok((evidence, runtime))
     }
 

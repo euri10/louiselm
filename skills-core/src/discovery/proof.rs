@@ -42,6 +42,9 @@ impl DiscoveryProof {
             return Err(DiscoveryError::Refused("runtime_mismatch"));
         }
         let inventory = Inventory::load(runtime)?;
+        if inventory.schema != super::INVENTORY_SCHEMA {
+            return Err(DiscoveryError::Refused("skill_roots_only"));
+        }
         if let Some(profile) = &bound.isolation.operator_profile {
             let expected: Vec<_> = inventory
                 .sources

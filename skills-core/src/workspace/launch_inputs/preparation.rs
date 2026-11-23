@@ -62,6 +62,7 @@ pub struct RunProposal {
 /// # Errors
 /// Refuses unknown configuration, unresolved supply, missing instructions, changed
 /// source/cache bytes, malformed inputs, unsafe/nested output or existing output.
+/// Skills-off mode also refuses missing or invalid registered discovery inventories.
 pub fn prepare(
     store: &Store,
     policy: &Policy,
@@ -71,7 +72,13 @@ pub fn prepare(
 ) -> Result<RunProposal, WorkspaceError> {
     filesystem::validate_output(output, &fs::canonicalize(selection.snapshot)?)?;
     filesystem::validate_output(output, &fs::canonicalize(selection.cache)?)?;
-    let configuration = runtime_configuration::resolve(&registry.agent(selection.agent_id)?)?;
+    let agent = registry.agent(selection.agent_id)?;
+    let configuration = runtime_configuration::resolve(&agent)?;
+    if selection.skills == crate::session_manifest::SkillsMode::Off {
+        let runtime = registry.runtime(&agent.runtime_id)?;
+        runtime.measure()?;
+        crate::discovery::Inventory::load(&runtime)?;
+    }
     let envelope = registry.envelope(selection.envelope_id)?;
     let (record, files) =
         super::super::load_snapshot(selection.snapshot, selection.snapshot_digest)?;

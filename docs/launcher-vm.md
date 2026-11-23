@@ -117,8 +117,15 @@ TEST_BIN=$(./scripts/launcher-vm exec env PATH=/home/vm/.cargo/bin:/usr/bin:/bin
 ./scripts/launcher-vm exec getent ahostsv4 api.openai.com
 ```
 
-The offline stock gate must pass before provisioning a key or making a paid
-request. It also checks the installed guard and measured runtime. The stripped
+Run the same offline command with
+`privileged_installed_brokered_stock_codex_skills_off_completes_prompt` too. It
+consumes the generated, registered `louiselm-discovery.json`, checks `/skills`
+reports no Skills, verifies writable Codex state, completes a mocked-upstream
+prompt, then checks Park/Resume and disposal. The separate installed
+`privileged_installed_skills_off_masks_all_native_roots` gate checks empty mounts,
+nested roots and rename/recreate denial from the Agent and workspace helpers.
+Both stock gates must pass before provisioning a key or making a paid
+request. They also check the installed guard and measured runtime. The stripped
 debug launcher stays within the installed profile's 128 MiB file limit.
 `TEST_BIN` is the library test binary cargo reports: the target dir also holds
 the `main.rs` test binary and leftovers from earlier builds, so do not glob for it.

@@ -2,6 +2,8 @@
 use super::*;
 use louiselm_skills::{
     cache::CacheBase,
+    discovery::{INVENTORY_PATH, INVENTORY_SCHEMA, Inventory},
+    discovery_source::{Source, SourceKind, SourceRoot},
     session_manifest::{SessionInputManifest, SkillsMode},
     workspace::{
         self, WorkspaceError,
@@ -121,6 +123,27 @@ impl PreparedFixture {
         }
     }
 
+    fn register_inventory(&mut self, bytes: &[u8]) {
+        let mut runtime = self.registry.runtime("demo-runtime").unwrap();
+        fs::write(runtime.root.join(INVENTORY_PATH), bytes).unwrap();
+        runtime
+            .adapters
+            .push(louiselm_skills::registry::MeasuredFile {
+                path: INVENTORY_PATH.into(),
+                sha256: Digest::of(bytes).hex().into(),
+            });
+        fs::write(
+            self.root.join("registry/runtimes.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": louiselm_skills::registry::REGISTRY_SCHEMA,
+                "entries": [runtime],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        self.registry = Registry::open(&self.root.join("registry")).unwrap();
+    }
+
     fn prepare(
         &self,
         request: &Preparation<'_>,
@@ -206,8 +229,57 @@ fn prepares_complete_measured_inputs_and_an_inactive_fresh_run() {
 }
 
 #[test]
+fn skills_off_preparation_refuses_an_unregistered_or_invalid_discovery_inventory() {
+    // eacfd940's Codex registration measured its executables but no inventory.
+    // The proposal succeeded, then native mask construction failed after consume.
+    for inventory in [None, Some(b"{}".as_slice())] {
+        let mut fixture = PreparedFixture::new();
+        if let Some(bytes) = inventory {
+            fixture.register_inventory(bytes);
+        }
+        let instructions = vec!["AGENTS.md".into()];
+        let mut selection = fixture.selection(&instructions);
+        selection.skills = SkillsMode::Off;
+        let error = fixture
+            .prepare(&selection, "missing-inventory")
+            .expect_err("Skills off must require its inventory before publishing a proposal");
+        assert!(error.to_string().contains("discovery inventory"));
+        let WorkspaceError::DiscoveryInventory(error) = error else {
+            panic!("expected an inventory refusal, got {error}");
+        };
+        assert_eq!(
+            error.dimension(),
+            louiselm_skills::posture::DimensionName::NativeSupply
+        );
+        assert!(!fixture.root.join("missing-inventory").exists());
+    }
+}
+
+#[test]
 fn explicit_off_preparation_needs_no_generation_and_never_hides_enabled_failure() {
-    let fixture = PreparedFixture::new();
+    let mut fixture = PreparedFixture::new();
+    let runtime = fixture.registry.runtime("demo-runtime").unwrap();
+    let inventory = Inventory {
+        schema: INVENTORY_SCHEMA.into(),
+        adapter_id: "fixture".into(),
+        version: "1".into(),
+        runtime_id: runtime.id,
+        executable_sha256: runtime.executable_sha256,
+        sources: SourceKind::ALL
+            .into_iter()
+            .map(|kind| Source {
+                id: kind.name().into(),
+                kind,
+                root: if kind == SourceKind::ProjectInstructions {
+                    SourceRoot::Workspace
+                } else {
+                    SourceRoot::Home
+                },
+                path: format!("sources/{}", kind.name()),
+            })
+            .collect(),
+    };
+    fixture.register_inventory(&inventory.canonical_bytes());
     let fresh = support::Fixture::new();
     let instructions = vec!["AGENTS.md".into()];
     let mut selection = fixture.selection(&instructions);
@@ -346,7 +418,7 @@ fn privileged_preparation_cli_measures_trusted_owners_without_launch() {
     let instructions = fixture.root.join("instructions.json");
     fs::write(&instructions, br#"["AGENTS.md"]"#).unwrap();
     let destination = fixture.root.join("cli-prepared");
-    let prepare = || {
+    let prepare = |skills| {
         Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
             .args(["workspace", "launch-inputs", "prepare", "--store"])
             .arg(fixture.supply.fixture.store_root())
@@ -356,7 +428,7 @@ fn privileged_preparation_cli_measures_trusted_owners_without_launch() {
                 "--agent",
                 "demo",
                 "--skills",
-                "enabled",
+                skills,
                 "--envelope",
                 "denied",
                 "--snapshot",
@@ -375,7 +447,7 @@ fn privileged_preparation_cli_measures_trusted_owners_without_launch() {
             .unwrap()
     };
     fs::write(&instructions, br#"{"implicit":"instructions"}"#).unwrap();
-    let refused = prepare();
+    let refused = prepare("enabled");
     assert!(!refused.status.success());
     assert!(
         String::from_utf8_lossy(&refused.stderr)
@@ -383,7 +455,11 @@ fn privileged_preparation_cli_measures_trusted_owners_without_launch() {
     );
     assert!(!destination.exists());
     fs::write(&instructions, br#"["AGENTS.md"]"#).unwrap();
-    let output = prepare();
+    let refused = prepare("off");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("discovery inventory"));
+    assert!(!destination.exists());
+    let output = prepare("enabled");
     assert!(
         output.status.success(),
         "{}",
@@ -399,5 +475,8 @@ fn privileged_preparation_cli_measures_trusted_owners_without_launch() {
         proposal
     );
     assert_eq!(proposal.envelope.revision, 1);
-    assert!(!prepare().status.success(), "existing output is refused");
+    assert!(
+        !prepare("enabled").status.success(),
+        "existing output is refused"
+    );
 }

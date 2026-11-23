@@ -74,7 +74,6 @@ fn codex_configuration_explicitly_disables_added_extensions() {
         super::super::tool_integration::Integration::CodexAcp,
         Path::new("/runtime"),
         Path::new("/session/home"),
-        None,
     );
     let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
     for feature in ["plugins", "remote_plugin", "apps"] {
@@ -101,7 +100,7 @@ fn codex_configuration_explicitly_disables_added_extensions() {
         crate::runtime_configuration::resolve(&agent).unwrap(),
         Digest::of(
             format!(
-                "{}\n{}",
+                "{}\n{}\nCODEX_HOME=private-home",
                 environment["CODEX_CONFIG"], environment["DEFAULT_AUTH_REQUEST"]
             )
             .as_bytes()

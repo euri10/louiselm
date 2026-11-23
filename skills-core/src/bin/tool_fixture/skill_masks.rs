@@ -21,7 +21,7 @@ pub(super) fn inspect(output: &mut impl Write) -> io::Result<()> {
     let inventory = Inventory::parse(&bytes).map_err(|_| refused())?;
     let workspace = std::env::current_dir()?;
     let home = workspace.parent().ok_or_else(refused)?.join("home");
-    for source in inventory.sources {
+    for source in &inventory.sources {
         let base = match source.root {
             SourceRoot::Home => &home,
             SourceRoot::Workspace => &workspace,
@@ -36,14 +36,30 @@ pub(super) fn inspect(output: &mut impl Write) -> io::Result<()> {
                 | SourceKind::NativeSkills
                 | SourceKind::SystemSkills
         ) {
+            let nested = inventory.sources.iter().any(|other| {
+                matches!(
+                    other.kind,
+                    SourceKind::ManagedSkills
+                        | SourceKind::RepositorySkills
+                        | SourceKind::NativeSkills
+                        | SourceKind::SystemSkills
+                ) && other.root == source.root
+                    && source.path.starts_with(&format!("{}/", other.path))
+            });
+            if nested {
+                // The outer canonical empty view has no child mountpoints.
+                if path.try_exists()? || fs::create_dir_all(&path).is_ok() {
+                    return Err(refused());
+                }
+                continue;
+            }
             if fs::read_dir(&path)?.next().is_some()
                 || fs::write(path.join("forbidden"), b"not a Skill").is_ok()
             {
                 return Err(refused());
             }
-            if matches!(source.root, SourceRoot::Home | SourceRoot::Workspace)
-                && let Some((first, _)) = source.path.split_once('/')
-            {
+            if matches!(source.root, SourceRoot::Home | SourceRoot::Workspace) {
+                let first = source.path.split('/').next().ok_or_else(refused)?;
                 let parent = base.join(first);
                 if fs::rename(&parent, parent.with_extension("moved")).is_ok() {
                     return Err(refused());
@@ -56,6 +72,7 @@ pub(super) fn inspect(output: &mut impl Write) -> io::Result<()> {
         }
     }
     fs::write(workspace.join("ordinary-edit"), b"still writable")?;
+    fs::write(home.join("runtime-state"), b"still writable")?;
     output.write_all(b"\x1aSKILL_MASKS_OK\n")?;
     output.flush()
 }

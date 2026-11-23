@@ -119,6 +119,41 @@ fn masks_bind_registered_inventory_and_pin_writable_ancestors() {
 }
 
 #[test]
+fn nested_skill_roots_share_the_outer_mask_without_freezing_runtime_state() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut runtime, plan, mut inventory) = fixture(root.path());
+    for source in &mut inventory.sources {
+        match source.kind {
+            SourceKind::ManagedSkills => source.path = "skills".into(),
+            SourceKind::SystemSkills => {
+                source.root = SourceRoot::Home;
+                source.path = "skills/.system".into();
+            }
+            _ => (),
+        }
+    }
+    register(&mut runtime, &inventory);
+    let store = Store::open(&root.path().join("empty-store")).unwrap();
+    let masks = SkillMasks::prepare(&store, &runtime, &plan).unwrap();
+    assert_eq!(masks.evidence.sources.len(), 4);
+    let arguments = masks.arguments();
+    let mounts: Vec<_> = arguments.as_chunks::<3>().0.iter().collect();
+    assert!(
+        mounts
+            .iter()
+            .any(|mount| mount[2] == plan.home.join("skills").display().to_string())
+    );
+    assert!(
+        !mounts
+            .iter()
+            .any(|mount| mount[2] == plan.home.join("skills/.system").display().to_string())
+    );
+    assert!(!masks.parents.contains(&plan.home));
+    assert!(!masks.parents.contains(&plan.home.join(".codex")));
+    assert_eq!(masks.workspace_only().evidence.sources.len(), 1);
+}
+
+#[test]
 fn changed_missing_ambiguous_or_symlinked_roots_are_refused() {
     for case in 0..6 {
         let root = tempfile::tempdir().unwrap();
@@ -143,7 +178,7 @@ fn changed_missing_ambiguous_or_symlinked_roots_are_refused() {
                     .iter_mut()
                     .find(|s| s.kind == SourceKind::NativeSkills)
                     .unwrap()
-                    .path = ".managed".into();
+                    .path = ".managed/skills".into();
                 register(&mut runtime, &inventory);
             }
             _ => {
