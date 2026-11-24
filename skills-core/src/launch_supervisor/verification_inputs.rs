@@ -100,12 +100,46 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    fn checker(root: &Path, script: &str) -> std::path::PathBuf {
+        let checker = root.join("checker");
+        // A sibling spawn can inherit a writable script FD until exec, making
+        // our own exec fail with ETXTBSY even after fs::write closes it. Keep
+        // that FD in a waited child instead of this shared test process.
+        assert!(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "umask 077; printf '%s' \"$1\" > \"$2\" && chmod 700 \"$2\"",
+                    "checker-fixture",
+                    script,
+                ])
+                .arg(&checker)
+                .status()
+                .unwrap()
+                .success()
+        );
+        checker
+    }
+
+    #[test]
+    fn checker_creation_is_safe_during_concurrent_spawns() {
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..16 {
+                        let root = tempfile::tempdir().unwrap();
+                        let checker = checker(root.path(), "#!/bin/sh\nexit 0\n");
+                        assert_eq!(check_toolchain(&checker), Ok(()));
+                    }
+                });
+            }
+        });
+    }
+
     #[test]
     fn toolchain_check_does_not_inherit_operator_private_working_directory() {
         let root = tempfile::tempdir().unwrap();
-        let checker = root.path().join("checker");
-        std::fs::write(&checker, b"#!/bin/sh\n[ \"$PWD\" = / ]\n").unwrap();
-        std::fs::set_permissions(&checker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let checker = checker(root.path(), "#!/bin/sh\n[ \"$PWD\" = / ]\n");
         assert_eq!(check_toolchain(&checker), Ok(()));
     }
 
@@ -113,11 +147,9 @@ mod tests {
     fn qualified_input_changes_require_new_evidence_and_unsafe_inputs_are_refused() {
         let root = tempfile::tempdir().unwrap();
         let manifest = root.path().join("manifest");
-        let checker = root.path().join("checker");
         std::fs::write(&manifest, b"tool-v1").unwrap();
         std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
-        std::fs::write(&checker, b"#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&checker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let checker = checker(root.path(), "#!/bin/sh\nexit 0\n");
         let owner = rustix::process::geteuid().as_raw();
         let first = measure(&[&manifest, &checker], &checker, owner).unwrap();
         assert_eq!(
