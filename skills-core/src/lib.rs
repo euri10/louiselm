@@ -5,6 +5,11 @@
 //! candidate, a digest, or an analysis, but nothing an Agent produces is ever
 //! treated as authority here.
 
+// Installed fixtures compile the production Control broker dispatcher with its
+// existing test-only HTTPS certificate seam, not a second daemon implementation.
+#[cfg(test)]
+extern crate self as louiselm_skills;
+
 pub mod admission;
 pub mod assessment;
 pub mod beads_mutation;

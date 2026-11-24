@@ -12,6 +12,51 @@ from unittest.mock import patch
 
 
 class StockChainTests(unittest.TestCase):
+    def test_check_requires_exact_pins_without_downloading_or_rebuilding(self):
+        module = runpy.run_path(str(Path(__file__).with_name("fetch-stock-codex-chain")))
+        main = module["main"]
+        artifacts = {name: {**pin, "file": hashlib.sha256(b"file").hexdigest()}
+                     for name, pin in module["ARTIFACTS"].items()}
+        with tempfile.TemporaryDirectory() as root, \
+                patch.dict(main.__globals__, ARTIFACTS=artifacts,
+                           fetch=lambda _: self.fail("check must not download")), \
+                patch("sys.argv", ["fetch-stock-codex-chain", "--check", root]):
+            directory = Path(root)
+            for name, pin in artifacts.items():
+                path = directory / name
+                path.write_bytes(b"file")
+                path.chmod(pin["mode"])
+            inventory = directory / "louiselm-discovery.json"
+            inventory.write_bytes(main.__globals__["discovery_inventory"]())
+            inventory.chmod(0o444)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                main()
+            self.assertEqual(set(json.loads(stdout.getvalue())), {*artifacts, inventory.name})
+            for name in ["node", "codex-acp.js", "codex", "codex-code-mode-host", inventory.name]:
+                path = directory / name
+                original = path.read_bytes()
+                mode = path.stat().st_mode & 0o777
+                path.chmod(0o644)
+                path.write_bytes(b"not the pinned artifact")
+                path.chmod(mode)
+                with self.subTest(name=name), self.assertRaisesRegex(SystemExit, "pinned file differs: " + name):
+                    main()
+                path.chmod(0o644)
+                path.write_bytes(original)
+                path.chmod(mode)
+            executable = directory / "node"
+            executable.chmod(0o4555)
+            with self.assertRaisesRegex(SystemExit, "pinned file mode differs: node"):
+                main()
+            executable.chmod(0o755)
+            with self.assertRaisesRegex(SystemExit, "pinned file mode differs: node"):
+                main()
+            executable.unlink()
+            executable.symlink_to(directory / "codex")
+            with self.assertRaisesRegex(SystemExit, "pinned file is missing or not regular: node"):
+                main()
+
     def test_provisioning_measures_the_actual_scoped_inventory(self):
         module = runpy.run_path(str(Path(__file__).with_name("fetch-stock-codex-chain")))
         main = module["main"]

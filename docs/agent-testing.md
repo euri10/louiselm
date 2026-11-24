@@ -77,7 +77,15 @@ Contained Bead-executor or launcher-prefix changes also require the installed
 `privileged_installed_lua_bead_executor` gate described in
 [bead-executor](bead-executor.md), inside the disposable launcher VM. CI runs it
 with real operator authorization, launcher, Lua Sessions and terminal cleanup;
-the ACP peer and capture admission/attachment are explicit offline doubles.
+cases 1–4 retain explicit ACP/capture doubles, and case 5 uses real capture.
+Required cases 11 and 10 combine the hash-pinned stock Codex/ACP/Code Mode
+chain, qualified native Beads with the full tracker export, full source, real
+operator/capture and Enforced certification. Case 11 proves production-daemon
+startup and disposal before a prompt; case 10 uses the actual dispatcher with
+a test-only TLS root for six local requests, three reviewed promotions and six
+cryptographically verified terminal chains. No real credential or paid request
+is permitted. Keep unset/empty fixture coverage; do not replace it with the
+stock variant. Provisioning and exact bounds are in the linked gate recipe.
 A skipped unprivileged Rust fixture is not installed acceptance.
 
 Usage benchmark harness changes also run `python3 scripts/test-usage-benchmark.py`.

@@ -110,7 +110,12 @@ fn start() -> Result<(), String> {
     let paths = installed_paths()?;
     let broker = InstalledBroker::over(&paths, Path::new("/var/lib/louiselm/broker"), listener)
         .map_err(|error| error.to_string())?;
-    serve(broker).map_err(|error| error.to_string())
+    serve(
+        broker,
+        #[cfg(test)]
+        None,
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn adopt_state() -> Result<(), String> {
@@ -176,7 +181,18 @@ fn activated_listener() -> Result<OwnedFd, String> {
     Ok(fd)
 }
 
-fn serve(broker: InstalledBroker) -> Result<(), BrokerError> {
+// Library fixtures have the existing test-only certificate setter. Binary
+// unit tests link the ordinary library instead, so pass that setter explicitly.
+#[cfg(test)]
+pub(crate) type ProviderTestRoot = (
+    ureq::tls::Certificate<'static>,
+    fn(&mut louiselm_skills::broker::BrokerSession, ureq::tls::Certificate<'static>),
+);
+
+pub(crate) fn serve(
+    broker: InstalledBroker,
+    #[cfg(test)] provider_root: Option<&ProviderTestRoot>,
+) -> Result<(), BrokerError> {
     let broker = Arc::new(broker);
     let queries = inspection::Queries::start(Arc::clone(&broker))?;
     let _attention_worker = attention::start(Arc::clone(&broker))?;
@@ -205,11 +221,17 @@ fn serve(broker: InstalledBroker) -> Result<(), BrokerError> {
         }
         let owner = Arc::clone(&broker);
         let queries = Arc::clone(&queries);
+        #[cfg(test)]
+        let provider_root = provider_root.cloned();
         workers.push(
             thread::Builder::new()
                 .name("louiselm-broker-session".into())
                 .spawn(move || {
                     let mut session = owner.serve_accepted(channel)?;
+                    #[cfg(test)]
+                    if let Some((root, set_root)) = provider_root {
+                        set_root(&mut session, root);
+                    }
                     queries.run_session(&owner, &mut session)
                 })
                 .map_err(|_| BrokerError::Transport(TransportError::WorkerUnavailable))?,

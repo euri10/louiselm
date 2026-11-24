@@ -1,5 +1,6 @@
 -- Private-mount VM composition: real operator caller, capture CLI and broker.
--- Only the measured ACP peer and reviewed offline verification plan are fixtures.
+-- The ordinary case uses a measured ACP fixture. Stock cases require the real
+-- pinned runtime; only the reviewed verification plan and local TLS peer are fixtures.
 ---@diagnostic disable-next-line: undefined-global -- Neovim standalone fixture.
 local nvim = vim
 nvim.opt.rtp:prepend(nvim.fn.getcwd())
@@ -16,13 +17,17 @@ local completed, failure = false, nil
 ---@type louiselm.workflow.BeadRunSummary?
 local summary
 local approvals, heads = 0, { selection.worktree.head }
+local stock = nvim.env.LOUISELM_TEST_STOCK_OPERATOR == "1"
+local startup_only = nvim.env.LOUISELM_TEST_STOCK_STARTUP_ONLY == "1"
+local attachment
 local started = nvim.uv.hrtime()
 local function progress(phase)
   io.stderr:write(
     "INSTALLED_OPERATOR phase=" .. phase .. " elapsed_ms=" .. math.floor((nvim.uv.hrtime() - started) / 1000000) .. "\n"
   )
 end
-local controller = assert(require("louiselm.workflow.operator").new(selection, {
+local controller
+controller = assert(require("louiselm.workflow.operator").new(selection, {
   on_promotion = function(preview, decide)
     approvals = approvals + 1
     progress("promotion-" .. approvals)
@@ -38,6 +43,31 @@ local controller = assert(require("louiselm.workflow.operator").new(selection, {
     progress("start-" .. operation)
     return nvim.system(argv, options, function(result)
       progress("end-" .. operation .. "-code-" .. result.code)
+      if argv[1] == "louiselm-capture" and argv[3] == "run" and argv[4] == "attach" and result.code == 0 then
+        attachment = nvim.deepcopy(argv)
+        if startup_only then
+          -- Hold the completed attach callback before it can send the first
+          -- prompt. Everything through the production daemon and stock ACP
+          -- initialization is real; this case deliberately ends at that cut.
+          nvim.schedule(function()
+            local inspected = nvim
+              .system({
+                "louiselm-control",
+                "session",
+                "inspect",
+                selection.envelope.run_id .. "-worker-1",
+                "--json",
+              }, { text = true })
+              :wait()
+            assert(inspected.code == 0, "stock worker inspection failed")
+            local state = nvim.json.decode(inspected.stdout)
+            assert(state.state == "running" and state.broker_head.sequence == 1)
+            assert(controller:dispose())
+            completed = true
+          end)
+          return
+        end
+      end
       if argv[1] == "louiselm-control" and argv[2] == "promotion" and argv[3] == "commit" and result.code == 0 then
         heads[#heads + 1] = nvim.json.decode(result.stdout).commit
       end
@@ -48,9 +78,6 @@ local controller = assert(require("louiselm.workflow.operator").new(selection, {
 local on_worker = controller.options.on_worker
 controller.options.on_worker = function(result, continue)
   progress("worker-result")
-  if result.error then
-    print("offline worker startup: " .. result.error)
-  end
   on_worker(result, continue)
 end
 assert(controller:start(function(ok, err, result)
@@ -58,12 +85,21 @@ assert(controller:start(function(ok, err, result)
   failure, summary, completed = not ok and err or nil, result, true
 end))
 assert(
-  nvim.wait(nvim.env.LOUISELM_TEST_SOURCE_SIZED == "1" and 180000 or 90000, function()
+  nvim.wait(stock and 270000 or nvim.env.LOUISELM_TEST_SOURCE_SIZED == "1" and 180000 or 90000, function()
     return completed
   end, 10),
   "operator Run timed out"
 )
 assert(controller:dispose())
+if stock then
+  nvim.fn.writefile({ nvim.json.encode(heads) }, nvim.env.XDG_STATE_HOME .. "/stock-heads.json")
+end
+if startup_only then
+  assert(stock and attachment and approvals == 0 and #heads == 1)
+  assert(failure == "Bead Run disposed", "probe must end by its deliberate disposal, not a startup failure")
+  print("installed stock operator: production daemon, Running receipt and real capture attachment; no prompt")
+  return
+end
 assert(not failure, failure)
 assert(summary and #summary.accepted == 3 and #summary.failed == 0)
 assert(approvals == 3 and #heads == 4, "expected three approvals and commits: " .. summary.text)
@@ -96,24 +132,25 @@ assert(
   duplicate.code ~= 0 and duplicate.stderr:find("Run UUID conflicts with existing record", 1, true),
   "real capture must retain the exact admitted Run"
 )
-local attach = {
-  "louiselm-capture",
-  "--require-interface=1",
-  "run",
-  "attach",
-  "--id",
-  selection.envelope.run_id,
-  "--session-id",
-  selection.manifest.agent.id .. "/fixture-acp",
-  "--agent",
-  selection.manifest.agent.id,
-  "--acp-session-id",
-  "fixture-acp",
-  "--cwd",
-  "/var/lib/louiselm/sessions/" .. selection.envelope.run_id .. "-worker-1/workspace",
-  "--load-session",
-  "false",
-}
+local attach = stock and assert(attachment, "stock Run never attached its real ACP Session")
+  or {
+    "louiselm-capture",
+    "--require-interface=1",
+    "run",
+    "attach",
+    "--id",
+    selection.envelope.run_id,
+    "--session-id",
+    selection.manifest.agent.id .. "/fixture-acp",
+    "--agent",
+    selection.manifest.agent.id,
+    "--acp-session-id",
+    "fixture-acp",
+    "--cwd",
+    "/var/lib/louiselm/sessions/" .. selection.envelope.run_id .. "-worker-1/workspace",
+    "--load-session",
+    "false",
+  }
 local changed = nvim.deepcopy(attach)
 changed[8] = "different-anchor"
 local refused = nvim.system(changed, { text = true }):wait()

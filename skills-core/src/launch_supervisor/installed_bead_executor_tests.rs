@@ -1,6 +1,9 @@
-//! Installed broker/launcher and real Lua Sessions; offline measured ACP peer.
+//! Installed broker/launcher and real Lua Sessions; fixture or pinned stock ACP.
 use super::*;
 use std::cell::Cell;
+
+#[path = "installed_stock_operator_tests.rs"]
+mod stock;
 
 #[derive(Default)]
 struct FailureObservation {
@@ -147,12 +150,16 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=9).contains(&index));
+    assert!((1..=11).contains(&index));
+    let stock_operator = matches!(index, 10 | 11);
+    let startup_only = index == 11;
     let startup_failure = index == 9;
     // Case 8 reuses the passing promotion fixture, with an actual human-review
     // delay crossing its selected expiry before Accept reaches the real CLI.
     let delayed_promotion = index == 8;
-    let index = if startup_failure {
+    let index = if stock_operator {
+        5
+    } else if startup_failure {
         1
     } else if delayed_promotion {
         4
@@ -165,9 +172,13 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .unwrap();
     mounts(root.path());
     let _account = BrokerAccount::create();
-    let (_, config, manager) = install_unseeded_daemon(
+    let (paths, config, manager) = install_unseeded_daemon(
         root.path(),
-        crate::conformance::admission::Enforcement::PreCutover,
+        if stock_operator {
+            crate::conformance::admission::Enforcement::Enforced
+        } else {
+            crate::conformance::admission::Enforcement::PreCutover
+        },
         6,
     );
     if index == 1 && std::env::var_os("LOUISELM_TEST_BR").is_none() {
@@ -183,7 +194,19 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         chown(&import_running, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
     }
     let (program, tracker, bead_id) = beads::provision(root.path());
-    let manifest = workspace::fixture_manifest();
+    let upstream = if stock_operator {
+        stock::install(root.path(), &paths, &config, startup_only)
+    } else {
+        None
+    };
+    let manifest = if stock_operator {
+        workspace::fixture_manifest_for(
+            super::super::codex_chain::runtime_directory(root.path()).as_deref(),
+            crate::registry::NetworkPolicy::Brokered,
+        )
+    } else {
+        workspace::fixture_manifest()
+    };
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
     let operator = root.path().join("operator");
     fs::create_dir(&operator).unwrap();
@@ -392,7 +415,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         );
     }
     let input = root.path().join("controller.json");
-    let selected = if index == 5 {
+    let mut selected = if index == 5 {
         operator_selection(
             &config,
             &operator,
@@ -405,6 +428,29 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     } else {
         serde_json::json!({"cases":cases})
     };
+    if let Some(upstream) = &upstream {
+        selected["envelope"]["provider_requests"]["upstream"] = serde_json::json!(format!(
+            "https://api.openai.com:{}/v1/responses",
+            upstream.port
+        ));
+        selected["envelope"]["provider_requests"]["addresses"] = serde_json::json!(["127.0.0.1"]);
+        // Six expected HTTPS exchanges, with one unused unit so the Run does
+        // not deliberately enter its exhaustion hold before the final verifier.
+        selected["envelope"]["provider_requests"]["max_run_requests"] = serde_json::json!(7);
+    }
+    if stock_operator {
+        for (index, bead) in selected["beads"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            bead["prompt"] = serde_json::json!(format!(
+                "Create accepted-{}.txt for this offline fixture.",
+                index + 1
+            ));
+        }
+    }
     write_json(&input, &selected);
     if startup_failure {
         // Exact private fixture input, never system or retained live storage.
@@ -430,13 +476,30 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         false,
         &BROKER_UID.to_string(),
         Some(broker_group.0.path()),
+        None,
     );
+    ready(&config);
+    if upstream.is_some() {
+        // The first production startup establishes pristine state identity.
+        // Custody is loaded once at startup, so install the dummy credential
+        // between daemons, not after the serving daemon has loaded its store.
+        terminate(&mut daemon);
+        stock::provision_credential();
+        daemon = process_with_cgroup(
+            &manager,
+            BROKER_UID,
+            false,
+            &BROKER_UID.to_string(),
+            Some(broker_group.0.path()),
+            Some((stock::BROKER_ENTRY, root.path())),
+        );
+        ready(&config);
+    }
     if let Some(observation) = failure {
         observation
             .daemon_pid
             .set(Some(i32::try_from(daemon.0.id()).unwrap()));
     }
-    ready(&config);
     assert!(broker_group.0.processes().unwrap().contains(&daemon.0.id()));
     let hold_injector = (index >= 6).then(|| inject_provider_hold(&state, index, now));
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
@@ -470,6 +533,14 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         ])
         .current_dir(&project)
         .env_clear()
+        .env(
+            "LOUISELM_TEST_STOCK_OPERATOR",
+            if stock_operator { "1" } else { "0" },
+        )
+        .env(
+            "LOUISELM_TEST_STOCK_STARTUP_ONLY",
+            if startup_only { "1" } else { "0" },
+        )
         .env(
             "PATH",
             "/usr/local/lib/louiselm/current/bin:/usr/local/lib/louiselm-tools:/usr/bin:/bin",
@@ -659,6 +730,19 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         eprintln!(
             "startup cause preserved; one consumed authorization; no successor or fabricated terminal receipt"
         );
+    } else if startup_only {
+        let run_id = selected["envelope"]["run_id"].as_str().unwrap();
+        wait_terminal(&format!("{run_id}-worker-1"));
+        let store = crate::broker::AuthorizationStore::open(
+            &Path::new(STATE).join("authorizations"),
+            config.pool.clone(),
+        )
+        .unwrap();
+        assert_eq!(store.session_count_for_run(run_id).unwrap(), 1);
+        assert_eq!(fs::read_dir(&journal).unwrap().count(), 0);
+        eprintln!(
+            "STOCK_OPERATOR production-daemon startup, real capture attachment and terminal cleanup proven; no prompt"
+        );
     } else if index == 5 {
         let run_id = selected["envelope"]["run_id"].as_str().unwrap();
         for bead in 1..=3 {
@@ -671,7 +755,20 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             wait_terminal(&format!("lua-verifier-{index}"));
         }
     }
+    if stock_operator {
+        stock::verify_run(
+            root.path(),
+            &paths,
+            &config,
+            &state,
+            &selected,
+            startup_only,
+        );
+    }
     super::super::launcher_cleanup::assert_exited(&previous_maps);
+    if let Some(upstream) = upstream {
+        upstream.finish();
+    }
     eprintln!("installed Lua launcher exit and guard cleanup proven");
     terminate(&mut daemon);
 }

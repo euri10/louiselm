@@ -197,7 +197,8 @@ jobs:
   sender-guard-vm:
     name: Sender guard object and loader (disposable KVM)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Includes building the qualified native tracker, not just its old double.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - name: Install existing launcher VM prerequisites
@@ -214,6 +215,19 @@ jobs:
           printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
           test -r /dev/kvm && test -w /dev/kvm
           systemctl --user show-environment >/dev/null
+      - name: Build the qualified native Beads tracker
+        run: |
+          set -euo pipefail
+          revision=5830c1e49ae0f38b67fc50382c8481f1ff46a7cf
+          git init --quiet "$RUNNER_TEMP/qualified-br"
+          git -C "$RUNNER_TEMP/qualified-br" fetch --depth=1 https://github.com/euri10/beads_rust.git "$revision"
+          git -C "$RUNNER_TEMP/qualified-br" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/qualified-br" rev-parse HEAD)" = "$revision"
+          cd "$RUNNER_TEMP/qualified-br"
+          rustup toolchain install nightly-2026-08-31 --profile minimal
+          CARGO_BUILD_JOBS=1 cargo build --release --locked --bin br
+          ./target/release/br version | grep -F 5830c1e
+          install -m 755 target/release/br "$RUNNER_TEMP/louiselm-native-br"
       - name: Prepare the pinned guest with build and verifier tools
         run: |
           install -d -m 700 "${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -222,9 +236,11 @@ jobs:
         run: |
           python3 scripts/test-stock-codex-chain.py
           python3 scripts/fetch-stock-codex-chain "$RUNNER_TEMP/louiselm-stock-chain"
+          python3 scripts/fetch-stock-codex-chain --check "$RUNNER_TEMP/louiselm-stock-chain"
       - name: Exercise the embedded object with restricted guest networking
         run: |
           ./scripts/launcher-vm start
+          ./scripts/launcher-vm put "$RUNNER_TEMP/louiselm-native-br" /var/tmp/louiselm-native-br
           ./scripts/launcher-vm exec mkdir -p /var/tmp/louiselm-stock-chain
           tar -C "$RUNNER_TEMP/louiselm-stock-chain" -c node codex-acp.js codex codex-code-mode-host louiselm-discovery.json |
             ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-stock-chain
@@ -307,7 +323,7 @@ jobs:
           version: stable
       - name: Run the installed Lua controller gate
         run: |
-          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/install-broker-beads.py scripts/install-broker-attention.py scripts/conformance-qa.py scripts/install-qa-runtime.py |
+          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/install-broker-beads.py scripts/install-broker-attention.py scripts/conformance-qa.py scripts/install-qa-runtime.py scripts/fetch-stock-codex-chain |
             ./scripts/launcher-vm exec tar -x -C /home/vm
           ./scripts/launcher-vm exec mkdir /var/tmp/louiselm-controller-source
           git archive HEAD | ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-controller-source
@@ -360,6 +376,21 @@ jobs:
               LOUISELM_TEST_CAPTURE=/var/tmp/louiselm-test-capture LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 240 \
               unshare --mount --propagation private -- /bin/bash -c '\''umask 022; exec "$@"'\'' fixture \
               "$library_test" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture
+            # First the unchanged production daemon through real capture attach,
+            # without a prompt; then the same dispatcher with test-only TLS roots
+            # through three stock workers, real promotions and six terminal chains.
+            for stock_case in 11 10; do
+              sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$stock_case" \
+                LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
+                LOUISELM_TEST_BR=/var/tmp/louiselm-native-br \
+                LOUISELM_TEST_BEADS_JSONL=/var/tmp/louiselm-controller-source/.beads/issues.jsonl \
+                LOUISELM_TEST_WORKSPACE_SNAPSHOT=/var/tmp/louiselm-controller-snapshot \
+                LOUISELM_TEST_LUA_ROOT=/home/vm LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+                LOUISELM_TEST_CAPTURE=/var/tmp/louiselm-test-capture LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 360 \
+                unshare --mount --net --propagation private -- \
+                /bin/bash -ec '\''umask 022; /usr/sbin/ip link set lo up; exec "$@"'\'' fixture \
+                "$library_test" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture
+            done
             sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE=1 \
               LOUISELM_TEST_LUA_ROOT=/home/vm \
               LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \

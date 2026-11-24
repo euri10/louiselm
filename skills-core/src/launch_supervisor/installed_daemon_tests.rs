@@ -177,7 +177,7 @@ fn process(manager: &OwnedFd, uid: u32, seed: bool) -> BrokerChild {
 }
 
 fn process_with_groups(manager: &OwnedFd, uid: u32, seed: bool, groups: &str) -> BrokerChild {
-    process_with_cgroup(manager, uid, seed, groups, None)
+    process_with_cgroup(manager, uid, seed, groups, None, None)
 }
 
 fn process_with_cgroup(
@@ -186,6 +186,7 @@ fn process_with_cgroup(
     seed: bool,
     groups: &str,
     cgroup: Option<&Path>,
+    offline_entry: Option<(&str, &Path)>,
 ) -> BrokerChild {
     let mut command = if let Some(cgroup) = cgroup {
         let mut command = Command::new("/bin/sh");
@@ -222,6 +223,11 @@ fn process_with_cgroup(
             .arg(std::env::current_exe().unwrap())
             .args([SEED, "--exact", "--nocapture"])
             .env("LOUISELM_DAEMON_SEED", "1");
+    } else if let Some((entry, root)) = offline_entry {
+        command
+            .arg(std::env::current_exe().unwrap())
+            .args([entry, "--exact", "--nocapture"])
+            .env("LOUISELM_OFFLINE_OPERATOR_BROKER", root);
     } else {
         // Matches the unit's StandardInput=socket: the listener is fd 0.
         command.args([

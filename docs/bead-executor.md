@@ -334,6 +334,24 @@ done
   /bin/bash -c 'umask 022; exec "$1" \
     launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor_failure_cleanup \
     --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable
+
+# Required combined stock-runtime gate; see provisioning below.
+for stock_case in 11 10; do
+  ./scripts/launcher-vm exec sudo -n env \
+    LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$stock_case" \
+    LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
+    LOUISELM_TEST_BR=/var/tmp/louiselm-native-br \
+    LOUISELM_TEST_BEADS_JSONL=/var/tmp/louiselm-controller-source/.beads/issues.jsonl \
+    LOUISELM_TEST_WORKSPACE_SNAPSHOT=/var/tmp/louiselm-controller-snapshot \
+    LOUISELM_TEST_LUA_ROOT=/home/vm \
+    LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+    LOUISELM_TEST_CAPTURE=/path/to/current/louiselm-capture \
+    LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim \
+    timeout 360 unshare --mount --net --propagation private -- \
+    /bin/bash -ec 'umask 022; /usr/sbin/ip link set lo up; exec "$1" \
+      launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor \
+      --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable
+done
 ```
 
 The guest must contain the current Rust build, `lua/`,
@@ -344,8 +362,8 @@ distro Neovim is too old for the plugin's supported APIs. This gate uses the rea
 operator CLI, installed launcher, headless Lua Sessions and durable terminal
 cleanup receipts. Operator inspection is live-only, so it cannot prove cleanup
 after its worker disappears. The measured ACP peer and tracker are offline
-fixtures; the gate runs a passing plan, a failing plan, an unapprovable
-worker and accepted promotion into a dedicated Run worktree. No Provider requests are issued. Capture
+fixtures in cases 1–9; those cases run a passing plan, a failing plan, an unapprovable
+worker and accepted promotion into a dedicated Run worktree without Provider requests. Capture
 admission/attachment is doubled in cases 1–4. Case 5 runs the actual operator
 caller with the real capture CLI, a nonalphabetical reviewed execution order
 against the exact sorted permission set, three separately promoted commits,
@@ -385,6 +403,34 @@ case against a snapshot of the tracked repository. Capture uses the installed
 The source-sized operator case has a bounded three-minute aggregate wait and
 five-minute fixture approval, based on measured complete three-task cycles;
 all production per-operation deadlines and spending caps remain unchanged.
+Cases 11 and 10 require the combined stock/native/operator configuration; missing
+inputs fail rather than substitute a double. Provision the four artifacts and
+discovery inventory with `scripts/fetch-stock-codex-chain`, then verify them
+offline with `scripts/fetch-stock-codex-chain --check DIRECTORY`. Their hashes
+and immutable modes must match Node 24.16.0, Codex/Code Mode 0.156.1 and
+codex-acp 1.10.0. CI builds native `br` at
+`5830c1e49ae0f38b67fc50382c8481f1ff46a7cf` and imports the tracked full export
+into private broker custody. Both cases require a full source snapshot, Skills
+off, Brokered networking and an Enforced installation with a passing real
+certificate, never a waiver or PreCutover evidence.
+
+Case 11 runs the unchanged production daemon through stock ACP initialization,
+its Running receipt and real capture attachment, then disposes before a prompt.
+It verifies one signed terminal chain, the current source HEAD and zero Provider
+attempts. Case 10 compiles the actual daemon dispatcher into the library test;
+only this test process supplies the private TLS CA through the existing test-root
+setter. No installed CLI flag, production trust override or real Provider
+credential is added. A pristine production startup establishes broker state identity; the
+dummy credential is provisioned between daemons, before the serving daemon loads
+custody. The private network namespace permits only loopback. A local TLS peer
+elicits three real Code Mode file edits and exactly six requests, with one unused
+unit of fixture budget so exhaustion does not deliberately block the last
+verifier. All three promotions use the actual operator approval callback and
+current-HEAD snapshots. The gate cryptographically verifies all six terminal
+chains, Certified conformance, runtime/source bindings and the durable spent
+count, then checks guard cleanup. Its aggregate Lua wait is 270 seconds, inside
+the five-minute fixture approval; production deadlines are unchanged. These
+offline checks do not identify the lost live failure or close paid-Run acceptance.
 Case 8 reuses the passing promotion fixture with an explicit thirty-second
 preview deadline and accepts only after it passes. The real CLI reports expiry,
 the Run starts no successor, HEAD and checkout stay unchanged, no journal is

@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import io
 import json
+import stat
 import sys
 import tarfile
 import urllib.request
@@ -93,10 +94,35 @@ def extract(archive, member):
         return bundle.extractfile(entry).read()
 
 
+def check(directory):
+    """Check existing immutable pins without fetching or executing anything."""
+    pins = {name: (pin["file"], pin["mode"]) for name, pin in ARTIFACTS.items()}
+    pins["louiselm-discovery.json"] = (hashlib.sha256(discovery_inventory()).hexdigest(), 0o444)
+    digests = {}
+    for name, (expected, mode) in pins.items():
+        path = directory / name
+        if not path.exists() or not stat.S_ISREG(path.lstat().st_mode):
+            raise SystemExit(f"pinned file is missing or not regular: {name}")
+        if stat.S_IMODE(path.stat().st_mode) != mode:
+            raise SystemExit(f"pinned file mode differs: {name}")
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != expected:
+            raise SystemExit(f"pinned file differs: {name}")
+        digests[name] = digest
+    return digests
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output", type=Path, help="new directory to create")
-    output = parser.parse_args().output
+    parser.add_argument("--check", action="store_true", help="verify an existing directory offline")
+    parser.add_argument("output", type=Path, help="new directory to create, or existing directory to check")
+    args = parser.parse_args()
+    output = args.output
+    if args.check:
+        json.dump(check(output), sys.stdout, sort_keys=True)
+        print()
+        return
     output.mkdir(mode=0o755)
     digests = {}
     for name, pin in ARTIFACTS.items():
