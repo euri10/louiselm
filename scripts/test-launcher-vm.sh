@@ -163,7 +163,7 @@ base=$(bash "$vm" plan | jq -r .base_image)
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 for checkout in "$test_dir/checkout-one" "$test_dir/checkout two"; do
   mkdir -p "$checkout/scripts" "$checkout/skills-core"
-  cp -- "$vm" "$script_dir/verifier-toolchain" "$checkout/scripts/"
+  cp -- "$vm" "$script_dir/verifier-toolchain" "$script_dir/launcher-guest-updates" "$checkout/scripts/"
   cp -- "$script_dir/../rust-toolchain.toml" "$checkout/"
   git -C "$script_dir/.." show HEAD:skills-core/Cargo.lock >"$checkout/skills-core/Cargo.lock"
   git init -q --template= --initial-branch=main "$checkout"
@@ -284,6 +284,19 @@ export VM_TEST_PREPARE_LOG="$test_dir/prepare-commands"
 export VM_TEST_PREPARE_ARCHIVE="$test_dir/prepare-archive"
 export VM_TEST_PREPARE_ARGV="$test_dir/prepare-argv"
 bash "$prepare_vm" prepare >/dev/null
+grep -Fxq 'sudo -n sh -s -- disable ' "$VM_TEST_PREPARE_LOG" || {
+  echo 'prepare did not disable automatic package updates' >&2; exit 1
+}
+grep -Fxq 'sudo -n sh -s -- check ' "$VM_TEST_PREPARE_LOG" || {
+  echo 'prepare omitted the automatic package update gate' >&2; exit 1
+}
+awk '/sudo -n sh -s -- disable / { sealed=1 }
+  /apt-get update/ { if (!sealed) exit 1 }' "$VM_TEST_PREPARE_LOG" || {
+  echo 'prepare refreshed packages before disabling automatic updates' >&2; exit 1
+}
+grep -Fxq 'bootcmd:' "$test_dir/cache/louiselm-launcher-vm/seed/user-data"
+grep -Fq 'cloud-init-per instance louiselm-no-auto-updates' "$test_dir/cache/louiselm-launcher-vm/seed/user-data"
+grep -Fq 'systemctl mask --now "$@"' "$test_dir/cache/louiselm-launcher-vm/seed/user-data"
 grep -Eq 'apt-get install .* libssl-dev( |$)' "$VM_TEST_PREPARE_LOG" || {
   echo 'prepare omitted the declared OpenSSL development dependency' >&2; exit 1
 }
@@ -444,4 +457,5 @@ refuse_fido 'failed HID metadata inspection'
 export VM_TEST_FIDO_UDEV_STATUS=0
 check_fido
 python3 "$script_dir/test-launcher-vm-slots.py"
+python3 "$script_dir/test-launcher-guest-updates.py"
 echo 'launcher-vm safety contract: passed'

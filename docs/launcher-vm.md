@@ -160,6 +160,52 @@ Missing or ambiguous evidence is unknown, never permission to delete. This
 command only visits registered throwaway slots; it cannot clean legacy,
 retained failed, or persistent first-Run VMs.
 
+## Deliberate package maintenance and measurement drift
+
+Trusted guest preparation disables and masks `unattended-upgrades.service`,
+`apt-daily.timer`, `apt-daily-upgrade.timer` and their two APT services. Cloud-init
+applies the same policy to fresh default and throwaway overlays, including those
+made from an older shared base. `start` waits for cloud-init and checks the policy
+before returning. Existing overlays are checked, not silently repaired.
+The offline gate rejects any enabled or active update unit:
+
+```sh
+# In the selected throwaway guest; put only the trusted script under test.
+./scripts/launcher-vm --slot put scripts/launcher-guest-updates /home/vm/launcher-guest-updates
+./scripts/launcher-vm --slot exec sh /home/vm/launcher-guest-updates check
+```
+
+Keep automatic updates off even when a real Run temporarily has guest egress.
+Freezing packages is deliberate reproducibility, not a substitute for security
+maintenance. A maintainer updates them in a separate maintenance window:
+
+1. Stop Runs and prove disposal; resolve occupied or poisoned reservations
+   through the authorized lifecycle before changing measured software. Preserve
+   the release identity, authority, keys, accounting and evidence. Prefer a fresh
+   guest; retained evidence guests such as dackn.8 are never maintenance targets.
+2. With deliberate trusted provisioning egress, refresh APT metadata, review the
+   proposed authenticated package changes, and apply the selected updates using
+   explicit `apt-get` commands. The masked timers/services stay masked; manual
+   APT does not require enabling them. Reboot if the update requires it.
+3. Review the changed tools' provenance, then re-measure by rerunning the signed
+   release's root `louiselm-skills launcher install` with the original operator,
+   broker IDs and pool bounds ([installer recipe](../skills-core/README.md#manual-launcher-authority-acceptance)).
+   Never edit stored digests, reset history, enlarge the pool or bypass refusal.
+4. Require trusted `release status` and `launcher status --robot-json`, rerun
+   `louiselm-launch certify` and the applicable offline installed gates/rehearsal,
+   and recheck the update-policy gate before allowing another Run. A stale
+   certificate or changed measurement never grants continuing authority.
+
+`launcher status` names **Measured system-tool drift** for changed `getent`
+(provided by Debian's `libc-bin`), `ssh-keygen` or Bubblewrap bytes. Its existing
+`*_changed` failure codes and untrusted result remain; a package update is a
+possible cause, not something inferred solely from a hash mismatch. Review APT
+history and provenance before accepting new measurements.
+
+Host preparation scripts can protect a fresh guest independently of the installed
+release. Shipping the new compiled status diagnostic requires a newly qualified,
+signed release containing it; an existing signed bundle does not gain the change.
+
 ## Capped live OpenAI acceptance
 
 `louiselm-qbr.5.1.3.13` is a maintainer-run check, never a CI gate. First create

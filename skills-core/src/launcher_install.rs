@@ -1302,8 +1302,8 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
                     Ok(found) if found.to_string() == config.ssh_keygen_digest => {}
                     Ok(_) => failures.push(failure(
                         "ssh_keygen_changed",
-                        "The measured ssh-keygen bytes changed after installation.",
-                        "Review the system tool update, then rerun the root launcher installer.",
+                        "Measured system-tool drift: ssh-keygen bytes changed after installation (possible package update).",
+                        "Review the system tool update, re-measure with the root launcher installer, then verify status and recertify.",
                     )),
                     Err(error) => failures.push(failure(
                         "ssh_keygen_unreadable",
@@ -1319,8 +1319,8 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
                     Ok(found) if found.to_string() == config.getent_digest => {}
                     Ok(_) => failures.push(failure(
                         "getent_changed",
-                        "The measured getent bytes changed after installation.",
-                        "Review the system tool update, then rerun the root launcher installer.",
+                        "Measured system-tool drift: getent bytes changed after installation (possible package update).",
+                        "Review the system tool update, re-measure with the root launcher installer, then verify status and recertify.",
                     )),
                     Err(error) => failures.push(failure(
                         "getent_unreadable",
@@ -1336,8 +1336,8 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
                     Ok(found) if found.to_string() == config.bwrap_digest => {}
                     Ok(_) => failures.push(failure(
                         "bwrap_changed",
-                        "The measured bubblewrap bytes changed after installation.",
-                        "Review the sandbox helper update, then rerun the root launcher installer.",
+                        "Measured system-tool drift: bubblewrap bytes changed after installation (possible package update).",
+                        "Review the sandbox helper update, re-measure with the root launcher installer, then verify status and recertify.",
                     )),
                     Err(error) => failures.push(failure(
                         "bwrap_unreadable",

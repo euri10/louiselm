@@ -206,7 +206,7 @@ stop_vm() {
 }
 
 init_seed() {
-  local instance_id=louiselm-launcher-vm-1
+  local instance_id="louiselm-launcher-vm-$(</proc/sys/kernel/random/uuid)"
   [[ -z $slot_state ]] || instance_id="louiselm-launcher-vm-$slot_id"
   if [[ ! -f $state/client-key ]]; then
     ssh-keygen -q -t ed25519 -N '' -C launcher-vm-client -f "$state/client-key"
@@ -220,6 +220,10 @@ init_seed() {
     printf 'disable_root: true\nssh_pwauth: false\nssh_deletekeys: false\nssh_keys:\n  ed25519_private: |\n'
     sed 's/^/    /' "$state/host-key"
     printf '  ed25519_public: %s\n' "$(<"$state/host-key.pub")"
+    # Also seal fresh overlays made from older shared bases, before measurement.
+    printf "bootcmd:\n  - |\n    cloud-init-per instance louiselm-no-auto-updates sh <<'LOUISELM_UPDATE_POLICY'\n    set -- disable\n"
+    sed 's/^/    /' "$project_root/scripts/launcher-guest-updates"
+    printf '    LOUISELM_UPDATE_POLICY\n'
   } >"$state/seed/user-data"
   xorriso -as mkisofs -quiet -output "$state/seed.iso" -volid cidata -joliet -rock "$state/seed"
 }
@@ -259,6 +263,7 @@ case $action in
     trap 'stop_vm' EXIT
     start_image "$build" off
     guest sudo -n cloud-init status --wait
+    guest sudo -n sh -s -- disable <"$project_root/scripts/launcher-guest-updates"
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       "${packages[@]}"
@@ -279,6 +284,7 @@ case $action in
       /home/vm/.cargo/bin/cargo test --manifest-path /home/vm/skills-core/Cargo.toml \
       --all-features --locked --offline --no-run
     guest /bin/bash /home/vm/verifier-toolchain check
+    guest sudo -n sh -s -- check <"$project_root/scripts/launcher-guest-updates"
     guest sudo -n sync
     stop_vm
     trap - EXIT
@@ -303,11 +309,20 @@ case $action in
       grep -Fxq 'ID_VENDOR_ID=1050' <<<"$yubikey_properties" &&
         grep -Fxq 'ID_MODEL_ID=0407' <<<"$yubikey_properties" || die 'selected USB device is not the approved 1050:0407 YubiKey'
     fi
-    [[ -f $state/run.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$base" "$state/run.qcow2"
+    fresh_overlay=false
+    if [[ ! -f $state/run.qcow2 ]]; then
+      qemu-img create -f qcow2 -F qcow2 -b "$base" "$state/run.qcow2"
+      fresh_overlay=true
+    fi
     [[ -f $state/run.qcow2.vars.fd ]] || install -m 600 -- "$base.vars.fd" "$state/run.qcow2.vars.fd"
-    [[ -z $slot_state ]] || init_seed
+    if $fresh_overlay || [[ -n $slot_state ]]; then init_seed; fi
     trap 'stop_vm' EXIT
     start_image "$state/run.qcow2" "$network_restrict"
+    guest sudo -n cloud-init status --wait
+    if $fresh_overlay; then
+      guest sudo -n sh -s -- disable <"$project_root/scripts/launcher-guest-updates"
+    fi
+    guest sudo -n sh -s -- check <"$project_root/scripts/launcher-guest-updates"
     if [[ -n $yubikey_bus ]]; then
       guest sudo -n sh -s -- /sys/bus/usb/devices /sys/class/hidraw /dev \
         <"$project_root/scripts/launcher-vm-fido" ||
@@ -334,6 +349,7 @@ case $action in
     fi
     qemu-img create -f qcow2 -F qcow2 -b "$base" "$state/run.qcow2"
     install -m 600 -- "$base.vars.fd" "$state/run.qcow2.vars.fd"
+    init_seed
     ;;
   exec) active || die 'VM is not running'; guest "$@" ;;
   terminal)

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Trusted guest preparation only. Never updates packages or refreshes measurements.
+set -eu
+case ${1:-} in
+  disable|check) [ "$#" = 1 ] || exit 64 ;;
+  *) echo 'Usage: launcher-guest-updates {disable|check}' >&2; exit 64 ;;
+esac
+action=$1
+set -- unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer \
+  apt-daily.service apt-daily-upgrade.service
+if [ "$action" = disable ]; then
+  [ "$(id -u)" = 0 ] || { echo 'guest preparation requires root' >&2; exit 1; }
+  systemctl disable --now "$@"
+  systemctl mask --now "$@"
+fi
+for unit do
+  enabled=$(systemctl is-enabled "$unit" 2>/dev/null) || :
+  active=$(systemctl is-active "$unit" 2>/dev/null) || :
+  case $enabled:$active in
+    disabled:inactive|masked:inactive|not-found:inactive|not-found:unknown) ;;
+    *) echo "automatic package updates unsafe: $unit is $enabled/$active; disable before measuring launcher authority" >&2
+       exit 1 ;;
+  esac
+done
+echo 'launcher guest: automatic package updates disabled and inactive'

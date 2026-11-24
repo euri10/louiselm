@@ -1120,6 +1120,41 @@ fn install_owns_the_release_broker_units_and_status_reports_drift() {
 }
 
 #[test]
+fn package_drift_is_named_and_keeps_launcher_authority_untrusted() {
+    for (tool, code) in [
+        ("getent", "getent_changed"),
+        ("ssh-keygen", "ssh_keygen_changed"),
+        ("bwrap", "bwrap_changed"),
+    ] {
+        let fixture = Fixture::new();
+        install(
+            &fixture.paths,
+            &FakeRunner::default(),
+            &Fixture::request(),
+            10,
+        )
+        .unwrap();
+        fs::write(
+            fixture.root().join("usr/bin").join(tool),
+            "package update\n",
+        )
+        .unwrap();
+        let report = status(&fixture.paths);
+        assert!(!report.trusted);
+        let failure = report
+            .failures
+            .iter()
+            .find(|failure| failure.code == code)
+            .unwrap();
+        assert!(
+            failure.detail.contains("Measured system-tool drift"),
+            "{failure:?}"
+        );
+        assert!(failure.next_action.contains("re-measure"), "{failure:?}");
+    }
+}
+
+#[test]
 fn status_is_actionable_and_never_serializes_private_key_material() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
