@@ -1,7 +1,7 @@
 # Disposable launcher acceptance VM
 
 Use `scripts/launcher-vm` for privileged launcher checks, never host `sudo`.
-This is one headless QEMU/KVM guest, not an installed desktop launcher or a
+These are headless QEMU/KVM guests, not an installed desktop launcher or a
 replacement for the real Control broker acceptance in `skills-core/README.md`.
 
 See the [launcher acceptance audit](launcher-acceptance.md) for the AC-by-AC
@@ -67,6 +67,88 @@ the existing host rustup executable provisions the pinned guest toolchain.
 ./scripts/launcher-vm stop                  # guest shutdown, then bounded unit cleanup
 ./scripts/launcher-vm reset --discard       # stopped only; fresh disk AND UEFI variables
 ```
+
+## Parallel throwaway slots
+
+For credential-free gates, each Session chooses a private disk-backed cache
+and uses `--slot` on **every** command. The cache's canonical absolute path
+determines a stable unit `louiselm-launcher-vm-<hash>.service` and a loopback SSH
+port in 23000–52999. A port collision refuses; choose another cache. The default
+commands above still use `louiselm-launcher-vm.service` and port 22554.
+Always inspect existing units first; never connect to or stop another Session's
+guest. Slot mode verifies your Session through `session.identity()` and records
+its exact owner and editor socket. Codex uses its exposed `CODEX_SESSION_ID`;
+other Agents supply their own verified `LOUISELM_VM_OWNER=agent/ACP-id`, with
+`NVIM` pointing to their owning editor. A supplied owner string alone is not
+authorization.
+
+```sh
+systemctl --user list-units 'louiselm-launcher-vm*'
+slot_cache=$(mktemp -d "$HOME/.cache/louiselm-vm-slot.XXXXXXXX")
+export XDG_CACHE_HOME="$slot_cache"  # keep this value for this Session's commands
+./scripts/launcher-vm --slot plan
+# First slot only: reference an existing credential-free prepared base in place.
+# Use the current prepared-<digest>.qcow2 filename shown by plan.
+./scripts/launcher-vm --slot prepare --base /absolute/existing/prepared-DIGEST.qcow2
+# Later Sessions with the same inputs: --slot prepare (no --base needed).
+./scripts/launcher-vm --slot start
+./scripts/launcher-vm --slot exec uname -a
+./scripts/launcher-vm --slot status
+./scripts/launcher-vm --slot cleanup  # stop your guest and DELETE its thin overlay
+```
+
+The per-user pool is always `$HOME/.cache/louiselm-launcher-vm-pool`, independent
+of `XDG_CACHE_HOME`. Under `bases/`, one reference per provisioning digest points
+to the existing read-only base and UEFI template. The complete backing chain
+must already be owned and read-only. No base is copied, rebased, renamed or
+made writable. Keep the original backing files in place. If the current digest
+has no shared base, slot preparation refuses and requests `--base`. Prepare
+missing inputs once using the existing default workflow when its unit is free,
+then register that prepared base. Slot preparation never downloads, installs,
+builds another base, or starts a provisioning guest. Subsequent prepares reuse
+the registered reference. Pool commands never remove bases, including when the final slot is
+cleaned. Existing duplicate legacy bases are outside this cleanup's scope.
+
+Each slot has only a thin qcow2 overlay backed by that shared image, private
+UEFI variables, cloud-init seed, and newly generated SSH client/host keys. Its
+unique cloud-init instance ID applies those keys on first boot. Slot mode rejects
+Provider egress, USB passthrough, interactive terminals and retained resets.
+Use only credential-free prepared inputs and commands. The retained failed guest
+(`dackn.8`, `~/.cache/louiselm-a0mvo.fe0XzX8V/cache`) and persistent first-Run VM
+(`~/.local/state/louiselm/first-run/louiselm-launcher-vm`) retain their existing
+one-at-a-time procedure. Slot preparation refuses existing unmarked VM directories;
+never enroll either retained guest as a slot.
+
+Admission is serialized across Sessions. The default cap is **two registered
+slots**, including stopped slots; the legacy default unit is separate. Prepare
+and start require **20 GiB free after growth reservations**: every registered
+slot reserves its remaining possible 32 GiB overlay growth plus 16 MiB for
+metadata/firmware/seed on that filesystem. These are admission bounds,
+not preallocated files or a runtime filesystem quota; unrelated disk writers can
+still consume space. `LOUISELM_VM_MAX_SLOTS` accepts 1–8 (default 2), and
+`LOUISELM_VM_MIN_FREE_GIB` accepts 1–1024 (default 20). Sessions must agree on
+these operator settings; do not raise the cap or lower the floor to bypass a
+refusal. A refusal reports free/needed space and cleanup commands.
+
+`--slot status` lists all registered slots, their owner, liveness, age, allocated
+disk bytes and unit state; shared base bytes are listed separately. It does not
+connect to guests. Other commands require the exact verified owner. To reclaim
+slots whose owners are gone, use one command:
+
+```sh
+./scripts/launcher-vm --slot cleanup --gone
+```
+
+Cleanup rechecks death under the admission and slot locks, verifies the running
+QEMU belongs to that cache, stops only its exact unit, then removes its overlay,
+UEFI variables, seed and private keys and releases its slot reservation. A failed
+stop preserves the overlay/reservation. Logs and small ownership markers remain.
+Live or unknown owners are protected. Liveness first queries the recorded editor
+for the exact Session; when the editor is unreachable it uses
+`agent-liveness-snapshot`'s transcript evidence (45-minute default silence window).
+Missing or ambiguous evidence is unknown, never permission to delete. This
+command only visits registered throwaway slots; it cannot clean legacy,
+retained failed, or persistent first-Run VMs.
 
 ## Capped live OpenAI acceptance
 
@@ -274,7 +356,7 @@ take an exclusive nonblocking lock, so competing commands fail clearly;
 `status` and `logs` remain available during preparation or execution.
 `stop` is idempotent and does not delete state. `reset --discard` retains the
 previous disk and firmware variables under a printed `discarded.*` directory;
-these consume disk until explicitly removed. There is deliberately no recursive
+these consume disk until explicitly removed. Legacy guests have no automatic
 cleanup command. The one-hour unit deadline is an emergency stop, not a clean
 snapshot: stop the guest explicitly after work.
 
@@ -350,8 +432,9 @@ Old bases and overlays stay intact; the same explicit `prepare` and
 `reset --discard` procedure applies. Startup never accepts or rebases a retained
 disk merely because its previous ID included a checkout path (louiselm-d7mxk).
 
-The launcher VM has one shared systemd unit and SSH port, so do not prepare
-while another launcher VM is active or in use. All commands that connect to or
+The default launcher VM has one shared systemd unit and SSH port, so do not prepare
+that default while another default guest is active or in use. Parallel throwaway
+gates use `--slot` instead. All commands that connect to or
 stop a running VM verify its QEMU state directory against the selected cache.
 If the VM belongs to another cache, they refuse before SSH or shutdown. Inspect
 `systemctl --user show louiselm-launcher-vm.service -p ExecStart` and use the

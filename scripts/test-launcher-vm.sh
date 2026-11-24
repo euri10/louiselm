@@ -443,4 +443,5 @@ export VM_TEST_FIDO_UDEV_STATUS=1
 refuse_fido 'failed HID metadata inspection'
 export VM_TEST_FIDO_UDEV_STATUS=0
 check_fido
+python3 "$script_dir/test-launcher-vm-slots.py"
 echo 'launcher-vm safety contract: passed'

@@ -3,6 +3,30 @@
 Required by [AGENTS.md](../AGENTS.md) for executable changes, gates and CI monitoring.
 Read once before applicable work. Language policies remain in force.
 
+Credential-free launcher VM gates may run in parallel: inspect
+`systemctl --user list-units 'louiselm-launcher-vm*'`, choose a private disk-backed
+`XDG_CACHE_HOME` for your Session and use `scripts/launcher-vm --slot` for every
+command. See [parallel throwaway slots](https://github.com/euri10/louiselm/blob/main/docs/launcher-vm.md#parallel-throwaway-slots).
+All slots share one read-only prepared base per input digest; never copy a base
+into a Session cache. First use may reference an existing credential-free base
+with `--slot prepare --base /absolute/prepared-<digest>.qcow2`; later Sessions
+use `--slot prepare`. Ownership must resolve through `session.identity()`.
+Defaults are two registered slots and a 20 GiB free-space floor after reserving
+each overlay's remaining 32 GiB possible growth. A floor/cap refusal means wait
+or clean your own slot, not lower the guard. Run `--slot cleanup` after your
+gates, including failures, to stop your guest and remove its overlay/keys while
+keeping logs and the base. `--slot status` reports owners/ages/disk;
+`--slot cleanup --gone` reclaims only provably gone owners, protecting live or
+unknown Sessions. Never stop or connect to a VM you did not start during tests.
+The default `louiselm-launcher-vm.service`/22554 path remains singular. Retained
+failed guests (including dackn.8) and the persistent first-Run VM are excluded
+from slot enrollment and cleanup; keep their existing one-at-a-time rules.
+Wrapper changes run `bash -n scripts/launcher-vm` and the complete
+`scripts/test-launcher-vm.sh` suite (including the offline Python slot contracts),
+then verify concurrent boots, independent SSH identities and cleanup using only
+owned slots and an existing prepared base. No signing, provisioning installs,
+recovery or Provider requests are needed for this wrapper acceptance.
+
 Public site Markdown link changes require both `npm run site:test` and the full
 `npm run site:build`. MyST exports relatively linked Markdown even outside the
 public TOC. Link non-curated guides through repository URLs; adding a public

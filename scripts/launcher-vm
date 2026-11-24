@@ -5,7 +5,21 @@ umask 077
 die() { echo "launcher-vm: $*" >&2; exit 1; }
 usage() {
   echo 'Usage: launcher-vm {plan|start} [--yubikey BUS:ADDR|--provider-egress] | {prepare|status|logs|stop|terminal|forward PORT|reset --discard|exec COMMAND...|put FILE GUEST_PATH|get GUEST_PATH FILE}'
+  echo '       launcher-vm --slot {plan|prepare [--base EXISTING_BASE]|start|status|logs|stop|cleanup [--gone]|exec COMMAND...|put FILE GUEST_PATH|get GUEST_PATH FILE}'
 }
+if [[ ${1:-} == --slot ]]; then
+  shift
+  exec python3 "$(dirname -- "$0")/launcher-vm-slots.py" "$@"
+fi
+# Private entrypoint used by the slot coordinator after ownership/admission.
+slot_state= slot_port= slot_base=
+if [[ ${1:-} == --slot-runtime ]]; then
+  [[ $# -ge 5 ]] || die 'incomplete slot context'
+  slot_state=$2 slot_port=$3 slot_base=$4
+  [[ $slot_port =~ ^[0-9]{5}$ ]] && (( slot_port >= 23000 && slot_port <= 52999 )) || die 'invalid slot port'
+  [[ $slot_base == /* && $slot_base != *[,$'\n\r']* ]] || die 'invalid slot base'
+  shift 4
+fi
 action=${1:-help}
 shift || true
 yubikey_bus= yubikey_addr= browser_port= network_restrict=on network_mode=restricted
@@ -35,6 +49,13 @@ case $action in
   put|get) [[ $# == 2 ]] || { usage >&2; exit 64; } ;;
   *) usage >&2; exit 64 ;;
 esac
+if [[ -n $slot_state ]]; then
+  [[ -z $yubikey_bus && $network_mode == restricted ]] || die 'throwaway slots forbid USB and Provider egress'
+  case $action in
+    plan|start|status|logs|stop|exec|put|get) ;;
+    *) die 'unsupported throwaway slot runtime action' ;;
+  esac
+fi
 (( UID != 0 )) || die 'never run this host wrapper as root'
 if [[ $action == terminal ]]; then
   [[ -t 0 && -t 1 ]] || die 'terminal requires a private operator TTY, never an Agent or recorded terminal'
@@ -42,8 +63,16 @@ fi
 cache=${XDG_CACHE_HOME:-"$HOME/.cache"}
 [[ $cache == /* && $cache != *[,$'\n\r']* ]] || die 'cache path must be absolute and contain no comma or newline'
 state="$cache/louiselm-launcher-vm"
+[[ -z $slot_state ]] || state=$slot_state
 [[ $(realpath -m -- "$state") == "$state" ]] || die 'state path must have no symlink or dot components'
 unit=louiselm-launcher-vm.service
+ssh_port=22554
+if [[ -n $slot_state ]]; then
+  [[ $state != *[,$'\n\r']* ]] || die 'invalid slot state'
+  slot_id=$(printf '%s' "$state" | sha256sum | cut -c 1-12)
+  unit="louiselm-launcher-vm-$slot_id.service"
+  ssh_port=$slot_port
+fi
 image=debian-13-genericcloud-amd64-20260831-2587.qcow2
 image_url="https://cloud.debian.org/images/cloud/trixie/20260831-2587/$image"
 image_sha=8ea9faae810043a0b35b0149f05014f26705c2339ffb11ead308f33e844a87cc3ef46ec81d5262b38817b6a88af404874d48a5857ebe072ef6a31dfb6e371f50
@@ -61,6 +90,7 @@ base_id=$({
   sha256sum <"$project_root/scripts/verifier-toolchain"
 } | sha256sum | cut -c 1-16)
 base="$state/prepared-$base_id.qcow2"
+[[ -z $slot_base ]] || base=$slot_base
 build="$state/build-$base_id.qcow2"
 
 qemu_args() {
@@ -77,7 +107,7 @@ qemu_args() {
     -drive "file=$state/seed.iso,format=raw,if=none,id=seed,readonly=on"
     -device virtio-blk-pci,drive=seed
     -device virtio-rng-pci
-    -netdev "user,id=net0,restrict=$2,hostfwd=tcp:127.0.0.1:22554-:22"
+    -netdev "user,id=net0,restrict=$2,hostfwd=tcp:127.0.0.1:$ssh_port-:22"
     -device virtio-net-pci,netdev=net0)
   if [[ -n $yubikey_bus ]]; then
     qemu+=(-device qemu-xhci,id=recovery-usb
@@ -126,13 +156,13 @@ require_matching_vm() {
   for (( index=1; index<${#argv[@]}; index++ )); do
     if [[ ${argv[index]} == -serial && ${argv[index+1]:-} == "file:$state/serial.log" ]]; then return; fi
   done
-  die 'running VM belongs to a different cache; inspect systemctl --user show louiselm-launcher-vm.service -p ExecStart and use its original XDG_CACHE_HOME; no action taken'
+  die "running VM belongs to a different cache; inspect systemctl --user show $unit -p ExecStart and use its original XDG_CACHE_HOME; no action taken"
 }
 guest() {
   local quoted
   require_matching_vm
   printf -v quoted '%q ' "$@"
-  timeout --foreground 900 ssh "${ssh_options[@]}" -p 22554 vm@127.0.0.1 "$quoted"
+  timeout --foreground 900 ssh "${ssh_options[@]}" -p "$ssh_port" vm@127.0.0.1 "$quoted"
 }
 active() { systemctl --user is-active --quiet "$unit"; }
 stopped() {
@@ -175,6 +205,25 @@ stop_vm() {
   stopped
 }
 
+init_seed() {
+  local instance_id=louiselm-launcher-vm-1
+  [[ -z $slot_state ]] || instance_id="louiselm-launcher-vm-$slot_id"
+  if [[ ! -f $state/client-key ]]; then
+    ssh-keygen -q -t ed25519 -N '' -C launcher-vm-client -f "$state/client-key"
+    ssh-keygen -q -t ed25519 -N '' -C launcher-vm-host -f "$state/host-key"
+  fi
+  printf 'louiselm-launcher-vm %s\n' "$(cut -d ' ' -f 1,2 "$state/host-key.pub")" >"$state/known_hosts"
+  mkdir -p -- "$state/seed"
+  printf 'instance-id: %s\nlocal-hostname: louiselm-launcher-vm\n' "$instance_id" >"$state/seed/meta-data"
+  {
+    printf '#cloud-config\nusers:\n  - name: vm\n    shell: /bin/bash\n    lock_passwd: true\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    ssh_authorized_keys:\n      - %s\n' "$(<"$state/client-key.pub")"
+    printf 'disable_root: true\nssh_pwauth: false\nssh_deletekeys: false\nssh_keys:\n  ed25519_private: |\n'
+    sed 's/^/    /' "$state/host-key"
+    printf '  ed25519_public: %s\n' "$(<"$state/host-key.pub")"
+  } >"$state/seed/user-data"
+  xorriso -as mkisofs -quiet -output "$state/seed.iso" -volid cidata -joliet -rock "$state/seed"
+}
+
 case $action in
   terminal|forward|put|get) active || die 'VM is not running'; require_matching_vm ;;
 esac
@@ -203,20 +252,7 @@ case $action in
       chmod 400 -- "$state/$image"
     fi
     printf '%s  %s\n' "$image_sha" "$state/$image" | sha512sum --check --status || die 'cached image SHA-512 mismatch; VM not started'
-    if [[ ! -f $state/client-key ]]; then
-      ssh-keygen -q -t ed25519 -N '' -C launcher-vm-client -f "$state/client-key"
-      ssh-keygen -q -t ed25519 -N '' -C launcher-vm-host -f "$state/host-key"
-    fi
-    printf 'louiselm-launcher-vm %s\n' "$(cut -d ' ' -f 1,2 "$state/host-key.pub")" >"$state/known_hosts"
-    mkdir -p -- "$state/seed"
-    printf 'instance-id: louiselm-launcher-vm-1\nlocal-hostname: louiselm-launcher-vm\n' >"$state/seed/meta-data"
-    {
-      printf '#cloud-config\nusers:\n  - name: vm\n    shell: /bin/bash\n    lock_passwd: true\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    ssh_authorized_keys:\n      - %s\n' "$(<"$state/client-key.pub")"
-      printf 'disable_root: true\nssh_pwauth: false\nssh_deletekeys: false\nssh_keys:\n  ed25519_private: |\n'
-      sed 's/^/    /' "$state/host-key"
-      printf '  ed25519_public: %s\n' "$(<"$state/host-key.pub")"
-    } >"$state/seed/user-data"
-    xorriso -as mkisofs -quiet -output "$state/seed.iso" -volid cidata -joliet -rock "$state/seed"
+    init_seed
     qemu-img create -f qcow2 -F qcow2 -b "$state/$image" "$build" 32G
     cp -- /usr/share/OVMF/OVMF_VARS_4M.fd "$build.vars.fd"
     # Only trusted distro provisioning gets egress; test guests always use restrict=on.
@@ -226,9 +262,9 @@ case $action in
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       "${packages[@]}"
-    scp "${ssh_options[@]}" -P 22554 -- "$project_root/scripts/verifier-toolchain" vm@127.0.0.1:/home/vm/verifier-toolchain
+    scp "${ssh_options[@]}" -P "$ssh_port" -- "$project_root/scripts/verifier-toolchain" vm@127.0.0.1:/home/vm/verifier-toolchain
     guest sudo -n env DEBIAN_FRONTEND=noninteractive /bin/bash /home/vm/verifier-toolchain install
-    scp "${ssh_options[@]}" -P 22554 -- "$(command -v rustup)" vm@127.0.0.1:/home/vm/rustup-init
+    scp "${ssh_options[@]}" -P "$ssh_port" -- "$(command -v rustup)" vm@127.0.0.1:/home/vm/rustup-init
     guest chmod 700 /home/vm/rustup-init
     guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain "$rust_toolchain" --component rustfmt,clippy
     guest sudo -n install -d -o vm -g vm -m 0755 /var/tmp/louiselm-skills-target
@@ -269,6 +305,7 @@ case $action in
     fi
     [[ -f $state/run.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$base" "$state/run.qcow2"
     [[ -f $state/run.qcow2.vars.fd ]] || install -m 600 -- "$base.vars.fd" "$state/run.qcow2.vars.fd"
+    [[ -z $slot_state ]] || init_seed
     trap 'stop_vm' EXIT
     start_image "$state/run.qcow2" "$network_restrict"
     if [[ -n $yubikey_bus ]]; then
@@ -300,12 +337,12 @@ case $action in
     ;;
   exec) active || die 'VM is not running'; guest "$@" ;;
   terminal)
-    timeout --foreground 3600 ssh "${ssh_options[@]}" -t -p 22554 vm@127.0.0.1 'exec bash --noprofile --norc'
+    timeout --foreground 3600 ssh "${ssh_options[@]}" -t -p "$ssh_port" vm@127.0.0.1 'exec bash --noprofile --norc'
     ;;
   forward)
     timeout --foreground 3600 ssh "${ssh_options[@]}" -N -o ExitOnForwardFailure=yes \
-      -L "127.0.0.1:$browser_port:127.0.0.1:$browser_port" -p 22554 vm@127.0.0.1
+      -L "127.0.0.1:$browser_port:127.0.0.1:$browser_port" -p "$ssh_port" vm@127.0.0.1
     ;;
-  put) timeout 300 scp "${ssh_options[@]}" -P 22554 -- "$1" "vm@127.0.0.1:$2" ;;
-  get) timeout 300 scp "${ssh_options[@]}" -P 22554 -- "vm@127.0.0.1:$1" "$2" ;;
+  put) timeout 300 scp "${ssh_options[@]}" -P "$ssh_port" -- "$1" "vm@127.0.0.1:$2" ;;
+  get) timeout 300 scp "${ssh_options[@]}" -P "$ssh_port" -- "vm@127.0.0.1:$1" "$2" ;;
 esac
