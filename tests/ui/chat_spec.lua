@@ -6864,7 +6864,13 @@ T["chat"]["refuses command pickers while a permission decision is open"] = funct
   pickers[1].choose(2)
   run_scheduled()
   MiniTest.expect.equality(#responses, 1)
-  MiniTest.expect.equality({ chat:switch_session() }, { false, "no chat sessions are attached" })
+  nvim.ui.select = function(items, _, callback)
+    MiniTest.expect.equality(#items, 1)
+    MiniTest.expect.equality(items[1].id, "session-1")
+    callback(nil)
+  end
+  assert(chat:switch_session())
+  MiniTest.expect.equality(chat.current_id, "session-1")
   chat:dispose()
 end
 
@@ -6937,7 +6943,13 @@ T["chat"]["drops queued decisions whose requests were cancelled"] = function()
   MiniTest.expect.equality(responses, {})
   MiniTest.expect.equality(chat.decisions:is_active(), false)
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(pickers[1].buffer), false)
-  MiniTest.expect.equality({ chat:switch_session() }, { false, "no chat sessions are attached" })
+  nvim.ui.select = function(items, _, callback)
+    MiniTest.expect.equality(#items, 1)
+    MiniTest.expect.equality(items[1].id, "session-1")
+    callback(nil)
+  end
+  assert(chat:switch_session())
+  MiniTest.expect.equality(chat.current_id, "session-1")
   chat:dispose()
 end
 
@@ -8774,6 +8786,89 @@ T["chat"]["aligns Session picker columns with missing names and different option
   choose(choices[2])
   MiniTest.expect.equality(chat.current_id, "session-22")
   chat:dispose()
+end
+
+T["chat"]["Session picker retains unavailable winbar views and releases them on close and disposal"] = function()
+  -- louiselm-plqid: session-6 (Failed-launch receipts lbcyl), 2026-11-24.
+  -- A session-control timeout removed the Session from the live registry while
+  -- its clickable winbar entry and buffer remained. No ACP payload is needed.
+  local listeners = nvim.on_key()
+  local autocmds = #nvim.api.nvim_get_autocmds({})
+  local window = nvim.api.nvim_get_current_win()
+  local previous_winbar = nvim.wo[window].winbar
+  for _, status in ipairs({ "disposed", "error", "disposed" }) do
+    local retained = fake_session("session-6", "codex")
+    retained.state.name = "Failed-launch receipts lbcyl"
+    local live = fake_session("session-7", "codex")
+    local api = fake_api()
+    api.list_sessions = function()
+      -- Include an unattached Session; the registry is not the displayed list.
+      return retained.disposed and { "unattached", "session-7" } or { "unattached", "session-7", "session-6" }
+    end
+    local chat = assert(Chat.new(api, { start_insert_on_switch = false, markdown_highlighting = false }))
+    MiniTest.finally(function()
+      chat:dispose()
+      retained:dispose()
+      live:dispose()
+    end)
+    assert(chat:attach(retained))
+    local retained_buffer = assert(chat:buffer())
+    nvim.api.nvim_buf_set_lines(retained_buffer, -2, -1, false, { "> retained draft" })
+    assert(chat:attach(live))
+    local live_buffer = assert(chat:buffer())
+    if status == "disposed" then
+      assert(retained:dispose())
+      retained.state.disposal_reason = "Session-control operation timed out"
+    else
+      retained.state.status = status
+    end
+    retained:emit({ type = "state_changed", session_id = "session-6", data = { status = status } })
+    assert(nvim.wait(1000, function()
+      return nvim.wo[window].winbar:find("✗ Failed-launch receipts lbcyl", 1, true) ~= nil
+    end))
+
+    local choices, labels, choose
+    nvim.ui.select = function(items, options, callback)
+      choices, choose = items, callback
+      labels = nvim.tbl_map(options.format_item, items)
+    end
+    assert(chat:switch_session())
+    MiniTest.expect.equality(
+      nvim.tbl_map(function(choice)
+        return choice.id
+      end, choices),
+      { "session-6", "session-7" }
+    )
+    MiniTest.expect.equality(labels[1]:find(status, 1, true) ~= nil, true)
+    choose(choices[1])
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), retained_buffer)
+    MiniTest.expect.equality(chat.views["session-6"].renderer:prompt_text(), "retained draft")
+    assert(chat:switch("session-7"))
+    assert(chat:winbar_click(1, window))
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), retained_buffer)
+
+    assert(chat:close_session())
+    MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(retained_buffer), false)
+    MiniTest.expect.equality(nvim.wo[window].winbar:find("Failed-launch receipts lbcyl", 1, true), nil)
+    assert(chat:switch_session())
+    MiniTest.expect.equality(
+      nvim.tbl_map(function(choice)
+        return choice.id
+      end, choices),
+      { "session-7" }
+    )
+    choose(nil)
+    -- Queue a view refresh, then tear down before it can reach the editor.
+    live:emit({ type = "state_changed", session_id = "session-7", data = { status = "ready" } })
+    assert(chat:dispose())
+    settle_decision_focus()
+    MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(live_buffer), false)
+    MiniTest.expect.equality(chat:buffer("session-6"), nil)
+    MiniTest.expect.equality(chat:buffer("session-7"), nil)
+    MiniTest.expect.equality(nvim.wo[window].winbar, previous_winbar)
+    MiniTest.expect.equality(nvim.on_key(), listeners)
+    MiniTest.expect.equality(#nvim.api.nvim_get_autocmds({}), autocmds)
+  end
 end
 
 T["chat"]["switches with telemetry rows and closes only the selected session"] = function()

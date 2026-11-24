@@ -2299,7 +2299,8 @@ function Chat:switch_session()
     return false, "a Session picker is already open"
   end
   local states = {}
-  for _, id in ipairs(self.api:list_sessions()) do
+  -- Retained views remain navigable after their Session leaves the live registry.
+  for _, id in ipairs(self.view_order) do
     local view = self.views[id]
     if view ~= nil then
       states[#states + 1] = view.session:inspect()
