@@ -73,6 +73,9 @@ local function fixture(skills_policy, skill_catalog)
       return true
     end
     function child:dispose(reason)
+      if self.dispose_failure then
+        return false, self.dispose_failure
+      end
       self.state.status = "disposed"
       self.state.disposal_reason = reason
       self.disposed = true
@@ -184,7 +187,11 @@ T["contradictory option ACK refuses dispatch and retains failed operation"] = fu
   end)
   local state = assert(control:request({ action = "inspect", id = req.id }))
   assert(assert(state.error):find("confirm", 1, true))
+  MiniTest.expect.equality(state.status, "disposed")
+  MiniTest.expect.equality(children[1].disposed, true)
+  MiniTest.expect.equality(next(children[1].listeners), nil)
   MiniTest.expect.equality(#children[1].prompts, 0)
+  MiniTest.expect.equality(control:request({ action = "cancel", id = req.id }), state)
   assert(control:request(req))
   MiniTest.expect.equality(#children, 1)
 end
@@ -203,6 +210,7 @@ T["cancel during configuration prevents a late ACK from sending"] = function()
   end)
   local state = assert(control:request({ action = "cancel", id = req.id }))
   MiniTest.expect.equality(state.phase, "cancelled")
+  MiniTest.expect.equality(state.status, "disposed")
   MiniTest.expect.equality(children[1].disposed, true)
   acknowledge(children[1], 1, options("b"))
   nvim.wait(20, function()
@@ -238,6 +246,174 @@ T["a dependent choice rejected after a Model change cannot dispatch"] = function
   MiniTest.expect.equality(#children, 1)
 end
 
+T["failed pre-dispatch cleanup reports the actual state and disposal error"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("cleanup-error")
+  req.options = { { id = "model", value = "b" } }
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  local child = children[1]
+  child.dispose_failure = "close refused"
+  ready(1, options("a"))
+  wait_for(function()
+    return #child.changes == 1
+  end)
+  acknowledge(child, 1, options("a"))
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "failed"
+  end)
+  local state = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(state.status, "ready")
+  assert(assert(state.error):find("close refused", 1, true))
+  assert(state.error:find("confirm", 1, true))
+  child.dispose_failure = nil
+  local retried = assert(control:request({ action = "cancel", id = req.id }))
+  MiniTest.expect.equality(retried.phase, "failed")
+  MiniTest.expect.equality(retried.status, "disposed")
+  MiniTest.expect.equality(child.disposed, true)
+end
+
+T["a failed uncertain dispatch retains its child for inspection"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("uncertain-dispatch")
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1)
+  wait_for(function()
+    return #children[1].prompts == 1
+  end)
+  local child = children[1]
+  child:emit("admission_settled", { result = "uncertain" })
+  child.complete(nil, "dispatch outcome unknown")
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "failed"
+  end)
+  local state = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(state.admission, "uncertain")
+  MiniTest.expect.equality(state.status, "admitting")
+  MiniTest.expect.equality(child.disposed, nil)
+  MiniTest.expect.equality(control:request({ action = "cancel", id = req.id }), state)
+end
+
+T["a rejected admission disposes its child after the not-sent settlement"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("rejected-admission")
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1)
+  wait_for(function()
+    return #children[1].prompts == 1
+  end)
+  local child = children[1]
+  child:emit("admission_settled", { result = "not_sent" })
+  child.state.status = "ready"
+  child.complete(nil, "admission rejected")
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "failed"
+  end)
+  local state = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(state.admission, "not_sent")
+  MiniTest.expect.equality(state.status, "disposed")
+  MiniTest.expect.equality(child.disposed, true)
+end
+
+T["a child taken over by a person is retained when configuration fails"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("human-takeover")
+  req.options = { { id = "model", value = "b" } }
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1, options("a"))
+  wait_for(function()
+    return #children[1].changes == 1
+  end)
+  local child = children[1]
+  child.state.current_turn = 1
+  child.state.status = "prompting"
+  child.changes[1].callback(nil, "option rejected")
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "failed"
+  end)
+  local state = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(state.status, "prompting")
+  MiniTest.expect.equality(child.disposed, nil)
+end
+
+T["cancelling a child taken over by a person cannot cancel their turn"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("human-cancel")
+  req.options = { { id = "model", value = "b" } }
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1, options("a"))
+  wait_for(function()
+    return #children[1].changes == 1
+  end)
+  local child = children[1]
+  child.state.current_turn, child.state.turn_id, child.state.status = 1, "human-turn", "prompting"
+  local state = assert(control:request({ action = "cancel", id = req.id }))
+  MiniTest.expect.equality(state.phase, "failed")
+  MiniTest.expect.equality(state.status, "prompting")
+  MiniTest.expect.equality(child.cancelled, nil)
+  MiniTest.expect.equality(child.disposed, nil)
+end
+
+T["a queued admission rejection cannot dispose a newer human turn"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("human-after-rejection")
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1)
+  wait_for(function()
+    return #children[1].prompts == 1
+  end)
+  local child = children[1]
+  child:emit("admission_settled", { result = "not_sent", turn_id = child.state.turn_id })
+  child.complete(nil, "admission rejected")
+  child.state.current_turn, child.state.turn_id, child.state.status = 2, "human-turn", "prompting"
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "failed"
+  end)
+  local state = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(state.status, "prompting")
+  MiniTest.expect.equality(child.disposed, nil)
+end
+
+T["a deadline cannot dispose a child taken over by a person"] = function()
+  local control, children, _, ready = fixture()
+  local req = request("human-before-deadline")
+  req.timeout_ms = 100
+  req.options = { { id = "model", value = "b" } }
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  ready(1, options("a"))
+  wait_for(function()
+    return #children[1].changes == 1
+  end)
+  local child = children[1]
+  child.state.current_turn, child.state.turn_id, child.state.status = 1, "human-turn", "prompting"
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "timed_out"
+  end)
+  local state = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(state.status, "prompting")
+  MiniTest.expect.equality(child.disposed, nil)
+end
+
 T["cancel during admission reports cancellation despite the completion failure callback"] = function()
   local control, children, _, ready = fixture()
   assert(control:request(request("admission-cancel")))
@@ -256,6 +432,8 @@ T["cancel during admission reports cancellation despite the completion failure c
   local state = assert(control:request({ action = "inspect", id = "admission-cancel" }))
   MiniTest.expect.equality(state.phase, "cancelled")
   MiniTest.expect.equality(state.admission, "cancelled")
+  MiniTest.expect.equality(state.status, "disposed")
+  MiniTest.expect.equality(children[1].disposed, true)
   MiniTest.expect.equality(state.error, nil)
   MiniTest.expect.equality(#children[1].prompts, 1)
   MiniTest.expect.equality(next(children[1].listeners), nil)
@@ -430,6 +608,7 @@ T["startup deadline disposes its child and ignores late readiness"] = function()
   wait_for(function()
     return assert(control:request({ action = "inspect", id = req.id })).phase == "timed_out"
   end)
+  MiniTest.expect.equality(assert(control:request({ action = "inspect", id = req.id })).status, "disposed")
   MiniTest.expect.equality(children[1].disposed, true)
   MiniTest.expect.equality(next(children[1].listeners), nil)
   children[1].ready(children[1])
@@ -439,6 +618,62 @@ T["startup deadline disposes its child and ignores late readiness"] = function()
   MiniTest.expect.equality(#children[1].prompts, 0)
   MiniTest.expect.equality(assert(control:request(req)).phase, "timed_out")
   MiniTest.expect.equality(#children, 1)
+end
+
+T["failed option starts release real Sessions, buffers and handlers on every retry"] = function()
+  local plugin = require("louiselm")
+  local Command = require("louiselm.ui.chat.command")
+  local root = nvim.fn.getcwd()
+  MiniTest.finally(function()
+    Command.register()
+    Command.configure(nil)
+  end)
+  assert(plugin.setup({
+    agents = {
+      mock = {
+        provider = "test-service",
+        command = nvim.v.progpath,
+        args = {
+          "--headless",
+          "--noplugin",
+          "-i",
+          "NONE",
+          "--cmd",
+          "set runtimepath^=" .. nvim.fn.fnameescape(root),
+          "-u",
+          root .. "/tests/mock/init.lua",
+          "-c",
+          "lua require('louiselm.dev.mock_agent').run({config_options={{id='model',name='Model',type='select',currentValue='small',options={{name='Small',value='small'}}}}})",
+        },
+      },
+    },
+  }))
+  local baseline_buffers, baseline_handlers
+  for index = 1, 3 do
+    local req = request("real-invalid-" .. index)
+    req.cwd = root
+    req.timeout_ms = false
+    req.options = { { id = "model", value = "not-advertised" } }
+    assert(plugin.session_control(req))
+    assert(nvim.wait(10000, function()
+      return assert(plugin.session_control({ action = "inspect", id = req.id })).phase == "failed"
+    end, 10))
+    local state = assert(plugin.session_control({ action = "inspect", id = req.id }))
+    MiniTest.expect.equality(state.error, "config option value is not available")
+    MiniTest.expect.equality(state.status, "disposed")
+    assert(state.buffer == nil or not nvim.api.nvim_buf_is_valid(state.buffer))
+    MiniTest.expect.equality(require("louiselm.session").exit_verdict(), {})
+    MiniTest.expect.equality(assert(plugin.session_control({ action = "discover", agent = "mock" })).sessions, {})
+    MiniTest.expect.equality(plugin.session_control({ action = "cancel", id = req.id }), state)
+    MiniTest.expect.equality(plugin.session_control(req), state)
+    if index == 1 then
+      baseline_buffers = nvim.api.nvim_list_bufs()
+      baseline_handlers = #nvim.api.nvim_get_autocmds({})
+    else
+      MiniTest.expect.equality(nvim.api.nvim_list_bufs(), baseline_buffers)
+      MiniTest.expect.equality(#nvim.api.nvim_get_autocmds({}), baseline_handlers)
+    end
+  end
 end
 
 T["unlimited operations allocate no deadline and still release their observers"] = function()

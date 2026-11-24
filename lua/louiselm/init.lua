@@ -18,7 +18,7 @@ local Mcp = require("louiselm.mcp")
 ---@field context? {name: string, text: string}[] Up to 16 explicit text snapshots; prompt and context together at most 262144 bytes. Never consumes Chat drafts.
 ---@field options? {id: string, value: string|boolean}[] Up to 32 ordered advertised choices; Model before dependent effort.
 ---@field parent_turn_id? string Actual parent admission/turn identity; correlation does not grant authority.
----@field timeout_ms? integer|false Whole-operation deadline, default 300000, maximum 3600000; false explicitly disables it. Expiry disposes the child.
+---@field timeout_ms? integer|false Whole-operation deadline, default 300000, maximum 3600000; false explicitly disables it. Expiry disposes the still-owned child.
 ---@field result? boolean Include the bounded assistant-text tail on inspect only.
 
 ---@class louiselm.SessionControlDiscoveryRequest
@@ -41,11 +41,11 @@ local Mcp = require("louiselm.mcp")
 ---@field session_id? string Local child identity.
 ---@field acp_session_id? string Persistent Agent-side child identity.
 ---@field turn_id? string Stable admission/turn identity; not proof of dispatch.
----@field status? louiselm.session.Status Latest observed child state.
+---@field status? louiselm.session.Status Latest child state, including the actual state after terminal cleanup.
 ---@field current_turn? integer Latest observed local attempt ordinal.
 ---@field admission? string Admission settlement, including explicit uncertainty.
 ---@field options table<string, string|boolean> Confirmed current option values, not an advertised-choice catalog.
----@field buffer? integer Child transcript buffer, available in the Session switcher.
+---@field buffer? integer Child transcript buffer; an untouched background view may be removed after pre-dispatch cleanup.
 ---@field error? string Failure description, at most 1024 bytes.
 ---@field stop_reason? string Peer's completed-turn stop reason.
 ---@field result? {text: string, truncated: boolean} Explicitly requested assistant-text tail, at most 8192 bytes.
@@ -58,6 +58,7 @@ local M = {}
 ---Discover existing choices or create, inspect or cancel a child through the configured owner.
 ---Call on the main loop; asynchronous work is observed through compact snapshots.
 ---Exact start retries reuse their operation. Unknown keys after restart are not replayed.
+---Failed or cancelled pre-dispatch children are disposed unless a different turn has taken over; dispatched or uncertain children are retained.
 ---@param request louiselm.SessionControlRequest|louiselm.SessionControlDiscoveryRequest Data-only operation or read-only discovery request.
 ---@return louiselm.SessionControlSnapshot|louiselm.SessionControlDiscovery|nil snapshot State, not proof of task acceptance.
 ---@return string? error_message Invalid request, missing owner or unknown/conflicting operation.

@@ -118,8 +118,13 @@ and snapshot fields are documented in the generated public API appendix.
 The child gets its own Chat buffer and appears in the Session switcher without
 taking focus. The owner reuses configured Agents, MCP selection, permission
 handling and Session lifecycle. Initialization, ordered configuration and one
-initial prompt are one operation. Completed children stay available for human
-follow-up; later human turns do not reactivate that operation.
+initial prompt are one operation. Failed or cancelled pre-dispatch children are
+disposed, and their untouched background views are removed. If a person has
+focused the view or entered a draft, the view remains available. Completed
+children and children whose dispatch is uncertain stay available for human
+follow-up; later human turns do not reactivate that operation. If a different
+turn takes over a child, a delayed failure, cancellation or operation deadline
+leaves that turn alone and reports the child's current status.
 
 Snapshots contain operation/Session/turn IDs, `revision`, `phase`, latest
 Session `status`, admission result, confirmed options and bounded errors.
@@ -128,6 +133,10 @@ Watch prints only changed revisions and terminal state. Use `--result` when need
 it adds an assistant-text tail and a truncation flag, not tool payloads or the
 complete transcript. A returned turn ID means admission began; `ready` means
 idle; `completed` means the initial turn ended. None certifies task acceptance.
+For a failed or timed-out operation, `status` reports the child's actual state
+after attempted cleanup. A cleanup error is reported alongside the failure;
+`disposed` alone does not prove external resources, such as a VM started by the
+Agent, have stopped.
 
 ### Read-only option discovery
 
@@ -153,7 +162,9 @@ a probe. When interpreting dependent effort choices, inspect the source
 Session's current Model. Existing advertisements are advisory: the launch
 controller validates every choice against the child's fresh, ordered replacement
 lists, refusing dispatch if a value disappeared or was not confirmed. Unknown
-labels require clarification, not invented option IDs.
+labels require clarification, not invented option IDs. A failed operation does
+not include an advertised-choice catalog, and discovery remains unavailable when
+no existing Session advertises one.
 
 ### One-command background batches
 
@@ -212,7 +223,7 @@ consumption is outside the launch measurement.
 | Task/context | Prompt at most 64 KiB; at most 16 named text snapshots; combined prompt/context at most 256 KiB |
 | Options | At most 32 distinct IDs, processed in caller order |
 | Results/errors | Assistant tail at most 8192 bytes; error at most 1024 bytes |
-| Child deadline | `timeout_ms` covers creation through initial-turn completion; default 300000, maximum 3600000; `false` explicitly means no deadline; expiry disposes the child |
+| Child deadline | `timeout_ms` covers creation through initial-turn completion; default 300000, maximum 3600000; `false` explicitly means no deadline; expiry disposes a still-owned child |
 | Local watch | Default/maximum 60000 ms per call; expiration does not cancel the child |
 | CLI transport | JSON file/stdin at most 1 MiB; ordinary RPC calls have a 5-second client deadline; batch dispatch waiting is at most 60 seconds |
 
@@ -221,8 +232,9 @@ is allocated. Cancellation and owner disposal still stop owned work and release
 observers. This does not extend the bounded client/watch waits or provide Run
 supervision, containment or a durable operation record.
 
-Deadline expiry retains the reason in the Session snapshot and chat, and the
-operation reports the child's final `disposed` status. In a stopped ordinary
+Deadline expiry retains the reason in the Session snapshot and chat when it
+disposes the child, and the operation reports the child's actual final status.
+In a stopped ordinary
 Session with an ACP identity, click **Resume this Session** or run
 `:LouiselmResume` to load that conversation directly. The old view, draft and
 staged context survive failed loads; successful loading replaces the view and

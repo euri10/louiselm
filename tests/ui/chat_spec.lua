@@ -317,6 +317,33 @@ T["chat"] = MiniTest.new_set({
   },
 })
 
+T["chat"]["discarding a failed background view preserves human drafts and focused views"] = function()
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  local empty, draft, focused =
+    fake_session("empty", "mock"), fake_session("draft", "mock"), fake_session("focused", "mock")
+  for _, session in ipairs({ empty, draft, focused }) do
+    assert(chat:attach(session, { background = true }))
+  end
+  local empty_buffer = assert(chat:buffer("empty"))
+  local draft_buffer = assert(chat:buffer("draft"))
+  chat.views.draft.renderer:replace_prompt("keep this draft")
+  assert(empty:dispose())
+  chat:discard_empty_background("empty")
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(empty_buffer), false)
+  MiniTest.expect.equality(chat.views.empty, nil)
+  assert(draft:dispose())
+  chat:discard_empty_background("draft")
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(draft_buffer), true)
+  MiniTest.expect.equality(chat.views.draft.renderer:prompt_text(), "keep this draft")
+  assert(chat:switch("focused"))
+  assert(focused:dispose())
+  chat:discard_empty_background("focused")
+  assert(chat.views.focused ~= nil)
+end
+
 T["chat"]["schedules recording failures and ignores queued notices after Disposal"] = function()
   local session = fake_session("recording-ui", "claude")
   session.state.status = "prompting"

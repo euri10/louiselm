@@ -6,6 +6,7 @@ local nvim = vim
 ---@field request louiselm.SessionControlRequest Owned exact retry input.
 ---@field snapshot louiselm.SessionControlSnapshot
 ---@field session? louiselm.session.Session
+---@field detach? fun() Release an untouched background view after disposing its Session.
 ---@field timer? {stop: fun(self: table), close: fun(self: table), is_closing: fun(self: table): boolean}
 ---@field unsubscribe? fun()
 ---@field terminal boolean
@@ -14,10 +15,11 @@ local nvim = vim
 ---@field cancel_requested? boolean Cancellation was requested by the operation owner.
 ---@field completion_received? boolean Peer completion arrived; scheduled settlement must win a later cancel.
 ---@field completion_error? string Completion error waiting for cancellation admission settlement.
+---@field admission_result? string Peer settlement observed before scheduled delivery.
 
 ---@class louiselm.ui.SessionControl
 ---@field api louiselm.session.Api
----@field attach fun(session: louiselm.session.Session): integer?, string?
+---@field attach fun(session: louiselm.session.Session): integer?, string?, (fun())?
 ---@field operations table<string, louiselm.ui.SessionControlOperation>
 ---@field count integer
 ---@field disposed boolean
@@ -299,13 +301,20 @@ end
 ---@param changes? table
 local function update(op, changes)
   local state = nvim.deepcopy(op.snapshot)
-  if not op.terminal and op.session then
+  if op.session then
     local child = op.session:inspect()
     state.session_id, state.acp_session_id = child.id, child.acp_session_id
     state.status, state.current_turn = child.status, child.current_turn
     state.options = values(child.config_options)
   end
   for key, value in pairs(changes or {}) do
+    if key == "error" and #value > 1024 then
+      local last = 1024
+      while last > 0 and value:byte(last + 1) >= 128 and value:byte(last + 1) < 192 do
+        last = last - 1
+      end
+      value = value:sub(1, last)
+    end
     state[key] = value
   end
   if not nvim.deep_equal(state, op.snapshot) then
@@ -330,22 +339,73 @@ local function release(op)
 end
 
 ---@param op louiselm.ui.SessionControlOperation
+---@param state louiselm.session.State
+---@return boolean
+local function owns_current_turn(op, state)
+  return (op.snapshot.turn_id == nil and state.current_turn == 0)
+    or (op.snapshot.turn_id ~= nil and state.turn_id == op.snapshot.turn_id)
+end
+
+---@param op louiselm.ui.SessionControlOperation
+---@return boolean
+local function before_dispatch(op)
+  if not op.session or not owns_current_turn(op, op.session:inspect()) then
+    return false
+  end
+  if op.admission_result ~= nil then
+    return op.admission_result == "not_sent" or op.admission_result == "cancelled"
+  end
+  return op.snapshot.turn_id == nil
+end
+
+---@param op louiselm.ui.SessionControlOperation
+---@param reason? string
+---@param discard_view boolean
+---@return string? error_message
+local function dispose_child(op, reason, discard_view)
+  local session = op.session
+  if not session then
+    return
+  end
+  local disposed, err = session:dispose(reason)
+  if session:inspect().status == "disposed" then
+    if discard_view and op.detach then
+      op.detach()
+    end
+    op.detach = nil
+  end
+  if not disposed then
+    return err or "child disposal failed"
+  end
+end
+
+---@param op louiselm.ui.SessionControlOperation
 ---@param phase string
 ---@param err? string
-local function finish(op, phase, err)
+---@param cleanup? "discard"|"retain"
+---@param reason? string
+local function finish(op, phase, err, cleanup, reason)
   if op.terminal then
     return
   end
-  if err and #err > 1024 then
-    local last = 1024
-    while last > 0 and err:byte(last + 1) >= 128 and err:byte(last + 1) < 192 do
-      last = last - 1
-    end
-    err = err:sub(1, last)
+  if phase == "failed" and cleanup == nil and before_dispatch(op) then
+    cleanup = "discard"
   end
-  update(op, { phase = phase, error = err })
   op.terminal = true
   release(op)
+  if cleanup then
+    local dispose_error = dispose_child(op, reason, cleanup == "discard")
+    if dispose_error then
+      err = "child disposal failed: " .. dispose_error .. (err and "; " .. err or "")
+    end
+  end
+  update(op, { phase = phase, error = err })
+  if cleanup == nil or not op.session or op.session:inspect().status == "disposed" then
+    op.session = nil
+  end
+  if cleanup ~= "discard" or op.session == nil then
+    op.detach = nil
+  end
 end
 
 ---@param self louiselm.ui.SessionControl
@@ -363,6 +423,9 @@ end
 ---@param op louiselm.ui.SessionControlOperation
 ---@param event louiselm.session.Event
 local function observe(self, op, event)
+  if event.type == "admission_settled" then
+    op.admission_result = event.data.result
+  end
   scheduled(self, op, function()
     if event.type == "chunk" then
       local content = event.data.content
@@ -381,7 +444,7 @@ local function observe(self, op, event)
       if event.data.result == "dispatched" then
         update(op, { phase = "running" })
       elseif event.data.result == "cancelled" then
-        finish(op, "cancelled")
+        finish(op, "cancelled", nil, op.cancel_requested and before_dispatch(op) and "discard" or nil)
       elseif op.completion_error then
         finish(op, "failed", op.completion_error)
       end
@@ -506,13 +569,10 @@ local function start(self, op)
   op.unsubscribe = session:on(function(event)
     observe(self, op, event)
   end)
-  local buffer, attach_error = self.attach(session)
+  local buffer, attach_error, detach = self.attach(session)
+  op.detach = detach
   if not buffer then
     finish(op, "failed", attach_error or "child attachment failed")
-    local disposed, dispose_error = session:dispose()
-    if not disposed then
-      update(op, { error = dispose_error or "child disposal failed" })
-    end
     return
   end
   update(op, { buffer = buffer })
@@ -521,7 +581,7 @@ end
 ---Own bounded delegation records over an existing configured Session API.
 ---The caller owns the API and supplies background Chat attachment on the main loop.
 ---@param api louiselm.session.Api Existing configured owner; never reconstructed from process state.
----@param attach fun(session: louiselm.session.Session): integer?, string? Attach without changing focus.
+---@param attach fun(session: louiselm.session.Session): integer?, string?, (fun())? Attach without changing focus; return a view-release callback.
 ---@param skill_catalog? string Existing configured injection catalog; never applied to native-policy children.
 ---@return louiselm.ui.SessionControl controller Explicitly disposed by the command registration.
 function M.new(api, attach, skill_catalog)
@@ -572,14 +632,8 @@ function Control:request(request)
             return
           end
           local reason = deadline_reason(timeout_ms)
-          finish(created, "timed_out", reason)
-          if created.session then
-            local disposed, dispose_error = created.session:dispose(reason)
-            update(created, { status = created.session:inspect().status })
-            if not disposed then
-              update(created, { error = dispose_error or "deadline disposal failed" })
-            end
-          end
+          local owned = not created.session or owns_current_turn(created, created.session:inspect())
+          finish(created, "timed_out", reason, owned and "retain" or nil, reason)
         end, timeout_ms)
       end
       scheduled(self, created, function()
@@ -588,10 +642,20 @@ function Control:request(request)
     end
   elseif not op then
     return nil, "unknown operation id in this editor registration; do not automatically replay after restart"
+  elseif request.action == "cancel" and op.terminal and op.session then
+    local dispose_error = dispose_child(op, nil, true)
+    local err = dispose_error and ("child disposal failed: " .. dispose_error .. "; " .. (op.snapshot.error or ""))
+    update(op, err and { error = err } or nil)
+    if op.session:inspect().status == "disposed" then
+      op.session = nil
+    end
   elseif request.action == "cancel" and not op.terminal and not op.completion_received then
     op.cancel_requested = true
     local session = op.session
-    if session and ACTIVE[session:inspect().status] then
+    local state = session and session:inspect()
+    if state and not owns_current_turn(op, state) then
+      finish(op, "failed", "child is no longer owned by this operation")
+    elseif session and state and ACTIVE[state.status] then
       local cancelled, cancel_error = session:cancel()
       if not cancelled then
         finish(op, "failed", cancel_error or "cancellation failed")
@@ -599,13 +663,7 @@ function Control:request(request)
         update(op, { phase = "cancelling" })
       end
     else
-      finish(op, "cancelled")
-      if session then
-        local disposed, dispose_error = session:dispose()
-        if not disposed then
-          update(op, { error = dispose_error or "child disposal failed" })
-        end
-      end
+      finish(op, "cancelled", nil, (not session or before_dispatch(op)) and "discard" or nil)
     end
   end
   local snapshot = nvim.deepcopy(op.snapshot)
@@ -624,12 +682,12 @@ function Control:dispose()
   self.disposed = true
   for _, op in pairs(self.operations) do
     if not op.terminal then
-      finish(op, "cancelled")
-      if op.session then
-        local disposed, err = op.session:dispose()
-        if not disposed then
-          update(op, { error = err or "child disposal failed" })
-        end
+      local owned = not op.session or owns_current_turn(op, op.session:inspect())
+      finish(op, "cancelled", nil, owned and "retain" or nil)
+    elseif op.session then
+      local dispose_error = dispose_child(op, nil, true)
+      if dispose_error then
+        update(op, { error = "child disposal failed: " .. dispose_error })
       end
     end
   end

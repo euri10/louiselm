@@ -125,6 +125,7 @@ local nvim = vim
 ---@field winbar_click fun(self: louiselm.ui.Chat, target: integer, clicked_window?: integer): boolean, string? Follow a winbar click target.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
 ---@field close_session fun(self: louiselm.ui.Chat, session_ids?: string[]): boolean, string? Close the current Session, or confirm and close an explicit group.
+---@field discard_empty_background fun(self: louiselm.ui.Chat, session_id: string) Release an untouched background view after its Session is disposed.
 ---@field staged_context fun(self: louiselm.ui.Chat): table<louiselm.session.Session, louiselm.ui.StagedContext> Report Staged context by attached Session.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
@@ -2518,7 +2519,8 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param replacement? string Successfully loaded replacement to focus if this view is current.
-local function close_view(self, view, replacement)
+---@param retain_session? boolean The caller owns Session disposal.
+local function close_view(self, view, replacement, retain_session)
   local id = view.session:inspect().id
   view.resume_choice = nil
   if
@@ -2575,7 +2577,11 @@ local function close_view(self, view, replacement)
       break
     end
   end
-  local _, close_error = view.session:dispose()
+  local close_error
+  if not retain_session then
+    local _
+    _, close_error = view.session:dispose()
+  end
   if self.current_id == id then
     self.current_id = nil
     if replacement ~= nil then
@@ -2596,6 +2602,23 @@ local function close_view(self, view, replacement)
   end
   render_winbars(self)
   self.decisions:present_next()
+end
+
+---Remove an untouched background view after its owner disposes the Session.
+---@param session_id string Local Session identity.
+function Chat:discard_empty_background(session_id)
+  local view = self.views[session_id]
+  if view == nil or self.current_id == session_id then
+    return
+  end
+  local draft = view.draft
+  if #draft.contexts > 0 or draft.pending_skill ~= nil or draft.queued_prompt ~= nil then
+    return
+  end
+  if nvim.api.nvim_buf_is_valid(view.renderer.buffer) and view.renderer:prompt_text() ~= "" then
+    return
+  end
+  close_view(self, view, nil, true)
 end
 
 ---@param status string

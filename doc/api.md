@@ -40,7 +40,7 @@ louiselm.SessionControlPhase:
 - `parent_turn_id: string?` -- Actual parent admission/turn identity; correlation does not grant authority.
 - `prompt: string?` -- Explicit non-empty task text; required for start, at most 65536 bytes.
 - `result: boolean?` -- Include the bounded assistant-text tail on inspect only.
-- `timeout_ms: (integer|false)?` -- Whole-operation deadline, default 300000, maximum 3600000; false explicitly disables it. Expiry disposes the child.
+- `timeout_ms: (integer|false)?` -- Whole-operation deadline, default 300000, maximum 3600000; false explicitly disables it. Expiry disposes the still-owned child.
 
 ### louiselm.SessionControlDiscoveryRequest
 
@@ -61,7 +61,7 @@ louiselm.SessionControlPhase:
 
 - `acp_session_id: string?` -- Persistent Agent-side child identity.
 - `admission: string?` -- Admission settlement, including explicit uncertainty.
-- `buffer: integer?` -- Child transcript buffer, available in the Session switcher.
+- `buffer: integer?` -- Child transcript buffer; an untouched background view may be removed after pre-dispatch cleanup.
 - `current_turn: integer?` -- Latest observed local attempt ordinal.
 - `error: string?` -- Failure description, at most 1024 bytes.
 - `id: string` -- Operation key, not a Session identity.
@@ -70,7 +70,7 @@ louiselm.SessionControlPhase:
 - `result: { text: string, truncated: boolean }?` -- Explicitly requested assistant-text tail, at most 8192 bytes.
 - `revision: integer` -- Monotonic change counter for this operation's compact state.
 - `session_id: string?` -- Local child identity.
-- `status: ("admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6))?` -- Latest observed child state.
+- `status: ("admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6))?` -- Latest child state, including the actual state after terminal cleanup.
 - `stop_reason: string?` -- Peer's completed-turn stop reason.
 - `turn_id: string?` -- Stable admission/turn identity; not proof of dispatch.
 

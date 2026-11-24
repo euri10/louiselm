@@ -577,7 +577,11 @@ function M.register()
         if not attached then
           return nil, err
         end
-        return current:buffer(session:inspect().id)
+        local id = session:inspect().id
+        local buffer, buffer_error = current:buffer(id)
+        return buffer, buffer_error, function()
+          current:discard_empty_background(id)
+        end
       end, current.skill_catalog)
     end
     return control:request(request)
