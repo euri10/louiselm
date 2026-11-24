@@ -16,7 +16,7 @@ use crate::beads_mutation::{
 use crate::broker::verification::{VerificationRecord, VerificationStatus};
 use crate::broker::{
     GrantRequest,
-    run_envelope::{ChildAuthorization, RunAuthorization, RunEnvelope},
+    run_envelope::{ChildAuthorization, RunAuthorization, RunDispatch, RunDraft, RunEnvelope},
 };
 use crate::launch_protocol::SessionStatus;
 use crate::launch_protocol::{LifecycleRequest, VerificationRequest};
@@ -348,6 +348,11 @@ pub fn verification(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorizationRequest {
+    /// Activate reviewed draft intent once, after current readiness checks.
+    Dispatch {
+        /// Non-executing policy and reviewed execution limit.
+        draft: Box<RunDraft>,
+    },
     /// Read the Provider hold without changing the exact approved Run.
     ProviderStatus {
         /// Approved Run identity.
@@ -378,6 +383,11 @@ pub enum AuthorizationRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorizationResponse {
+    /// Exact activated policy and its one-time approval.
+    Dispatch {
+        /// Broker-time activation of the reviewed intent.
+        receipt: Box<RunDispatch>,
+    },
     /// Authenticated observation of the exact Run's durable Provider hold.
     ProviderStatus {
         /// Inspected Run identity.
@@ -460,6 +470,20 @@ pub fn authorization(
                 hold,
             },
         ) => grant.request.run_id == hold.run_id && expected_envelope_digest == envelope_digest,
+        (AuthorizationRequest::Dispatch { draft }, AuthorizationResponse::Dispatch { receipt }) => {
+            receipt.schema == "louiselm.broker.run-dispatch/1"
+                && draft
+                    .digest()
+                    .is_ok_and(|digest| digest.to_string() == receipt.draft_digest)
+                && draft
+                    .activate(receipt.dispatched_at_ms)
+                    .is_ok_and(|envelope| envelope == receipt.envelope)
+                && receipt.authorization.schema == "louiselm.broker.run-authorization/1"
+                && receipt.authorization.run_id == draft.envelope.run_id
+                && receipt.authorization.envelope_revision == draft.envelope.envelope_revision
+                && receipt.authorization.envelope_digest
+                    == Digest::of(&receipt.envelope.canonical_bytes()).to_string()
+        }
         (AuthorizationRequest::Run { envelope }, AuthorizationResponse::Run { receipt }) => {
             receipt.schema == "louiselm.broker.run-authorization/1"
                 && receipt.run_id == envelope.run_id

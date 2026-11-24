@@ -368,6 +368,11 @@ impl Queries {
                                         envelope_digest: expected_envelope_digest.clone(),
                                         hold,
                                     }),
+                                AuthorizationRequest::Dispatch { draft } => broker
+                                    .dispatch_run(draft)
+                                    .map(|receipt| AuthorizationResponse::Dispatch {
+                                        receipt: Box::new(receipt),
+                                    }),
                                 AuthorizationRequest::Run { envelope } => broker
                                     .authorize_run(envelope)
                                     .map(|receipt| AuthorizationResponse::Run { receipt }),

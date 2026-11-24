@@ -681,6 +681,42 @@ impl InstalledBroker {
         &self,
         envelope: &super::run_envelope::RunEnvelope,
     ) -> Result<super::run_envelope::RunAuthorization, BrokerError> {
+        self.check_run_operator(envelope)?;
+        self.run_envelopes.approve_with(envelope, now_ms()?, || {
+            self.check_unstarted_run(&envelope.run_id)
+        })
+    }
+
+    /// Activates draft intent exactly once on the broker's dispatch clock.
+    /// The trusted controller must complete source/readiness/rehearsal checks first.
+    /// # Errors
+    /// Refuses foreign, changed, previously dispatched or invalid Run authority.
+    pub fn dispatch_run(
+        &self,
+        draft: &super::run_envelope::RunDraft,
+    ) -> Result<super::run_envelope::RunDispatch, BrokerError> {
+        self.check_run_operator(&draft.envelope)?;
+        self.run_envelopes.dispatch_with(draft, now_ms, || {
+            self.check_unstarted_run(&draft.envelope.run_id)
+        })
+    }
+
+    fn check_unstarted_run(&self, run_id: &str) -> Result<(), BrokerError> {
+        if self
+            .service
+            .authorizations()
+            .session_count_for_run(run_id)?
+            != 0
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
+        Ok(())
+    }
+
+    fn check_run_operator(
+        &self,
+        envelope: &super::run_envelope::RunEnvelope,
+    ) -> Result<(), BrokerError> {
         if envelope.controller_uid != self.verifier.config().operator_uid {
             return Err(BrokerError::ControllerMismatch);
         }
@@ -693,17 +729,7 @@ impl InstalledBroker {
         {
             return Err(BrokerError::InvalidGrant);
         }
-        self.run_envelopes.approve_with(envelope, now_ms()?, || {
-            if self
-                .service
-                .authorizations()
-                .session_count_for_run(&envelope.run_id)?
-                != 0
-            {
-                return Err(BrokerError::InvalidGrant);
-            }
-            Ok(())
-        })
+        Ok(())
     }
 
     /// Reads a durable Provider hold under the operator's exact Run approval.

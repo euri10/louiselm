@@ -64,6 +64,7 @@ local advance, next_bead
 
 ---@class louiselm.workflow.BeadExecutorOptions
 ---@field envelope table Closed Rust RunEnvelope explicitly selected by the operator; start authorizes it.
+---@field draft? table Closed Rust RunDraft with the same inactive envelope; activates once after input checks.
 ---@field bead_ids string[] Execution order, restricted to envelope.bead_scope.issue_ids.
 ---@field agent_id string Installed registered Codex Agent identity.
 ---@field prepare fun(bead_id: string, callback: fun(prepared: louiselm.workflow.BeadPreparation?, error_message?: string), expected_head?: string): boolean, string? Stage the next snapshot from the current Run branch HEAD.
@@ -87,6 +88,8 @@ local advance, next_bead
 ---@field owned_api? louiselm.session.Api
 ---@field cancel_hold_poll? fun() Owned pending-prompt poll cancellation.
 ---@field cancel_promotion? fun() Owned pending promotion UI cancellation.
+---@field initial_preparation? louiselm.workflow.BeadPreparation First snapshot checked before draft dispatch.
+---@field initial_staged? table First fixed verification input checked before draft dispatch.
 ---@field start fun(self: louiselm.workflow.BeadExecutor, callback: fun(ok: boolean, error_message?: string, summary: louiselm.workflow.BeadRunSummary)): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.BeadExecutor): boolean, string?
 
@@ -890,6 +893,71 @@ local function check_prepared(self, id, prepared)
   return bytes
 end
 
+local function stage_prepared(self, prepared, callback)
+  if self.initial_staged then
+    local staged = self.initial_staged
+    self.initial_staged = nil
+    return callback(staged)
+  end
+  control(self, { "louiselm-control", "verification", "--json" }, {
+    kind = "stage",
+    input_id = "verify-input-" .. prepared.grant.request.session_id,
+    snapshot = prepared.verification.snapshot,
+    snapshot_digest = prepared.verification.snapshot_digest,
+    expected_base_commit = self.head,
+    plan = prepared.verification.plan,
+    plan_digest = prepared.verification.plan_digest,
+  }, "staged", callback)
+end
+
+local function dispatch_envelope(self, receipt)
+  local envelope = receipt.envelope
+  local expiry = type(envelope) == "table" and envelope.expires_at_ms
+  local dispatched = receipt.dispatched_at_ms
+  if
+    receipt.schema ~= "louiselm.broker.run-dispatch/1"
+    or not digest(receipt.draft_digest)
+    or type(dispatched) ~= "number"
+    or dispatched < 0
+    or dispatched % 1 ~= 0
+    or type(expiry) ~= "number"
+    or expiry <= dispatched
+    or expiry > 9007199254740991
+    or expiry % 1 ~= 0
+    or type(receipt.authorization) ~= "table"
+  then
+    return nil
+  end
+  local execution = self.options.draft.execution
+  if
+    (execution.kind == "duration" and expiry ~= dispatched + execution.duration_ms)
+    or (execution.kind == "stop_by" and expiry ~= execution.expires_at_ms)
+  then
+    return nil
+  end
+  local expected = nvim.deepcopy(self.options.draft.envelope)
+  expected.expires_at_ms = expiry
+  for _, key in ipairs({ "bead_scope", "provider_requests", "commands", "skill_requests" }) do
+    if present(expected[key]) then
+      expected[key].expires_at_ms = expiry
+    end
+  end
+  if not nvim.deep_equal(envelope, expected) then
+    return nil
+  end
+  self.options.envelope = nvim.deepcopy(envelope)
+  local prepared = self.initial_preparation
+  for _, grant in ipairs({ prepared.grant, prepared.verification.verifier_grant }) do
+    grant.expires_at_ms = expiry
+    for _, key in ipairs({ "beads_mutations", "provider_requests", "commands", "skill_requests" }) do
+      if present(grant[key]) then
+        grant[key].expires_at_ms = expiry
+      end
+    end
+  end
+  return receipt.authorization
+end
+
 ---@param self louiselm.workflow.BeadExecutor
 next_bead = function(self)
   local id = self.options.bead_ids[self.index]
@@ -909,118 +977,110 @@ next_bead = function(self)
     prepared = nvim.deepcopy(prepared)
     local launch = prepared.grant.request
     local input_id = "verify-input-" .. launch.session_id
-    control(
-      self,
-      { "louiselm-control", "verification", "--json" },
-      {
-        kind = "stage",
-        input_id = input_id,
-        snapshot = prepared.verification.snapshot,
-        snapshot_digest = prepared.verification.snapshot_digest,
-        expected_base_commit = self.head,
-        plan = prepared.verification.plan,
-        plan_digest = prepared.verification.plan_digest,
-      },
-      "staged",
-      function(staged, stage_error)
-        if not staged then
-          return finish(self, false, stage_error or "verification inputs could not be staged")
-        end
-        authorize(
-          self,
-          { kind = "session", grant = prepared.grant, expected_envelope_digest = self.envelope_digest },
-          function(receipt)
-            if
-              receipt.schema ~= "louiselm.broker.child-authorization/1"
-              or receipt.run_id ~= launch.run_id
-              or receipt.session_id ~= launch.session_id
-              or receipt.authorization_id ~= launch.authorization_id
-              or receipt.envelope_revision ~= launch.envelope_revision
-              or receipt.envelope_digest ~= self.envelope_digest
-              or receipt.request_digest ~= "sha256:" .. nvim.fn.sha256(bytes)
-            then
-              return finish(self, false, "broker returned a mismatched child authorization")
+    stage_prepared(self, prepared, function(staged, stage_error)
+      if not staged then
+        return finish(self, false, stage_error or "verification inputs could not be staged")
+      end
+      authorize(
+        self,
+        { kind = "session", grant = prepared.grant, expected_envelope_digest = self.envelope_digest },
+        function(receipt)
+          if
+            receipt.schema ~= "louiselm.broker.child-authorization/1"
+            or receipt.run_id ~= launch.run_id
+            or receipt.session_id ~= launch.session_id
+            or receipt.authorization_id ~= launch.authorization_id
+            or receipt.envelope_revision ~= launch.envelope_revision
+            or receipt.envelope_digest ~= self.envelope_digest
+            or receipt.request_digest ~= "sha256:" .. nvim.fn.sha256(bytes)
+          then
+            return finish(self, false, "broker returned a mismatched child authorization")
+          end
+          local result = {
+            bead_id = id,
+            launch_request = launch,
+            envelope_digest = receipt.envelope_digest,
+            request_digest = receipt.request_digest,
+          }
+          local completed = response(self, function(_, worker_error)
+            if self.cancel_hold_poll then
+              self.cancel_hold_poll()
+              self.cancel_hold_poll = nil
             end
-            local result = {
-              bead_id = id,
-              launch_request = launch,
-              envelope_digest = receipt.envelope_digest,
-              request_digest = receipt.request_digest,
-            }
-            local completed = response(self, function(_, worker_error)
-              if self.cancel_hold_poll then
-                self.cancel_hold_poll()
-                self.cancel_hold_poll = nil
-              end
-              result.error = worker_error
-              provider_status(self, function()
-                advance(self, "verify", function()
-                  verify_worker(self, result, prepared, input_id, staged.input_digest)
-                end)
+            result.error = worker_error
+            provider_status(self, function()
+              advance(self, "verify", function()
+                verify_worker(self, result, prepared, input_id, staged.input_digest)
               end)
             end)
-            progress(self, "working")
-            local session, start_error = self.run:create_session(
-              self.options.agent_id,
-              {
-                cwd = "/var/lib/louiselm/sessions/" .. launch.session_id .. "/workspace",
-                broker_session_id = launch.session_id,
-                launch_request = launch,
-                start_timeout_ms = START_TIMEOUT_MS,
-                permission_policy = {
-                  name = "contained-worker",
-                  evaluate = function()
-                    return "allow"
-                  end,
-                },
+          end)
+          progress(self, "working")
+          local session, start_error = self.run:create_session(
+            self.options.agent_id,
+            {
+              cwd = "/var/lib/louiselm/sessions/" .. launch.session_id .. "/workspace",
+              broker_session_id = launch.session_id,
+              launch_request = launch,
+              start_timeout_ms = START_TIMEOUT_MS,
+              permission_policy = {
+                name = "contained-worker",
+                evaluate = function()
+                  return "allow"
+                end,
               },
-              response(self, function(ready, ready_error)
-                if not ready then
-                  return stop_startup(self, launch, ready_error)
+            },
+            response(self, function(ready, ready_error)
+              if not ready then
+                return stop_startup(self, launch, ready_error)
+              end
+              result.session = ready
+              local function prompt()
+                local sent, prompt_error = ready:prompt(prepared.prompt, completed)
+                if not sent then
+                  completed(nil, prompt_error or "worker prompt refused")
+                else
+                  result.worker_turn_id = sent
+                  watch_provider_hold(self)
                 end
-                result.session = ready
-                local function prompt()
-                  local sent, prompt_error = ready:prompt(prepared.prompt, completed)
-                  if not sent then
-                    completed(nil, prompt_error or "worker prompt refused")
-                  else
-                    result.worker_turn_id = sent
-                    watch_provider_hold(self)
-                  end
+              end
+              if self.index ~= 1 then
+                return prompt()
+              end
+              -- Capture's current Run projection has one anchor Session. The broker
+              -- separately retains every child binding; the finite graph generates no work.
+              local state = ready:inspect()
+              local attached = response(self, function(ok, attach_error)
+                if not ok then
+                  return finish(self, false, attach_error or "Run attachment failed")
                 end
-                if self.index ~= 1 then
-                  return prompt()
-                end
-                -- Capture's current Run projection has one anchor Session. The broker
-                -- separately retains every child binding; the finite graph generates no work.
-                local state = ready:inspect()
-                local attached = response(self, function(ok, attach_error)
-                  if not ok then
-                    return finish(self, false, attach_error or "Run attachment failed")
-                  end
-                  prompt()
-                end)
-                local attached_started, attach_error = Service.attach({
-                  id = launch.run_id,
-                  session_id = state.agent .. "/" .. state.acp_session_id,
-                  agent = state.agent,
-                  acp_session_id = state.acp_session_id,
-                  cwd = state.working_dir,
-                  load_session = ready.client ~= nil and ready.client.agent_capabilities.loadSession == true,
-                }, attached, self.options.system)
-                if not attached_started then
-                  attached(false, attach_error)
-                end
+                prompt()
               end)
-            )
-            if not session then
-              stop_startup(self, launch, start_error)
-            end
+              local attached_started, attach_error = Service.attach({
+                id = launch.run_id,
+                session_id = state.agent .. "/" .. state.acp_session_id,
+                agent = state.agent,
+                acp_session_id = state.acp_session_id,
+                cwd = state.working_dir,
+                load_session = ready.client ~= nil and ready.client.agent_capabilities.loadSession == true,
+              }, attached, self.options.system)
+              if not attached_started then
+                attached(false, attach_error)
+              end
+            end)
+          )
+          if not session then
+            stop_startup(self, launch, start_error)
           end
-        )
-      end
-    )
+        end
+      )
+    end)
   end)
+  if self.initial_preparation then
+    local prepared = self.initial_preparation
+    self.initial_preparation = nil
+    prepared_callback(prepared)
+    return
+  end
   local started, err = self.options.prepare(id, prepared_callback, self.head)
   if not started then
     prepared_callback(nil, err or "could not prepare worker")
@@ -1040,6 +1100,7 @@ function M.new(options)
     if
       not nvim.tbl_contains({
         "envelope",
+        "draft",
         "bead_ids",
         "agent_id",
         "prepare",
@@ -1055,6 +1116,12 @@ function M.new(options)
     end
   end
   local envelope = options.envelope
+  if
+    options.draft ~= nil
+    and (type(options.draft) ~= "table" or not nvim.deep_equal(options.draft.envelope, envelope))
+  then
+    return nil, "Run draft must bind the selected inactive envelope"
+  end
   if
     type(envelope) ~= "table"
     or type(envelope.bead_scope) ~= "table"
@@ -1116,12 +1183,11 @@ function M.new(options)
   then
     return nil, "session_api must support create_session"
   end
-  local owned = nvim.tbl_extend(
-    "force",
-    {},
-    options,
-    { envelope = nvim.deepcopy(envelope), bead_ids = nvim.deepcopy(options.bead_ids) }
-  )
+  local owned = nvim.tbl_extend("force", {}, options, {
+    envelope = nvim.deepcopy(envelope),
+    draft = options.draft and nvim.deepcopy(options.draft),
+    bead_ids = nvim.deepcopy(options.bead_ids),
+  })
   local manifest = {}
   for index in ipairs(owned.bead_ids) do
     manifest["work_" .. index] = { workflow = "beads", outcomes = { { name = "verify", to = "verify_" .. index } } }
@@ -1176,7 +1242,6 @@ function Controller:start(callback)
     return false, "Bead Run requires a completion callback"
   end
   self.status, self.callback = "active", callback
-  progress(self, "authorizing")
   if self.run.session_api == nil then
     local api, errors = Session.new({
       [self.options.agent_id] = {
@@ -1192,39 +1257,74 @@ function Controller:start(callback)
     end
     self.run.session_api, self.owned_api = api, api
   end
-  authorize(self, { kind = "run", envelope = self.options.envelope }, function(receipt)
-    if
-      receipt.schema ~= "louiselm.broker.run-authorization/1"
-      or receipt.run_id ~= self.options.envelope.run_id
-      or receipt.envelope_revision ~= self.options.envelope.envelope_revision
-      or not digest(receipt.envelope_digest)
-    then
-      return finish(self, false, "broker returned a mismatched Run authorization")
-    end
-    self.envelope_digest = receipt.envelope_digest
-    local admitted = response(self, function(token, err)
-      if not token then
-        return finish(self, false, err or "Run admission failed")
+  local function dispatch()
+    progress(self, "authorizing")
+    local request = self.options.draft and { kind = "dispatch", draft = self.options.draft }
+      or { kind = "run", envelope = self.options.envelope }
+    authorize(self, request, function(receipt)
+      if self.options.draft then
+        receipt = dispatch_envelope(self, receipt)
       end
-      local ledger, ledger_error = Ledger.new({ id = self.options.envelope.run_id, token = token }, {
-        capture = "louiselm-capture",
-        system = self.options.system,
-      })
-      if not ledger then
-        return finish(self, false, ledger_error)
+      if
+        not receipt
+        or receipt.schema ~= "louiselm.broker.run-authorization/1"
+        or receipt.run_id ~= self.options.envelope.run_id
+        or receipt.envelope_revision ~= self.options.envelope.envelope_revision
+        or not digest(receipt.envelope_digest)
+      then
+        return finish(self, false, "broker returned a mismatched Run authorization")
       end
-      self.executor.ledger = ledger
-      next_bead(self)
+      self.envelope_digest = receipt.envelope_digest
+      local admitted = response(self, function(token, err)
+        if not token then
+          return finish(self, false, err or "Run admission failed")
+        end
+        local ledger, ledger_error = Ledger.new({ id = self.options.envelope.run_id, token = token }, {
+          capture = "louiselm-capture",
+          system = self.options.system,
+        })
+        if not ledger then
+          return finish(self, false, ledger_error)
+        end
+        self.executor.ledger = ledger
+        next_bead(self)
+      end)
+      local started, err = Service.admit(
+        { id = self.options.envelope.run_id, generated_work_max = #self.options.bead_ids, park_ttl_ms = 3600000 },
+        admitted,
+        self.options.system
+      )
+      if not started then
+        admitted(nil, err)
+      end
     end)
-    local started, err = Service.admit(
-      { id = self.options.envelope.run_id, generated_work_max = #self.options.bead_ids, park_ttl_ms = 3600000 },
-      admitted,
-      self.options.system
-    )
+  end
+  if self.options.draft then
+    progress(self, "preparing")
+    local checked = response(self, function(prepared, preparation_error)
+      if not prepared then
+        return finish(self, false, preparation_error or "Run readiness failed")
+      end
+      local bytes, err = check_prepared(self, self.options.bead_ids[1], prepared)
+      if not bytes then
+        return finish(self, false, err)
+      end
+      prepared = nvim.deepcopy(prepared)
+      stage_prepared(self, prepared, function(staged, stage_error)
+        if not staged then
+          return finish(self, false, stage_error or "Run verification inputs unavailable")
+        end
+        self.initial_preparation, self.initial_staged = prepared, staged
+        dispatch()
+      end)
+    end)
+    local started, err = self.options.prepare(self.options.bead_ids[1], checked, self.head)
     if not started then
-      admitted(nil, err)
+      checked(nil, err)
     end
-  end)
+  else
+    dispatch()
+  end
   return true
 end
 

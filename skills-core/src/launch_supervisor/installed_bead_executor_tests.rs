@@ -871,23 +871,23 @@ fn operator_selection(
         serde_json::json!(["operator-1", "operator-2", "operator-3"]);
     envelope["bead_scope"]["max_mutations"] = serde_json::json!(3);
     let now = envelope["expires_at_ms"].as_u64().unwrap() - 120_000;
-    if std::env::var_os("LOUISELM_TEST_WORKSPACE_SNAPSHOT").is_some() {
-        // Measured full-source cycles exceed the tiny fixture's 90s aggregate
-        // wait. Keep all production operation deadlines unchanged, but give this
-        // explicit offline approval enough lifetime for three complete cycles.
-        let expires = serde_json::json!(now + 300_000);
-        envelope["expires_at_ms"] = expires.clone();
-        envelope["bead_scope"]["expires_at_ms"] = expires;
-    }
+    let duration_ms = if std::env::var_os("LOUISELM_TEST_WORKSPACE_SNAPSHOT").is_some() {
+        300_000
+    } else {
+        120_000
+    };
     // This operator workflow really uses Provider authority. The generic Run
     // fixture now denies it, so select the full positive scope explicitly here.
     envelope["provider_requests"] = serde_json::to_value(guard::approval(now)).unwrap();
-    envelope["provider_requests"]["expires_at_ms"] = envelope["expires_at_ms"].clone();
     envelope["provider_requests"]["models"] = serde_json::json!(["gpt-5.6-luna"]);
     envelope["provider_requests"]["max_effort"] = serde_json::json!("high");
     envelope["provider_requests"]["max_run_requests"] = serde_json::json!(6);
+    envelope["expires_at_ms"] = 0.into();
+    envelope["bead_scope"]["expires_at_ms"] = 0.into();
+    envelope["provider_requests"]["expires_at_ms"] = 0.into();
     serde_json::json!({
-        "schema":"louiselm.operator.bead-run/1", "envelope":envelope,
+        "schema":"louiselm.operator.bead-run/2", "envelope":envelope,
+        "execution":{"kind":"duration", "duration_ms":duration_ms},
         "beads":[{"id":"operator-3","prompt":"promote-fixture-1"},
             {"id":"operator-1","prompt":"promote-fixture-2"},
             {"id":"operator-2","prompt":"promote-fixture-3"}],

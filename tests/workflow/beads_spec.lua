@@ -301,6 +301,85 @@ local function wait(predicate)
   MiniTest.expect.equality(nvim.wait(2000, predicate, 1), true)
 end
 
+T["draft dispatch waits for current inputs and activates one fixed deadline"] = function()
+  local f = fixture()
+  f.hold_prepare = true
+  f.options.envelope.expires_at_ms = 0
+  f.options.draft = {
+    schema = "louiselm.broker.run-draft/1",
+    envelope = nvim.deepcopy(f.options.envelope),
+    execution = { kind = "duration", duration_ms = 1800000 },
+  }
+  local system = f.options.system
+  local dispatched, expiry
+  f.options.system = function(argv, options, done)
+    if argv[2] == "run" and options.stdin then
+      local input = nvim.json.decode(options.stdin)
+      if input.kind == "dispatch" then
+        assert(#f.stage_requests == 1 and #f.workers == 0, "check fixed inputs before consuming authority")
+        dispatched = now_ms()
+        expiry = dispatched + input.draft.execution.duration_ms
+        local envelope = nvim.deepcopy(input.draft.envelope)
+        envelope.expires_at_ms = expiry
+        envelope.bead_scope.expires_at_ms = expiry
+        later(done, {
+          code = 0,
+          stdout = nvim.json.encode({
+            kind = "dispatch",
+            receipt = {
+              schema = "louiselm.broker.run-dispatch/1",
+              draft_digest = DIGEST,
+              dispatched_at_ms = dispatched,
+              envelope = envelope,
+              authorization = {
+                schema = "louiselm.broker.run-authorization/1",
+                run_id = envelope.run_id,
+                envelope_revision = 1,
+                envelope_digest = DIGEST,
+              },
+            },
+          }),
+        })
+        return { kill = function() end }
+      end
+    end
+    return system(argv, options, done)
+  end
+  f:start()
+  MiniTest.expect.equality(#f.calls, 0)
+  MiniTest.expect.equality(#f.workers, 0)
+  MiniTest.expect.equality(f.runner:start(function() end), false)
+  f.prepare_done()
+  wait(function()
+    return #f.workers == 1
+  end)
+  MiniTest.expect.equality(f.runner.options.envelope.expires_at_ms, expiry)
+  MiniTest.expect.equality(#f.prepared, 1)
+  MiniTest.expect.equality(#f.stage_requests, 1)
+  MiniTest.expect.equality(f.runner.options.draft.envelope.expires_at_ms, 0)
+end
+
+T["failed draft preparation never authorizes or admits a Run"] = function()
+  local f = fixture()
+  f.options.envelope.expires_at_ms = 0
+  f.options.draft = {
+    schema = "louiselm.broker.run-draft/1",
+    envelope = nvim.deepcopy(f.options.envelope),
+    execution = { kind = "duration", duration_ms = 1800000 },
+  }
+  f.options.prepare = function(_, done)
+    later(done, nil, "source changed; review required")
+    return true
+  end
+  f:start()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.error, "source changed; review required")
+  MiniTest.expect.equality(#f.calls, 0)
+  MiniTest.expect.equality(#f.workers, 0)
+end
+
 T["worker startup failure stops before another authorization without exposing process prose"] = function()
   local f = fixture()
   f.startup_error = "private startup stderr and credential"

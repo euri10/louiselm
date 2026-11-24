@@ -8,14 +8,14 @@ local HEAD = string.rep("a", 40)
 local function fixture()
   local f = { calls = {}, callbacks = {}, killed = 0 }
   f.selection = {
-    schema = "louiselm.operator.bead-run/1",
+    schema = "louiselm.operator.bead-run/2",
     envelope = {
       schema = "louiselm.broker.run-envelope/2",
       run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       envelope_id = "env",
       envelope_revision = 1,
       controller_uid = 1000,
-      expires_at_ms = 9999999999999,
+      expires_at_ms = 0,
       verification_plan_digest = DIGEST,
       max_sessions = 6,
       bead_scope = {
@@ -24,9 +24,9 @@ local function fixture()
         issue_ids = { "b-1", "b-2", "b-3" },
         effects = { { kind = "comment_add" } },
         max_mutations = 3,
-        expires_at_ms = 9999999999999,
+        expires_at_ms = 0,
       },
-      provider_requests = { models = { "gpt-5.6-luna" }, max_effort = "high", max_run_requests = 12 },
+      provider_requests = { models = { "gpt-5.6-luna" }, max_effort = "high", max_run_requests = 12, expires_at_ms = 0 },
     },
     beads = { { id = "b-1", prompt = "First" }, { id = "b-2", prompt = "Second" }, { id = "b-3", prompt = "Third" } },
     manifest = {
@@ -75,6 +75,7 @@ local function fixture()
   end
   function f:stage(head, snapshot_digest)
     self:reply(0, "1000:1500:750\n")
+    self:reply(0, "run/" .. self.selection.envelope.run_id .. "\n")
     self:reply(0, {
       schema = "louiselm.workspace.preview/1",
       snapshot_digest = snapshot_digest or DIGEST,
@@ -87,6 +88,60 @@ local function fixture()
     return self.calls[#self.calls].options.stdin and nvim.json.decode(self.calls[#self.calls].options.stdin)
   end
   return f
+end
+
+T["draft construction and reopen retain intent without activating authority"] = function()
+  local f = fixture()
+  f.selection.schema = "louiselm.operator.bead-run/2"
+  f.selection.envelope.expires_at_ms = 0
+  f.selection.envelope.bead_scope.expires_at_ms = 0
+  f.selection.envelope.provider_requests.expires_at_ms = 0
+  f.selection.execution = { kind = "duration", duration_ms = 1800000 }
+  local saved = nvim.json.encode(f.selection)
+  for _ = 1, 2 do
+    local restored = nvim.json.decode(saved)
+    local controller, err = require("louiselm.workflow.operator").new(restored, f.options)
+    assert(controller, err)
+    MiniTest.expect.equality(controller.options.draft.execution, f.selection.execution)
+    MiniTest.expect.equality(controller.options.envelope.expires_at_ms, 0)
+    MiniTest.expect.equality(#f.calls, 0)
+    assert(controller:dispose())
+  end
+end
+
+T["draft defaults to relative execution and rejects ambiguous or active terms before effects"] = function()
+  local f = fixture()
+  local controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
+  MiniTest.expect.equality(controller.options.draft.execution, { kind = "duration", duration_ms = 1800000 })
+  assert(controller:dispose())
+  for _, execution in ipairs({
+    false,
+    "30m",
+    {},
+    { kind = "duration", duration_ms = 0 },
+    { kind = "duration", duration_ms = 10, expires_at_ms = 10 },
+    { kind = "stop_by", expires_at_ms = 1, duration_ms = 10 },
+  }) do
+    f.selection.execution = execution
+    local invalid, err = require("louiselm.workflow.operator").new(f.selection, f.options)
+    MiniTest.expect.equality(invalid, nil)
+    assert(type(err) == "string")
+  end
+  f.selection.execution = { kind = "stop_by", expires_at_ms = 1 }
+  controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
+  assert(controller:dispose(), "an elapsed explicit cutoff remains inspectable as a draft")
+  for _, envelope in ipairs({
+    f.selection.envelope,
+    f.selection.envelope.bead_scope,
+    f.selection.envelope.provider_requests,
+  }) do
+    envelope.expires_at_ms = 1
+    local invalid, err = require("louiselm.workflow.operator").new(f.selection, f.options)
+    MiniTest.expect.equality(invalid, nil)
+    assert(type(err) == "string")
+    envelope.expires_at_ms = 0
+  end
+  MiniTest.expect.equality(#f.calls, 0)
 end
 
 T["brokered worker refuses pre-cutover before snapshots or child grants"] = function()
@@ -304,7 +359,7 @@ T["refuses malformed or uncertain staging without retry"] = function()
     f:stage(HEAD)
     f:reply(result.code, result.value)
     assert(f.done and not f.prepared and f.error)
-    MiniTest.expect.equality(#f.calls, 5)
+    MiniTest.expect.equality(#f.calls, 6)
     assert(f.controller:dispose())
   end
 end
@@ -360,11 +415,25 @@ T["refuses public input directories, stale HEAD and dirty checkout before sharin
     f.controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
     f:prepare("b-1", HEAD)
     f:reply(0, "1000:1500:750\n")
+    f:reply(0, "run/" .. f.selection.envelope.run_id .. "\n")
     f:reply(0, preview)
     assert(f.done and not f.prepared and f.error)
-    MiniTest.expect.equality(#f.calls, 2)
+    MiniTest.expect.equality(#f.calls, 3)
     assert(f.controller:dispose())
   end
+end
+
+T["Start refuses a changed Run branch before snapshot or authority"] = function()
+  local f = fixture()
+  f.controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))
+  MiniTest.finally(function()
+    assert(f.controller:dispose())
+  end)
+  f:prepare("b-1", HEAD)
+  f:reply(0, "1000:1500:750\n")
+  f:reply(0, "main\n")
+  MiniTest.expect.equality(f.error, "Run checkout branch changed; review the draft again")
+  MiniTest.expect.equality(#f.calls, 2)
 end
 
 T["refuses implicit options defaults and excess first-Run authority"] = function()

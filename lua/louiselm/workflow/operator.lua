@@ -5,8 +5,9 @@ local nvim = vim
 local M = {}
 
 ---@class louiselm.workflow.OperatorBeadSelection
----@field schema "louiselm.operator.bead-run/1"
----@field envelope table Complete closed Rust RunEnvelope; no credential.
+---@field schema "louiselm.operator.bead-run/2"
+---@field envelope table Complete inactive Rust RunEnvelope; all expiries zero, revision one, no credential.
+---@field execution? { kind: "duration", duration_ms: integer }|{ kind: "stop_by", expires_at_ms: integer } Defaults to thirty minutes from dispatch; an explicit cutoff never shifts.
 ---@field beads { id: string, prompt: string }[] Exact reviewed order, three to five Beads.
 ---@field manifest table Complete resolved SessionInputManifest; source identities are refreshed.
 ---@field cache string Broker-readable immutable cache selected by the operator.
@@ -46,11 +47,19 @@ end
 
 local function validate(selection, options)
   if
-    not closed(
-      selection,
-      { "schema", "envelope", "beads", "manifest", "cache", "plan", "snapshot_parent", "input_group", "worktree" }
-    )
-    or selection.schema ~= "louiselm.operator.bead-run/1"
+    not closed(selection, {
+      "schema",
+      "envelope",
+      "execution",
+      "beads",
+      "manifest",
+      "cache",
+      "plan",
+      "snapshot_parent",
+      "input_group",
+      "worktree",
+    })
+    or selection.schema ~= "louiselm.operator.bead-run/2"
     or not closed(options, { "system", "session_api", "on_promotion" })
     or (options.system ~= nil and type(options.system) ~= "function")
     or (options.on_promotion ~= nil and type(options.on_promotion) ~= "function")
@@ -98,6 +107,35 @@ local function validate(selection, options)
     return nil, "operator Run requires resolved inputs, private sharing and exactly three to five Beads"
   end
   local provider = envelope.provider_requests
+  local execution = selection.execution
+  if execution == nil then
+    execution = { kind = "duration", duration_ms = 1800000 }
+  end
+  if type(execution) ~= "table" then
+    return nil, "Run draft requires a duration or explicit stop-by cutoff"
+  end
+  local limit = execution.kind == "duration" and execution.duration_ms or execution.expires_at_ms
+  if
+    not closed(execution, execution.kind == "duration" and { "kind", "duration_ms" } or { "kind", "expires_at_ms" })
+    or not nvim.tbl_contains({ "duration", "stop_by" }, execution.kind)
+    or type(limit) ~= "number"
+    or limit <= 0
+    or limit > 9007199254740991
+    or limit % 1 ~= 0
+    or envelope.envelope_revision ~= 1
+    or envelope.expires_at_ms ~= 0
+  then
+    return nil, "Run draft requires an inactive envelope and a finite duration or explicit stop-by cutoff"
+  end
+  for _, key in ipairs({ "bead_scope", "provider_requests", "commands", "skill_requests" }) do
+    if
+      envelope[key] ~= nil
+      and envelope[key] ~= nvim.NIL
+      and (type(envelope[key]) ~= "table" or envelope[key].expires_at_ms ~= 0)
+    then
+      return nil, "Run draft capability expiries must be zero until dispatch"
+    end
+  end
   if
     type(provider.max_run_requests) ~= "number"
     or provider.max_run_requests < 1
@@ -196,7 +234,9 @@ function M.new(selection, options)
     return nil, err
   end
   selection = nvim.deepcopy(selection)
+  selection.execution = selection.execution or { kind = "duration", duration_ms = 1800000 }
   local disposed, pending = false, nil
+  local controller
   local seen, bindings = {}, {}
   local system = options.system or nvim.system
   local function prepare(id, done, head)
@@ -254,7 +294,11 @@ function M.new(selection, options)
     end
     local snapshot = selection.snapshot_parent .. "/" .. selection.envelope.run_id .. "-" .. index
     local function ready(binding)
-      local worker, verifier = grants(selection, id, index, binding)
+      if not controller then
+        return finish(nil, "Run controller is unavailable")
+      end
+      local current = nvim.tbl_extend("force", {}, selection, { envelope = controller.options.envelope })
+      local worker, verifier = grants(current, id, index, binding)
       finish({
         grant = worker,
         prompt = selection.beads[index].prompt,
@@ -268,9 +312,9 @@ function M.new(selection, options)
         },
       })
     end
-    local function snapshot_parent_checked(metadata)
-      if metadata ~= selection.envelope.controller_uid .. ":" .. selection.input_group .. ":750\n" then
-        finish(nil, "snapshot parent must be operator-owned, input-group-owned and mode 0750")
+    local function snapshot_branch_checked(branch)
+      if branch ~= "run/" .. selection.envelope.run_id .. "\n" then
+        finish(nil, "Run checkout branch changed; review the draft again")
         return
       end
       execute(
@@ -355,6 +399,16 @@ function M.new(selection, options)
         end
       )
     end
+    local function snapshot_parent_checked(metadata)
+      if metadata ~= selection.envelope.controller_uid .. ":" .. selection.input_group .. ":750\n" then
+        return finish(nil, "snapshot parent must be operator-owned, input-group-owned and mode 0750")
+      end
+      execute(
+        { "/usr/bin/git", "-C", selection.worktree.path, "symbolic-ref", "--quiet", "--short", "HEAD" },
+        nil,
+        snapshot_branch_checked
+      )
+    end
     local function prepare_snapshot()
       execute({ "/usr/bin/stat", "--format=%u:%g:%a", "--", selection.snapshot_parent }, nil, snapshot_parent_checked)
     end
@@ -390,8 +444,10 @@ function M.new(selection, options)
     end
     return true
   end
-  local controller, construction_error = Workflow.new_bead_executor({
+  local construction_error
+  controller, construction_error = Workflow.new_bead_executor({
     envelope = selection.envelope,
+    draft = { schema = "louiselm.broker.run-draft/1", envelope = selection.envelope, execution = selection.execution },
     bead_ids = ids,
     agent_id = selection.manifest.agent.id,
     prepare = prepare,

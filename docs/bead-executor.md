@@ -17,6 +17,23 @@ selection. Calling `start` authorizes those exact bytes through the authenticate
 operator CLI. Construct a new Run ID for each execution; restarting this Lua
 object does not replay or renew approval.
 
+The operator caller below persists an inactive draft instead. Its zero-expiry
+envelope cannot authorize a Session. Opening or reconstructing that draft starts
+no process and reserves no authority, budget or Session. Keep the private JSON
+file until explicit Start or cancellation; no human-wait timer expires it.
+The caller defaults to thirty minutes of execution from dispatch. An explicit
+`execution = {kind = "stop_by", expires_at_ms = ...}` retains an absolute cutoff.
+An elapsed cutoff refuses Start without creating authority.
+
+For headless callers, `draft` is the closed `RunDraft` alongside its matching
+inactive `envelope`. Start prepares the first current-HEAD snapshot and stages
+its exact verification plan before requesting `kind = "dispatch"`. The broker
+samples its clock after checks, fixes every capability expiry, and returns the
+activated envelope and its separate approval digest. The Run ID is single-use,
+including after restart or an uncertain reply. Retry, Park, resume and policy
+reapproval cannot extend that deadline or reset spending. The existing explicit
+absolute `envelope` API remains useful for separately approved headless callers.
+
 `envelope.bead_scope.issue_ids` is the canonical, sorted, unique permission set.
 The execution list (`bead_ids`, or `beads` in the operator caller) carries the
 reviewed order independently. The operator caller requires exactly the same
@@ -206,14 +223,17 @@ building the operator selection below. Copy `proposal.run_id` into
 `envelope.run_id`, its proposed profile ID/revision into `envelope.envelope_id`
 and `envelope.envelope_revision`, and the parsed `manifest.json` into `manifest`.
 Use its `base_commit` for the dedicated worktree's initial `head`.
-Add the reviewed ordered Beads, finite limits, fixed verification plan and expiry
-through the existing operator envelope; none is supplied or approved by preparation.
+Add the reviewed ordered Beads, finite limits and fixed verification plan to the
+inactive operator envelope, with every expiry set to zero. Select an execution
+duration or an explicit stop-by cutoff; preparation grants neither.
 The selected immutable cache must be privately readable by the operator and broker;
 preparation does not change registry, group membership or access permissions.
 
 Before each Run, recheck Bead readiness and have the operator freshly review the
 exact ordered selection, fixed verification plan and finite limits, including the
-Provider request cap, Session count and expiry. Earlier selections, plans, limits
+Provider request cap, Session count and execution duration or stop-by cutoff. At
+Start, current source, selected task readiness, runtime/policy, services, boot
+and required matching rehearsal must be rechecked. Earlier selections, plans, limits
 and approvals are historical records; they do not set defaults or authorize a
 new Run. Obtain separate explicit operator approval for the reviewed Run before
 invoking the caller. Provisioning code changes must be rebuilt into a reviewed
@@ -270,16 +290,24 @@ nvim --noplugin -u NONE --cmd 'set runtimepath^=/approved/louiselm' \
 ```
 
 The file must be operator-owned mode 0600 and at most 64KiB. Review it before
-invocation: after the rehearsal blocker is resolved, starting it will approve the
-exact envelope and admit the real capture ledger. It currently refuses before
-either effect. No API key belongs in it. The closed `louiselm.operator.bead-run/1` object
+Start: after the rehearsal blocker is resolved, Start will recheck current
+readiness and activate the reviewed limits at dispatch. It currently refuses
+before either authorization or capture admission; the saved draft stays intact.
+No API key belongs in it. The closed `louiselm.operator.bead-run/2` object
 contains:
 
 - `envelope`: complete `RunEnvelope`, with a fresh UUID Run ID, exact sorted
   Bead scope, two Sessions per Bead, one failure comment per Bead, fixed plan
-  digest, finite expiry and explicit finite shared Provider request cap. This
+  digest and explicit finite shared Provider request cap. Set the envelope and
+  all capability `expires_at_ms` fields to `0`, with revision `1`; these are
+  placeholders, not authority. This
   first-Run caller permits only `gpt-5.6-luna`, with an at-most-high reasoning cap;
   the registered runtime must select the approved low-effort default.
+- `execution`: optional `{kind: "duration", duration_ms: ...}`, defaulting to
+  `1800000` milliseconds after checks at dispatch, or an explicitly reviewed
+  `{kind: "stop_by", expires_at_ms: ...}` absolute Unix millisecond cutoff.
+  Only one form is allowed. Changed reviewed terms require fresh review;
+  inspecting, reopening or rehearsing a draft never activates or refreshes them.
 - `beads`: exactly the same IDs in reviewed execution order, as `{id, prompt}`
   records containing individually reviewed worker instructions. This order need
   not be alphabetical; the envelope's permission set must remain sorted.

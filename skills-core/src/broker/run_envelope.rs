@@ -20,6 +20,9 @@ use crate::{
     skill_request::ApprovedSkillRequests,
 };
 
+mod draft;
+pub use draft::{ExecutionLimit, RunDispatch, RunDraft};
+
 /// Exact broker-owned authority approved by the operator before child launches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -278,9 +281,17 @@ impl RunEnvelopeStore {
                 .checked_add(1)
                 .ok_or(BrokerError::InvalidGrant)
         })?;
-        if envelope.envelope_revision != expected {
+        if envelope.envelope_revision != expected
+            || current
+                .as_ref()
+                .is_some_and(|prior| envelope.expires_at_ms > prior.expires_at_ms)
+        {
             return Err(BrokerError::InvalidGrant);
         }
+        self.write_approval(envelope)
+    }
+
+    fn write_approval(&self, envelope: &RunEnvelope) -> Result<RunAuthorization, BrokerError> {
         let directory = self.root.join(&envelope.run_id);
         fs::create_dir_all(&directory).map_err(BrokerError::Storage)?;
         sync_directory(&self.root)?;
