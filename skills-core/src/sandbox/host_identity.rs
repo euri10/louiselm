@@ -413,18 +413,20 @@ mod tests {
     fn closing_the_datagram_gate_does_not_release_its_reader() {
         let (sender, receiver) = UnixDatagram::pair().expect("gate socket pair opens");
         receiver
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .expect("gate timeout is set");
-        drop(sender);
+            .set_nonblocking(true)
+            .expect("gate reader is nonblocking");
         let mut byte = [0];
+        sender.send(b"1").expect("release byte is sent");
+        assert_eq!(receiver.recv(&mut byte).expect("release byte arrives"), 1);
+        assert_eq!(byte, *b"1");
+        drop(sender);
 
+        // Inspect EOF semantics without a timed blocking receive, which can
+        // return EINTR under concurrent process/signal activity (louiselm-6lyrq).
         let error = receiver
             .recv(&mut byte)
             .expect_err("a closed datagram peer produces no EOF byte");
 
-        assert!(matches!(
-            error.kind(),
-            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-        ));
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock, "{error}");
     }
 }
