@@ -45,6 +45,7 @@ mod key_cleanup;
 pub(crate) mod qa_fault;
 pub(crate) mod qa_policy;
 mod revocation;
+pub mod startup_receipts;
 mod units;
 pub use broker::{LauncherVerifier, public_runtime_config};
 pub use key_cleanup::{KeyCleanup, SessionKeyState, cleanup_key};

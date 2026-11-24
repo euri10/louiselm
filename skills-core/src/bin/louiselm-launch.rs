@@ -286,7 +286,7 @@ fn run() -> Result<i32, &'static str> {
         .map_err(|_| "launch supervisor unavailable")?;
     let session = receiver
         .recv()
-        .map_err(|_| "launch supervisor unavailable")?
+        .map_err(|_| "launch supervisor exited; inspect this Session's terminal evidence; missing proof requires administrative reboot recovery")?
         .map_err(|error| {
             let (phase, code) = error.diagnostic_parts();
             eprintln!(

@@ -145,6 +145,13 @@ struct FaultSigner {
 }
 
 impl LaunchSigner for FaultSigner {
+    fn save_startup_receipts(
+        &self,
+        receipts: Vec<crate::launcher_install::startup_receipts::StartupReceipt>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        self.signer.save_startup_receipts(receipts, complete)
+    }
     fn complete_session(
         &self,
         terminal: ReceiptPayload,
@@ -274,10 +281,18 @@ fn failure_case(scenario: &'static str) {
         .unwrap();
     assert_eq!(
         failed,
-        if scenario.starts_with("signer") {
-            SupervisorError::SigningUnavailable
+        if scenario.starts_with("storage") {
+            SupervisorError::StartupDeliveryPending {
+                failure: Box::new(SupervisorError::DurabilityUnavailable),
+            }
         } else {
-            SupervisorError::DurabilityUnavailable
+            SupervisorError::RecoveryRequired {
+                failure: Box::new(if scenario.starts_with("signer") {
+                    SupervisorError::SigningUnavailable
+                } else {
+                    SupervisorError::DurabilityUnavailable
+                }),
+            }
         }
     );
     marker(&lines, "BROKER_REJECTED");
@@ -288,8 +303,15 @@ fn failure_case(scenario: &'static str) {
             .join("louiselm-session-session")
             .exists()
     );
-    crate::launcher_install::acquire_identity(&paths, 0)
-        .unwrap()
-        .release()
-        .unwrap();
+    if scenario.starts_with("storage") {
+        crate::launcher_install::acquire_identity(&paths, 0)
+            .unwrap()
+            .release()
+            .unwrap();
+    } else {
+        assert!(matches!(
+            crate::launcher_install::acquire_identity(&paths, 0),
+            Err(crate::launcher_install::LauncherError::Poisoned { slot: 0 })
+        ));
+    }
 }

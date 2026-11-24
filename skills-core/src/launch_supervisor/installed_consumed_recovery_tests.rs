@@ -378,6 +378,13 @@ fn privileged_consumed_recovery_before_reboot() {
     let sessions = sessions();
     fs::create_dir_all(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
+    // Handled guard refusal now produces terminal cleanup. Keep this recovery
+    // fixture receiptless by making exact-proof persistence unavailable.
+    fs::write(
+        paths.state_root.join("startup-receipts"),
+        b"blocked fixture storage",
+    )
+    .unwrap();
     let supervisor = LaunchSupervisor::new(
         connect_control_broker(&config, Duration::from_secs(15)).unwrap(),
         Arc::new(InstalledLaunchSigner::open(&paths, Duration::from_secs(15)).unwrap()),
@@ -399,9 +406,11 @@ fn privileged_consumed_recovery_before_reboot() {
         .unwrap();
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(45)).unwrap().err(),
-        Some(SupervisorError::ConformanceRefused(
-            crate::conformance::admission::Condition::GuardUnavailable
-        ))
+        Some(SupervisorError::RecoveryRequired {
+            failure: Box::new(SupervisorError::ConformanceRefused(
+                crate::conformance::admission::Condition::GuardUnavailable
+            ))
+        })
     );
     marker(&lines, "REFUSAL_RESERVED");
     marker(&lines, "RECOVERY_READY");

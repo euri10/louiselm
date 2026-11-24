@@ -451,6 +451,85 @@ fn admitted_request_reaches_only_the_configured_upstream_with_the_broker_key() {
 }
 
 #[test]
+fn startup_cleanup_releases_its_slot_with_zero_or_spent_provider_reservations() {
+    for spent in [0, 1] {
+        let mut fixture = fixture(Some(approval(5)), Some("openai"));
+        if spent == 1 {
+            fixture.admit(&FakeUpstream::replying(200), 2500).unwrap();
+        }
+        let authorization = fixture.session.authorization().clone();
+        let prefix = fixture
+            .service
+            .receipts()
+            .stored_bytes(&authorization.session_id)
+            .unwrap();
+        let previous = SignedReceipt::parse_canonical(prefix.last().unwrap()).unwrap();
+        let terminal = signed(payload(
+            &authorization,
+            "startup-failed",
+            2,
+            Some(previous.digest().to_string()),
+            ReceiptOutcome::FailedLaunch {
+                authorization: Box::new(Authorization {
+                    authorization_id: authorization.authorization_id.clone(),
+                    request_id: authorization.request_id.clone(),
+                    request_digest: authorization.request_digest.clone(),
+                }),
+                identity_slot: authorization.identity_slot,
+                assigned_uid: authorization.assigned_uid,
+                assigned_gid: authorization.assigned_gid,
+                failure: louiselm_skills::launch_receipt::LaunchFailure {
+                    phase: "startup_finalize".into(),
+                    code: "unavailable".into(),
+                },
+                agent_execution: louiselm_skills::launch_receipt::AgentExecution::Started,
+                retained_storage: louiselm_skills::launch_recovery::RetainedStorage::Sealed,
+            },
+            SessionState::Terminal,
+        ));
+        fixture
+            .service
+            .receipts()
+            .append(
+                &authorization,
+                &terminal.canonical_bytes(),
+                None,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        let successor = fixture
+            .service
+            .authorize(
+                &grant(&request("successor")),
+                3000,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        assert_eq!(successor.identity.slot, authorization.identity_slot);
+        assert_eq!(
+            fixture.service.provider_requests_spent("run-1").unwrap(),
+            spent
+        );
+        assert_eq!(
+            fixture
+                .service
+                .authorizations()
+                .session_count_for_run("run-1")
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            &fixture
+                .service
+                .receipts()
+                .stored_bytes(&authorization.session_id)
+                .unwrap()[..2],
+            prefix.as_slice()
+        );
+    }
+}
+
+#[test]
 fn missing_permission_or_credential_spends_nothing_and_calls_nothing() {
     let upstream = FakeUpstream::replying(200);
     let mut unpermitted = fixture(None, Some("openai"));

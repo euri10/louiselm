@@ -56,6 +56,11 @@ impl BrokerService {
                 InspectionOutcome::RecoveredAfterReboot {
                     proof: Box::new(proof),
                 }
+            } else if chain
+                .last()
+                .is_some_and(|receipt| receipt.payload.outcome.is_failed_launch())
+            {
+                InspectionOutcome::FailedLaunch {}
             } else if receipt_state == Some(SessionState::Terminal) {
                 InspectionOutcome::Disposed {}
             } else {

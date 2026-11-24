@@ -462,8 +462,10 @@ a successor worker nor verifier receives authority. The hold is an explicit
 offline spending double; these cases make no Provider calls.
 Case 9 removes only the private fixture's staged source before startup. It
 requires the real launcher's matching `workspace_prepare/unavailable` diagnostic
-in the stopped Lua Run, one consumed authorization and no successor, verifier,
-task-failure comment or invented terminal receipt. The wrapper must exit.
+in the stopped Lua Run, one consumed authorization and no successor, verifier
+or task-failure comment. The original supervisor must persist an authenticated
+terminal failed-launch receipt without successful preparation or Agent
+measurements, then release its local lease. The wrapper still exits with failure.
 For source-sized stock-runtime diagnosis, the installed workspace fixture accepts
 `LOUISELM_TEST_WORKSPACE_SNAPSHOT` naming a native frozen snapshot; it copies and
 validates every included file and binds the seven project instruction documents.

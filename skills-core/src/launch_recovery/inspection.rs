@@ -11,6 +11,8 @@ pub enum InspectionOutcome {
     Unrecovered {},
     /// The original chain ends in an authenticated supervisor Disposal.
     Disposed {},
+    /// Startup failed and its original supervisor proved terminal cleanup.
+    FailedLaunch {},
     /// Root established cleanup after another boot and the broker accepted it.
     RecoveredAfterReboot {
         /// Exact independently verified proof, separate from the original chain.
@@ -28,7 +30,7 @@ pub struct Inspection {
     pub binding: Binding,
     /// Last historical receipt state; absent when no receipt was ever accepted.
     pub receipt_state: Option<SessionState>,
-    /// Explicit distinction between normal Disposal and separate reboot recovery.
+    /// Distinguishes failed startup, normal Disposal and separate reboot recovery.
     pub outcome: InspectionOutcome,
 }
 
@@ -51,7 +53,9 @@ impl Inspection {
         }
         let terminal = self.receipt_state == Some(SessionState::Terminal);
         match &self.outcome {
-            InspectionOutcome::Disposed {} if terminal => Ok(()),
+            InspectionOutcome::Disposed {} | InspectionOutcome::FailedLaunch {} if terminal => {
+                Ok(())
+            }
             InspectionOutcome::Unrecovered {} if !terminal => Ok(()),
             InspectionOutcome::RecoveredAfterReboot { proof } if !terminal => {
                 proof.validate()?;

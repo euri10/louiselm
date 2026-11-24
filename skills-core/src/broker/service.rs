@@ -414,6 +414,16 @@ impl BrokerService {
                 _ => None,
             })
             .next_back();
+        let last_failure = if head.is_some_and(|receipt| receipt.payload.outcome.is_failed_launch())
+        {
+            Some(ProtocolError::new(
+                ErrorCode::LaunchFailed,
+                Some(SessionState::Terminal),
+                head.map(|receipt| receipt.payload.sequence),
+            ))
+        } else {
+            last_failure
+        };
         Ok(Some(SessionInspection {
             session_id: authorization.session_id.clone(),
             run_id: authorization.run_id.clone(),
@@ -735,17 +745,30 @@ impl BrokerService {
                 commands.policy(&authorization.authorization_id, policy_at_ms)
             })
             .transpose()?;
-        let (ack, _) =
+        let (ack, _, failed) =
             self.store_next_receipt(channel, &authorization, 0, now_ms, clock, verify_signature)?;
         self.retain_workspace_reference(&authorization.session_id, |references| {
             references
                 .launch_receipts
                 .insert(ack.receipt_digest.clone());
         })?;
+        if failed {
+            send(channel, ack.canonical_bytes())?;
+            return Err(BrokerError::LaunchFailed);
+        }
         check_conformance_waiver(&authorization, now_ms, clock)?;
         send(channel, ack.canonical_bytes())?;
-        let (ack, evidence) =
+        let (ack, evidence, failed) =
             self.store_next_receipt(channel, &authorization, 1, now_ms, clock, verify_signature)?;
+        if failed {
+            self.retain_workspace_reference(&authorization.session_id, |references| {
+                references
+                    .launch_receipts
+                    .insert(ack.receipt_digest.clone());
+            })?;
+            send(channel, ack.canonical_bytes())?;
+            return Err(BrokerError::LaunchFailed);
+        }
         let evidence = evidence.ok_or(BrokerError::ReceiptUnauthorized)?;
         self.retain_workspace_reference(&authorization.session_id, |references| {
             references
@@ -810,7 +833,7 @@ impl BrokerService {
         now_ms: u64,
         clock: Instant,
         verify_signature: &mut F,
-    ) -> Result<(ReceiptAcknowledgement, Option<StartEvidence>), BrokerError>
+    ) -> Result<(ReceiptAcknowledgement, Option<StartEvidence>, bool), BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -823,6 +846,7 @@ impl BrokerService {
             return Err(BrokerError::ReceiptUnauthorized);
         }
         let evidence = match &receipt.payload.outcome {
+            ReceiptOutcome::FailedLaunch { .. } => None,
             ReceiptOutcome::Launch { .. } if expected_sequence == 0 => None,
             ReceiptOutcome::Start { evidence, .. } if expected_sequence == 1 => {
                 Some(evidence.clone())
@@ -832,7 +856,11 @@ impl BrokerService {
         // The exact bytes from the wire are what gets stored: nothing here
         // reserializes the supervisor's signed envelope.
         let report = conformance_transfer::receive_report(channel, receipt, deadline)?;
-        check_conformance_waiver(authorization, now_ms, clock)?;
+        let failed = matches!(receipt.payload.outcome, ReceiptOutcome::FailedLaunch { .. });
+        self.check_history(&authorization.session_id)?;
+        if !failed {
+            check_conformance_waiver(authorization, now_ms, clock)?;
+        }
         let acknowledgement = match self.receipts.append(
             authorization,
             &packet.bytes,
@@ -859,7 +887,7 @@ impl BrokerService {
                 sequence: acknowledgement.sequence,
             },
         )?;
-        Ok((acknowledgement, evidence))
+        Ok((acknowledgement, evidence, failed))
     }
 
     /// Original proof observation, not a new check or an operator-view read.

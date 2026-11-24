@@ -133,12 +133,73 @@ fn recovery_cannot_substitute_a_terminal_receipt_for_launch_genesis() {
 }
 
 #[test]
+fn failed_launch_can_begin_a_terminal_chain_without_success_measurements() {
+    let mut value = serde_json::to_value(&chain()[0]).unwrap();
+    value["payload"]["resulting_state"] = serde_json::json!("terminal");
+    value["payload"]["outcome"] = serde_json::json!({
+        "action": "failed_launch",
+        "authorization": launch_authorization("request-0"),
+        "identity_slot": 0,
+        "assigned_uid": 2_000_000,
+        "assigned_gid": 3_000_000,
+        "failure": { "phase": "workspace_prepare", "code": "unavailable" },
+        "agent_execution": "not_started",
+        "retained_storage": "absent"
+    });
+    let receipt: SignedReceipt = serde_json::from_value(value).unwrap();
+    receipt.validate().unwrap();
+    assert_eq!(receipt.payload.sequence, 0);
+    assert_eq!(receipt.payload.resulting_state, SessionState::Terminal);
+    assert!(
+        !String::from_utf8(receipt.canonical_bytes())
+            .unwrap()
+            .contains("measurement")
+    );
+}
+
+#[test]
 fn provider_credentials_cannot_extend_receipt_records() {
     for field in ["credential", "provider_credentials", "authorization_header"] {
         let mut value = serde_json::to_value(&chain()[0]).unwrap();
         value["payload"][field] = serde_json::json!("fixture-provider-secret");
         assert!(serde_json::from_value::<SignedReceipt>(value).is_err());
     }
+}
+
+#[test]
+fn failed_launch_cannot_claim_execution_before_genesis_or_deny_a_signed_start() {
+    use louiselm_skills::launch_receipt::{AgentExecution, LaunchFailure};
+    let mut receipt = chain()[0].clone();
+    receipt.payload.outcome = ReceiptOutcome::FailedLaunch {
+        authorization: Box::new(launch_authorization("request-0")),
+        identity_slot: 0,
+        assigned_uid: 2_000_000,
+        assigned_gid: 3_000_000,
+        failure: LaunchFailure {
+            phase: "sandbox_prepare".into(),
+            code: "unavailable".into(),
+        },
+        agent_execution: AgentExecution::Started,
+        retained_storage: louiselm_skills::launch_recovery::RetainedStorage::Sealed,
+    };
+    receipt.payload.resulting_state = SessionState::Terminal;
+    assert_eq!(receipt.validate(), Err(ReceiptError::ContradictoryCause));
+    let mut prefix = chain()[..2].to_vec();
+    receipt.payload.sequence = 2;
+    receipt.payload.request_id = "failed-launch".into();
+    receipt.payload.previous_receipt_digest = Some(prefix[1].digest().to_string());
+    let ReceiptOutcome::FailedLaunch {
+        agent_execution, ..
+    } = &mut receipt.payload.outcome
+    else {
+        panic!("failed launch")
+    };
+    *agent_execution = AgentExecution::NotStarted;
+    prefix.push(receipt);
+    assert_eq!(
+        louiselm_skills::launch_receipt::verify_chain(&prefix, &anchor(), |_, _, _| true),
+        Err(ReceiptError::InvalidTransition { sequence: 2 })
+    );
 }
 
 #[test]

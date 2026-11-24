@@ -550,11 +550,26 @@ fn installed_broker_worker() {
             "fault must not return a launched Session"
         );
         let inspection = broker.inspect("session").unwrap().unwrap();
+        let terminal_refusal = std::env::var("LOUISELM_BROKER_FAULT").unwrap() == "refuse";
         assert_eq!(
             inspection.state,
-            crate::launch_receipt::SessionState::Starting
+            if terminal_refusal {
+                crate::launch_receipt::SessionState::Terminal
+            } else {
+                crate::launch_receipt::SessionState::Starting
+            }
         );
         assert!(inspection.start_evidence.is_none());
+        if terminal_refusal {
+            assert!(matches!(
+                launched,
+                Err(crate::broker::BrokerError::LaunchFailed)
+            ));
+            assert_eq!(
+                inspection.last_failure.unwrap().code,
+                crate::launch_protocol::ErrorCode::LaunchFailed
+            );
+        }
         println!("BROKER_REJECTED");
         return;
     }

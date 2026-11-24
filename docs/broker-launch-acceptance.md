@@ -25,6 +25,35 @@ be durable while the final audit or ACK fails: its recorded state is Running,
 but no acknowledged `BrokerSession` is returned. Never label a live Session from
 the stored state alone.
 
+A handled startup failure can instead end with a `failed_launch` terminal
+receipt. Only the original supervisor creates it, after proving its owned tree
+and capabilities ended and retained storage is absent or durably sealed.
+Before initialization it can be sequence zero, with no successful preparation,
+Agent identity or Running evidence. During startup it continues the exact
+signed prefix, including envelopes whose acknowledgements were lost. The
+existing post-Start `launch_finalization_failed` Disposal cause remains an
+explicit failed startup outcome. Neither outcome makes startup successful.
+
+The root-owned `startup-receipts/<session-id>.json` record preserves exact signed
+envelopes and any conformance report before delivery. Missing ownership,
+uncertain cleanup, signing or proof-storage failure retains the reservation and
+reports administrative reboot recovery required. The broker verifies the
+authorization, Run, Session, assigned identity, signature and chain, then stores
+the terminal bytes durably before its identity reconciliation permits reuse.
+Broker inspection reports `last_failure.code = launch_failed` for either
+verified failed startup outcome. Installed `recover-inspect` reports
+`outcome.status = failed_launch`, distinct from normal Disposal and reboot
+recovery, even after the supervisor exits. Original normalized startup
+phase/code remain the launch caller's failure.
+If exact terminal proof was saved but its ACK is uncertain, the caller reports
+pending delivery. A missing proof or unproved cleanup reports recovery required.
+
+Slot release does not refund Provider reservations, undo consumption, restore
+Session uniqueness or reset Run counts. These receipts make no zero-request
+claim. ACP silence establishes neither cleanup nor Provider spending. The
+rehearsal refusal and paid-dispatch gate remain in force under `louiselm-a4r1d`;
+installed live acceptance belongs to the maintainer.
+
 ## Aggregate acceptance map
 
 Criteria below refer to the launch aggregate `louiselm-qbr.5.1.1` and its

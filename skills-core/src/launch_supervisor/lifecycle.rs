@@ -220,7 +220,21 @@ impl LaunchedSession {
             )),
             Ok(Err(error)) => match worker.join() {
                 Ok(Err(SupervisorError::AuthorizationRejected) | Ok(_)) => Err(error),
-                Ok(Err(owner_error)) => Err(owner_error),
+                Ok(Err(owner_error)) => {
+                    if matches!(
+                        &error,
+                        SupervisorError::RecoveryRequired { .. }
+                            | SupervisorError::StartupDeliveryPending { .. }
+                    ) {
+                        Err(error)
+                    } else if owner_error == SupervisorError::KeyCleanupUnavailable {
+                        Err(SupervisorError::StartupKeyCleanupPending {
+                            failure: Box::new(error),
+                        })
+                    } else {
+                        Err(owner_error)
+                    }
+                }
                 Err(_) => Err(SupervisorError::WorkerUnavailable),
             },
             Err(_) => match worker.join() {
@@ -294,6 +308,23 @@ impl Drop for LaunchedSession {
 }
 
 impl SessionOwner {
+    fn startup_failure(&self, error: &SupervisorError) -> SupervisorError {
+        if !self.cleanup_unproven
+            && !self.quarantined
+            && self.receipt().payload.outcome.is_failed_launch()
+        {
+            if self.broker_head.digest == self.receipt().digest().to_string() {
+                error.clone()
+            } else {
+                SupervisorError::StartupDeliveryPending {
+                    failure: Box::new(error.clone()),
+                }
+            }
+        } else {
+            super::failed_launch::recovery(error.clone())
+        }
+    }
+
     fn complete_signing_lifetime(&self) -> Result<(), SupervisorError> {
         if self.state != SessionState::Terminal
             || self.cleanup_unproven
@@ -725,7 +756,7 @@ impl SessionOwner {
             self.maintain_conformance();
             if let Some(result) = self.finished.take() {
                 if let Some(error) = startup_failure.as_ref() {
-                    let _ = ready.send(Err(error.clone()));
+                    let _ = ready.send(Err(self.startup_failure(error)));
                 }
                 return result;
             }
@@ -892,7 +923,7 @@ impl SessionOwner {
             self.collect_tool_result();
             if let Some(result) = self.finished.take() {
                 if let Some(error) = startup_failure.as_ref() {
-                    let _ = ready.send(Err(error.clone()));
+                    let _ = ready.send(Err(self.startup_failure(error)));
                 }
                 return result;
             }
@@ -2070,11 +2101,42 @@ impl SessionOwner {
             return;
         };
         let sender = self.sender.clone();
+        let startup_signer = Arc::clone(&self.signer);
+        let startup_payload = payload.clone();
         if self
             .signer
             .sign(
                 payload.canonical_bytes(),
                 Box::new(move |result| {
+                    if startup_payload.outcome.is_failed_launch()
+                        && let Ok(signature) = result
+                    {
+                        let receipt = SignedReceipt {
+                            schema: SIGNED_RECEIPT_SCHEMA.into(),
+                            payload: startup_payload,
+                            signature: signature.clone(),
+                        };
+                        let reply = sender.clone();
+                        let saved = startup_signer.save_startup_receipts(
+                            vec![crate::launcher_install::startup_receipts::StartupReceipt {
+                                receipt_bytes: receipt.canonical_bytes(),
+                                report_bytes: None,
+                            }],
+                            Box::new(move |saved| {
+                                let _ = reply.send(OwnerEvent::Signed {
+                                    operation_epoch,
+                                    result: saved.map(|()| signature),
+                                });
+                            }),
+                        );
+                        if let Err(error) = saved {
+                            let _ = sender.send(OwnerEvent::Signed {
+                                operation_epoch,
+                                result: Err(error),
+                            });
+                        }
+                        return;
+                    }
                     let _ = sender.send(OwnerEvent::Signed {
                         operation_epoch,
                         result,

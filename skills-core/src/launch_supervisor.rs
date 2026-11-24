@@ -26,6 +26,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod failed_launch;
+
 use crate::{
     Digest,
     isolation::{CONTRACT_VERSION, IsolationEvidence},
@@ -354,6 +356,17 @@ pub trait LaunchBroker: Send + Sync {
 
 /// Root-owned receipt signer used for a new chain.
 pub trait LaunchSigner: Send + Sync {
+    /// Saves the exact startup prefix before any envelope is delivered.
+    /// # Errors
+    /// Refuses unavailable durable protected storage; the default grants no proof.
+    fn save_startup_receipts(
+        &self,
+        _receipts: Vec<crate::launcher_install::startup_receipts::StartupReceipt>,
+        _complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::DurabilityUnavailable)
+    }
+
     /// Trusted installed release digest.
     fn release_id(&self) -> &str;
 
@@ -813,6 +826,19 @@ pub trait RunningAgent: Send {
 
 /// OS operations whose concrete implementation holds root authority.
 pub trait LaunchPlatform: Send + Sync {
+    /// Observes and durably seals this owner's retained storage after its tree
+    /// cleanup. This may not inspect or take over any other process tree.
+    /// # Errors
+    /// Refuses untrusted paths or uncertain durability. The default fails closed.
+    fn seal_failed_launch_storage(
+        &self,
+        _request: &LaunchRequest,
+        _sessions_root: &std::path::Path,
+        _complete: SupervisorCompletion<crate::launch_recovery::RetainedStorage>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::CleanupUnproven)
+    }
+
     /// Revalidate retained Session authority without renewing launch authorization.
     /// Runs on the owned conformance worker, never the lifecycle dispatcher.
     /// Implementations must bound their I/O by `deadline`; a stalled worker does
@@ -988,8 +1014,30 @@ pub enum SupervisorError {
     #[error("Session lifecycle mechanic failed")]
     LifecycleMechanicUnavailable,
     /// Tree cleanup could not prove zero survivors; the identity is poisoned.
-    #[error("Session cleanup could not be proved")]
+    #[error("Session cleanup could not be proved; administrative reboot recovery required")]
     CleanupUnproven,
+    /// Original failure is preserved, but valid terminal evidence is unavailable.
+    #[error(
+        "{failure}; terminal launch evidence unavailable; administrative reboot recovery required"
+    )]
+    RecoveryRequired {
+        /// Original normalized startup failure.
+        failure: Box<SupervisorError>,
+    },
+    /// Cleanup and exact proof persistence succeeded, but the terminal ACK is uncertain.
+    #[error(
+        "{failure}; saved terminal cleanup delivery unconfirmed; retry deliver-failed-launch for this Session"
+    )]
+    StartupDeliveryPending {
+        /// Original normalized startup failure.
+        failure: Box<SupervisorError>,
+    },
+    /// Terminal cleanup is durable; completing its signing reference needs maintenance.
+    #[error("{failure}; terminal cleanup accepted; launcher signing-key cleanup needs maintenance")]
+    StartupKeyCleanupPending {
+        /// Original normalized startup failure.
+        failure: Box<SupervisorError>,
+    },
     /// Opaque ACP relay or process waiting failed.
     #[error("Agent stdio relay failed")]
     RelayFailed,
@@ -1007,6 +1055,9 @@ impl SupervisorError {
     #[must_use]
     pub fn diagnostic_parts(&self) -> (&'static str, &'static str) {
         match self {
+            Self::RecoveryRequired { failure }
+            | Self::StartupDeliveryPending { failure }
+            | Self::StartupKeyCleanupPending { failure } => failure.diagnostic_parts(),
             Self::PreparationFailed { phase, code } => (phase, code),
             Self::BrokerTimeout => ("authorization", "timeout"),
             Self::AuthorizationRejected | Self::LaunchDocumentRejected => {
@@ -1254,24 +1305,25 @@ fn run_launch(
         gid: authorization.assigned_gid,
     };
 
-    let identity = inner.platform.acquire_identity(assigned)?;
+    let identity = inner
+        .platform
+        .acquire_identity(assigned)
+        .map_err(failed_launch::recovery)?;
+    let mut startup_history = failed_launch::Startup::new(inner, request, &authorization);
     if identity.identity() != assigned {
-        return Err(release_identity(
-            identity,
+        drop(identity);
+        return Err(failed_launch::recovery(
             SupervisorError::IdentityAssignmentInvalid,
         ));
     }
     let mut capability = match inner.platform.create_capability(request, assigned) {
         Ok(capability) => capability,
-        Err(error) => return Err(release_identity(identity, error)),
+        Err(error) => return Err(startup_history.finish(identity, error)),
     };
     let capability_channel = capability.channel();
     if !matches!(capability_channel, Channel::UnixSocket { .. }) {
         capability.close();
-        return Err(release_identity(
-            identity,
-            SupervisorError::CapabilityUnavailable,
-        ));
+        return Err(startup_history.finish(identity, SupervisorError::CapabilityUnavailable));
     }
     let Ok(mut resolution) = resolve(
         request,
@@ -1283,10 +1335,7 @@ fn run_launch(
         },
     ) else {
         capability.close();
-        return Err(release_identity(
-            identity,
-            SupervisorError::ResolutionFailed,
-        ));
+        return Err(startup_history.finish(identity, SupervisorError::ResolutionFailed));
     };
     if authorization.role == crate::launch_protocol::LaunchRole::FixedVerifier {
         resolution.plan.network = NetworkPolicy::Denied;
@@ -1300,17 +1349,14 @@ fn run_launch(
         );
         let Some(provider_expiry) = authorization.provider_expires_at_ms else {
             capability.close();
-            return Err(release_identity(
+            return Err(startup_history.finish(
                 identity,
                 SupervisorError::BrokeredProviderAuthenticationUnavailable,
             ));
         };
         if checked_at_ms >= provider_expiry {
             capability.close();
-            return Err(release_identity(
-                identity,
-                SupervisorError::AuthorizationRejected,
-            ));
+            return Err(startup_history.finish(identity, SupervisorError::AuthorizationRejected));
         }
     }
 
@@ -1322,11 +1368,12 @@ fn run_launch(
                 let _ = identity.poison();
                 return Err(SupervisorError::CleanupUnproven);
             }
-            return Err(release_identity(identity, error));
+            return Err(startup_history.finish(identity, error));
         }
     };
     if prepared.evidence().check().is_err() {
         return Err(cleanup_prepared(
+            &mut startup_history,
             prepared,
             capability,
             identity,
@@ -1335,6 +1382,7 @@ fn run_launch(
     }
     let Some(leader_pid) = prepared.sandbox_leader_pid() else {
         return Err(cleanup_prepared(
+            &mut startup_history,
             prepared,
             capability,
             identity,
@@ -1345,6 +1393,7 @@ fn run_launch(
         Ok(processes) if processes.contains(&leader_pid) => {}
         _ => {
             return Err(cleanup_prepared(
+                &mut startup_history,
                 prepared,
                 capability,
                 identity,
@@ -1355,6 +1404,7 @@ fn run_launch(
     let membership = prepared.process_membership();
     if membership.contains(leader_pid) != Ok(true) {
         return Err(cleanup_prepared(
+            &mut startup_history,
             prepared,
             capability,
             identity,
@@ -1381,10 +1431,19 @@ fn run_launch(
         });
     let conformance = match inspected {
         Ok(value) => value,
-        Err(error) => return Err(cleanup_prepared(prepared, capability, identity, error)),
+        Err(error) => {
+            return Err(cleanup_prepared(
+                &mut startup_history,
+                prepared,
+                capability,
+                identity,
+                error,
+            ));
+        }
     };
     if brokered && !matches!(conformance.evidence, ConformanceEvidence::Certified { .. }) {
         return Err(cleanup_prepared(
+            &mut startup_history,
             prepared,
             capability,
             identity,
@@ -1405,7 +1464,13 @@ fn run_launch(
     ) {
         Ok(evidence) => evidence,
         Err(error) => {
-            return Err(cleanup_prepared(prepared, capability, identity, error));
+            return Err(cleanup_prepared(
+                &mut startup_history,
+                prepared,
+                capability,
+                identity,
+                error,
+            ));
         }
     };
     let launch_payload = ReceiptPayload {
@@ -1428,15 +1493,27 @@ fn run_launch(
         },
         resulting_state: SessionState::Starting,
     };
-    let launch_receipt = match transact_receipt(inner, launch_payload, conformance.report_bytes) {
+    let launch_receipt = match startup_history.receipt(launch_payload, conformance.report_bytes) {
         Ok(receipt) => receipt,
         Err(error) => {
-            return Err(cleanup_prepared(prepared, capability, identity, error));
+            return Err(cleanup_prepared(
+                &mut startup_history,
+                prepared,
+                capability,
+                identity,
+                error,
+            ));
         }
     };
 
     if let Err(error) = check_conformance_waiver(&authorization, now_ms, validation_clock) {
-        return Err(cleanup_prepared(prepared, capability, identity, error));
+        return Err(cleanup_prepared(
+            &mut startup_history,
+            prepared,
+            capability,
+            identity,
+            error,
+        ));
     }
 
     if brokered {
@@ -1445,10 +1522,17 @@ fn run_launch(
             prepared.prepare_sender_guard(scope, channel)
         });
         if let Err(error) = guard {
-            return Err(cleanup_prepared(prepared, capability, identity, error));
+            return Err(cleanup_prepared(
+                &mut startup_history,
+                prepared,
+                capability,
+                identity,
+                error,
+            ));
         }
     }
 
+    startup_history.execution = crate::launch_receipt::AgentExecution::Attempted;
     let running = match if brokered {
         prepared.start_brokered()
     } else {
@@ -1461,10 +1545,11 @@ fn run_launch(
                 let _ = identity.poison();
                 return Err(SupervisorError::CleanupUnproven);
             }
-            return Err(release_identity(identity, error));
+            return Err(startup_history.finish(identity, error));
         }
     };
 
+    startup_history.execution = crate::launch_receipt::AgentExecution::Started;
     let authentication = match running.authentication() {
         Ok(proof)
             if proof.credentials.pid != leader_pid
@@ -1477,6 +1562,7 @@ fn run_launch(
         }
         _ => {
             return Err(cleanup_running(
+                &mut startup_history,
                 running,
                 capability,
                 identity,
@@ -1501,7 +1587,15 @@ fn run_launch(
         });
     let tool_isolation_digest = match isolated {
         Ok(digest) => digest.to_string(),
-        Err(error) => return Err(cleanup_running(running, capability, identity, error)),
+        Err(error) => {
+            return Err(cleanup_running(
+                &mut startup_history,
+                running,
+                capability,
+                identity,
+                error,
+            ));
+        }
     };
     let binding = CapabilityBinding {
         session_id: request.session_id.clone(),
@@ -1515,16 +1609,34 @@ fn run_launch(
     };
     let agent_process = authentication.process.clone();
     if let Err(error) = await_key_authority(inner) {
-        return Err(cleanup_running(running, capability, identity, error));
+        return Err(cleanup_running(
+            &mut startup_history,
+            running,
+            capability,
+            identity,
+            error,
+        ));
     }
     if let Err(error) = check_conformance_waiver(&authorization, now_ms, validation_clock) {
-        return Err(cleanup_running(running, capability, identity, error));
+        return Err(cleanup_running(
+            &mut startup_history,
+            running,
+            capability,
+            identity,
+            error,
+        ));
     }
     if let Err(error) = capability
         .bind(binding.clone(), authentication)
         .and_then(|()| capability.enable())
     {
-        return Err(cleanup_running(running, capability, identity, error));
+        return Err(cleanup_running(
+            &mut startup_history,
+            running,
+            capability,
+            identity,
+            error,
+        ));
     }
 
     let launch_digest = launch_receipt.digest();
@@ -1552,10 +1664,16 @@ fn run_launch(
         },
         resulting_state: SessionState::Running,
     };
-    let receipt = match transact_receipt(inner, start_payload, None) {
+    let receipt = match startup_history.receipt(start_payload, None) {
         Ok(receipt) => receipt,
         Err(error) => {
-            return Err(cleanup_running(running, capability, identity, error));
+            return Err(cleanup_running(
+                &mut startup_history,
+                running,
+                capability,
+                identity,
+                error,
+            ));
         }
     };
     let signer = Arc::clone(&inner.signer);
@@ -1602,6 +1720,13 @@ fn run_launch(
         Duration::from_millis(u64::from(broker_loss_grace_ms)),
         startup,
     )
+    .map_err(|error| {
+        if error == SupervisorError::WorkerUnavailable {
+            failed_launch::recovery(error)
+        } else {
+            error
+        }
+    })
 }
 
 fn check_conformance_waiver(
@@ -1743,20 +1868,11 @@ fn launch_evidence(
     Ok(evidence)
 }
 
-fn transact_receipt(
+fn deliver_receipt(
     inner: &SupervisorInner,
-    payload: ReceiptPayload,
+    receipt: &SignedReceipt,
     report_bytes: Option<Vec<u8>>,
-) -> Result<SignedReceipt, SupervisorError> {
-    payload
-        .validate()
-        .map_err(|_| SupervisorError::ReceiptInvalid)?;
-    let signature = await_signer(inner, payload.canonical_bytes())?;
-    let receipt = SignedReceipt {
-        schema: SIGNED_RECEIPT_SCHEMA.to_owned(),
-        payload,
-        signature,
-    };
+) -> Result<(), SupervisorError> {
     receipt
         .validate()
         .map_err(|_| SupervisorError::ReceiptInvalid)?;
@@ -1781,7 +1897,7 @@ fn transact_receipt(
         Some(ReceiptDisposition::Rejected) => return Err(SupervisorError::DurabilityUnavailable),
         None => return Err(SupervisorError::AcknowledgementMismatch),
     }
-    Ok(receipt)
+    Ok(())
 }
 
 fn await_broker<T>(
@@ -1824,6 +1940,7 @@ fn await_signer(inner: &SupervisorInner, payload: Vec<u8>) -> Result<String, Sup
 }
 
 fn cleanup_prepared(
+    startup: &mut failed_launch::Startup<'_>,
     mut prepared: Box<dyn PreparedAgent>,
     mut capability: Box<dyn CapabilityGate>,
     identity: Box<dyn IdentityGuard>,
@@ -1831,14 +1948,17 @@ fn cleanup_prepared(
 ) -> SupervisorError {
     capability.close();
     if prepared.dispose().is_ok() {
-        release_identity(identity, original)
+        startup.finish(identity, original)
     } else {
+        // Acquisition already fsynced the fail-closed marker. Even an unlock
+        // failure here retains that marker and cannot grant reuse.
         let _ = identity.poison();
-        SupervisorError::CleanupUnproven
+        failed_launch::recovery(original)
     }
 }
 
 fn cleanup_running(
+    startup: &mut failed_launch::Startup<'_>,
     mut running: Box<dyn RunningAgent>,
     mut capability: Box<dyn CapabilityGate>,
     identity: Box<dyn IdentityGuard>,
@@ -1846,21 +1966,12 @@ fn cleanup_running(
 ) -> SupervisorError {
     capability.close();
     if running.dispose().is_ok() {
-        release_identity(identity, original)
+        startup.finish(identity, original)
     } else {
+        // Acquisition already fsynced the fail-closed marker. Even an unlock
+        // failure here retains that marker and cannot grant reuse.
         let _ = identity.poison();
-        SupervisorError::CleanupUnproven
-    }
-}
-
-fn release_identity(
-    identity: Box<dyn IdentityGuard>,
-    original: SupervisorError,
-) -> SupervisorError {
-    if identity.release().is_ok() {
-        original
-    } else {
-        SupervisorError::CleanupUnproven
+        failed_launch::recovery(original)
     }
 }
 

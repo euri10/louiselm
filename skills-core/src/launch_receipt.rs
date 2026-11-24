@@ -192,10 +192,51 @@ pub struct StartEvidence {
     pub sender_guard_required: bool,
 }
 
+/// Established execution facts, independent of ACP traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExecution {
+    /// The owner never attempted to release restricted Agent initialization.
+    NotStarted,
+    /// Initialization was attempted; its execution could not be established.
+    Attempted,
+    /// The owner established that restricted initialization started.
+    Started,
+}
+
+/// Payload-free classification of the original startup failure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchFailure {
+    /// Fixed trusted startup boundary.
+    pub phase: String,
+    /// Fixed trusted cause category.
+    pub code: String,
+}
+
 /// Privileged lifecycle result recorded by one receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReceiptOutcome {
+    /// The original owner proved its failed startup tree and capabilities ended,
+    /// and its retained storage is safe for identity reuse. This grants no retry
+    /// and makes no statement about Provider spending.
+    FailedLaunch {
+        /// Exact consumed launch authorization.
+        authorization: Box<Authorization>,
+        /// Broker-assigned slot held throughout cleanup.
+        identity_slot: u32,
+        /// Host UID held throughout cleanup.
+        assigned_uid: u32,
+        /// Host GID held throughout cleanup.
+        assigned_gid: u32,
+        /// Original normalized failure.
+        failure: LaunchFailure,
+        /// Only execution facts established by this owner.
+        agent_execution: AgentExecution,
+        /// Durable absence or sealed retained bytes.
+        retained_storage: crate::launch_recovery::RetainedStorage,
+    },
     /// The initial authorized launch and all evidence it established.
     Launch {
         /// Broker authorization for the launch.
@@ -233,6 +274,20 @@ pub enum ReceiptOutcome {
 }
 
 impl ReceiptOutcome {
+    /// Whether this terminal outcome records failed startup with proven cleanup.
+    #[must_use]
+    pub const fn is_failed_launch(&self) -> bool {
+        matches!(
+            self,
+            Self::FailedLaunch { .. }
+                | Self::Disposal {
+                    authority: ReceiptAuthority::Cause {
+                        cause: ReceiptCause::LaunchFinalizationFailed
+                    }
+                }
+        )
+    }
+
     fn authorization(&self) -> Option<&Authorization> {
         match self {
             Self::Launch { authorization, .. }
@@ -244,6 +299,7 @@ impl ReceiptOutcome {
             }
             | Self::Resume { authorization }
             | Self::Interrupt { authorization } => Some(authorization),
+            Self::FailedLaunch { authorization, .. } => Some(authorization),
             _ => None,
         }
     }
@@ -254,7 +310,7 @@ impl ReceiptOutcome {
             Self::Start { .. } | Self::Resume { .. } => state == SessionState::Running,
             Self::Interrupt { .. } => matches!(state, SessionState::Running | SessionState::Parked),
             Self::Park { .. } => state == SessionState::Parked,
-            Self::Disposal { .. } => state == SessionState::Terminal,
+            Self::Disposal { .. } | Self::FailedLaunch { .. } => state == SessionState::Terminal,
         }
     }
 }
@@ -322,6 +378,10 @@ impl ReceiptPayload {
     ///
     /// # Errors
     /// Rejects size/schema/identifier/digest violations, invalid genesis/predecessor shape, inconsistent authorization/evidence, or an outcome incompatible with the resulting state.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One closed outcome table validates the receipt trust boundary without splitting its invariants across dispatch helpers."
+    )]
     pub fn validate(&self) -> Result<(), ReceiptError> {
         check_size(&self.canonical_bytes())?;
         if self.schema != RECEIPT_SCHEMA {
@@ -343,6 +403,30 @@ impl ReceiptPayload {
         }
 
         match &self.outcome {
+            ReceiptOutcome::FailedLaunch {
+                authorization,
+                assigned_uid,
+                assigned_gid,
+                failure,
+                agent_execution,
+                ..
+            } => {
+                validate_authorization(authorization, &authorization.request_id)?;
+                // Restricted initialization requires the durable normal Launch ACK.
+                if self.sequence == 0 && *agent_execution != AgentExecution::NotStarted {
+                    return Err(ReceiptError::ContradictoryCause);
+                }
+                if self.sequence == 0 && self.request_id != authorization.request_id {
+                    return Err(ReceiptError::LaunchRequestMismatch);
+                }
+                if *assigned_uid == 0 || *assigned_gid == 0 {
+                    return Err(ReceiptError::Malformed(
+                        "invalid failed-launch identity".into(),
+                    ));
+                }
+                validate_identifier("failure phase", &failure.phase)?;
+                validate_identifier("failure code", &failure.code)?;
+            }
             ReceiptOutcome::Launch {
                 authorization,
                 evidence,
@@ -696,6 +780,17 @@ fn valid_transition(
     outcome: &ReceiptOutcome,
     resulting_state: SessionState,
 ) -> bool {
+    if let ReceiptOutcome::FailedLaunch {
+        agent_execution, ..
+    } = outcome
+    {
+        return resulting_state == SessionState::Terminal
+            && match state {
+                SessionState::Starting => true,
+                SessionState::Running => *agent_execution == AgentExecution::Started,
+                SessionState::Parked | SessionState::Terminal => false,
+            };
+    }
     matches!(
         (state, outcome, resulting_state),
         (

@@ -7,7 +7,7 @@ use std::{
     path::{Component, Path},
 };
 
-pub(super) fn seal_storage(root: &Path, session: &str) -> Result<RetainedStorage, RecoveryError> {
+pub(crate) fn seal_storage(root: &Path, session: &str) -> Result<RetainedStorage, RecoveryError> {
     crate::launch_protocol::validate_identifier(session).map_err(|_| RecoveryError::Conflict)?;
     if !root.is_absolute()
         || root

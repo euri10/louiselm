@@ -4,7 +4,7 @@
 //! retry never touches an identity after its authenticated recovery is durable.
 
 mod storage;
-use storage::seal_storage;
+pub(crate) use storage::seal_storage;
 
 use super::{
     LauncherConfig, LauncherError, LauncherPaths, LauncherSigner, LauncherVerifier, identity,

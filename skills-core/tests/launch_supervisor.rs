@@ -83,6 +83,45 @@ const PRIVILEGED_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_millis(500);
 const BROKER_LOSS_GRACE_MS: u32 = 250;
 
+fn recovery_required(failure: SupervisorError) -> SupervisorError {
+    SupervisorError::RecoveryRequired {
+        failure: Box::new(failure),
+    }
+}
+
+fn delivery_pending(failure: SupervisorError) -> SupervisorError {
+    SupervisorError::StartupDeliveryPending {
+        failure: Box::new(failure),
+    }
+}
+
+fn assert_failed_startup(setup: &Setup, count: usize) {
+    let records = lock(&setup.signer.saved_startup).clone();
+    assert_eq!(records.len(), count);
+    let receipts: Vec<_> = records
+        .iter()
+        .map(|record| SignedReceipt::parse_canonical(&record.receipt_bytes).unwrap())
+        .collect();
+    let terminal = receipts.last().unwrap();
+    assert!(matches!(
+        terminal.payload.outcome,
+        ReceiptOutcome::FailedLaunch { .. }
+    ));
+    assert_eq!(terminal.payload.resulting_state, SessionState::Terminal);
+    let first = &receipts[0].payload;
+    verify_chain(
+        &receipts,
+        &ChainAnchor {
+            session_id: first.session_id.clone(),
+            run_id: first.run_id.clone(),
+            release_id: first.release_id.clone(),
+            signing_key_id: first.signing_key_id.clone(),
+        },
+        |_, _, _| true,
+    )
+    .unwrap();
+}
+
 type Events = Arc<Mutex<Vec<String>>>;
 
 fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -141,6 +180,7 @@ struct BrokerState {
 }
 
 struct FakeBroker {
+    auto_ack_failed: AtomicBool,
     events: Events,
     state: Mutex<BrokerState>,
     changed: Condvar,
@@ -155,6 +195,7 @@ impl FakeBroker {
         receipt_root: PathBuf,
     ) -> Self {
         Self {
+            auto_ack_failed: AtomicBool::new(true),
             events,
             state: Mutex::new(BrokerState {
                 conformance_updates: Vec::new(),
@@ -651,7 +692,17 @@ impl LaunchBroker for FakeBroker {
         complete: SupervisorCompletion<ReceiptAcknowledgement>,
     ) -> Result<(), SupervisorError> {
         record(&self.events, "broker.append");
+        if lock(&self.state).closed {
+            return Err(SupervisorError::BrokerUnavailable);
+        }
         let behavior = lock(&self.state).append_behavior;
+        let failed = matches!(
+            SignedReceipt::parse_canonical(&receipt_bytes)
+                .unwrap()
+                .payload
+                .outcome,
+            ReceiptOutcome::FailedLaunch { .. }
+        );
         if matches!(behavior, AppendBehavior::Reject) {
             self.changed.notify_all();
             return thread::Builder::new()
@@ -689,6 +740,13 @@ impl LaunchBroker for FakeBroker {
         state.reports.push(report_bytes);
         state.pending_append = Some((index, complete));
         self.changed.notify_all();
+        drop(state);
+        if failed
+            && matches!(behavior, AppendBehavior::Hold)
+            && self.auto_ack_failed.load(Ordering::SeqCst)
+        {
+            self.acknowledge();
+        }
         Ok(())
     }
 
@@ -812,6 +870,8 @@ type PendingSignature = (
 );
 
 struct FakeSigner {
+    saved_startup: Mutex<Vec<louiselm_skills::launcher_install::startup_receipts::StartupReceipt>>,
+    save_fails: AtomicBool,
     authority_valid: AtomicBool,
     fail_completion: AtomicBool,
     containments: Mutex<Vec<louiselm_skills::launcher_install::KeyContainment>>,
@@ -843,6 +903,8 @@ impl FakeSigner {
         Self {
             authority_valid: AtomicBool::new(true),
             fail_completion: AtomicBool::new(false),
+            saved_startup: Mutex::new(Vec::new()),
+            save_fails: AtomicBool::new(false),
             containments: Mutex::new(Vec::new()),
             events,
             release_id: Digest::of(b"release").to_string(),
@@ -891,6 +953,29 @@ impl FakeSigner {
 }
 
 impl LaunchSigner for FakeSigner {
+    fn save_startup_receipts(
+        &self,
+        receipts: Vec<louiselm_skills::launcher_install::startup_receipts::StartupReceipt>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        if self.save_fails.load(Ordering::SeqCst) {
+            thread::spawn(move || complete(Err(SupervisorError::DurabilityUnavailable)));
+        } else {
+            let mut saved = lock(&self.saved_startup);
+            let first = SignedReceipt::parse_canonical(&receipts[0].receipt_bytes).unwrap();
+            if receipts.len() == 1
+                && first.payload.sequence == saved.len() as u64
+                && first.payload.outcome.is_failed_launch()
+            {
+                saved.extend(receipts);
+            } else {
+                assert!(receipts.starts_with(&saved));
+                *saved = receipts;
+            }
+            thread::spawn(move || complete(Ok(())));
+        }
+        Ok(())
+    }
     fn complete_session(
         &self,
         terminal: louiselm_skills::launch_receipt::ReceiptPayload,
@@ -1056,6 +1141,7 @@ impl SupervisorTimer for FakeTimer {
 }
 
 struct FakeIdentityGuard {
+    release_fails: bool,
     events: Events,
     identity: Identity,
     poisoned: bool,
@@ -1068,6 +1154,10 @@ impl IdentityGuard for FakeIdentityGuard {
     }
 
     fn release(mut self: Box<Self>) -> Result<(), SupervisorError> {
+        if self.release_fails {
+            record(&self.events, "identity.release_failed");
+            return Err(SupervisorError::CleanupUnproven);
+        }
         self.released = true;
         record(&self.events, "identity.release");
         Ok(())
@@ -1769,6 +1859,7 @@ impl LaunchPlatform for BubblewrapLaunchPlatform {
             return Err(SupervisorError::IdentityUnavailable);
         }
         Ok(Box::new(FakeIdentityGuard {
+            release_fails: false,
             events: Arc::clone(&self.events),
             identity: assigned,
             poisoned: false,
@@ -1893,6 +1984,8 @@ fn process_status_values(pid: u32, field: &str) -> Option<Vec<u32>> {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct PlatformBehavior {
+    identity_release_fails: bool,
+    storage_unproven: bool,
     conformance_refused: bool,
     agent_credentials: Option<louiselm_skills::launch_transport::KernelCredentials>,
     tool_isolation_unproven: bool,
@@ -2011,6 +2104,20 @@ impl FakePlatform {
 }
 
 impl LaunchPlatform for FakePlatform {
+    fn seal_failed_launch_storage(
+        &self,
+        _: &LaunchRequest,
+        _: &Path,
+        complete: SupervisorCompletion<louiselm_skills::launch_recovery::RetainedStorage>,
+    ) -> Result<(), SupervisorError> {
+        let result = if self.behavior.storage_unproven {
+            Err(SupervisorError::CleanupUnproven)
+        } else {
+            Ok(louiselm_skills::launch_recovery::RetainedStorage::Sealed)
+        };
+        thread::spawn(move || complete(result));
+        Ok(())
+    }
     fn revalidate_conformance(
         &self,
         authorization: &LaunchAuthorization,
@@ -2114,6 +2221,7 @@ impl LaunchPlatform for FakePlatform {
             assigned
         };
         Ok(Box::new(FakeIdentityGuard {
+            release_fails: self.behavior.identity_release_fails,
             events: Arc::clone(&self.events),
             identity,
             poisoned: false,
@@ -2991,7 +3099,7 @@ fn missing_tool_isolation_disposes_restricted_startup_without_enabling_effects()
         Some(SupervisorError::ToolIsolationUnproven)
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
-    assert_eq!(setup.broker.receipts().len(), 1);
+    assert_failed_startup(&setup, 2);
     let events = event_snapshot(&setup.events);
     assert!(events.iter().any(|event| event == "agent.start"));
     assert!(
@@ -2999,11 +3107,13 @@ fn missing_tool_isolation_disposes_restricted_startup_without_enabling_effects()
             .iter()
             .any(|event| event == "capability.bind" || event == "capability.enable")
     );
-    assert!(
-        events
-            .windows(3)
-            .any(|events| events == ["capability.close", "agent.dispose", "identity.release"])
-    );
+    assert!(events.windows(4).any(|events| events
+        == [
+            "capability.close",
+            "agent.dispose",
+            "identity.release",
+            "signer.sign"
+        ]));
 }
 
 #[test]
@@ -3175,7 +3285,7 @@ fn conformance_refusal_cleans_prepared_tree_without_starting_or_signing() {
         ),
         "conformance refusal must reach the launch consumer"
     );
-    assert_eq!(setup.signer.payloads(), [] as [std::vec::Vec<u8>; 0]);
+    assert_failed_startup(&setup, 1);
     assert!(!lock(&setup.platform.agent).started);
     let events = event_snapshot(&setup.events);
     assert!(events.iter().any(|event| event == "agent.dispose"));
@@ -3215,7 +3325,7 @@ fn brokered_launch_refuses_without_a_live_provider_deadline() {
             receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
             Err(error) if error == expected
         ));
-        assert_eq!(setup.signer.payloads(), [] as [std::vec::Vec<u8>; 0]);
+        assert_failed_startup(&setup, 1);
         assert!(!lock(&setup.platform.agent).started);
     }
 }
@@ -3266,7 +3376,7 @@ fn brokered_launch_refuses_unevaluated_host_conformance() {
         receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
         Err(SupervisorError::ConformanceUnavailable)
     ));
-    assert_eq!(setup.signer.payloads(), [] as [std::vec::Vec<u8>; 0]);
+    assert_failed_startup(&setup, 1);
     assert!(!lock(&setup.platform.agent).started);
 }
 
@@ -3352,7 +3462,7 @@ fn skills_off_without_measured_root_masks_refuses_before_any_receipt_or_start() 
         receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
         Some(SupervisorError::IsolationRejected)
     );
-    assert_eq!(lock(&setup.broker.state).receipts.len(), 0);
+    assert_failed_startup(&setup, 1);
     assert!(!lock(&setup.platform.agent).started);
     assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
     assert_eq!(event_count(&setup.events, "identity.release"), 1);
@@ -3725,10 +3835,10 @@ fn revoked_key_during_start_ack_cannot_report_a_successful_launch() {
     setup.broker.wait_for_append(1);
     setup.signer.authority_valid.store(false, Ordering::SeqCst);
     setup.broker.acknowledge();
-    assert!(matches!(
-        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
-        Err(SupervisorError::SigningUnavailable)
-    ));
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+        Some(recovery_required(SupervisorError::SigningUnavailable))
+    );
     assert!(lock(&setup.platform.agent).disposed);
 }
 
@@ -8949,7 +9059,8 @@ fn enable_and_start_failures_leave_only_the_durable_starting_receipt_and_clean_o
             expected,
         );
         let receipts = setup.broker.receipts();
-        assert_eq!(receipts.len(), 1, "case {case:?}");
+        assert_eq!(receipts.len(), 2, "case {case:?}");
+        assert_failed_startup(&setup, 2);
         let receipt =
             SignedReceipt::parse_canonical(&receipts[0]).expect("Starting receipt is canonical");
         assert_eq!(receipt.payload.sequence, 0, "case {case:?}");
@@ -8958,7 +9069,7 @@ fn enable_and_start_failures_leave_only_the_durable_starting_receipt_and_clean_o
             SessionState::Starting,
             "case {case:?}",
         );
-        assert_eq!(setup.signer.payloads().len(), 1, "case {case:?}");
+        assert_eq!(setup.signer.payloads().len(), 2, "case {case:?}");
 
         let events = event_snapshot(&setup.events);
         for event in [
@@ -9000,6 +9111,10 @@ enum RunningReceiptFailure {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One startup receipt fault matrix preserves cleanup, exact history, lease and completion assertions for each failure boundary."
+)]
 fn every_running_receipt_failure_disposes_the_started_tree_once() {
     for case in [
         RunningReceiptFailure::Sign,
@@ -9040,14 +9155,28 @@ fn every_running_receipt_failure_disposes_the_started_tree_once() {
                 .unwrap_or_else(|_| panic!("{case:?} failure did not complete"))
                 .err()
                 .expect("the Running receipt transaction must fail"),
-            expected,
+            if matches!(case, RunningReceiptFailure::Acknowledge) {
+                expected
+            } else if matches!(case, RunningReceiptFailure::Persist) {
+                delivery_pending(expected)
+            } else {
+                recovery_required(expected)
+            },
         );
         assert!(lock(&setup.platform.agent).started, "case {case:?}");
         assert!(lock(&setup.platform.agent).disposed, "case {case:?}");
-        assert_eq!(setup.signer.payloads().len(), 2, "case {case:?}");
+        assert_eq!(
+            setup.signer.payloads().len(),
+            if matches!(case, RunningReceiptFailure::Sign) {
+                2
+            } else {
+                3
+            },
+            "case {case:?}"
+        );
         let receipts = setup.broker.receipts();
         let expected_receipts = if matches!(case, RunningReceiptFailure::Acknowledge) {
-            2
+            3
         } else {
             1
         };
@@ -9073,7 +9202,6 @@ fn every_running_receipt_failure_disposes_the_started_tree_once() {
         for event in [
             "capability.close",
             "agent.dispose",
-            "identity.release",
             "broker.close",
             "complete",
         ] {
@@ -9091,6 +9219,10 @@ fn every_running_receipt_failure_disposes_the_started_tree_once() {
                 .iter()
                 .any(|event| event == "agent.running_dropped_without_disposal"),
             "case {case:?}: {events:?}",
+        );
+        assert_eq!(
+            event_count(&setup.events, "identity.release"),
+            usize::from(!matches!(case, RunningReceiptFailure::Sign))
         );
         assert_eq!(completion_count.load(Ordering::SeqCst), 1);
     }
@@ -9118,7 +9250,7 @@ fn post_start_authority_loss_records_containment_before_launch_fails() {
             .unwrap()
             .err()
             .expect("post-Start withdrawal must fail launch"),
-        SupervisorError::SigningUnavailable,
+        recovery_required(SupervisorError::SigningUnavailable),
     );
     assert_eq!(setup.broker.receipts().len(), 2);
     assert!(
@@ -9148,6 +9280,10 @@ fn post_start_relay_failure_acks_terminal_before_launch_fails() {
         "terminal ACK must precede failure"
     );
     let terminal = SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(0)).unwrap();
+    let saved = lock(&setup.signer.saved_startup);
+    assert_eq!(saved.len(), 3);
+    assert_eq!(saved[2].receipt_bytes, terminal.canonical_bytes());
+    drop(saved);
     assert_eq!(terminal.payload.resulting_state, SessionState::Terminal);
     assert!(matches!(
         terminal.payload.outcome,
@@ -9401,7 +9537,7 @@ fn longer_authorization_wait_does_not_extend_receipt_deadline() {
             .expect("receipt deadline completes")
             .err()
             .expect("held receipt must time out"),
-        SupervisorError::BrokerTimeout,
+        delivery_pending(SupervisorError::BrokerTimeout),
     );
     setup.broker.acknowledge();
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
@@ -9469,7 +9605,7 @@ fn local_identity_unavailability_remains_distinct_from_broker_exhaustion() {
             .expect("identity failure completes")
             .err()
             .expect("identity acquisition must fail"),
-        SupervisorError::IdentityUnavailable,
+        recovery_required(SupervisorError::IdentityUnavailable),
     );
     assert_eq!(
         event_snapshot(&setup.events),
@@ -9537,7 +9673,7 @@ fn invalid_identity_assignment_stops_before_capability_or_spawn() {
                 .expect("identity failure completes")
                 .err()
                 .expect("identity must fail"),
-            SupervisorError::IdentityAssignmentInvalid,
+            recovery_required(SupervisorError::IdentityAssignmentInvalid),
             "case {name}",
         );
         assert_eq!(
@@ -9553,7 +9689,7 @@ fn invalid_identity_assignment_stops_before_capability_or_spawn() {
 }
 
 #[test]
-fn mismatched_identity_guard_is_released_before_capability_or_spawn() {
+fn mismatched_identity_guard_withholds_reuse_without_capability_or_spawn() {
     let setup = setup(
         true,
         |_| {},
@@ -9571,14 +9707,14 @@ fn mismatched_identity_guard_is_released_before_capability_or_spawn() {
             .expect("identity guard mismatch completes")
             .err()
             .expect("mismatched guard must fail"),
-        SupervisorError::IdentityAssignmentInvalid,
+        recovery_required(SupervisorError::IdentityAssignmentInvalid),
     );
     assert_eq!(
         event_snapshot(&setup.events),
         [
             "broker.consume",
             "identity.acquire",
-            "identity.release",
+            "identity.dropped_without_release",
             "broker.close",
             "complete",
         ],
@@ -9612,11 +9748,184 @@ fn mismatched_receipt_ack_disposes_without_starting_or_enabling() {
     assert!(!events.iter().any(|event| event == "agent.start"));
     assert!(!events.iter().any(|event| event == "capability.enable"));
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
-    assert!(
+    assert!(events.windows(4).any(|events| {
         events
-            .windows(3)
-            .any(|events| { events == ["capability.close", "agent.dispose", "identity.release"] })
+            == [
+                "capability.close",
+                "agent.dispose",
+                "identity.release",
+                "signer.sign",
+            ]
+    }));
+}
+
+#[test]
+fn failed_identity_release_cannot_publish_replayable_cleanup_evidence() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior {
+            prepare_fails: true,
+            identity_release_fails: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
     );
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+        Some(recovery_required(SupervisorError::SpawnFailed))
+    );
+    assert!(lock(&setup.signer.saved_startup).is_empty());
+    assert_eq!(event_count(&setup.events, "broker.append"), 0);
+}
+
+#[test]
+fn saved_terminal_delivery_failure_does_not_demand_reboot_or_hide_the_original_cause() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Reject,
+        PlatformBehavior {
+            prepare_fails: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
+    );
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    let error = receiver
+        .recv_timeout(CALLBACK_TIMEOUT)
+        .unwrap()
+        .err()
+        .unwrap();
+    assert_failed_startup(&setup, 1);
+    assert_eq!(
+        error.diagnostic_parts(),
+        ("sandbox_prepare", "spawn_failed")
+    );
+    assert!(!error.to_string().contains("reboot"), "{error}");
+    assert!(error.to_string().contains("saved terminal"), "{error}");
+}
+
+#[test]
+fn key_cleanup_maintenance_after_terminal_ack_preserves_the_original_startup_cause() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior {
+            prepare_fails: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
+    );
+    setup.signer.fail_completion.store(true, Ordering::SeqCst);
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    let error = receiver
+        .recv_timeout(CALLBACK_TIMEOUT)
+        .unwrap()
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        SupervisorError::StartupKeyCleanupPending {
+            failure: Box::new(SupervisorError::SpawnFailed)
+        }
+    );
+    assert_eq!(
+        error.diagnostic_parts(),
+        ("sandbox_prepare", "spawn_failed")
+    );
+    assert_eq!(setup.broker.receipts().len(), 1);
+    assert_failed_startup(&setup, 1);
+}
+
+#[test]
+fn startup_proof_storage_or_sealing_failure_keeps_recovery_required_and_original_diagnostic() {
+    for storage_unproven in [false, true] {
+        let setup = setup(
+            true,
+            |_| {},
+            AppendBehavior::Hold,
+            PlatformBehavior {
+                prepare_fails: true,
+                storage_unproven,
+                ..PlatformBehavior::default()
+            },
+            SUPERVISOR_TIMEOUT,
+        );
+        setup
+            .signer
+            .save_fails
+            .store(!storage_unproven, Ordering::SeqCst);
+        let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+        let error = receiver
+            .recv_timeout(CALLBACK_TIMEOUT)
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(error, recovery_required(SupervisorError::SpawnFailed));
+        assert_eq!(
+            error.diagnostic_parts(),
+            ("sandbox_prepare", "spawn_failed")
+        );
+        assert_eq!(
+            event_count(&setup.events, "identity.release"),
+            usize::from(!storage_unproven)
+        );
+        assert_eq!(event_count(&setup.events, "broker.append"), 0);
+        assert_eq!(event_count(&setup.events, "signer.complete"), 0);
+        assert!(!lock(&setup.platform.agent).started);
+    }
+}
+
+#[test]
+fn terminal_ack_gates_completion_and_saved_bytes_preserve_a_lost_start_ack() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    setup.broker.auto_ack_failed.store(false, Ordering::SeqCst);
+    let (receiver, count) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    let original = setup.broker.receipts()[0].clone();
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    let start = setup.broker.receipts()[1].clone();
+    setup
+        .broker
+        .acknowledge_with(|ack| ack.receipt_digest = Digest::of(b"lost-ack").to_string());
+    setup.broker.wait_for_append(2);
+    assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+    assert_eq!(event_count(&setup.events, "signer.complete"), 0);
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    assert_failed_startup(&setup, 3);
+    let saved = lock(&setup.signer.saved_startup);
+    assert_eq!(saved[0].receipt_bytes, original);
+    assert_eq!(saved[1].receipt_bytes, start);
+    let terminal = SignedReceipt::parse_canonical(&saved[2].receipt_bytes).unwrap();
+    assert!(matches!(
+        terminal.payload.outcome,
+        ReceiptOutcome::FailedLaunch {
+            agent_execution: louiselm_skills::launch_receipt::AgentExecution::Started,
+            ..
+        }
+    ));
+    drop(saved);
+    setup.broker.acknowledge();
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+        Some(SupervisorError::AcknowledgementMismatch)
+    );
+    assert_eq!(event_count(&setup.events, "signer.complete"), 1);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -9650,6 +9959,11 @@ fn spawn_failure_closes_capability_then_releases_identity() {
             "platform.prepare",
             "capability.close",
             "identity.release",
+            "signer.sign",
+            "broker.append",
+            "broker.fsync",
+            "broker.ack",
+            "signer.complete",
             "broker.close",
             "complete",
         ]
@@ -9657,7 +9971,7 @@ fn spawn_failure_closes_capability_then_releases_identity() {
 }
 
 #[test]
-fn unverified_isolation_is_disposed_before_signing() {
+fn unverified_isolation_is_disposed_before_terminal_failure_signing() {
     let setup = setup(
         true,
         |_| {},
@@ -9687,6 +10001,11 @@ fn unverified_isolation_is_disposed_before_signing() {
             "capability.close",
             "agent.dispose",
             "identity.release",
+            "signer.sign",
+            "broker.append",
+            "broker.fsync",
+            "broker.ack",
+            "signer.complete",
             "broker.close",
             "complete",
         ]
@@ -9717,7 +10036,7 @@ fn receipt_rejection_and_timeout_dispose_before_releasing_identity_without_start
                 .unwrap_or_else(|_| panic!("durability {name} did not complete"))
                 .err()
                 .expect("durability must gate launch"),
-            expected,
+            delivery_pending(expected),
         );
         let events = event_snapshot(&setup.events);
         assert!(!events.iter().any(|event| event == "agent.start"));
@@ -9766,7 +10085,7 @@ fn unproved_failure_cleanup_poisons_the_identity_instead_of_releasing_it() {
             .expect("failed cleanup completes")
             .err()
             .expect("unproved cleanup must fail"),
-        SupervisorError::CleanupUnproven,
+        recovery_required(SupervisorError::DurabilityUnavailable),
     );
     let events = event_snapshot(&setup.events);
     assert!(

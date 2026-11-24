@@ -1325,6 +1325,26 @@ impl InstalledLaunchSigner {
 }
 
 impl LaunchSigner for InstalledLaunchSigner {
+    fn save_startup_receipts(
+        &self,
+        receipts: Vec<crate::launcher_install::startup_receipts::StartupReceipt>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let signer = Arc::clone(&self.signer);
+        let deadline = Instant::now() + self.timeout;
+        thread::Builder::new()
+            .name("louiselm-startup-evidence".into())
+            .spawn(move || {
+                complete(
+                    signer
+                        .save_startup_receipts(&receipts, deadline)
+                        .map_err(|_| SupervisorError::DurabilityUnavailable),
+                );
+            })
+            .map(drop)
+            .map_err(|_| SupervisorError::DurabilityUnavailable)
+    }
+
     fn complete_session(
         &self,
         terminal: crate::launch_receipt::ReceiptPayload,
@@ -1552,6 +1572,22 @@ impl SystemLaunchPlatform {
 }
 
 impl LaunchPlatform for SystemLaunchPlatform {
+    fn seal_failed_launch_storage(
+        &self,
+        request: &crate::launch::LaunchRequest,
+        sessions_root: &Path,
+        complete: SupervisorCompletion<crate::launch_recovery::RetainedStorage>,
+    ) -> Result<(), SupervisorError> {
+        complete(
+            crate::launcher_install::consumed_recovery::seal_storage(
+                sessions_root,
+                &request.session_id,
+            )
+            .map_err(|_| SupervisorError::CleanupUnproven),
+        );
+        Ok(())
+    }
+
     fn revalidate_conformance(
         &self,
         authorization: &LaunchAuthorization,

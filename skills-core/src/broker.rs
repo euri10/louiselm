@@ -104,6 +104,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// Startup failed and its authenticated terminal cleanup was stored.
+    #[error("launch failed; terminal cleanup receipt stored")]
+    LaunchFailed,
     /// A separate recovery proof is malformed or cannot authenticate its evidence.
     #[error(transparent)]
     Recovery(#[from] crate::launch_recovery::ProofError),

@@ -463,6 +463,22 @@ fn check_authorized(
     {
         return Err(BrokerError::ReceiptUnauthorized);
     }
+    if let ReceiptOutcome::FailedLaunch {
+        authorization: claimed,
+        identity_slot,
+        assigned_uid,
+        assigned_gid,
+        ..
+    } = &payload.outcome
+        && (claimed.authorization_id != authorization.authorization_id
+            || claimed.request_id != authorization.request_id
+            || claimed.request_digest != authorization.request_digest
+            || *identity_slot != authorization.identity_slot
+            || *assigned_uid != authorization.assigned_uid
+            || *assigned_gid != authorization.assigned_gid)
+    {
+        return Err(BrokerError::ReceiptUnauthorized);
+    }
     if let ReceiptOutcome::Launch { evidence, .. } = &payload.outcome
         && let crate::launch_receipt::ConformanceEvidence::Waived { condition, .. } =
             evidence.conformance

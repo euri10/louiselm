@@ -730,14 +730,34 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
                 .unwrap()
                 .is_some()
         );
-        assert_eq!(
-            fs::read_dir(Path::new(STATE).join("receipts/sessions"))
-                .unwrap()
-                .count(),
-            0
-        );
+        let held = store.consumed_for_session("lua-worker-1").unwrap().unwrap();
+        let scratch = root.path().join("failure-verifier");
+        fs::create_dir(&scratch).unwrap();
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).unwrap();
+        let verifier =
+            Arc::new(crate::launcher_install::LauncherVerifier::open(&paths, &scratch).unwrap());
+        let receipts = crate::broker::ReceiptStore::installed(
+            &Path::new(STATE).join("receipts"),
+            Arc::clone(&verifier),
+        )
+        .unwrap();
+        let bytes = receipts.stored_bytes("lua-worker-1").unwrap();
+        assert_eq!(bytes.len(), 1);
+        let receipt = crate::launch_receipt::SignedReceipt::parse_canonical(&bytes[0]).unwrap();
+        crate::launch_receipt::verify_chain(
+            std::slice::from_ref(&receipt),
+            &verifier.receipt_anchor("lua-worker-1").unwrap(),
+            |key, payload, signature| verifier.verify(key, payload, signature).is_ok(),
+        )
+        .unwrap();
+        assert!(matches!(&receipt.payload.outcome,
+            crate::launch_receipt::ReceiptOutcome::FailedLaunch {
+                failure, agent_execution: crate::launch_receipt::AgentExecution::NotStarted, ..
+            } if failure.phase == "workspace_prepare" && failure.code == "unavailable"));
+        let lease = crate::launcher_install::acquire_identity(&paths, held.identity.slot).unwrap();
+        lease.release().unwrap();
         eprintln!(
-            "startup cause preserved; one consumed authorization; no successor or fabricated terminal receipt"
+            "startup cause preserved; one consumed authorization; authenticated terminal failed launch; no successor"
         );
     } else if startup_only {
         let run_id = selected["envelope"]["run_id"].as_str().unwrap();

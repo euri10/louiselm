@@ -220,6 +220,8 @@ pub enum PostureSummary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    /// Startup failed; authenticated terminal cleanup evidence is durable.
+    LaunchFailed,
     /// Encoded message exceeded the fixed boundary.
     MessageTooLarge,
     /// Bytes were not one complete well-typed JSON message.
@@ -1775,6 +1777,7 @@ fn authorized_lifecycle_outcome(
             authority: ReceiptAuthority::Authorized(authorization),
         } => Some((authorization, LifecycleAction::Disposal)),
         ReceiptOutcome::Launch { .. }
+        | ReceiptOutcome::FailedLaunch { .. }
         | ReceiptOutcome::Start { .. }
         | ReceiptOutcome::Park { .. }
         | ReceiptOutcome::Disposal { .. } => None,
@@ -2321,6 +2324,11 @@ fn invalid_status(state: SessionState, receipt_head: Option<&ReceiptHead>) -> Pr
 )]
 fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
     match code {
+        ErrorCode::LaunchFailed => (
+            "launch failed; terminal cleanup evidence stored",
+            false,
+            NextAction::None,
+        ),
         ErrorCode::MessageTooLarge => ("protocol message is too large", false, NextAction::None),
         ErrorCode::MalformedMessage => ("protocol message is malformed", false, NextAction::None),
         ErrorCode::UnsupportedSchema => (

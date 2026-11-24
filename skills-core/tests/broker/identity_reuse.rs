@@ -1,6 +1,8 @@
 //! A consumed authorization is history, not permanent live identity occupancy.
 use super::*;
 
+#[path = "identity_reuse/failed_launch.rs"]
+mod failed_launch;
 #[path = "identity_reuse/receipted.rs"]
 mod receipted;
 #[path = "identity_reuse/recovery_inspection.rs"]

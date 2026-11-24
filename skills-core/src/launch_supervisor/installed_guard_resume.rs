@@ -45,6 +45,13 @@ impl ResumeSigner {
 }
 
 impl LaunchSigner for ResumeSigner {
+    fn save_startup_receipts(
+        &self,
+        receipts: Vec<crate::launcher_install::startup_receipts::StartupReceipt>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        self.signer.save_startup_receipts(receipts, complete)
+    }
     fn release_id(&self) -> &str {
         self.signer.release_id()
     }
