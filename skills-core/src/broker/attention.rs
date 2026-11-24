@@ -98,6 +98,8 @@ pub enum AttentionReason {
     PermissionRequired,
     /// A Run awaits an operator decision.
     RunParked,
+    /// Exact saved result awaits an operator decision independently of Run lifetime.
+    PromotionPending(String),
     /// A Session ended abnormally or recovery failed.
     SessionFailed,
     /// Exact packaged bytes await an authorized admission ceremony.
@@ -113,6 +115,7 @@ impl AttentionReason {
         match self {
             Self::PermissionRequired => ("permission_required", None),
             Self::RunParked => ("run_parked", None),
+            Self::PromotionPending(_) => ("promotion_pending", None),
             Self::SessionFailed => ("session_failed", None),
             Self::SkillApprovalPending => ("skill_approval_pending", Some("admission_required")),
             Self::SkillUnverified(code) => ("skill_unverified", Some(code.name())),
@@ -148,6 +151,8 @@ impl AttentionCondition {
         self.subject.validate()?;
         if !canonical_uuid(&self.operation_id)
             || self.created_at_ms == 0
+            || matches!(&self.reason, AttentionReason::PromotionPending(id)
+                if !matches!(self.subject, AttentionSubject::Run(_)) || self.linked_run_id.is_some() || !is_record_identifier(id))
             || (matches!(self.subject, AttentionSubject::Supply(_))
                 && (!matches!(
                     self.reason,
@@ -205,6 +210,9 @@ impl ProjectionChange {
                 }
                 if let AttentionReason::EndorsementWithdrawn(details) = &condition.reason {
                     attention["withdrawal"] = json!(details);
+                }
+                if let AttentionReason::PromotionPending(id) = &condition.reason {
+                    attention["result_id"] = json!(id);
                 }
                 json!({"type": "upsert", "attention": attention})
             }

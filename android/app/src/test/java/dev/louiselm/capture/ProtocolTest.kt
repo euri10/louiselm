@@ -11,6 +11,29 @@ import org.json.JSONObject
 
 class ProtocolTest {
     @Test
+    fun promotionPendingIsReadOnlyBoundedRunScopedMetadata() {
+        val payload = """{"generation":1,"items":[{
+          "subject_kind":"run","subject_id":"11111111-2222-4333-8444-555555555555",
+          "kind":"promotion_pending","source_operation_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "created_at_ms":1,"eligible":true,"reason":"Saved result awaits review",
+          "linked_run_id":null,"stage":null,"result_id":"saved-result-1"
+        }]}"""
+        val parsed = parseAttentionResponse(payload)
+        assertTrue(parsed is AttentionFetch.Success)
+        val item = (parsed as AttentionFetch.Success).snapshot.items.single()
+        assertEquals("saved-result-1", item.resultId)
+        for ((field, value) in listOf(
+            "result_id" to "../source", "result_id" to "x".repeat(129),
+            "result_id" to JSONObject.NULL, "subject_kind" to "session", "stage" to "candidate diff",
+            "payload" to "source bytes",
+        )) {
+            val malformed = JSONObject(payload)
+            malformed.getJSONArray("items").getJSONObject(0).put(field, value)
+            assertTrue(parseAttentionResponse(malformed.toString()) is AttentionFetch.OperatorAction)
+        }
+    }
+
+    @Test
     fun sessionNamesAreOptionalBoundedStringsAndCannotLabelOtherSubjects() {
         fun payload(name: Any?, subject: String = "session"): String {
             val value = JSONObject(invalidatedAttentionPayload)

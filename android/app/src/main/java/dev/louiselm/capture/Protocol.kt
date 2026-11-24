@@ -21,6 +21,7 @@ internal enum class AttentionKind(val reason: String) {
     TURN_READY("Agent turn is ready"),
     PERMISSION_REQUIRED("Permission is required"),
     RUN_PARKED("Run is Parked"),
+    PROMOTION_PENDING("Saved result awaits review"),
     SESSION_FAILED("Session failed"),
     SKILL_APPROVAL_PENDING("Skill approval is pending"),
     SKILL_UNVERIFIED("Skill supply is unverified"),
@@ -32,6 +33,7 @@ internal enum class AttentionKind(val reason: String) {
             "turn_ready" -> TURN_READY
             "permission_required" -> PERMISSION_REQUIRED
             "run_parked" -> RUN_PARKED
+            "promotion_pending" -> PROMOTION_PENDING
             "session_failed" -> SESSION_FAILED
             "skill_approval_pending" -> SKILL_APPROVAL_PENDING
             "skill_unverified" -> SKILL_UNVERIFIED
@@ -128,6 +130,7 @@ internal data class AttentionItem(
     val code: AttentionCode?,
     val withdrawal: AttentionWithdrawal? = null,
     val sessionName: String? = null,
+    val resultId: String? = null,
 )
 
 internal data class AttentionSnapshot(
@@ -165,6 +168,7 @@ internal data class AttentionSnapshot(
                     "stage",
                     "code",
                     "withdrawal",
+                    "result_id",
                 ),
                 "attention item",
             )
@@ -204,6 +208,14 @@ internal data class AttentionSnapshot(
             val linkedRunId = optionalString(value, "linked_run_id")
             if (linkedRunId != null) require(validCanonicalUuid(linkedRunId)) { "attention linked Run id is invalid" }
             val stage = optionalString(value, "stage")
+            val resultId = optionalString(value, "result_id")
+            if (kind == AttentionKind.PROMOTION_PENDING) {
+                require(subjectKind == AttentionSubjectKind.RUN && stage == null && linkedRunId == null &&
+                    resultId != null && resultId.length in 1..128 &&
+                    resultId.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '_' || it == '-' }) {
+                    "saved-result Attention metadata is invalid"
+                }
+            } else require(resultId == null) { "saved-result metadata does not match kind" }
             if (subjectKind == AttentionSubjectKind.SUPPLY) {
                 require(linkedRunId == null && stage == null) { "supply Attention cannot carry Run or stage context" }
             }
@@ -241,6 +253,7 @@ internal data class AttentionSnapshot(
                 code,
                 withdrawal,
                 sessionName,
+                resultId,
             )
         }
 

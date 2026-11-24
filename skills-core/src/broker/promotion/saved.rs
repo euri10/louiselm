@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn private_directory(path: &Path) -> Result<fs::File, BrokerError> {
+pub(super) fn private_directory(path: &Path) -> Result<fs::File, BrokerError> {
     let directory = filesystem::open_directory(path)?;
     let metadata = directory.metadata().map_err(BrokerError::Storage)?;
     if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
@@ -77,7 +77,7 @@ pub struct SavedAcceptance {
 }
 
 impl BrokerService {
-    fn saved_path(&self, id: &str) -> Result<PathBuf, BrokerError> {
+    pub(super) fn saved_path(&self, id: &str) -> Result<PathBuf, BrokerError> {
         super::super::record_name(id)?;
         Ok(self.authorizations().root.join("saved-results").join(id))
     }
@@ -185,6 +185,7 @@ impl BrokerService {
         let uid = producer.authorization().controller_uid;
         let path = self.saved_path(&request.request_id)?;
         if path.try_exists().map_err(BrokerError::Storage)? {
+            let _guard = self.lifecycle.promotion_guard();
             let saved = self.saved_result(uid, &request.request_id)?;
             if saved.request != *request
                 || saved.selection != *selection
@@ -193,6 +194,7 @@ impl BrokerService {
             {
                 return Err(BrokerError::RequestMismatch);
             }
+            self.queue_saved_promotion(&saved)?;
             return Ok(saved);
         }
         transfer::remaining(request.expires_at_ms)?;
@@ -249,7 +251,9 @@ impl BrokerService {
             &Digest::of(&serde_json::to_vec(&saved).map_err(|_| BrokerError::InvalidGrant)?)
                 .to_string(),
         )?;
-        self.saved_result(uid, &request.request_id)
+        let saved = self.saved_result(uid, &request.request_id)?;
+        self.queue_saved_promotion(&saved)?;
+        Ok(saved)
     }
 
     /// Records explicit discard without application, continuation or authority renewal.
@@ -264,7 +268,9 @@ impl BrokerService {
         if !saved.discarded {
             write_new_record(&self.saved_path(id)?.join("discarded.json"), &true)?;
         }
-        self.saved_result(uid, id)
+        let saved = self.saved_result(uid, id)?;
+        self.queue_saved_promotion(&saved)?;
+        Ok(saved)
     }
 
     /// Records the trusted operator's Git commit only after complete exact application.
@@ -287,6 +293,7 @@ impl BrokerService {
         }
         if let Some(prior) = &saved.accepted {
             return if prior == accepted {
+                self.queue_saved_promotion(&saved)?;
                 Ok(saved)
             } else {
                 Err(BrokerError::RequestMismatch)
@@ -306,7 +313,9 @@ impl BrokerService {
             return Err(BrokerError::RequestMismatch);
         }
         write_new_record(&self.saved_path(id)?.join("accepted.json"), accepted)?;
-        self.saved_result(uid, id)
+        let saved = self.saved_result(uid, id)?;
+        self.queue_saved_promotion(&saved)?;
+        Ok(saved)
     }
 
     pub(super) fn saved_changes(

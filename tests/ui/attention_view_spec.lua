@@ -97,6 +97,23 @@ T["renders durable conditions read-only and ignores queued frames after close"] 
   assert(lines:find("Skill approval pending", 1, true))
   assert(lines:find(supply.source_operation_id, 1, true))
   assert(not lines:find(supply.reason, 1, true))
+  local promotion = {
+    subject_kind = "run",
+    subject_id = item.linked_run_id,
+    kind = "promotion_pending",
+    source_operation_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    result_id = "saved-result-1",
+    reason = "candidate bytes must never render",
+  }
+  send({ promotion })
+  assert(nvim.wait(1000, function()
+    return table.concat(nvim.api.nvim_buf_get_lines(view.buffer, 0, -1, false), "\n"):find("saved-result-1", 1, true)
+      ~= nil
+  end))
+  lines = table.concat(nvim.api.nvim_buf_get_lines(view.buffer, 0, -1, false), "\n")
+  assert(lines:find("Saved result awaits review", 1, true))
+  assert(not lines:find(promotion.reason, 1, true))
+  MiniTest.expect.equality(pipe.writes, {})
   for field, value in pairs({
     subject_id = "01000",
     kind = "permission_required",

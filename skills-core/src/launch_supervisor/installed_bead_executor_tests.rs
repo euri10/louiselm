@@ -2,6 +2,9 @@
 use super::*;
 use std::cell::Cell;
 
+#[path = "installed_saved_attention_tests.rs"]
+mod saved_attention;
+
 #[path = "installed_stock_operator_tests.rs"]
 mod stock;
 
@@ -228,7 +231,11 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     fs::create_dir(&checkout).unwrap();
     let source_files = workspace::copy_snapshot_files(&workspace::snapshot_bytes(), &checkout);
     for arguments in [
-        vec!["init", "--quiet", "--initial-branch=run/lua-run-4"],
+        vec![
+            "init",
+            "--quiet",
+            "--initial-branch=run/44444444-4444-4444-8444-444444444444",
+        ],
         vec![
             "-c",
             "user.name=Fixture",
@@ -333,7 +340,11 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             continue;
         }
         let mut launch = named_request(&format!("lua-worker-{index}"));
-        launch.run_id = format!("lua-run-{index}");
+        launch.run_id = if index == 4 {
+            "44444444-4444-4444-8444-444444444444".into()
+        } else {
+            format!("lua-run-{index}")
+        };
         launch.session_input_manifest_id = if index == 4 {
             &promotion_manifest
         } else {
@@ -695,6 +706,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             1,
             "double Accept must create only one application journal"
         );
+        saved_attention::assert_saved_decision("44444444-4444-4444-8444-444444444444");
     }
     if (2..=3).contains(&index) && std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let read = |arguments: &[&str]| {

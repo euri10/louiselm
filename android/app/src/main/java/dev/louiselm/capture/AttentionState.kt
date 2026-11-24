@@ -140,6 +140,7 @@ private fun AttentionSnapshot.encode(): String = JSONObject()
             .put("reason", item.kind.reason)
             .put("linked_run_id", item.linkedRunId)
             .put("stage", item.stage)
+            .put("result_id", item.resultId)
             .put("code", item.code?.name?.lowercase())
             .put("withdrawal", item.withdrawal?.let { withdrawal ->
                 JSONObject()

@@ -19,6 +19,10 @@ use louiselm_skills::{
     reason = "One fixture binds exact source, job, producer/verifier evidence and the durable publication marker for store regressions."
 )]
 fn fixture(root: &Path) -> SavedResult {
+    let mut producer_launch = request("producer");
+    producer_launch.run_id = "11111111-2222-4333-8444-555555555555".into();
+    let mut verifier_launch = request("verifier");
+    verifier_launch.run_id.clone_from(&producer_launch.run_id);
     let snapshot = root.join("snapshot");
     fs::create_dir_all(snapshot.join("files")).unwrap();
     let bytes = format!("{{\"schema\":\"louiselm.workspace.snapshot/1\",\"base_commit\":\"{}\",\"files\":[],\"selected\":[],\"changes\":[]}}", "a".repeat(40)).into_bytes();
@@ -51,7 +55,7 @@ fn fixture(root: &Path) -> SavedResult {
             schema: VERIFICATION_SCHEMA.into(),
             protocol_version: PROTOCOL_VERSION,
             request_id: "export".into(),
-            launch: request("producer"),
+            launch: producer_launch,
             head: head.clone(),
             expires_at_ms: 1,
             operation: VerificationOperation::Export {
@@ -69,7 +73,7 @@ fn fixture(root: &Path) -> SavedResult {
                 schema: VERIFICATION_SCHEMA.into(),
                 protocol_version: PROTOCOL_VERSION,
                 request_id: "verify".into(),
-                launch: request("verifier"),
+                launch: verifier_launch,
                 head: ReceiptHead {
                     sequence: 1,
                     digest: head.digest.clone(),
@@ -148,6 +152,55 @@ fn fixture(root: &Path) -> SavedResult {
 }
 
 #[test]
+fn saved_attention_reconciles_durably_and_only_a_decision_clears_it() {
+    use louiselm_skills::broker::attention::{Outbox, ProjectionChange};
+    let root = tempfile::tempdir().unwrap();
+    let saved = fixture(root.path());
+    let service = verification::reopen(root.path(), "pending.sock");
+    service.reconcile_saved_promotions().unwrap();
+    service.reconcile_saved_promotions().unwrap();
+    let outbox_path = root.path().join("authorizations/attention-outbox");
+    let outbox = Outbox::open(&outbox_path).unwrap();
+    let pending = outbox.next().unwrap().unwrap();
+    let wire = pending.wire();
+    assert_eq!(wire["change"]["attention"]["kind"], "promotion_pending");
+    assert_eq!(
+        wire["change"]["attention"]["subject_id"],
+        saved.selection.run_id
+    );
+    assert_eq!(wire["change"]["attention"]["result_id"], "promotion");
+    assert!(!wire.to_string().contains("verification"));
+    assert!(!wire.to_string().contains("exact saved result"));
+    outbox
+        .acknowledge(pending.sequence, &pending.digest())
+        .unwrap();
+    service.reconcile_saved_promotions().unwrap();
+    assert!(outbox.next().unwrap().is_none());
+    assert!(!service.saved_result(1000, "promotion").unwrap().discarded);
+    drop(service);
+    let restarted = verification::reopen(root.path(), "pending-reopened.sock");
+    restarted.reconcile_saved_promotions().unwrap();
+    assert!(
+        Outbox::open(&outbox_path)
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    restarted.discard_saved_result(1000, "promotion").unwrap();
+    restarted.reconcile_saved_promotions().unwrap();
+    let cleared = outbox.next().unwrap().unwrap();
+    let ProjectionChange::Upsert(created) = pending.change else {
+        panic!("pending creation")
+    };
+    let ProjectionChange::Clear(resolved) = cleared.change else {
+        panic!("exact decision clear")
+    };
+    assert_eq!(created, resolved);
+    assert_eq!(cleared.sequence, pending.sequence + 1);
+}
+
+#[test]
 fn saved_result_survives_reopen_and_producer_removal_until_explicit_discard() {
     let root = TempDir::new().unwrap();
     let saved = fixture(root.path());
@@ -186,6 +239,12 @@ fn accepted_decision_requires_complete_application_and_is_durable_and_idempotent
     let root = tempfile::tempdir().unwrap();
     let saved = fixture(root.path());
     let service = verification::reopen(root.path(), "accept.sock");
+    service.reconcile_saved_promotions().unwrap();
+    let outbox = louiselm_skills::broker::attention::Outbox::open(
+        &root.path().join("authorizations/attention-outbox"),
+    )
+    .unwrap();
+    let pending = outbox.next().unwrap().unwrap();
     let accepted = SavedAcceptance {
         commit: "c".repeat(40),
         approval_digest: Digest::of(b"exact review").to_string(),
@@ -217,6 +276,8 @@ fn accepted_decision_requires_complete_application_and_is_durable_and_idempotent
             .is_err()
     );
     fs::write(journal.join("0.done"), b"0").unwrap();
+    service.reconcile_saved_promotions().unwrap();
+    assert_eq!(outbox.next().unwrap(), Some(pending));
     fs::write(
         journal.join("result.json"),
         serde_json::to_vec(&ApplicationResult {

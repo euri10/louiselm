@@ -410,6 +410,7 @@ impl InstalledBroker {
         endpoint: Option<&super::attention::AttentionEndpoint>,
     ) -> Result<bool, BrokerError> {
         let reconciled = self.reconcile_admissions(endpoint);
+        let promotions = self.service.reconcile_saved_promotions();
         let posture = self
             .service
             .reconcile_posture_attention(endpoint, |key, payload, signature| {
@@ -421,6 +422,7 @@ impl InstalledBroker {
             .attention
             .deliver_next(endpoint.ok_or(BrokerError::InvalidGrant)?)?;
         reconciled?;
+        promotions?;
         posture?;
         Ok(delivered)
     }

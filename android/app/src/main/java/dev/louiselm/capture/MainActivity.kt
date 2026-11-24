@@ -612,6 +612,7 @@ class MainActivity : Activity() {
                         AttentionKind.TURN_READY -> R.string.attention_turn_ready
                         AttentionKind.PERMISSION_REQUIRED -> R.string.attention_permission_required
                         AttentionKind.RUN_PARKED -> R.string.attention_run_parked
+                        AttentionKind.PROMOTION_PENDING -> R.string.attention_promotion_pending
                         AttentionKind.SESSION_FAILED -> R.string.attention_session_failed
                         AttentionKind.SKILL_APPROVAL_PENDING -> R.string.attention_skill_approval_pending
                         AttentionKind.SKILL_UNVERIFIED -> R.string.attention_skill_unverified
@@ -636,6 +637,14 @@ class MainActivity : Activity() {
                 if (item.subjectKind == AttentionSubjectKind.SUPPLY && item.kind == AttentionKind.SKILL_APPROVAL_PENDING) {
                     card.addView(TextView(this).apply {
                         text = getString(R.string.attention_request, item.sourceOperationId)
+                    }, matchWidth())
+                }
+                item.resultId?.let { result ->
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_saved_result, result)
+                    }, matchWidth())
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_saved_result_review)
                     }, matchWidth())
                 }
                 item.withdrawal?.let { withdrawal ->

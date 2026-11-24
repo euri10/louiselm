@@ -126,6 +126,16 @@ Only the new commit becomes the `expected_head` of the next Bead.
 If original Run authority has expired, acceptance applies only this result and
 `summary.continuation_required` marks remaining work for separate approval with
 fresh limits. It never renews the old Run or refunds spent budgets.
+
+Each published saved result also owns a durable Run-scoped `promotion_pending`
+Attention item. It survives Session disposal, Run completion or expiry, editor
+and receiver restarts, and notification acknowledgement. Only explicit Accept
+or Discard resolves it. The broker reconciles interrupted delivery from durable
+saved-decision metadata; retries preserve the same condition identity. Existing
+enabled Attention channels receive only bounded Run/result identifiers and a
+fixed label, never source, prompts, verification output or approval authority.
+Neovim and Android show the result identifier and a local review hint; neither
+display nor acknowledgement accepts a result or starts execution.
 The callback's decision may be `nil, error_message` to stop review without
 rejection. Its optional return is an idempotent UI cancellation function,
 called on decision, completion or disposal without granting approval.

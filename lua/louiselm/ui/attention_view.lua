@@ -16,6 +16,7 @@ local labels = {
   turn_ready = "Turn ready",
   permission_required = "Permission required",
   run_parked = "Run parked",
+  promotion_pending = "Saved result awaits review",
   session_failed = "Session failed",
   skill_approval_pending = "Skill approval pending",
   skill_unverified = "Posture unverified",
@@ -103,6 +104,20 @@ local function valid_withdrawal(item)
     and (value.urgency == "relied_on" or value.urgency == "subject_only")
 end
 
+local function valid_result(item)
+  local id = item.result_id
+  if item.kind ~= "promotion_pending" then
+    return id == nil or id == nvim.NIL
+  end
+  return item.subject_kind == "run"
+    and type(id) == "string"
+    and #id >= 1
+    and #id <= 128
+    and id:match("^[%w_%-]+$") ~= nil
+    and (item.stage == nil or item.stage == nvim.NIL)
+    and (item.linked_run_id == nil or item.linked_run_id == nvim.NIL)
+end
+
 local function write(view, lines)
   if view.disposed or not nvim.api.nvim_buf_is_valid(view.buffer) then
     return
@@ -126,6 +141,7 @@ local function render(view, snapshot)
       or (item.kind == "skill_approval_pending" and item.code ~= "admission_required")
       or (item.kind == "skill_unverified" and (item.code == nil or item.code == "admission_required"))
       or not valid_withdrawal(item)
+      or not valid_result(item)
       or (item.linked_run_id ~= nil and item.linked_run_id ~= nvim.NIL and not identifier(item.linked_run_id))
     then
       write(view, { "Attention unavailable: invalid durable item" })
@@ -134,6 +150,10 @@ local function render(view, snapshot)
     lines[#lines + 1] = labels[item.kind] .. (item.code and (" — " .. item.code) or "")
     lines[#lines + 1] = "  " .. item.subject_kind .. ": " .. item.subject_id
     lines[#lines + 1] = "  operation: " .. item.source_operation_id
+    if item.kind == "promotion_pending" then
+      lines[#lines + 1] = "  saved result: " .. item.result_id
+      lines[#lines + 1] = "  Inspect locally; only acceptance or explicit discard resolves this decision."
+    end
     if type(item.linked_run_id) == "string" then
       lines[#lines + 1] = "  Run: " .. item.linked_run_id
     end

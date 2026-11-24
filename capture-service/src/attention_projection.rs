@@ -1,7 +1,7 @@
 //! Ordered projection from the one canonical Control broker.
 
 use super::{
-    AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionStore,
+    AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionKind, AttentionStore,
     AttentionSubjectKind, advance_generation, sort_items, validate_draft, validate_key,
     validate_subject_id, validate_uuid,
 };
@@ -187,6 +187,7 @@ fn apply(items: &mut Vec<AttentionItem>, change: &ProjectionChange) {
                 stage: attention.stage.clone(),
                 code: attention.code,
                 withdrawal: attention.withdrawal.clone(),
+                result_id: attention.result_id.clone(),
             };
             if let Some(previous) = items
                 .iter_mut()
@@ -201,7 +202,10 @@ fn apply(items: &mut Vec<AttentionItem>, change: &ProjectionChange) {
         ProjectionChange::ClearSubject {
             subject_kind,
             subject_id,
-        } => items
-            .retain(|item| item.subject_kind != *subject_kind || item.subject_id != *subject_id),
+        } => items.retain(|item| {
+            item.kind == AttentionKind::PromotionPending
+                || item.subject_kind != *subject_kind
+                || item.subject_id != *subject_id
+        }),
     }
 }

@@ -73,6 +73,17 @@ def client(kind):
         assert uid == config["receiver_uid"]
         token = "wrong" if kind == "wrong" else TOKEN.read_text()
         projection = json.loads((REPO / "tests/fixtures/broker_attention_projection.json").read_bytes())
+        if kind.startswith("promotion-"):
+            key = {"subject_kind": "run", "subject_id": "11111111-2222-4333-8444-555555555555",
+                   "kind": "promotion_pending", "source_operation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+            projection = {"sequence": 2, "change": {"type": "upsert", "attention": {
+                **key, "created_at_ms": 100, "linked_run_id": None, "stage": None,
+                "result_id": "saved-result-1"}}}
+            if kind == "promotion-terminal":
+                projection = {"sequence": 3, "change": {"type": "clear_subject",
+                    "subject_kind": "run", "subject_id": key["subject_id"]}}
+            elif kind == "promotion-clear":
+                projection = {"sequence": 4, "change": {"type": "clear", "key": key}}
         request = {"type": "project", "request_id": "projection-1", "projection": projection, "capability": token}
         try:
             peer.sendall((json.dumps(request) + "\n").encode())
@@ -86,8 +97,9 @@ def client(kind):
         else:
             result = json.loads(reply)
             assert result["type"] == "projection_result"
-            assert result["result"]["sequence"] == 1
-            assert result["result"]["applied"] == (kind == "first")
+            assert result["result"]["sequence"] == projection["sequence"]
+            assert result["result"]["applied"] == (kind in (
+                "first", "promotion-first", "promotion-terminal", "promotion-clear"))
 
 
 @unittest.skipUnless(os.environ.get("LOUISELM_REQUIRE_BROKER_ATTENTION") == "1",
@@ -207,6 +219,29 @@ class InstalledAttention(unittest.TestCase):
                             "--clear-groups", sys.executable, str(client_script), "--client", kind)
                 self.phase("unknown client")
                 command(sys.executable, str(client_script), "--client", "unknown")
+
+                def project(kind):
+                    self.phase(kind)
+                    command("setpriv", "--reuid", str(broker.pw_uid), "--regid", str(broker.pw_gid),
+                            "--clear-groups", sys.executable, str(client_script), "--client", kind)
+
+                def assert_pending(expected):
+                    result = command("setpriv", "--reuid", str(receiver.pw_uid),
+                                     "--regid", str(receiver.pw_gid), "--clear-groups",
+                                     str(binary), "attention", "list", env=env)
+                    items = json.loads(result.stdout)["items"]
+                    pending = [item for item in items if item["kind"] == "promotion_pending"]
+                    self.assertEqual(len(pending), int(expected))
+                    if expected:
+                        self.assertEqual(pending[0]["result_id"], "saved-result-1")
+                        self.assertEqual(pending[0]["reason"], "Saved result awaits review")
+                        for field in ("prompt", "source", "verification", "changes", "job"):
+                            self.assertNotIn(field, pending[0])
+
+                project("promotion-first")
+                project("promotion-retry")
+                project("promotion-terminal")
+                assert_pending(True)
                 self.phase("stop provisioned receiver")
                 process.terminate()
                 process.wait(timeout=5)
@@ -216,6 +251,11 @@ class InstalledAttention(unittest.TestCase):
                 self.phase("replay client")
                 command("setpriv", "--reuid", str(broker.pw_uid), "--regid", str(broker.pw_gid),
                         "--clear-groups", sys.executable, str(client_script), "--client", "retry")
+                project("promotion-retry")
+                assert_pending(True)
+                project("promotion-clear")
+                project("promotion-retry")
+                assert_pending(False)
                 self.phase("stop replay receiver")
                 process.terminate()
                 process.wait(timeout=5)

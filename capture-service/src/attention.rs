@@ -52,6 +52,8 @@ pub enum AttentionKind {
     PermissionRequired,
     /// A Run is waiting for an operator decision after exhaustion.
     RunParked,
+    /// Saved verified work awaits an explicit operator decision beyond its Run lifetime.
+    PromotionPending,
     /// A Session ended with an error while work remains to inspect.
     SessionFailed,
     /// A Skill candidate awaits the local admission ceremony.
@@ -70,6 +72,7 @@ impl AttentionKind {
             Self::TurnReady => "Agent turn is ready",
             Self::PermissionRequired => "Permission is required",
             Self::RunParked => "Run is Parked",
+            Self::PromotionPending => "Saved result awaits review",
             Self::SessionFailed => "Session failed",
             Self::SkillApprovalPending => "Skill approval is pending",
             Self::SkillUnverified => "Skill supply is unverified",
@@ -153,6 +156,9 @@ pub struct AttentionDraft {
     /// Bounded evidence required only for a supply Endorsement withdrawal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withdrawal: Option<AttentionWithdrawal>,
+    /// Exact private saved-result identifier; present only for `promotion_pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_id: Option<String>,
 }
 
 impl AttentionDraft {
@@ -197,6 +203,9 @@ pub struct AttentionItem {
     /// Bounded evidence required only for a supply Endorsement withdrawal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withdrawal: Option<AttentionWithdrawal>,
+    /// Exact private saved-result identifier, never source or verification payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_id: Option<String>,
 }
 
 impl AttentionItem {
@@ -335,6 +344,11 @@ impl AttentionStore {
     /// Rejects unbounded or contradictory fields before changing state.
     pub fn upsert(&self, draft: AttentionDraft) -> Result<AttentionSnapshot, AttentionError> {
         validate_draft(&draft)?;
+        if draft.kind == AttentionKind::PromotionPending {
+            return Err(AttentionError::Invalid(
+                "saved results require an ordered broker projection".into(),
+            ));
+        }
         self.with_lock(|store| {
             let mut state = store.load()?;
             if store.local_park_resolved(&draft.key())? {
@@ -353,6 +367,7 @@ impl AttentionStore {
                 stage: draft.stage,
                 code: draft.code,
                 withdrawal: draft.withdrawal,
+                result_id: draft.result_id,
             };
             let key = item.key();
             let changed = if let Some(current) =
@@ -419,6 +434,11 @@ impl AttentionStore {
     /// Rejects an invalid key and reports persistence failures.
     pub fn clear(&self, key: &AttentionKey) -> Result<AttentionSnapshot, AttentionError> {
         validate_key(key)?;
+        if key.kind == AttentionKind::PromotionPending {
+            return Err(AttentionError::Invalid(
+                "saved results resolve only through their broker decision".into(),
+            ));
+        }
         self.with_lock(|store| {
             let mut state = store.load()?;
             let previous = state.items.len();
@@ -595,7 +615,14 @@ fn validate_draft(draft: &AttentionDraft) -> Result<(), AttentionError> {
         draft.stage.as_deref(),
     )?;
     validate_code(draft.kind, draft.code, draft.stage.as_deref())?;
-    withdrawal::validate(draft.kind, draft.withdrawal.as_ref())
+    withdrawal::validate(draft.kind, draft.withdrawal.as_ref())?;
+    validate_result(
+        draft.kind,
+        draft.subject_kind,
+        draft.result_id.as_deref(),
+        draft.stage.as_deref(),
+        draft.linked_run_id.as_deref(),
+    )
 }
 
 fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
@@ -617,7 +644,43 @@ fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
         item.stage.as_deref(),
     )?;
     validate_code(item.kind, item.code, item.stage.as_deref())?;
-    withdrawal::validate(item.kind, item.withdrawal.as_ref())
+    withdrawal::validate(item.kind, item.withdrawal.as_ref())?;
+    validate_result(
+        item.kind,
+        item.subject_kind,
+        item.result_id.as_deref(),
+        item.stage.as_deref(),
+        item.linked_run_id.as_deref(),
+    )
+}
+
+fn validate_result(
+    kind: AttentionKind,
+    subject: AttentionSubjectKind,
+    result: Option<&str>,
+    stage: Option<&str>,
+    linked_run: Option<&str>,
+) -> Result<(), AttentionError> {
+    let valid = if kind == AttentionKind::PromotionPending {
+        subject == AttentionSubjectKind::Run
+            && stage.is_none()
+            && linked_run.is_none()
+            && result.is_some_and(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            })
+    } else {
+        result.is_none()
+    };
+    if !valid {
+        return Err(AttentionError::Invalid(
+            "saved-result metadata does not match condition".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_session_name(
@@ -670,6 +733,12 @@ fn validate_code(
 
 fn validate_key(key: &AttentionKey) -> Result<(), AttentionError> {
     validate_subject_id(&key.subject_id)?;
+    if key.kind == AttentionKind::PromotionPending && key.subject_kind != AttentionSubjectKind::Run
+    {
+        return Err(AttentionError::Invalid(
+            "saved-result conditions require a Run subject".into(),
+        ));
+    }
     if key.subject_kind == AttentionSubjectKind::Run {
         validate_uuid(&key.subject_id, "Run subject_id")?;
     }
@@ -787,6 +856,7 @@ fn same_content(left: &AttentionItem, right: &AttentionItem) -> bool {
         && left.stage == right.stage
         && left.code == right.code
         && left.withdrawal == right.withdrawal
+        && left.result_id == right.result_id
 }
 
 fn advance_generation(state: &mut PersistedAttention) -> Result<(), AttentionError> {

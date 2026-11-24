@@ -102,6 +102,39 @@ class MainActivityTest {
         shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
         instrumentedPackages = ["dev.louiselm.capture"],
     )
+    fun savedPromotionRemainsReadOnlyAndCachedAfterAcknowledgementAndOfflineRestart() {
+        val options = activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE)
+        val payload = """{"generation":15,"items":[{
+          "subject_kind":"run","subject_id":"11111111-2222-4333-8444-555555555555",
+          "kind":"promotion_pending","source_operation_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "created_at_ms":1,"eligible":false,"reason":"Saved result awaits review",
+          "linked_run_id":null,"stage":null,"result_id":"saved-result-1"
+        }]}"""
+        options.edit().putString("payload", payload).commit()
+        shadowOf(activity).grantPermissions(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        fun checkCard() {
+            val labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+            assertTrue(labels.contains("Saved result awaits review"))
+            assertTrue(labels.contains("Saved result: saved-result-1"))
+            assertTrue(labels.contains(activity.getString(R.string.attention_saved_result_review)))
+            assertFalse(views(activity.window.decorView).filterIsInstance<Button>().any { it.text.toString() in listOf("Accept", "Discard", "Resume") })
+        }
+        checkCard()
+        assertEquals("saved-result-1", AttentionState(activity).cached("fixture-pair")?.items?.single()?.resultId)
+        options.edit().putBoolean("offline", true).commit()
+        controller.close()
+        drainStatus()
+        createActivity()
+        checkCard()
+    }
+
+    @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
     fun sessionNamesAppearAlongsideIdsAndSurviveOfflineRestart() {
         val item = JSONObject(invalidatedAttentionPayload).getJSONArray("items").getJSONObject(0)
         val items = JSONArray()

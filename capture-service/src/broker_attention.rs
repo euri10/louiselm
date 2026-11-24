@@ -212,7 +212,7 @@ impl BrokerAttentionSocket {
 enum Request {
     Project {
         request_id: String,
-        projection: BrokerProjection,
+        projection: Box<BrokerProjection>,
         capability: String,
     },
     RunLifecycle {

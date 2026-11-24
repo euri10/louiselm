@@ -1,5 +1,6 @@
 //! Exact operator promotion, with durable per-effect admission and observations.
 
+mod pending;
 mod saved;
 mod selection;
 mod service;
