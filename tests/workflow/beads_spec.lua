@@ -160,7 +160,15 @@ local function fixture()
         }
       elseif argv[2] == "promotion" then
         local input = nvim.json.decode(options.stdin)
-        if argv[3] == "preview" then
+        if argv[3] == "save" then
+          f.save_calls = (f.save_calls or 0) + 1
+          MiniTest.expect.equality(f.workers[#f.workers].disposed, 0)
+          if f.fail_save then
+            later(done, { code = 1, stdout = "", stderr = "" })
+            return { kill = function() end }
+          end
+          response = { schema = "louiselm.run-saved-result/1", result_id = input.selection.request_id }
+        elseif argv[3] == "preview" then
           f.preview_calls = (f.preview_calls or 0) + 1
           input.selection.expires_at_ms = f.preview_expiry or 9999999999999
           response = {
@@ -299,6 +307,50 @@ end
 
 local function wait(predicate)
   MiniTest.expect.equality(nvim.wait(2000, predicate, 1), true)
+end
+
+T["publication precedes finished worker disposal and promotion review"] = function()
+  local f = fixture()
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = function(_, decide)
+    MiniTest.expect.equality(f.save_calls, 1)
+    MiniTest.expect.equality(f.workers[1].disposed, 1)
+    MiniTest.expect.equality(f.verifiers[1].disposed, 1)
+    f.decide = decide
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.decide ~= nil
+  end)
+  MiniTest.expect.equality(f.save_calls, 1)
+end
+
+T["failed result publication preserves producer and stops before review"] = function()
+  local f = fixture()
+  f.fail_save = true
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = function()
+    error("unpublished result cannot open review")
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.workers[1].disposed, 0)
+  MiniTest.expect.equality(f.preview_calls, nil)
+  MiniTest.expect.equality(f.ok, false)
 end
 
 T["draft dispatch waits for current inputs and activates one fixed deadline"] = function()

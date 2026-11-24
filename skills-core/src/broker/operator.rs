@@ -105,7 +105,7 @@ enum Request {
     #[serde(rename = "louiselm.operator-launch-inputs/1")]
     LaunchInputs { request: Box<LaunchInputsRequest> },
     #[serde(rename = "louiselm.operator-promotion/1")]
-    Promotion { session_id: String },
+    Promotion { result_id: String },
     #[serde(rename = "louiselm.operator-verification/1")]
     Verification {
         request: Box<VerificationControlRequest>,
@@ -156,16 +156,16 @@ enum Request {
     },
 }
 
-/// Opens an authenticated stream that the broker hands to the producing Session.
+/// Opens an authenticated stream for one durable saved result.
 /// The caller then uses `PromotionClient` on this same stream; no Agent handles it.
 /// # Errors
-/// Refuses an untrusted endpoint, invalid Session or unavailable broker.
+/// Refuses an untrusted endpoint, invalid result ID or unavailable broker.
 pub fn promotion_stream(
     path: &Path,
     broker_uid: u32,
-    session_id: &str,
+    result_id: &str,
 ) -> Result<UnixStream, InspectError> {
-    validate_subject(session_id)?;
+    validate_subject(result_id)?;
     let deadline = Instant::now() + TIMEOUT;
     let mut stream = wire::connect(path).map_err(|_| InspectError::BrokerUnavailable)?;
     if peer_uid(&stream)? != broker_uid {
@@ -175,7 +175,7 @@ pub fn promotion_stream(
         return Err(InspectError::BrokerUnavailable);
     }
     let request = Request::Promotion {
-        session_id: session_id.to_owned(),
+        result_id: result_id.to_owned(),
     };
     let bytes = serde_json::to_vec(&request).map_err(|_| InspectError::InvalidRequest)?;
     wire::write(&mut stream, &bytes, deadline).map_err(|_| InspectError::BrokerUnavailable)?;
@@ -187,6 +187,18 @@ pub fn promotion_stream(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerificationControlRequest {
+    /// Publish exact verified bytes before disposing the original producer.
+    SaveResult {
+        /// Exact publication selection, never permission to apply.
+        request: super::promotion::PromotionRequest,
+    },
+    /// Inspect or explicitly discard a saved result without a live Session.
+    SavedResult {
+        /// Saved publication identity.
+        result_id: String,
+        /// Explicit operator discard; false is read-only inspection.
+        discard: bool,
+    },
     /// Copy the selected baseline and exact plan into private broker storage.
     Stage {
         /// Identifier of the private staged input.
@@ -228,6 +240,11 @@ pub enum VerificationControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerificationControlResponse {
+    /// Exact durable publication and explicit discard state.
+    SavedResult {
+        /// Historical verification and remeasured changes, no source payloads.
+        result: Box<super::promotion::SavedResult>,
+    },
     /// Exact private input digest.
     Staged {
         /// Digest of staged snapshot and plan.
@@ -284,6 +301,14 @@ pub fn verification(
         return Err(InspectError::StatusUnavailable);
     }
     let valid = match (request, &response) {
+        (
+            VerificationControlRequest::SaveResult { request },
+            VerificationControlResponse::SavedResult { result },
+        ) => result.request == *request && !result.discarded,
+        (
+            VerificationControlRequest::SavedResult { result_id, discard },
+            VerificationControlResponse::SavedResult { result },
+        ) => result.request.request_id == *result_id && (!discard || result.discarded),
         (
             VerificationControlRequest::Stage { plan_digest, .. },
             VerificationControlResponse::Staged { input_digest },
@@ -1043,8 +1068,8 @@ pub struct OperatorServer {
 }
 
 impl OperatorServer {
-    /// Hands one kernel-authenticated operator stream to the producing worker.
-    /// The worker owns the stream and its complete preview/commit transaction.
+    /// Hands one kernel-authenticated operator stream to the saved-result service.
+    /// The service owns the stream and its complete preview/commit transaction.
     /// # Errors
     /// Returns listener failure; malformed or disconnected clients are isolated.
     pub fn serve_promotion_once(
@@ -1060,14 +1085,14 @@ impl OperatorServer {
             wire::write(&mut stream, READY, deadline).map_err(|_| InspectError::InvalidRequest)?;
             let bytes =
                 wire::read(&mut stream, deadline).map_err(|_| InspectError::InvalidRequest)?;
-            let Request::Promotion { session_id } =
+            let Request::Promotion { result_id } =
                 serde_json::from_slice(&bytes).map_err(|_| InspectError::InvalidRequest)?
             else {
                 return Err(InspectError::InvalidRequest);
             };
-            validate_subject(&session_id)?;
+            validate_subject(&result_id)?;
             handoff(
-                &session_id,
+                &result_id,
                 stream
                     .try_clone()
                     .map_err(|_| InspectError::StatusUnavailable)?,
@@ -1330,7 +1355,7 @@ mod promotion_tests {
     use std::{os::unix::fs::PermissionsExt, thread};
 
     #[test]
-    fn authenticated_promotion_stream_reaches_exact_session_worker() {
+    fn authenticated_promotion_stream_reaches_exact_saved_result() {
         let root = tempfile::tempdir().unwrap();
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let path = root.path().join("promotion.sock");
@@ -1339,13 +1364,13 @@ mod promotion_tests {
         let worker = thread::spawn(move || {
             server
                 .serve_promotion_once(|id, mut stream| {
-                    assert_eq!(id, "worker-one");
+                    assert_eq!(id, "saved-one");
                     wire::write(&mut stream, b"exact-preview", Instant::now() + TIMEOUT)
                         .map_err(|_| InspectError::StatusUnavailable)
                 })
                 .unwrap();
         });
-        let mut stream = promotion_stream(&path, uid, "worker-one").unwrap();
+        let mut stream = promotion_stream(&path, uid, "saved-one").unwrap();
         assert_eq!(
             wire::read(&mut stream, Instant::now() + TIMEOUT).unwrap(),
             b"exact-preview"

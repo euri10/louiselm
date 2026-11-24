@@ -411,6 +411,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             }) } else { None },
             "journal_parent":if index == 4 { Some(&journal) } else { None },
             "plan":plan,"plan_digest":plan_digest,
+            "saved_ready":operator.join("saved-ready"),"saved_cleaned":operator.join("saved-cleaned"),
             "hold_ready":operator.join("hold-ready"),"hold_published":operator.join("hold-published")}),
         );
     }
@@ -502,6 +503,8 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     }
     assert!(broker_group.0.processes().unwrap().contains(&daemon.0.id()));
     let hold_injector = (index >= 6).then(|| inject_provider_hold(&state, index, now));
+    let saved_cleanup = (index == 4)
+        .then(|| expire_saved_result_sessions(&state, (config.broker_uid, config.broker_gid), now));
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit stable Neovim executable");
     let groups = if index == 5 {
@@ -601,6 +604,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         }
         command.status().unwrap()
     };
+    if let Some(cleanup) = saved_cleanup {
+        cleanup.join().unwrap();
+    }
     if let Some(injector) = hold_injector {
         injector.join().unwrap();
         let store = crate::broker::AuthorizationStore::open(
@@ -774,6 +780,56 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     }
     eprintln!("installed Lua launcher exit and guard cleanup proven");
     terminate(&mut daemon);
+}
+
+fn expire_saved_result_sessions(
+    operator: &Path,
+    owner: (u32, u32),
+    now: u64,
+) -> thread::JoinHandle<()> {
+    let ready = operator.join("saved-ready");
+    let cleaned = operator.join("saved-cleaned");
+    thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let sealed = ["lua-worker-4", "lua-verifier-4"].iter().all(|id| {
+                let root = Path::new(crate::launch_supervisor::SYSTEM_SESSIONS_ROOT).join(id);
+                fs::metadata(&root).is_ok_and(|meta| meta.mode() & 0o7777 == 0o700)
+                    && fs::read(root.join("workspace-retention.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                        .is_some_and(|marker| marker["disposed"] == true)
+            });
+            if ready.exists() && sealed {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "saved producer/verifier never reached sealed Disposal"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let report = crate::workspace::retention::cleanup_expired(
+            owner,
+            now + crate::workspace::retention::DEFAULT_RETENTION_MS + 86_400_000,
+        )
+        .unwrap();
+        assert_eq!(report.failed, 0, "expired Session cleanup failed");
+        assert_eq!(
+            report.removed, 2,
+            "cleanup must actually remove both finished Session trees"
+        );
+        for id in ["lua-worker-4", "lua-verifier-4"] {
+            assert!(
+                !Path::new(crate::launch_supervisor::SYSTEM_SESSIONS_ROOT)
+                    .join(id)
+                    .join("workspace")
+                    .exists()
+            );
+        }
+        fs::write(cleaned, b"").unwrap();
+        println!("SAVED_RESULT_EXPIRED_SESSION_STORAGE_REMOVED");
+    })
 }
 
 fn inject_provider_hold(state: &Path, index: usize, now: u64) -> thread::JoinHandle<()> {

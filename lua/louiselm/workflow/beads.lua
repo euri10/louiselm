@@ -23,7 +23,7 @@ local advance, next_bead
 
 ---@class louiselm.workflow.BeadResult
 ---@field bead_id string
----@field session? louiselm.session.Session Retained for verification and promotion.
+---@field session? louiselm.session.Session Producer handle; disposed after confirmed result publication.
 ---@field launch_request louiselm.acp.LaunchRequest
 ---@field envelope_digest string Run approval digest, never a launch digest.
 ---@field request_digest string Exact child launch digest.
@@ -458,10 +458,10 @@ end
 
 ---@param self louiselm.workflow.BeadExecutor
 ---@param result louiselm.workflow.BeadResult
----@param callback fun(accepted: boolean?, error_message?: string)
-local function promote(self, result, callback)
+---@return table selection
+local function promotion_selection(self, result)
   local launch = result.launch_request
-  local selection = {
+  return {
     schema = "louiselm.run-promotion-selection/1",
     run_id = launch.run_id,
     bead_id = result.bead_id,
@@ -472,6 +472,30 @@ local function promote(self, result, callback)
     journal_parent = self.options.worktree.journal_parent,
     expected_head = self.head,
   }
+end
+
+local function save_verified(self, result, callback)
+  local selection = promotion_selection(self, result)
+  promotion_control(self, "save", { selection = selection }, function(saved, save_error)
+    if not saved then
+      return callback(nil, save_error)
+    end
+    if saved.schema ~= "louiselm.run-saved-result/1" or saved.result_id ~= selection.request_id then
+      return callback(nil, "Run result publication unconfirmed; preserve producer")
+    end
+    local disposed, dispose_error = result.session:dispose()
+    if not disposed then
+      return callback(nil, dispose_error or "saved worker disposal failed")
+    end
+    callback(true)
+  end)
+end
+
+---@param self louiselm.workflow.BeadExecutor
+---@param result louiselm.workflow.BeadResult
+---@param callback fun(accepted: boolean?, error_message?: string)
+local function promote(self, result, callback)
+  local selection = promotion_selection(self, result)
   promotion_control(self, "preview", { selection = selection }, function(preview, preview_error)
     if not preview then
       return callback(nil, preview_error)
@@ -617,10 +641,6 @@ local function handoff(self, result)
               end
               self.summary.commits[result.bead_id] = result.promotion.commit
               self.summary.accepted[#self.summary.accepted + 1] = result.bead_id
-              local disposed, dispose_error = result.session:dispose()
-              if not disposed then
-                return finish(self, false, dispose_error or "promoted worker disposal failed")
-              end
               proceed()
             end)
           )
@@ -648,6 +668,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
   local verifier_launch = grant.request
   result.verifier_session_id = verifier_launch.session_id
   local reported = false
+  local verifier_session
   local function report(status, passed, message)
     if reported then
       return
@@ -656,6 +677,18 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
     result.verification = status
     result.verification_passed = passed
     result.error = message
+    if passed and self.options.worktree then
+      return save_verified(self, result, function(saved, save_error)
+        if not saved then
+          return finish(self, false, save_error)
+        end
+        local disposed, dispose_error = verifier_session:dispose()
+        if not disposed then
+          return finish(self, false, dispose_error or "saved verifier disposal failed")
+        end
+        handoff(self, result)
+      end)
+    end
     handoff(self, result)
   end
   local function unknown(message)
@@ -735,6 +768,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
                       if not ready then
                         return unknown(ready_error or "verifier startup failed")
                       end
+                      verifier_session = ready
                       control(
                         self,
                         { "louiselm-control", "session", "inspect", verifier_launch.session_id, "--json" },

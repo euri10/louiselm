@@ -73,6 +73,7 @@ impl BrokerService {
             self.verified_history(&authorization.launch_authorization(), verify)?;
         }
         if !tainted
+            && self.saved_changes(request, uid)?.is_none()
             && self
                 .receipts()
                 .head(&record.producer.request.launch.session_id)?
@@ -101,8 +102,33 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
-        let result = self.promotion_transaction(producer, &mut operator, &mut verify);
+        let result = self.promotion_transaction(Some(producer), None, &mut operator, &mut verify);
         // Shutdown is only transport cleanup, never evidence of checkout rollback.
+        let shutdown = operator.shutdown(Shutdown::Both);
+        match result {
+            Err(error) => Err(error),
+            Ok(status) => {
+                shutdown.map_err(BrokerError::Storage)?;
+                Ok(status)
+            }
+        }
+    }
+
+    /// Serves saved bytes without a live producer transport. Kernel operator credentials
+    /// and current evidence/policy are checked for every application effect.
+    /// # Errors
+    /// Refuses missing/discarded results and all ordinary promotion failures.
+    pub fn serve_saved_promotion<F>(
+        &self,
+        result_id: &str,
+        mut operator: UnixStream,
+        mut verify: F,
+    ) -> Result<PromotionStatus, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        super::super::record_name(result_id)?;
+        let result = self.promotion_transaction(None, Some(result_id), &mut operator, &mut verify);
         let shutdown = operator.shutdown(Shutdown::Both);
         match result {
             Err(error) => Err(error),
@@ -119,7 +145,8 @@ impl BrokerService {
     )]
     fn promotion_transaction<F>(
         &self,
-        producer: &mut BrokerSession,
+        producer: Option<&mut BrokerSession>,
+        saved_id: Option<&str>,
         operator: &mut UnixStream,
         verify: &mut F,
     ) -> Result<PromotionStatus, BrokerError>
@@ -133,8 +160,21 @@ impl BrokerService {
             .as_raw();
         let request: PromotionRequest = transfer::receive(operator)?;
         request.validate()?;
-        if uid == 0 || producer.authorization().controller_uid != uid {
+        if uid == 0
+            || request.destination.uid != uid
+            || producer.as_ref().is_some_and(|producer| {
+                producer.authorization().controller_uid != uid
+                    || producer.authorization().session_id != request.producer_session_id
+            })
+        {
             return Err(BrokerError::ControllerMismatch);
+        }
+        if saved_id.is_some_and(|id| id != request.request_id) {
+            return Err(BrokerError::RequestMismatch);
+        }
+        let saved_changes = self.saved_changes(&request, uid)?;
+        if producer.is_none() && saved_changes.is_none() {
+            return Err(BrokerError::UnknownAuthorization);
         }
         let directory = self.promotion_path(&request.request_id)?;
         if let Some(prior) = read_record::<PromotionRequest>(&directory.join("request.json"))? {
@@ -152,12 +192,18 @@ impl BrokerService {
         }
         transfer::remaining(request.expires_at_ms)?;
         let record = self.promotion_evidence(&request, uid, verify)?;
-        if record.producer.request.launch.digest().to_string()
-            != producer.authorization().request_digest
-        {
-            return Err(BrokerError::RequestMismatch);
-        }
-        let changes = self.promotion_transfer(producer, &request, &record, verify)?;
+        let changes = if let Some(changes) = saved_changes {
+            changes
+        } else {
+            let producer = producer.ok_or(BrokerError::UnknownAuthorization)?;
+            if record.producer.request.launch.digest().to_string()
+                != producer.authorization().request_digest
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+            self.promotion_transfer(producer, &request, &record, verify)?
+                .0
+        };
         self.promotion_evidence(&request, uid, verify)?;
         let review = self.promotion_review(&request)?;
         transfer::send(
@@ -268,13 +314,13 @@ impl BrokerService {
         }
     }
 
-    fn promotion_transfer<F>(
+    pub(super) fn promotion_transfer<F>(
         &self,
         producer: &mut BrokerSession,
         request: &PromotionRequest,
         record: &VerificationRecord,
         verify: &mut F,
-    ) -> Result<crate::workspace::promotion::Changes, BrokerError>
+    ) -> Result<(crate::workspace::promotion::Changes, std::path::PathBuf), BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -315,7 +361,7 @@ impl BrokerService {
         }
         let changes = transfer::load(Path::new(&source), &request.job)?;
         self.verification_current(producer, &transfer_request, verify)?;
-        Ok(changes)
+        Ok((changes, source.into()))
     }
 
     #[expect(

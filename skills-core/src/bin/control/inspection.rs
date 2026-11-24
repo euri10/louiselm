@@ -22,7 +22,6 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     io::{self, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},
-    os::unix::net::UnixStream,
     path::Path,
     sync::{
         Arc, Mutex,
@@ -141,7 +140,6 @@ enum WorkerQuery {
         request: Box<LifecycleRequest>,
         reply: SyncSender<Result<Result<SignedReceipt, ProtocolError>, InspectError>>,
     },
-    Promotion(UnixStream),
     Verification {
         expires: Instant,
         request: Box<operator::VerificationControlRequest>,
@@ -171,17 +169,22 @@ pub(super) struct Queries {
 }
 
 impl Queries {
-    fn start_promotion_listener(queries: &Arc<Self>, operator_uid: u32) -> Result<(), BrokerError> {
+    fn start_promotion_listener(
+        operator_uid: u32,
+        broker: Arc<InstalledBroker>,
+    ) -> Result<(), BrokerError> {
         let promotion = OperatorServer::bind(Path::new(operator::PROMOTION_SOCKET), operator_uid)
             .map_err(BrokerError::Storage)?;
-        let owner = Arc::clone(queries);
         thread::Builder::new()
             .name("louiselm-operator-promotion".into())
             .spawn(move || {
                 loop {
-                    if let Err(error) =
-                        promotion.serve_promotion_once(|id, stream| owner.promotion(id, stream))
-                    {
+                    if let Err(error) = promotion.serve_promotion_once(|id, stream| {
+                        broker
+                            .serve_saved_promotion(id, stream)
+                            .map(|_| ())
+                            .map_err(|_| InspectError::StatusUnavailable)
+                    }) {
                         if error.kind() == io::ErrorKind::Interrupted {
                             continue;
                         }
@@ -194,19 +197,6 @@ impl Queries {
         Ok(())
     }
 
-    fn promotion(&self, id: &str, stream: UnixStream) -> Result<(), InspectError> {
-        let sender = self
-            .sessions
-            .lock()
-            .map_err(|_| InspectError::StatusUnavailable)?
-            .get(id)
-            .cloned()
-            .ok_or(InspectError::UnknownSession)?;
-        sender
-            .try_send(WorkerQuery::Promotion(stream))
-            .map_err(|_| InspectError::StatusUnavailable)
-    }
-
     fn verification(
         &self,
         broker: &InstalledBroker,
@@ -217,6 +207,22 @@ impl Queries {
             VerificationControlRequest as Request, VerificationControlResponse as Response,
         };
         match request {
+            Request::SaveResult { request } => self.verification_worker(
+                &request.producer_session_id,
+                Request::SaveResult {
+                    request: request.clone(),
+                },
+                deadline,
+            ),
+            Request::SavedResult { result_id, discard } => {
+                operator::validate_subject(result_id)?;
+                broker
+                    .saved_result(self.operator_uid, result_id, *discard)
+                    .map(|result| Response::SavedResult {
+                        result: Box::new(result),
+                    })
+                    .map_err(|_| InspectError::StatusUnavailable)
+            }
             Request::Stage {
                 input_id,
                 snapshot,
@@ -336,7 +342,7 @@ impl Queries {
             sessions: Mutex::new(HashMap::new()),
         });
         let owner = Arc::clone(&queries);
-        Self::start_promotion_listener(&queries, config.operator_uid)?;
+        Self::start_promotion_listener(config.operator_uid, Arc::clone(&broker))?;
         consumed_recovery::start(Arc::clone(&broker))?;
         thread::Builder::new()
             .name("louiselm-operator-inspect".into())
@@ -564,6 +570,10 @@ impl Queries {
     }
 
     /// Answers one query on the sole worker, returning only proven terminal cleanup.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One channel-owning worker dispatches mutually exclusive queries without duplicating Session ownership."
+    )]
     fn answer(
         &self,
         broker: &InstalledBroker,
@@ -576,10 +586,6 @@ impl Queries {
                 request,
                 reply,
             } => return self.answer_lifecycle(broker, session, &request, expires, &reply),
-            WorkerQuery::Promotion(stream) => {
-                // The original authenticated worker owns the full operator transaction.
-                let _ = broker.serve_promotion(session, stream);
-            }
             WorkerQuery::Verification {
                 expires,
                 request,
@@ -594,6 +600,11 @@ impl Queries {
                         uid: self.operator_uid,
                     };
                     let result = match *request {
+                        Request::SaveResult { request } => broker
+                            .save_result(session, &request)
+                            .map(|result| Response::SavedResult {
+                                result: Box::new(result),
+                            }),
                         Request::Park { request } => broker
                             .request_lifecycle(session, &caller, &request)
                             .map(|receipt| Response::Parked {
@@ -619,9 +630,9 @@ impl Queries {
                                 commands_passed: record.execution.commands_passed(),
                                 record: Box::new(record),
                             }),
-                        Request::Stage { .. } | Request::Status { .. } => {
-                            Err(BrokerError::InvalidGrant)
-                        }
+                        Request::Stage { .. }
+                        | Request::Status { .. }
+                        | Request::SavedResult { .. } => Err(BrokerError::InvalidGrant),
                     }
                     .map_err(|_| InspectError::StatusUnavailable);
                     let _ = reply.send(result);

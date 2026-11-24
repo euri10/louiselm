@@ -81,12 +81,28 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
             byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' || byte == b'.'
         })
         || selection.producer_session_id == selection.verifier_session_id
-        || (verb == "preview" && command.approval_digest.is_some())
+        || (verb != "commit" && command.approval_digest.is_some())
         || (verb == "commit" && command.approval_digest.is_none())
     {
         return Err("invalid promotion selection");
     }
-    if verb == "preview" && selection.expires_at_ms.is_none() {
+    if verb == "inspect" || verb == "discard" {
+        let paths = super::installed_paths().map_err(|_| "installed broker unavailable")?;
+        let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
+            .map_err(|_| "installed broker unavailable")?;
+        let response = operator::verification(
+            Path::new(operator::SOCKET),
+            config.broker_uid,
+            &VerificationControlRequest::SavedResult {
+                result_id: selection.request_id.clone(),
+                discard: verb == "discard",
+            },
+            operator::TIMEOUT,
+        )
+        .map_err(|_| "saved result unavailable; inspect before retry")?;
+        return serde_json::to_vec(&response).map_err(|_| "saved result unavailable");
+    }
+    if (verb == "preview" || verb == "save") && selection.expires_at_ms.is_none() {
         selection.expires_at_ms = Some(now_ms()?.checked_add(240_000).ok_or("clock unavailable")?);
     }
     let expires = selection.expires_at_ms.ok_or("promotion expiry missing")?;
@@ -97,10 +113,12 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
     if expires - now > 300_000 {
         return Err("promotion preview expiry exceeds five minutes");
     }
-    let head = promotion::clean_run_head(&selection.checkout, &selection.run_id)
-        .map_err(|_| "Run worktree is dirty or on the wrong branch")?;
-    if head != selection.expected_head {
-        return Err("Run worktree HEAD changed");
+    if verb != "save" {
+        let head = promotion::clean_run_head(&selection.checkout, &selection.run_id)
+            .map_err(|_| "Run worktree is dirty or on the wrong branch")?;
+        if head != selection.expected_head {
+            return Err("Run worktree HEAD changed");
+        }
     }
     let paths = super::installed_paths().map_err(|_| "installed broker unavailable")?;
     let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
@@ -142,10 +160,26 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
         expires_at_ms: expires,
     };
     let selected_request = request.clone();
+    if verb == "save" {
+        let response = operator::verification(
+            Path::new(operator::SOCKET),
+            config.broker_uid,
+            &VerificationControlRequest::SaveResult { request },
+            operator::TIMEOUT,
+        )
+        .map_err(|_| "result publication unconfirmed; preserve producer")?;
+        let VerificationControlResponse::SavedResult { result } = response else {
+            return Err("result publication unconfirmed; preserve producer");
+        };
+        return serde_json::to_vec(&serde_json::json!({
+            "schema": "louiselm.run-saved-result/1", "result_id": result.request.request_id
+        }))
+        .map_err(|_| "saved result unavailable");
+    }
     let stream = operator::promotion_stream(
         Path::new(operator::PROMOTION_SOCKET),
         config.broker_uid,
-        &selection.producer_session_id,
+        &selection.request_id,
     )
     .map_err(|_| "promotion broker unavailable")?;
     let client = PromotionClient::prepare(
@@ -222,7 +256,7 @@ fn approval_digest(
 pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
     let result = (|| {
         let (verb, _) = super::arguments::operation(arguments)
-            .map_err(|()| "expected promotion preview|commit --json")?;
+            .map_err(|()| "expected promotion save|inspect|discard|preview|commit --json")?;
         let mut bytes = Vec::new();
         io::stdin()
             .take((louiselm_skills::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES + 1) as u64)

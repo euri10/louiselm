@@ -75,14 +75,17 @@ The two callbacks are controller responsibilities:
   command, Beads, Provider, dependency or skill grants. The plan digest must
   match the operator-approved Run envelope. The envelope's Beads mutation
   budget must reserve one failure comment per selected Bead.
-- `on_worker(result, continue)` receives the retained Session, assigned Bead,
+- `on_worker(result, continue)` receives the producer handle, assigned Bead,
   exact launch request, separate Run-envelope and launch-request digests, and
   any worker error. A finished worker also supplies durable `verification`
   status, ordered command observations and `verification_passed`.
   `continue(true)` sends passing work to the promotion preview when a Run
   worktree is configured. `continue(false)` rejects it.
-  Keep the producer Session retained until the promotion decision completes;
-  its authenticated broker worker serves the exact byte transfer.
+  With a Run worktree, passing verification first publishes the exact baseline,
+  candidate, plan and evidence under the broker's private saved-result store.
+  Only confirmed publication followed by authenticated launcher Disposal permits
+  releasing the finished producer. Publication failure stops with its original
+  work retained. Review then reads the saved copy without a live producer.
   Known failed or rejected Beads receive one broker-mediated comment containing
   the Run ID, outcome category and worker turn/verification request IDs when
   available (falling back to broker Session IDs), then the next
@@ -140,6 +143,16 @@ specific refusal, distinguishing expiry from uncertain application or a Git
 commit failure. Unstructured diagnostics are withheld; an unavailable outcome
 requires inspection before any retry. A pre-application refusal creates no
 promotion journal.
+
+`louiselm-control promotion save --json` accepts the same `selection` object as
+preview and confirms publication plus producer Disposal. `promotion inspect`
+and `promotion discard` take that selection to inspect or explicitly discard
+its `request_id`. These operator-only actions need no live producer. Saved
+baseline/result bytes and evidence are separate from seven-day Session storage;
+editor/VM restart and ordinary Session cleanup do not remove unresolved work.
+Inspection grants no application or execution permission. Discard is durable and
+idempotent, applies nothing, and refuses a result with any application intent
+until its effects have been inspected. Saved records retain historical evidence.
 
 The completion callback receives `{ run_id, accepted, commits, branch, failed, text }` even when
 the Run stops early. `failed` is ordered and includes each Bead ID, safe outcome,

@@ -71,7 +71,11 @@ pub(super) fn command() -> Command {
         .subcommand(group("launch-inputs", &["stage"], false))
         .subcommand(Command::new("verification").arg(json()))
         .subcommand(Command::new("lifecycle").arg(json()))
-        .subcommand(group("promotion", &["preview", "commit"], false))
+        .subcommand(group(
+            "promotion",
+            &["save", "inspect", "discard", "preview", "commit"],
+            false,
+        ))
         .subcommand(dependencies)
         .subcommand(waiver)
         .subcommand(

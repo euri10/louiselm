@@ -125,6 +125,8 @@ mod cold_resume;
 
 #[path = "broker/promotion.rs"]
 mod promotion;
+#[path = "broker/saved_result.rs"]
+mod saved_result;
 #[path = "broker/verification.rs"]
 mod verification;
 

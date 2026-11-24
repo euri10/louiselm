@@ -36,22 +36,42 @@ local controller = assert(Workflow.new_bead_executor({
   } or index >= 6 and { case.bead_id, "held-successor" } or { case.bead_id },
   worktree = index == 4 and { path = case.worktree, journal_parent = case.journal_parent, head = case.base_commit }
     or nil,
-  on_promotion = index == 4 and function(preview, decide)
-    assert(preview.schema == "louiselm.run-promotion-preview/1")
-    assert(preview.selection.expected_head == case.base_commit)
-    assert(nvim.deep_equal(preview.changes.added, { "accepted.txt" }))
-    if delayed_promotion then
-      -- Same event order as Run e0500a6e (pynio): verification, preview,
-      -- human delay, Accept. Use a shorter explicit deadline, never alter the
-      -- returned selection or its approval digest to simulate expiration.
-      assert(preview.selection.expires_at_ms > now_ms(), "preview must arrive before expiry")
-      nvim.defer_fn(function()
-        decide(true)
-      end, preview.selection.expires_at_ms - now_ms() + 50)
-    else
-      decide(true)
-    end
-  end or nil,
+  on_promotion = index == 4
+      and function(preview, decide)
+        assert(preview.schema == "louiselm.run-promotion-preview/1")
+        assert(preview.selection.expected_head == case.base_commit)
+        assert(nvim.deep_equal(preview.changes.added, { "accepted.txt" }))
+        assert(#require("louiselm.session").exit_verdict() == 0, "saved workers must already be released")
+        nvim.fn.writefile({}, case.saved_ready)
+        assert(
+          nvim.wait(30000, function()
+            return nvim.uv.fs_stat(case.saved_cleaned) ~= nil
+          end, 10),
+          "expired Session cleanup did not finish"
+        )
+        local inspected = nvim
+          .system({ "louiselm-control", "promotion", "inspect", "--json" }, {
+            stdin = nvim.json.encode({ selection = preview.selection }),
+            text = true,
+          })
+          :wait()
+        assert(inspected.code == 0, "saved result inspection must work after producer Disposal")
+        local saved = nvim.json.decode(inspected.stdout).result
+        assert(saved.request.request_id == preview.selection.request_id and saved.discarded == false)
+        assert(saved.verification.execution.cleanup_proven == true)
+        if delayed_promotion then
+          -- Same event order as Run e0500a6e (pynio): verification, preview,
+          -- human delay, Accept. Use a shorter explicit deadline, never alter the
+          -- returned selection or its approval digest to simulate expiration.
+          assert(preview.selection.expires_at_ms > now_ms(), "preview must arrive before expiry")
+          nvim.defer_fn(function()
+            decide(true)
+          end, preview.selection.expires_at_ms - now_ms() + 50)
+        else
+          decide(true)
+        end
+      end
+    or nil,
   system = function(argv, options, done)
     if delayed_promotion and argv[2] == "promotion" and argv[3] == "preview" then
       local request = nvim.json.decode(options.stdin)
