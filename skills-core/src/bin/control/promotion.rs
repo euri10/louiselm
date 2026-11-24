@@ -141,7 +141,10 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
     };
     if record.producer.request.launch.session_id != selection.producer_session_id
         || record.producer.request.launch.run_id != selection.run_id
-        || record.execution.request.launch.run_id != selection.run_id
+        || (!matches!(
+            record.execution.request.operation,
+            louiselm_skills::launch_protocol::VerificationOperation::Refresh { .. }
+        ) && record.execution.request.launch.run_id != selection.run_id)
     {
         return Err("verification belongs to another Run");
     }

@@ -16,6 +16,15 @@ pub const VERIFICATION_SCHEMA: &str = "louiselm.launch.verification/1";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerificationOperation {
+    /// Verify an exact broker-owned refresh copy, never revive the original Run.
+    Refresh {
+        /// Immutable private refresh preparation identifier.
+        input_id: String,
+        /// Digest binding source revision, new base and exact job.
+        input_digest: String,
+        /// Exact newly prepared job.
+        job_digest: String,
+    },
     /// Make one retained export readable by the dedicated broker, without a destination path.
     Transfer {
         /// Original producer export operation.
@@ -79,6 +88,18 @@ impl VerificationRequest {
             return Err(invalid());
         }
         match &self.operation {
+            VerificationOperation::Refresh {
+                input_id,
+                input_digest,
+                job_digest,
+            } => {
+                validate_identifier(input_id)?;
+                validate_digest(input_digest)?;
+                validate_digest(job_digest)?;
+                if self.head.sequence != 1 {
+                    return Err(invalid());
+                }
+            }
             VerificationOperation::Transfer {
                 export_request_id,
                 export_digest,
@@ -203,7 +224,9 @@ impl VerificationExecution {
     /// Refuses a foreign job, excess steps or malformed launch/integration evidence.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.request.validate()?;
-        let VerificationOperation::Run { job_digest, .. } = &self.request.operation else {
+        let (VerificationOperation::Run { job_digest, .. }
+        | VerificationOperation::Refresh { job_digest, .. }) = &self.request.operation
+        else {
             return Err(invalid());
         };
         validate_job(&self.job)?;

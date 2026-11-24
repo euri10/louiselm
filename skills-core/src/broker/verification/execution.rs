@@ -31,6 +31,12 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         self.authorize_verification(session, caller, request)?;
+        if matches!(
+            request.operation,
+            crate::launch_protocol::VerificationOperation::Refresh { .. }
+        ) {
+            self.check_saved_refresh_current(request)?;
+        }
         let producer = self.verification_producer_with_history(request, false)?;
         let deadline = deadline(request, now_ms)?;
         let directory = self.verification_directory()?;

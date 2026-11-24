@@ -83,10 +83,19 @@ impl InstalledBroker {
                 }
             },
         );
-        match failure {
-            Some(error) => Err(BrokerError::Verification(error)),
-            None => result,
+        if let Some(error) = failure {
+            return Err(BrokerError::Verification(error));
         }
+        let record = result?;
+        if matches!(
+            request.operation,
+            crate::launch_protocol::VerificationOperation::Refresh { .. }
+        ) && record.execution.commands_passed()
+        {
+            self.service
+                .publish_saved_refresh(session.authorization().controller_uid, &record)?;
+        }
+        Ok(record)
     }
 
     /// Reads durable actual outcomes and current quarantine applicability without effects.

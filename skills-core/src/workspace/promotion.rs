@@ -2,6 +2,7 @@
 
 mod client;
 mod filesystem;
+mod refresh;
 pub(crate) mod transfer;
 pub use client::PromotionClient;
 pub(crate) use transfer::copy_transfer;

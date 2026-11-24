@@ -6,6 +6,7 @@ use super::{
     VerificationRequest, digest, filesystem, fs, persist, protected, read_export, verification,
 };
 use crate::{
+    Digest,
     launch_protocol::{VerificationExecution, VerificationStep},
     sandbox::{IdentityPlan, PreparedSession},
 };
@@ -16,6 +17,28 @@ impl Storage {
         &self,
         request: &VerificationRequest,
     ) -> Result<(PathBuf, verification::LoadedJob), SupervisorError> {
+        if let VerificationOperation::Refresh {
+            input_id,
+            input_digest,
+            job_digest,
+        } = &request.operation
+        {
+            protected(&self.input_root, self.broker_uid, true)?;
+            let input = self.input_root.join(input_id);
+            protected(&input, self.broker_uid, true)?;
+            let root = filesystem::open_directory(&input)
+                .map_err(|_| SupervisorError::ResolutionFailed)?;
+            let bytes = filesystem::read_source(&root, "refresh.json", 16 * 1024 * 1024)
+                .map_err(|_| SupervisorError::ResolutionFailed)?
+                .ok_or(SupervisorError::ResolutionFailed)?;
+            if Digest::of(&bytes.bytes).to_string() != *input_digest {
+                return Err(SupervisorError::AuthorizationRejected);
+            }
+            let exported = input.join("transfer");
+            let loaded = verification::load(&exported.join("job"), &digest(job_digest)?)
+                .map_err(|_| SupervisorError::ResolutionFailed)?;
+            return Ok((exported, loaded));
+        }
         let VerificationOperation::Run {
             producer_session_id,
             export_request_id,

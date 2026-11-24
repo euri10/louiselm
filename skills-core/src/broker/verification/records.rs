@@ -41,6 +41,29 @@ impl BrokerService {
         request: &VerificationRequest,
         historical: bool,
     ) -> Result<VerificationExport, BrokerError> {
+        if matches!(request.operation, VerificationOperation::Refresh { .. }) {
+            let input = self.refresh_input(request)?;
+            self.validate_export_with_history(&input.producer, historical)?;
+            let verifier = self.verification_binding(request)?;
+            let source =
+                self.verification_binding_with_history(&input.producer.request, historical)?;
+            if input.controller_uid != verifier.controller_uid
+                || source.controller_uid != verifier.controller_uid
+                || input.producer.request.launch.session_id == request.launch.session_id
+                || source.role != crate::launch_protocol::LaunchRole::Agent
+                || verifier.role != crate::launch_protocol::LaunchRole::FixedVerifier
+                || verifier.commands.is_some()
+                || verifier.provider_requests.is_some()
+                || verifier.beads_mutations.is_some()
+                || verifier.skill_requests.is_some()
+                || verifier.require_cold_recovery
+                || input.producer.request.launch.run_id == request.launch.run_id
+                || input.producer.request.launch.skills != request.launch.skills
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+            return Ok(input.producer);
+        }
         let VerificationOperation::Run {
             producer_session_id,
             export_request_id,
@@ -98,8 +121,13 @@ impl BrokerService {
         historical: bool,
     ) -> Result<(), BrokerError> {
         evidence.validate()?;
+        let job = if matches!(request.operation, VerificationOperation::Refresh { .. }) {
+            self.refresh_input(request)?.job
+        } else {
+            producer.job.clone()
+        };
         if evidence.request != *request
-            || evidence.job != producer.job
+            || evidence.job != job
             || self.verification_producer_with_history(request, historical)? != *producer
         {
             return Err(BrokerError::RequestMismatch);
@@ -107,7 +135,7 @@ impl BrokerService {
         self.verification_integration(request, &evidence.integration_digest)
     }
 
-    pub(super) fn validate_verification_record(
+    pub(in crate::broker) fn validate_verification_record(
         &self,
         record: &VerificationRecord,
     ) -> Result<(), BrokerError> {
@@ -178,22 +206,29 @@ impl BrokerService {
             return Ok(VerificationStatus::NotRequested);
         };
         request.validate()?;
-        let VerificationOperation::Run {
-            producer_session_id,
-            ..
-        } = &request.operation
-        else {
-            return Err(BrokerError::InvalidGrant);
+        let producer_session_id = match &request.operation {
+            VerificationOperation::Run {
+                producer_session_id,
+                ..
+            } => producer_session_id.clone(),
+            VerificationOperation::Refresh { .. } => {
+                self.refresh_input(&request)?
+                    .producer
+                    .request
+                    .launch
+                    .session_id
+            }
+            _ => return Err(BrokerError::InvalidGrant),
         };
         if request.launch.session_id != session_id {
             return Err(BrokerError::RequestMismatch);
         }
         if self.lifecycle.is_quarantined(session_id)?
-            || self.lifecycle.is_quarantined(producer_session_id)?
+            || self.lifecycle.is_quarantined(&producer_session_id)?
         {
             return Ok(VerificationStatus::Quarantined {
                 output_provenance: self
-                    .workspace_output_provenance_for_session(producer_session_id)
+                    .workspace_output_provenance_for_session(&producer_session_id)
                     .unwrap_or_else(|_| crate::workspace::provenance::OutputProvenance::unknown()),
             });
         }

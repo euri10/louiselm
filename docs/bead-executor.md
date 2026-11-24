@@ -421,6 +421,34 @@ manual UI. `q` stops the Run; its buffer presents the payload-free host handoff.
 Copy it before closing, fetch the named branch, and update the host tracker by
 hand only after checking the accepted commits and any unconfirmed failure.
 
+## Refresh a saved result
+
+Changed destination HEAD, verification rules or qualified tools require an explicit
+refresh, followed by a new preview and a separate Accept. Time alone does not.
+Use `require("louiselm.workflow.saved_result").refresh(options, callback)` or set
+`g:louiselm_saved_refresh_selection` to an operator-owned mode-0600 JSON file and
+run `:luafile /path/to/trusted/plugin/scripts/bead-result-refresh.lua`.
+The script asks before starting its one unpaid verifier and opens the new review;
+closing that review leaves the result pending and never starts a successor.
+
+`options.selection` is the closed Rust `RefreshSelection`: saved `result_id`,
+current `request.verification_digest` as `revision_digest`, fresh `input_id`,
+new frozen `snapshot`/`snapshot_digest`/`expected_head`, and current
+`plan`/`plan_digest`. Supply current resolved `manifest`, immutable `cache`, a fresh
+`session_id`, and an explicitly approved fresh `envelope` with one Session,
+that exact plan, finite expiry and null Provider/Beads/command/skill capabilities.
+Freeze the clean destination `run/<original-run-id>` using `workspace prepare`;
+share only those inputs with the broker, never operator keys or journals.
+
+Refresh applies exact changed paths in a separate copy, not a textual merge.
+Any conflicting path refuses; no Agent repairs it. Failed/cancelled verification
+keeps the original pending. Successful verification appends immutable private
+revisions while preserving the original bytes and old/new verification/base
+lineage. It does not extend the original Run or refill its budgets. Any prior
+Accept application, including an uncertain one, must be inspected instead.
+Installed case 14 covers expired-original refresh, verifier failure, changed
+rules, destination movement, stale approvals and one explicit idempotent Accept.
+
 ## Acceptance gates
 
 The normal Lua suite covers list and grant refusal, sequencing, permission
@@ -428,14 +456,15 @@ policy, ledger admission, cancellation and fast-event callbacks. The installed
 gate is required in the `sender-guard-vm` CI job:
 
 ```sh
-for bead_case in 1 2 3 4 5 6 7 8 9; do
+for bead_case in 1 2 3 4 5 6 7 8 9 14; do
+  bead_timeout=$((bead_case == 14 ? 300 : 120))
   ./scripts/launcher-vm exec sudo -n env \
     LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
     LOUISELM_TEST_LUA_ROOT=/home/vm \
     LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
     LOUISELM_TEST_CAPTURE=/path/to/current/louiselm-capture \
     LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim \
-    timeout 120 unshare --mount --propagation private -- \
+    timeout "$bead_timeout" unshare --mount --propagation private -- \
     /bin/bash -c 'umask 022; exec "$1" \
       launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor \
       --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable

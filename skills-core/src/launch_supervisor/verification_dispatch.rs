@@ -25,7 +25,7 @@ impl SessionOwner {
             VerificationOperation::Export { .. } | VerificationOperation::Transfer { .. } => {
                 self.state == SessionState::Parked && self.channel_state == ChannelState::Revoked
             }
-            VerificationOperation::Run { .. } => {
+            VerificationOperation::Run { .. } | VerificationOperation::Refresh { .. } => {
                 self.state == SessionState::Running && request.head.sequence == 1
             }
         };
@@ -43,7 +43,10 @@ impl SessionOwner {
     }
 
     pub(super) fn handle_verification(&mut self, request: VerificationRequest) {
-        let run = matches!(request.operation, VerificationOperation::Run { .. });
+        let run = matches!(
+            request.operation,
+            VerificationOperation::Run { .. } | VerificationOperation::Refresh { .. }
+        );
         if self.verification.pending.is_some()
             || (run && self.verification.spent)
             || !self.verification_matches(&request)

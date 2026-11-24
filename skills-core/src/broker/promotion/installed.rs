@@ -7,6 +7,20 @@ use crate::broker::promotion::{
 use std::os::unix::net::UnixStream;
 
 impl InstalledBroker {
+    /// Prepares a separate refresh copy without renewing any expired Run authority.
+    /// # Errors
+    /// Refuses foreign ownership, conflicts, uncertain applications and invalid inputs.
+    pub fn prepare_saved_refresh(
+        &self,
+        uid: u32,
+        selection: &crate::broker::promotion::RefreshSelection,
+    ) -> Result<crate::broker::promotion::RefreshInput, BrokerError> {
+        if uid != self.verifier.config().operator_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        self.service.prepare_saved_refresh(uid, selection)
+    }
+
     /// Publishes verified work while its original authenticated producer still exists.
     /// # Errors
     /// Refuses foreign ownership, signature/evidence failures and uncertain publication.

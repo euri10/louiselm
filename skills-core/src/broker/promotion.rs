@@ -1,9 +1,11 @@
 //! Exact operator promotion, with durable per-effect admission and observations.
 
 mod pending;
+mod refresh;
 mod saved;
 mod selection;
 mod service;
+pub use refresh::{RefreshInput, RefreshSelection};
 pub use saved::{SavedAcceptance, SavedResult};
 pub use selection::SavedSelection;
 

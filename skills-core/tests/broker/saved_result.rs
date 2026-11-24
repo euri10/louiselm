@@ -152,6 +152,130 @@ fn fixture(root: &Path) -> SavedResult {
 }
 
 #[test]
+fn refresh_prepares_separate_changed_base_and_rules_without_releasing_pending_work() {
+    use louiselm_skills::broker::promotion::RefreshSelection;
+    let root = tempfile::tempdir().unwrap();
+    let saved = fixture(root.path());
+    let service = verification::reopen(root.path(), "refresh.sock");
+    let repository = root.path().join("new-repository");
+    fs::create_dir(&repository).unwrap();
+    let git = |args: &[&str]| {
+        let result = std::process::Command::new("git")
+            .current_dir(&repository)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+    };
+    git(&["init", "-q"]);
+    fs::write(repository.join("new-base"), b"independent change").unwrap();
+    git(&["add", "new-base"]);
+    git(&[
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "new base",
+    ]);
+    let snapshot = root.path().join("new-snapshot");
+    let preview = louiselm_skills::workspace::prepare(&repository, &[], &snapshot).unwrap();
+    let plan = root.path().join("new-plan.json");
+    let bytes = br#"{"schema":"louiselm.workspace.verification-plan/1","commands":[{"argv":["false"],"cwd":".","timeout_ms":2000}]}"#;
+    fs::write(&plan, bytes).unwrap();
+    let selection = RefreshSelection {
+        result_id: "promotion".into(),
+        revision_digest: saved.request.verification_digest.clone(),
+        input_id: "refresh-attempt".into(),
+        snapshot,
+        snapshot_digest: preview.snapshot_digest,
+        expected_head: preview.base_commit,
+        plan,
+        plan_digest: Digest::of(bytes).to_string(),
+    };
+    let input = service.prepare_saved_refresh(1000, &selection).unwrap();
+    assert_eq!(input.producer, saved.verification.producer);
+    assert_ne!(input.job.base_digest, saved.request.job.base_digest);
+    assert_eq!(input.job.plan_digest, selection.plan_digest);
+    assert_eq!(
+        service.prepare_saved_refresh(1000, &selection).unwrap(),
+        input
+    );
+    assert_eq!(service.saved_result(1000, "promotion").unwrap(), saved);
+    assert_eq!(
+        fs::read(repository.join("new-base")).unwrap(),
+        b"independent change"
+    );
+    assert!(!repository.join("result").exists());
+    assert!(!repository.join("SHOULD_NOT_EXECUTE").exists());
+    assert!(service.prepare_saved_refresh(1001, &selection).is_err());
+    service.discard_saved_result(1000, "promotion").unwrap();
+    assert!(service.prepare_saved_refresh(1000, &selection).is_err());
+
+    let uncertain_root = tempfile::tempdir().unwrap();
+    let uncertain = fixture(uncertain_root.path());
+    let uncertain_service = verification::reopen(uncertain_root.path(), "uncertain.sock");
+    let journal = uncertain_root
+        .path()
+        .join("authorizations/promotions/promotion");
+    fs::create_dir_all(&journal).unwrap();
+    fs::write(
+        journal.join("request.json"),
+        serde_json::to_vec(&uncertain.request).unwrap(),
+    )
+    .unwrap();
+    fs::write(journal.join("0.grant"), b"0").unwrap();
+    assert!(
+        uncertain_service
+            .prepare_saved_refresh(1000, &selection)
+            .is_err()
+    );
+    assert_eq!(
+        uncertain_service
+            .saved_result(1000, "promotion")
+            .unwrap()
+            .request,
+        uncertain.request
+    );
+}
+
+#[test]
+fn saved_result_survives_reopen_and_producer_removal_until_explicit_discard() {
+    let root = TempDir::new().unwrap();
+    let saved = fixture(root.path());
+    let service = verification::reopen(root.path(), "first.sock");
+    assert_eq!(service.saved_result(1000, "promotion").unwrap(), saved);
+    assert!(matches!(
+        service.saved_result(1001, "promotion"),
+        Err(BrokerError::ControllerMismatch)
+    ));
+    fs::remove_dir_all(root.path().join("producer-work")).unwrap();
+    drop(service);
+    let restarted = verification::reopen(root.path(), "reopened.sock");
+    assert_eq!(restarted.saved_result(1000, "promotion").unwrap(), saved);
+    assert_eq!(
+        restarted.promotion_status("promotion").unwrap(),
+        louiselm_skills::broker::promotion::PromotionStatus::NotRequested
+    );
+    let discarded = restarted.discard_saved_result(1000, "promotion").unwrap();
+    assert!(discarded.discarded);
+    assert_eq!(
+        restarted.discard_saved_result(1000, "promotion").unwrap(),
+        discarded
+    );
+    assert!(
+        root.path()
+            .join("authorizations/saved-results/promotion/transfer/job/source/result")
+            .exists()
+    );
+}
+
+#[test]
 fn saved_attention_reconciles_durably_and_only_a_decision_clears_it() {
     use louiselm_skills::broker::attention::{Outbox, ProjectionChange};
     let root = tempfile::tempdir().unwrap();
@@ -201,33 +325,92 @@ fn saved_attention_reconciles_durably_and_only_a_decision_clears_it() {
 }
 
 #[test]
-fn saved_result_survives_reopen_and_producer_removal_until_explicit_discard() {
-    let root = TempDir::new().unwrap();
+fn immutable_refresh_lineage_survives_discard_and_reopen_without_forging_authority() {
+    use louiselm_skills::broker::promotion::{RefreshInput, RefreshSelection};
+    let root = tempfile::tempdir().unwrap();
     let saved = fixture(root.path());
-    let service = verification::reopen(root.path(), "first.sock");
-    assert_eq!(service.saved_result(1000, "promotion").unwrap(), saved);
-    assert!(matches!(
-        service.saved_result(1001, "promotion"),
-        Err(BrokerError::ControllerMismatch)
-    ));
-    fs::remove_dir_all(root.path().join("producer-work")).unwrap();
-    drop(service);
-    let restarted = verification::reopen(root.path(), "reopened.sock");
-    assert_eq!(restarted.saved_result(1000, "promotion").unwrap(), saved);
-    assert_eq!(
-        restarted.promotion_status("promotion").unwrap(),
-        louiselm_skills::broker::promotion::PromotionStatus::NotRequested
+    let directory = root.path().join("authorizations/saved-results/promotion");
+    let original_bytes = fs::read(directory.join("saved.json")).unwrap();
+    let input_root = root.path().join("verification-inputs/refresh-storage");
+    fs::create_dir_all(&input_root).unwrap();
+    let copied = std::process::Command::new("/bin/cp")
+        .arg("-R")
+        .arg(directory.join("transfer"))
+        .arg(input_root.join("transfer"))
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    let input = RefreshInput {
+        schema: "louiselm.workspace.refresh/1".into(),
+        selection: RefreshSelection {
+            result_id: "promotion".into(),
+            revision_digest: saved.request.verification_digest.clone(),
+            input_id: "refresh-storage".into(),
+            snapshot: directory.join("transfer/snapshot"),
+            snapshot_digest: saved.request.job.snapshot_digest.clone(),
+            expected_head: saved.selection.expected_head.clone(),
+            plan: saved.selection.plan.clone(),
+            plan_digest: saved.request.job.plan_digest.clone(),
+        },
+        producer: saved.verification.producer.clone(),
+        job: saved.request.job.clone(),
+        controller_uid: 1000,
+    };
+    let input_bytes = serde_json::to_vec(&input).unwrap();
+    fs::write(input_root.join("refresh.json"), &input_bytes).unwrap();
+    let mut revised = saved.clone();
+    revised.verification.execution.request.launch.session_id = "fresh-verifier".into();
+    revised.verification.execution.request.launch.run_id = "fresh-run".into();
+    revised.verification.execution.request.operation = VerificationOperation::Refresh {
+        input_id: input.selection.input_id.clone(),
+        input_digest: Digest::of(&input_bytes).to_string(),
+        job_digest: input.job.job_digest.clone(),
+    };
+    revised.request.verifier_session_id = "fresh-verifier".into();
+    revised.selection.verifier_session_id = "fresh-verifier".into();
+    revised.request.verification_digest =
+        Digest::of(&serde_json::to_vec(&revised.verification).unwrap()).to_string();
+    let revisions = directory.join("revisions");
+    fs::create_dir(&revisions).unwrap();
+    fs::set_permissions(&revisions, fs::Permissions::from_mode(0o700)).unwrap();
+    let published = revisions.join("refresh-storage");
+    fs::create_dir(&published).unwrap();
+    fs::set_permissions(&published, fs::Permissions::from_mode(0o700)).unwrap();
+    let copied = std::process::Command::new("/bin/cp")
+        .arg("-R")
+        .arg(input_root.join("transfer"))
+        .arg(published.join("transfer"))
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    let bytes = serde_json::to_vec(&revised).unwrap();
+    fs::write(published.join("saved.json"), &bytes).unwrap();
+    fs::write(
+        published.join("published.json"),
+        serde_json::to_vec(&Digest::of(&bytes).to_string()).unwrap(),
+    )
+    .unwrap();
+    fs::write(directory.join("next.json"), serde_json::to_vec(&serde_json::json!({ "input_id": "refresh-storage", "digest": Digest::of(&bytes).to_string() })).unwrap()).unwrap();
+    // Synthetic store characterization only: no authenticated verifier/cleanup exists.
+    let service = verification::reopen(root.path(), "revision.sock");
+    assert_eq!(service.saved_result(1000, "promotion").unwrap(), revised);
+    assert!(
+        service
+            .publish_saved_refresh(1000, &revised.verification)
+            .is_err()
     );
-    let discarded = restarted.discard_saved_result(1000, "promotion").unwrap();
+    assert!(service.verification_status("fresh-verifier").is_err());
+    let discarded = service.discard_saved_result(1000, "promotion").unwrap();
     assert!(discarded.discarded);
     assert_eq!(
-        restarted.discard_saved_result(1000, "promotion").unwrap(),
-        discarded
+        fs::read(directory.join("saved.json")).unwrap(),
+        original_bytes
     );
-    assert!(
-        root.path()
-            .join("authorizations/saved-results/promotion/transfer/job/source/result")
-            .exists()
+    drop(service);
+    let restarted = verification::reopen(root.path(), "revision-reopened.sock");
+    assert_eq!(
+        restarted.saved_result(1000, "promotion").unwrap(),
+        discarded
     );
 }
 

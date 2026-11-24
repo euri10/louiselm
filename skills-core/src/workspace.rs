@@ -133,6 +133,13 @@ pub(crate) struct SourceFile {
 
 type SourceFiles = BTreeMap<String, SourceFile>;
 
+pub(crate) fn snapshot_files(
+    snapshot: &Path,
+    expected: &Digest,
+) -> Result<SourceFiles, WorkspaceError> {
+    Ok(load_snapshot(snapshot, expected)?.1)
+}
+
 impl SnapshotRecord {
     fn preview(&self) -> Result<SnapshotPreview, WorkspaceError> {
         Ok(SnapshotPreview {

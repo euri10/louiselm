@@ -187,6 +187,11 @@ pub fn promotion_stream(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerificationControlRequest {
+    /// Prepare saved bytes on an explicit new baseline; executes nothing.
+    StageRefresh {
+        /// Exact current revision and selected new inputs.
+        selection: Box<super::promotion::RefreshSelection>,
+    },
     /// Publish exact verified bytes before disposing the original producer.
     SaveResult {
         /// Exact publication selection, never permission to apply.
@@ -249,6 +254,13 @@ pub enum VerificationControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerificationControlResponse {
+    /// Exact new combined job, still awaiting separate bounded verifier authority.
+    RefreshPrepared {
+        /// Immutable preparation with no authority to execute or apply.
+        input: Box<super::promotion::RefreshInput>,
+        /// Exact preparation identity consumed by the supervisor.
+        input_digest: String,
+    },
     /// Exact durable publication and explicit discard state.
     SavedResult {
         /// Historical verification and remeasured changes, no source payloads.
@@ -290,6 +302,10 @@ pub enum VerificationControlResponse {
 /// Submit one exact verification operation through the authenticated operator socket.
 /// # Errors
 /// Refuses malformed input, untrusted broker replies, or unavailable ownership.
+#[expect(
+    clippy::too_many_lines,
+    reason = "One closed response matcher preserves request-specific correlation for every operation."
+)]
 pub fn verification(
     path: &Path,
     broker_uid: u32,
@@ -310,6 +326,20 @@ pub fn verification(
         return Err(InspectError::StatusUnavailable);
     }
     let valid = match (request, &response) {
+        (
+            VerificationControlRequest::StageRefresh { selection },
+            VerificationControlResponse::RefreshPrepared {
+                input,
+                input_digest,
+            },
+        ) => {
+            input.selection == **selection
+                && Digest::of(
+                    &serde_json::to_vec(&input).map_err(|_| InspectError::StatusUnavailable)?,
+                )
+                .to_string()
+                    == *input_digest
+        }
         (
             VerificationControlRequest::SaveResult { request, selection },
             VerificationControlResponse::SavedResult { result },

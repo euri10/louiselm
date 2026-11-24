@@ -87,9 +87,60 @@ impl BrokerService {
     /// # Errors
     /// Refuses foreign operators, absent/incomplete publication, unsafe paths and changed bytes.
     pub fn saved_result(&self, uid: u32, id: &str) -> Result<SavedResult, BrokerError> {
-        let directory = self.saved_path(id)?;
+        Ok(self.saved_revision(uid, id)?.0)
+    }
+
+    pub(super) fn saved_revision(
+        &self,
+        uid: u32,
+        id: &str,
+    ) -> Result<(SavedResult, PathBuf), BrokerError> {
+        let mut directory = self.saved_path(id)?;
+        let mut saved = Self::read_saved_revision(uid, id, &directory)?;
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(next) =
+            read_record::<super::refresh::NextRevision>(&directory.join("next.json"))?
+        {
+            let parent = private_directory(&directory)?;
+            sync_record(&parent, "next.json")?;
+            parent.sync_all().map_err(BrokerError::Storage)?;
+            super::super::record_name(&next.input_id)?;
+            if !seen.insert(next.input_id.clone()) {
+                return Err(BrokerError::RequestMismatch);
+            }
+            let next_path = self.saved_path(id)?.join("revisions").join(&next.input_id);
+            let revised = Self::read_saved_revision(uid, id, &next_path)?;
+            if saved.discarded
+                || saved.accepted.is_some()
+                || saved.application != PromotionStatus::NotRequested
+                || revised.verification.producer != saved.verification.producer
+                || Digest::of(&serde_json::to_vec(&revised).map_err(|_| BrokerError::InvalidGrant)?)
+                    .to_string()
+                    != next.digest
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+            let input = self.refresh_input(&revised.verification.execution.request)?;
+            if input.selection.result_id != id
+                || input.selection.input_id != next.input_id
+                || input.selection.revision_digest != saved.request.verification_digest
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+            saved = revised;
+            directory = next_path;
+        }
+        self.read_saved_decisions(id, &mut saved)?;
+        Ok((saved, directory))
+    }
+
+    fn read_saved_revision(
+        uid: u32,
+        id: &str,
+        directory: &Path,
+    ) -> Result<SavedResult, BrokerError> {
         let parent = private_directory(directory.parent().ok_or(BrokerError::InvalidGrant)?)?;
-        let root = private_directory(&directory)?;
+        let root = private_directory(directory)?;
         let bytes = filesystem::read_source(&root, "saved.json", 16 * 1024 * 1024)?
             .ok_or(BrokerError::InvalidGrant)?;
         let confirmation = filesystem::read_source(&root, "published.json", 128)?
@@ -99,7 +150,7 @@ impl BrokerService {
         if confirmed != Digest::of(&bytes.bytes).to_string() {
             return Err(BrokerError::RequestMismatch);
         }
-        let mut saved: SavedResult =
+        let saved: SavedResult =
             serde_json::from_slice(&bytes.bytes).map_err(|_| BrokerError::InvalidGrant)?;
         saved.request.validate()?;
         saved.selection.validate(&saved.request)?;
@@ -109,10 +160,16 @@ impl BrokerService {
             || saved.accepted.is_some()
             || saved.application != PromotionStatus::NotRequested
             || saved.selection.run_id != saved.verification.producer.request.launch.run_id
-            || saved.selection.run_id != saved.verification.execution.request.launch.run_id
+            || (!matches!(
+                saved.verification.execution.request.operation,
+                crate::launch_protocol::VerificationOperation::Refresh { .. }
+            ) && saved.selection.run_id != saved.verification.execution.request.launch.run_id)
             || !saved.verification.execution.commands_passed()
             || saved.verification.execution.job != saved.request.job
-            || saved.verification.producer.job != saved.request.job
+            || (!matches!(
+                saved.verification.execution.request.operation,
+                crate::launch_protocol::VerificationOperation::Refresh { .. }
+            ) && saved.verification.producer.job != saved.request.job)
             || saved.verification.producer.request.launch.session_id
                 != saved.request.producer_session_id
             || saved.verification.execution.request.launch.session_id
@@ -137,6 +194,19 @@ impl BrokerService {
         if saved.changes != changes.preview || saved.selection.expected_head != baseline {
             return Err(BrokerError::RequestMismatch);
         }
+        // Reconfirm durability after an interrupted acknowledgement, without
+        // treating a merely visible publication as a complete saved result.
+        sync_record(&root, "published.json")?;
+        root.sync_all().map_err(BrokerError::Storage)?;
+        parent.sync_all().map_err(BrokerError::Storage)?;
+        Ok(saved)
+    }
+
+    // Decision metadata belongs to the logical result, not its immutable revisions.
+    // Apply it without loading and remeasuring the current payload a second time.
+    fn read_saved_decisions(&self, id: &str, saved: &mut SavedResult) -> Result<(), BrokerError> {
+        let directory = self.saved_path(id)?;
+        let root = private_directory(&directory)?;
         saved.discarded = match read_record::<bool>(&directory.join("discarded.json"))? {
             None => false,
             Some(true) => true,
@@ -155,15 +225,10 @@ impl BrokerService {
             }
             sync_record(&root, "accepted.json")?;
         }
-        // Reconfirm durability after an interrupted acknowledgement, without
-        // treating a merely visible publication as a complete saved result.
-        sync_record(&root, "published.json")?;
         if saved.discarded {
             sync_record(&root, "discarded.json")?;
         }
-        root.sync_all().map_err(BrokerError::Storage)?;
-        parent.sync_all().map_err(BrokerError::Storage)?;
-        Ok(saved)
+        root.sync_all().map_err(BrokerError::Storage)
     }
 
     /// Saves immutable work before the caller may dispose its producer.
@@ -327,12 +392,15 @@ impl BrokerService {
         if !path.try_exists().map_err(BrokerError::Storage)? {
             return Ok(None);
         }
-        let saved = self.saved_result(uid, &request.request_id)?;
+        let (saved, revision) = self.saved_revision(uid, &request.request_id)?;
         let mut selected = request.clone();
         selected.expires_at_ms = saved.request.expires_at_ms;
         if selected != saved.request || saved.discarded {
             return Err(BrokerError::RequestMismatch);
         }
-        Ok(Some(transfer::load(&path.join("transfer"), &request.job)?))
+        Ok(Some(transfer::load(
+            &revision.join("transfer"),
+            &request.job,
+        )?))
     }
 }

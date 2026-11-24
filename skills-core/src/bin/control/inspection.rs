@@ -197,6 +197,10 @@ impl Queries {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One closed operator dispatcher preserves channel ownership across verification operations."
+    )]
     fn verification(
         &self,
         broker: &InstalledBroker,
@@ -207,6 +211,18 @@ impl Queries {
             VerificationControlRequest as Request, VerificationControlResponse as Response,
         };
         match request {
+            Request::StageRefresh { selection } => broker
+                .prepare_saved_refresh(self.operator_uid, selection)
+                .and_then(|input| {
+                    Ok(Response::RefreshPrepared {
+                        input_digest: louiselm_skills::Digest::of(
+                            &serde_json::to_vec(&input).map_err(|_| BrokerError::InvalidGrant)?,
+                        )
+                        .to_string(),
+                        input: Box::new(input),
+                    })
+                })
+                .map_err(|_| InspectError::StatusUnavailable),
             Request::SaveResult { request, selection } => self.verification_worker(
                 &request.producer_session_id,
                 Request::SaveResult {
@@ -646,6 +662,7 @@ impl Queries {
                                 record: Box::new(record),
                             }),
                         Request::Stage { .. }
+                        | Request::StageRefresh { .. }
                         | Request::AcceptSavedResult { .. }
                         | Request::Status { .. }
                         | Request::SavedResult { .. } => Err(BrokerError::InvalidGrant),

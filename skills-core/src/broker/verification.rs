@@ -64,6 +64,9 @@ impl BrokerService {
     ) -> Result<String, BrokerError> {
         request.validate()?;
         match &request.operation {
+            VerificationOperation::Refresh { .. } => {
+                Ok(self.refresh_input(request)?.job.plan_digest)
+            }
             VerificationOperation::Export {
                 input_id,
                 input_digest,
@@ -113,6 +116,17 @@ impl BrokerService {
         plan_digest: &Digest,
     ) -> Result<Digest, BrokerError> {
         record_name(input_id)?;
+        self.prepare_verification_inputs()?;
+        Ok(crate::workspace::verification::stage_inputs(
+            snapshot,
+            snapshot_digest,
+            plan,
+            plan_digest,
+            &self.verification_inputs.join(input_id),
+        )?)
+    }
+
+    pub(in crate::broker) fn prepare_verification_inputs(&self) -> Result<(), BrokerError> {
         match fs::DirBuilder::new()
             .mode(0o700)
             .create(&self.verification_inputs)
@@ -126,13 +140,7 @@ impl BrokerService {
                 .parent()
                 .ok_or(BrokerError::InvalidGrant)?,
         )?;
-        Ok(crate::workspace::verification::stage_inputs(
-            snapshot,
-            snapshot_digest,
-            plan,
-            plan_digest,
-            &self.verification_inputs.join(input_id),
-        )?)
+        Ok(())
     }
 
     /// Captures the actual Parked producer through its original supervisor channel.
@@ -252,7 +260,9 @@ impl BrokerService {
             VerificationOperation::Export { .. } | VerificationOperation::Transfer { .. } => {
                 SessionState::Parked
             }
-            VerificationOperation::Run { .. } => SessionState::Running,
+            VerificationOperation::Run { .. } | VerificationOperation::Refresh { .. } => {
+                SessionState::Running
+            }
         };
         if !self
             .receipts()
@@ -284,7 +294,9 @@ impl BrokerService {
             VerificationOperation::Export { .. } | VerificationOperation::Transfer { .. } => {
                 SessionState::Parked
             }
-            VerificationOperation::Run { .. } => SessionState::Running,
+            VerificationOperation::Run { .. } | VerificationOperation::Refresh { .. } => {
+                SessionState::Running
+            }
         };
         if status.state != state
             || status.broker_head.as_ref() != Some(&request.head)

@@ -153,7 +153,8 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=13).contains(&index));
+    assert!((1..=14).contains(&index));
+    let saved_refresh = index == 14;
     let rehearsal_fault = match index {
         12 => "replica",
         13 => "pre_acp",
@@ -169,7 +170,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         5
     } else if startup_failure {
         1
-    } else if delayed_promotion {
+    } else if delayed_promotion || saved_refresh {
         4
     } else {
         index
@@ -353,7 +354,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .digest()
         .to_string();
         let expiry = now
-            + if index == 4 && delayed_promotion {
+            + if index == 4 && (delayed_promotion || saved_refresh) {
                 60_000
             } else {
                 120_000
@@ -598,6 +599,10 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .env(
             "LOUISELM_TEST_PROMOTION_DELAY",
             if delayed_promotion { "1" } else { "0" },
+        )
+        .env(
+            "LOUISELM_TEST_SAVED_REFRESH",
+            if saved_refresh { "1" } else { "0" },
         );
     let status = if let Some(observation) = failure {
         let mut neovim = BrokerChild(command.spawn().unwrap());
@@ -695,7 +700,10 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         let head = git(&["rev-parse", "HEAD"]);
         assert_eq!(git(&["status", "--porcelain"]), "");
         assert_ne!(head, promotion_preview.base_commit);
-        assert_eq!(git(&["rev-parse", "HEAD^"]), promotion_preview.base_commit);
+        assert_eq!(
+            git(&["rev-parse", if saved_refresh { "HEAD~3" } else { "HEAD^" }]),
+            promotion_preview.base_commit
+        );
         assert_eq!(
             fs::read(checkout.join("accepted.txt")).unwrap(),
             b"accepted Bead output\n"

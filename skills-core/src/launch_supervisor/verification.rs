@@ -194,9 +194,11 @@ impl Worker {
                             Ok(ResponseResult::VerificationExport { evidence })
                         })()
                     }
-                    VerificationOperation::Run { .. } => storage
-                        .execute(&request, &session, &flag, &gate, &cleanup_flag, deadline)
-                        .map(|evidence| ResponseResult::VerificationExecution { evidence }),
+                    VerificationOperation::Run { .. } | VerificationOperation::Refresh { .. } => {
+                        storage
+                            .execute(&request, &session, &flag, &gate, &cleanup_flag, deadline)
+                            .map(|evidence| ResponseResult::VerificationExecution { evidence })
+                    }
                 };
                 finish(result, &cleanup_flag, &completion_flag, complete)
             })
