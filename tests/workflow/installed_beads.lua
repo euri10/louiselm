@@ -27,6 +27,7 @@ if index == 1 then
 end
 print("installed verification case " .. index)
 local completed, failure, observed = false, nil, false
+local reviewed
 local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
   envelope = case.envelope,
@@ -51,7 +52,7 @@ local controller = assert(Workflow.new_bead_executor({
         )
         local inspected = nvim
           .system({ "louiselm-control", "promotion", "inspect", "--json" }, {
-            stdin = nvim.json.encode({ selection = preview.selection }),
+            stdin = nvim.json.encode({ result_id = preview.selection.request_id }),
             text = true,
           })
           :wait()
@@ -59,25 +60,47 @@ local controller = assert(Workflow.new_bead_executor({
         local saved = nvim.json.decode(inspected.stdout).result
         assert(saved.request.request_id == preview.selection.request_id and saved.discarded == false)
         assert(saved.verification.execution.cleanup_proven == true)
+        assert(preview.selection.expires_at_ms == nil, "saved review must have no deadline")
+        local function promotion(verb, payload)
+          return nvim
+            .system({ "louiselm-control", "promotion", verb, "--json" }, {
+              stdin = nvim.json.encode(payload),
+              text = true,
+            })
+            :wait()
+        end
+        local rules = nvim.fn.readfile(case.plan, "b")
+        assert(nvim.uv.fs_chmod(case.plan, 420))
+        local changed = nvim.deepcopy(rules)
+        changed[#changed] = changed[#changed] .. " "
+        nvim.fn.writefile(changed, case.plan, "b")
+        local refused =
+          promotion("commit", { result_id = preview.selection.request_id, approval_digest = preview.approval_digest })
+        assert(
+          refused.code == 1
+            and nvim.json.decode(refused.stderr).message == "verification rules changed; refresh required"
+        )
+        nvim.fn.writefile(rules, case.plan, "b")
+        assert(nvim.uv.fs_chmod(case.plan, 292))
+        local reopened = promotion("preview", { result_id = preview.selection.request_id })
+        assert(reopened.code == 0, reopened.stderr)
+        assert(
+          nvim.json.decode(reopened.stdout).approval_digest == preview.approval_digest,
+          "fresh transport must preserve exact review identity"
+        )
+        reviewed =
+          { id = preview.selection.request_id, approval = preview.approval_digest, verification = saved.verification }
         if delayed_promotion then
-          -- Same event order as Run e0500a6e (pynio): verification, preview,
-          -- human delay, Accept. Use a shorter explicit deadline, never alter the
-          -- returned selection or its approval digest to simulate expiration.
-          assert(preview.selection.expires_at_ms > now_ms(), "preview must arrive before expiry")
           nvim.defer_fn(function()
+            assert(now_ms() >= case.envelope.expires_at_ms)
             decide(true)
-          end, preview.selection.expires_at_ms - now_ms() + 50)
+          end, math.max(1, case.envelope.expires_at_ms - now_ms() + 50))
         else
           decide(true)
         end
       end
     or nil,
   system = function(argv, options, done)
-    if delayed_promotion and argv[2] == "promotion" and argv[3] == "preview" then
-      local request = nvim.json.decode(options.stdin)
-      request.selection.expires_at_ms = now_ms() + 30000
-      options.stdin = nvim.json.encode(request)
-    end
     if argv[1] == "louiselm-capture" then
       nvim.schedule(function()
         done({ code = 0, stdout = '{"token":"fixture-capture-only"}', stderr = "" })
@@ -210,9 +233,8 @@ assert(controller:start(function(ok, err, summary)
     return
   end
   if delayed_promotion then
-    assert(not ok and controller.status == "failed")
-    assert(err == "Run promotion commit refused: promotion preview expired; no changes applied", err)
-    assert(#summary.accepted == 0 and #summary.failed == 0 and next(summary.commits) == nil)
+    assert(ok and controller.status == "completed", err)
+    assert(#summary.accepted == 1 and #summary.failed == 0 and summary.commits[case.bead_id])
     assert(#controller.run.workers == 2, "expiry must not start a successor")
     completed = true
     return
@@ -248,6 +270,26 @@ local disposed, dispose_error = controller:dispose()
 assert(disposed, dispose_error)
 assert(finished, "installed Lua controller timed out")
 assert(not failure, failure)
+if reviewed then
+  local repeated = nvim
+    .system({ "louiselm-control", "promotion", "commit", "--json" }, {
+      stdin = nvim.json.encode({ result_id = reviewed.id, approval_digest = reviewed.approval }),
+      text = true,
+    })
+    :wait()
+  assert(repeated.code == 0, repeated.stderr)
+  assert(nvim.json.decode(repeated.stdout).commit == controller.summary.commits[case.bead_id])
+  local inspection = nvim
+    .system({ "louiselm-control", "promotion", "inspect", "--json" }, {
+      stdin = nvim.json.encode({ result_id = reviewed.id }),
+      text = true,
+    })
+    :wait()
+  assert(inspection.code == 0, inspection.stderr)
+  local saved = nvim.json.decode(inspection.stdout).result
+  assert(nvim.deep_equal(saved.verification, reviewed.verification), "unchanged evidence must be reused, not rerun")
+  assert(saved.accepted.commit == controller.summary.commits[case.bead_id] and saved.application.state == "Completed")
+end
 assert(
   startup_failure or index >= 6 or observed,
   "installed Lua controller did not report worker result for case " .. index

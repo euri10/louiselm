@@ -5,15 +5,10 @@ local nvim = vim
 
 local T = MiniTest.new_set()
 
-local function now_ms()
-  local seconds, microseconds = nvim.uv.gettimeofday()
-  return seconds * 1000 + math.floor(microseconds / 1000)
-end
-
-local function fixture(duration)
+local function fixture()
   local f = { decisions = 0, previous = nvim.api.nvim_get_current_win() }
   f.preview = {
-    selection = { bead_id = "bead-1", run_id = "run-1", expires_at_ms = now_ms() + (duration or 240000) },
+    selection = { bead_id = "bead-1", run_id = "run-1" },
     approval_digest = "sha256:approval",
     changes = { added = { "new.txt" }, modified = { "old.txt" }, deleted = { "gone.txt" } },
   }
@@ -34,9 +29,8 @@ local function fixture(duration)
   return f
 end
 
--- Replaces picker-stub assertions with the real review buffer and key handling.
--- Live d1e871e4 showed a hidden multiline picker still waiting after expiry.
-T["focused review shows exact paths, deadline and remaining time"] = function()
+-- Saved review has no deadline; bounded application permission is tested natively.
+T["focused review shows exact paths without a countdown"] = function()
   local f = fixture()
   f:open()
   assert(f.window ~= f.previous)
@@ -48,16 +42,13 @@ T["focused review shows exact paths, deadline and remaining time"] = function()
     "+ new.txt",
     "~ old.txt",
     "- gone.txt",
-    "Time remaining:",
     "Accept exact preview",
-    "Reject",
-    "Expiry stops the Run",
+    "Discard saved result",
   }) do
     assert(text:find(value, 1, true), text)
   end
-  local deadline = os.date("!%Y-%m-%d %H:%M:%S UTC", math.floor(f.preview.selection.expires_at_ms / 1000))
-  assert(type(deadline) == "string")
-  assert(text:find(deadline, 1, true), text)
+  assert(not text:find("Expires", 1, true), text)
+  assert(not text:find("Time remaining", 1, true), text)
   MiniTest.expect.equality(f.decisions, 0)
   nvim.api.nvim_feedkeys("a", "mx!", false)
   MiniTest.expect.equality(f.accepted, true)
@@ -66,32 +57,37 @@ T["focused review shows exact paths, deadline and remaining time"] = function()
   MiniTest.expect.equality(nvim.api.nvim_get_current_win(), f.previous)
 end
 
-T["reject and closing the review never accept"] = function()
-  for _, action in ipairs({ "reject", "close" }) do
+T["only explicit discard rejects; closing or Escape keeps saved work pending"] = function()
+  for _, action in ipairs({ "reject", "close", "escape" }) do
     local f = fixture()
     f:open()
     if action == "reject" then
       nvim.api.nvim_feedkeys("r", "mx!", false)
-    else
+    elseif action == "close" then
       nvim.api.nvim_win_close(f.window, true)
+    else
+      nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<Esc>", true, false, true), "mx!", false)
     end
-    MiniTest.expect.equality(f.accepted, false)
+    if action == "reject" then
+      MiniTest.expect.equality(f.accepted, false)
+    else
+      MiniTest.expect.equality(f.accepted, nil)
+      MiniTest.expect.equality(f.error, "operator closed promotion review; saved result remains pending")
+    end
     MiniTest.expect.equality(f.decisions, 1)
   end
 end
 
-T["expiry stops review once without approval or renewed deadline"] = function()
-  local f = fixture(250)
-  local deadline = f.preview.selection.expires_at_ms
+T["saved review waits without deciding and still accepts later"] = function()
+  local f = fixture()
   f:open()
-  assert(nvim.wait(1500, function()
-    return f.decisions == 1
-  end, 5))
-  MiniTest.expect.equality(f.accepted, nil)
-  assert(f.error:find("expired", 1, true))
-  MiniTest.expect.equality(f.preview.selection.expires_at_ms, deadline)
-  MiniTest.expect.equality(nvim.api.nvim_win_is_valid(f.window), false)
-  f.cancel()
+  nvim.wait(50, function()
+    return false
+  end, 5)
+  MiniTest.expect.equality(f.decisions, 0)
+  MiniTest.expect.equality(nvim.api.nvim_win_is_valid(f.window), true)
+  nvim.api.nvim_feedkeys("a", "mx!", false)
+  MiniTest.expect.equality(f.accepted, true)
   MiniTest.expect.equality(f.decisions, 1)
 end
 
@@ -104,8 +100,8 @@ T["q stops the Run without accepting or rejecting a task"] = function()
   MiniTest.expect.equality(f.decisions, 1)
 end
 
-T["cancelling review releases its window and suppresses late expiry"] = function()
-  local f = fixture(100)
+T["cancelling review releases its window without deciding"] = function()
+  local f = fixture()
   f:open()
   assert(type(f.cancel) == "function")
   f.cancel()
@@ -115,14 +111,6 @@ T["cancelling review releases its window and suppresses late expiry"] = function
   end, 5)
   MiniTest.expect.equality(f.decisions, 0)
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(f.buffer), false)
-end
-
-T["already expired preview cannot be accepted"] = function()
-  local f = fixture(-1)
-  f:open()
-  MiniTest.expect.equality(f.accepted, nil)
-  MiniTest.expect.equality(f.decisions, 1)
-  assert(f.error:find("expired", 1, true))
 end
 
 T["tainted promotion retains exact-use review"] = function()

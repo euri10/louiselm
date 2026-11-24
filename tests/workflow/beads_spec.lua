@@ -161,6 +161,7 @@ local function fixture()
       elseif argv[2] == "promotion" then
         local input = nvim.json.decode(options.stdin)
         if argv[3] == "save" then
+          f.saved_selection = nvim.deepcopy(input.selection)
           f.save_calls = (f.save_calls or 0) + 1
           MiniTest.expect.equality(f.workers[#f.workers].disposed, 0)
           if f.fail_save then
@@ -170,13 +171,20 @@ local function fixture()
           response = { schema = "louiselm.run-saved-result/1", result_id = input.selection.request_id }
         elseif argv[3] == "preview" then
           f.preview_calls = (f.preview_calls or 0) + 1
-          input.selection.expires_at_ms = f.preview_expiry or 9999999999999
+          MiniTest.expect.equality(input.result_id, f.saved_selection.request_id)
+          local selection = nvim.deepcopy(f.saved_selection)
+          if f.preview_with_deadline then
+            selection.expires_at_ms = 1
+          end
           response = {
             schema = "louiselm.run-promotion-preview/1",
-            selection = input.selection,
+            selection = selection,
             changes = { added = { "file" }, modified = {}, deleted = {} },
             approval_digest = DIGEST,
           }
+        elseif argv[3] == "discard" then
+          f.discard_calls = (f.discard_calls or 0) + 1
+          response = { kind = "saved_result", result = { discarded = true } }
         else
           f.commit_calls = (f.commit_calls or 0) + 1
           if f.fail_promotion_commit then
@@ -185,7 +193,7 @@ local function fixture()
           end
           response = {
             schema = "louiselm.run-promotion-commit/1",
-            bead_id = input.selection.bead_id,
+            bead_id = f.saved_selection.bead_id,
             commit = string.rep("b", 40),
           }
         end
@@ -331,6 +339,38 @@ T["publication precedes finished worker disposal and promotion review"] = functi
     return f.decide ~= nil
   end)
   MiniTest.expect.equality(f.save_calls, 1)
+end
+
+T["late acceptance commits only saved work and never dispatches an expired Run successor"] = function()
+  local f = fixture()
+  f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
+  f.options.on_promotion = function(preview, decide)
+    MiniTest.expect.equality(preview.selection.expires_at_ms, nil)
+    f.decide = decide
+  end
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  f.workers[1].complete()
+  wait(function()
+    return f.verify_done ~= nil
+  end)
+  f.verify_done(true)
+  wait(function()
+    return f.decide ~= nil
+  end)
+  f.runner.options.envelope.expires_at_ms = now_ms() - 1
+  later(f.decide, true)
+  wait(function()
+    return f.finished == 1
+  end)
+  MiniTest.expect.equality(f.ok, true)
+  MiniTest.expect.equality(f.summary.accepted, { "b-1" })
+  MiniTest.expect.equality(f.summary.continuation_required, true)
+  MiniTest.expect.equality(f.commit_calls, 1)
+  MiniTest.expect.equality(f.prepared, { "b-1" })
+  MiniTest.expect.equality(#f.workers, 1)
 end
 
 T["failed result publication preserves producer and stops before review"] = function()
@@ -552,7 +592,7 @@ T["payload-free progress follows real worker and verifier boundaries"] = functio
   MiniTest.expect.equality(#events, count)
 end
 
-T["review expiry stops without rejection, commit or successor and cancels the UI"] = function()
+T["closing review stops without discard, commit or successor and cancels the UI"] = function()
   local f = fixture()
   f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
   local closed = 0
@@ -574,12 +614,13 @@ T["review expiry stops without rejection, commit or successor and cancels the UI
   wait(function()
     return f.decide ~= nil
   end)
-  later(f.decide, nil, "Run promotion preview expired; no changes applied")
+  later(f.decide, nil, "operator closed promotion review; saved result remains pending")
   wait(function()
     return f.finished == 1
   end)
   MiniTest.expect.equality(f.ok, false)
-  assert(f.error:find("expired", 1, true))
+  assert(f.error:find("remains pending", 1, true))
+  MiniTest.expect.equality(f.discard_calls, nil)
   MiniTest.expect.equality(f.prepared, { "b-1" })
   MiniTest.expect.equality(f.commit_calls, nil)
   MiniTest.expect.equality(f.summary.failed, {})
@@ -589,11 +630,10 @@ T["review expiry stops without rejection, commit or successor and cancels the UI
   MiniTest.expect.equality(closed, 1)
 end
 
-T["operator view and real review stop cleanly when a verified preview expires"] = function()
+T["operator view closes real saved review without discarding it"] = function()
   local f = fixture()
   f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
   f.options.on_promotion = require("louiselm.ui.run_promotion").prompt
-  f.preview_expiry = now_ms() + 500
   f.runner = assert(require("louiselm.workflow.beads").new(f.options))
   MiniTest.finally(function()
     f.runner:dispose()
@@ -613,10 +653,15 @@ T["operator view and real review stop cleanly when a verified preview expires"] 
   end)
   f.verify_done(true)
   wait(function()
+    return nvim.api.nvim_win_get_config(nvim.api.nvim_get_current_win()).relative == "editor"
+  end)
+  nvim.api.nvim_feedkeys("q", "mx!", false)
+  wait(function()
     return f.runner.status == "disposed"
   end)
   local text = table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
-  assert(text:find("Run stopped: Run promotion preview expired; no changes applied", 1, true), text)
+  assert(text:find("Run stopped: operator stopped promotion review", 1, true), text)
+  MiniTest.expect.equality(f.discard_calls, nil)
   MiniTest.expect.equality(f.prepared, { "b-1" })
   MiniTest.expect.equality(f.commit_calls, nil)
   MiniTest.expect.equality(f.failure_requests, nil)
@@ -1270,13 +1315,13 @@ T["rejected promotion does not commit and a stale next snapshot refuses"] = func
   MiniTest.expect.equality(rejected.prepared_heads, { head, head })
 end
 
-T["promotion preview requires a usable deadline before opening the prompt"] = function()
+T["promotion preview refuses an unsolicited review deadline"] = function()
   local f = fixture()
   f.options.worktree = { path = "/run-worktree", journal_parent = "/journal", head = string.rep("a", 40) }
   f.options.on_promotion = function()
-    error("invalid expiry must not reach the UI")
+    error("a review deadline must not reach the UI")
   end
-  f.preview_expiry = nvim.NIL
+  f.preview_with_deadline = true
   f:start()
   wait(function()
     return f.workers[1] and f.workers[1].complete

@@ -4,7 +4,7 @@ use louiselm_skills::{
     Digest,
     broker::{
         operator::{self, VerificationControlRequest, VerificationControlResponse},
-        promotion::PromotionRequest,
+        promotion::{PromotionRequest, SavedAcceptance, SavedResult, SavedSelection as Selection},
         verification::VerificationStatus,
     },
     workspace::promotion::{self, DestinationIdentity, PromotionClient},
@@ -12,29 +12,15 @@ use louiselm_skills::{
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, Read as _, Write as _},
-    path::{Path, PathBuf},
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Selection {
-    schema: String,
-    run_id: String,
-    bead_id: String,
-    producer_session_id: String,
-    verifier_session_id: String,
-    request_id: String,
-    checkout: PathBuf,
-    journal_parent: PathBuf,
-    expected_head: String,
-    expires_at_ms: Option<u64>,
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Command {
-    selection: Selection,
+    selection: Option<Selection>,
+    result_id: Option<String>,
     approval_digest: Option<String>,
 }
 
@@ -72,7 +58,18 @@ fn now_ms() -> Result<u64, &'static str> {
     reason = "The preview and commit recheck one exact selection through the same broker transaction."
 )]
 fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> {
-    let selection = &mut command.selection;
+    let paths = super::installed_paths().map_err(|_| "installed broker unavailable")?;
+    let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
+        .map_err(|_| "installed broker unavailable")?;
+    let (selection, saved) = match (command.selection.take(), command.result_id.take()) {
+        (Some(selection), None) if verb == "save" => (selection, None),
+        (None, Some(id)) if verb != "save" => {
+            let saved = saved_result(config.broker_uid, &id, false)?;
+            (saved.selection.clone(), Some(saved))
+        }
+        _ => return Err("select exactly one saved result or publication context"),
+    };
+    let selection = &selection;
     if selection.schema != "louiselm.run-promotion-selection/1"
         || selection.run_id.is_empty()
         || selection.bead_id.is_empty()
@@ -87,42 +84,45 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
         return Err("invalid promotion selection");
     }
     if verb == "inspect" || verb == "discard" {
-        let paths = super::installed_paths().map_err(|_| "installed broker unavailable")?;
-        let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
-            .map_err(|_| "installed broker unavailable")?;
-        let response = operator::verification(
-            Path::new(operator::SOCKET),
-            config.broker_uid,
-            &VerificationControlRequest::SavedResult {
-                result_id: selection.request_id.clone(),
-                discard: verb == "discard",
-            },
-            operator::TIMEOUT,
-        )
-        .map_err(|_| "saved result unavailable; inspect before retry")?;
-        return serde_json::to_vec(&response).map_err(|_| "saved result unavailable");
+        let result = saved_result(config.broker_uid, &selection.request_id, verb == "discard")?;
+        return serde_json::to_vec(&VerificationControlResponse::SavedResult {
+            result: Box::new(result),
+        })
+        .map_err(|_| "saved result unavailable");
     }
-    if (verb == "preview" || verb == "save") && selection.expires_at_ms.is_none() {
-        selection.expires_at_ms = Some(now_ms()?.checked_add(240_000).ok_or("clock unavailable")?);
+    if let Some(saved) = &saved {
+        if saved.discarded {
+            return Err("saved result was explicitly discarded");
+        }
+        if let Some(accepted) = &saved.accepted {
+            if verb != "commit"
+                || command.approval_digest.as_deref() != Some(&accepted.approval_digest)
+            {
+                return Err("saved result already accepted; inspect its commit");
+            }
+            return serde_json::to_vec(&Committed {
+                schema: "louiselm.run-promotion-commit/1",
+                commit: accepted.commit.clone(),
+                bead_id: selection.bead_id.clone(),
+            })
+            .map_err(|_| "saved commit unavailable");
+        }
+        if saved.application != louiselm_skills::broker::promotion::PromotionStatus::NotRequested {
+            return Err(
+                "prior application exists; inspect saved result and local journals before retry",
+            );
+        }
     }
-    let expires = selection.expires_at_ms.ok_or("promotion expiry missing")?;
-    let now = now_ms()?;
-    if expires <= now {
-        return Err("promotion preview expired; no changes applied");
-    }
-    if expires - now > 300_000 {
-        return Err("promotion preview expiry exceeds five minutes");
-    }
+    // Preview spends no application authority: its short transport is dropped.
+    // Explicit Accept creates a new exact transaction, never renewing a prior one.
+    let expires = now_ms()?.checked_add(240_000).ok_or("clock unavailable")?;
     if verb != "save" {
         let head = promotion::clean_run_head(&selection.checkout, &selection.run_id)
             .map_err(|_| "Run worktree is dirty or on the wrong branch")?;
         if head != selection.expected_head {
-            return Err("Run worktree HEAD changed");
+            return Err("Run worktree HEAD changed; refresh required");
         }
     }
-    let paths = super::installed_paths().map_err(|_| "installed broker unavailable")?;
-    let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
-        .map_err(|_| "installed broker unavailable")?;
     let status = operator::verification(
         Path::new(operator::SOCKET),
         config.broker_uid,
@@ -145,6 +145,23 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
     {
         return Err("verification belongs to another Run");
     }
+    if verb != "save" {
+        let mut plan = Vec::new();
+        std::fs::File::open(&selection.plan)
+            .map_err(|_| "verification rules unavailable; refresh required")?
+            .take(65_537)
+            .read_to_end(&mut plan)
+            .map_err(|_| "verification rules unavailable; refresh required")?;
+        if plan.len() > 65_536 || Digest::of(&plan).to_string() != record.execution.job.plan_digest
+        {
+            return Err("verification rules changed; refresh required");
+        }
+        let inputs = louiselm_skills::launch_supervisor::verification_inputs::current()
+            .map_err(|_| "verification tools unavailable; refresh required")?;
+        if inputs.to_string() != record.execution.verifier_inputs_digest {
+            return Err("verification tools changed; refresh required");
+        }
+    }
     let request = PromotionRequest {
         schema: "louiselm.workspace.promotion/1".into(),
         request_id: selection.request_id.clone(),
@@ -164,7 +181,10 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
         let response = operator::verification(
             Path::new(operator::SOCKET),
             config.broker_uid,
-            &VerificationControlRequest::SaveResult { request },
+            &VerificationControlRequest::SaveResult {
+                request,
+                selection: Box::new(selection.clone()),
+            },
             operator::TIMEOUT,
         )
         .map_err(|_| "result publication unconfirmed; preserve producer")?;
@@ -198,8 +218,10 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
     )
     .map_err(|_| "promotion preview invalid")?;
     if verb == "preview" {
-        let review = client
-            .tainted_review()
+        let reviewed = stable_review(&selected_request, client.tainted_review())
+            .map_err(|_| "promotion review invalid")?;
+        let review = reviewed
+            .as_ref()
             .map(|value| value.digest().map_err(|_| "promotion review invalid"))
             .transpose()?;
         serde_json::to_vec(&Preview {
@@ -207,7 +229,7 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
             selection,
             changes: client.preview(),
             approval_digest: digest,
-            tainted_review: client.tainted_review(),
+            tainted_review: reviewed.as_ref(),
             tainted_review_digest: review,
         })
         .map_err(|_| "promotion preview invalid")
@@ -235,6 +257,24 @@ fn operation(verb: &str, mut command: Command) -> Result<Vec<u8>, &'static str> 
             &record.execution.job.result_digest,
         )
         .map_err(|_| "promotion applied but Git commit failed; inspect worktree")?;
+        operator::verification(
+            Path::new(operator::SOCKET),
+            config.broker_uid,
+            &VerificationControlRequest::AcceptSavedResult {
+                result_id: selection.request_id.clone(),
+                accepted: SavedAcceptance {
+                    commit: commit.clone(),
+                    approval_digest: digest,
+                    request_digest: Digest::of(
+                        &serde_json::to_vec(&selected_request)
+                            .map_err(|_| "invalid application record")?,
+                    )
+                    .to_string(),
+                },
+            },
+            operator::TIMEOUT,
+        )
+        .map_err(|_| "Git commit created but saved decision unconfirmed; inspect before retry")?;
         serde_json::to_vec(&Committed {
             schema: "louiselm.run-promotion-commit/1",
             commit,
@@ -250,7 +290,42 @@ fn approval_digest(
     changes: &promotion::ChangePreview,
     review: Option<&louiselm_skills::broker::promotion::PromotionReview>,
 ) -> Result<String, serde_json::Error> {
+    let review = stable_review(request, review)?;
+    let mut request = request.clone();
+    request.expires_at_ms = 0;
     Ok(Digest::of(&serde_json::to_vec(&(selection, request, changes, review))?).to_string())
+}
+
+fn stable_review(
+    request: &PromotionRequest,
+    review: Option<&louiselm_skills::broker::promotion::PromotionReview>,
+) -> Result<Option<louiselm_skills::broker::promotion::PromotionReview>, serde_json::Error> {
+    let mut request = request.clone();
+    request.expires_at_ms = 0;
+    review
+        .map(|review| {
+            let mut review = review.clone();
+            review.request_digest = Digest::of(&serde_json::to_vec(&request)?).to_string();
+            Ok(review)
+        })
+        .transpose()
+}
+
+fn saved_result(uid: u32, id: &str, discard: bool) -> Result<SavedResult, &'static str> {
+    let response = operator::verification(
+        Path::new(operator::SOCKET),
+        uid,
+        &VerificationControlRequest::SavedResult {
+            result_id: id.into(),
+            discard,
+        },
+        operator::TIMEOUT,
+    )
+    .map_err(|_| "saved result unavailable; inspect before retry")?;
+    let VerificationControlResponse::SavedResult { result } = response else {
+        return Err("saved result unavailable");
+    };
+    Ok(*result)
 }
 
 pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
@@ -296,6 +371,7 @@ mod tests {
 
     use super::*;
     use louiselm_skills::workspace::{provenance::OutputProvenance, verification::JobPreview};
+    use std::path::PathBuf;
 
     #[test]
     fn approval_binds_selected_output_even_when_changed_paths_are_identical() {
@@ -310,7 +386,7 @@ mod tests {
             checkout: PathBuf::from("/worktree"),
             journal_parent: PathBuf::from("/journal"),
             expected_head: "a".repeat(40),
-            expires_at_ms: Some(1_000_000),
+            plan: PathBuf::from("/plan.json"),
         };
         let mut request = PromotionRequest {
             schema: "louiselm.workspace.promotion/1".into(),
@@ -343,6 +419,12 @@ mod tests {
             deleted: vec![],
         };
         let approved = approval_digest(&selection, &request, &changes, None).unwrap();
+        request.expires_at_ms += 1;
+        assert_eq!(
+            approved,
+            approval_digest(&selection, &request, &changes, None).unwrap(),
+            "review approval binds the exact work, not a spent application lifetime"
+        );
         request.job.result_digest = Digest::of(b"different-bytes").to_string();
         assert_ne!(
             approved,

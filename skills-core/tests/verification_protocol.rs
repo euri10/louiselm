@@ -68,6 +68,7 @@ fn evidence() -> VerificationExecution {
             command_count: 2,
         },
         integration_digest: Digest::of(b"integration").to_string(),
+        verifier_inputs_digest: Digest::of(b"qualified-verifier-inputs").to_string(),
         steps: vec![
             VerificationStep::Completed {
                 exit_code: 0,

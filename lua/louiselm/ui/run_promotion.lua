@@ -3,28 +3,16 @@
 local nvim = vim
 local M = {}
 
-local function now_ms()
-  local seconds, microseconds = nvim.uv.gettimeofday()
-  return seconds * 1000 + math.floor(microseconds / 1000)
-end
-
----Focus a scrollable exact-preview review until choice, expiry or cancellation.
+---Focus a scrollable saved-result review until choice or cancellation.
 ---@param preview table Result of `louiselm-control promotion preview --json`.
----@param decide fun(accepted: boolean?, error_message?: string) Main-loop choice; nil stops on expiry.
----@return fun() cancel Releases the UI/timer without making a decision; idempotent.
+---@param decide fun(accepted: boolean?, error_message?: string) Main-loop choice; nil leaves saved work pending.
+---@return fun() cancel Releases the UI without making a decision; idempotent.
 function M.prompt(preview, decide)
-  local expiry_error = "Run promotion preview expired; no changes applied"
-  if preview.selection.expires_at_ms <= now_ms() then
-    decide(nil, expiry_error)
-    return function() end
-  end
   local lines = {
     "Promote " .. preview.selection.bead_id .. " into run/" .. preview.selection.run_id .. "?",
-    "a: Accept exact preview | r/Esc: Reject | q: Stop Run | scroll to review paths",
-    "Time remaining:",
+    "a: Accept exact preview | r: Discard saved result | Esc: Close | q: Stop Run",
     "Approval digest: " .. preview.approval_digest,
-    "Expires at: " .. os.date("!%Y-%m-%d %H:%M:%S UTC", math.floor(preview.selection.expires_at_ms / 1000)),
-    "Expiry stops the Run without applying this preview.",
+    "Saved work remains pending until acceptance or explicit discard.",
   }
   for _, group in ipairs({ { "added", "+ " }, { "modified", "~ " }, { "deleted", "- " } }) do
     for _, path in ipairs(preview.changes[group[1]] or {}) do
@@ -65,17 +53,12 @@ function M.prompt(preview, decide)
     title_pos = "center",
   })
   nvim.wo[window].wrap = true
-  local finished, timer = false, nil
+  local finished = false
   local function cancel(wiping)
     if finished then
       return false
     end
     finished = true
-    if timer and not timer:is_closing() then
-      timer:stop()
-      timer:close()
-    end
-    timer = nil
     local focused = nvim.api.nvim_get_current_win() == window
     if not wiping and nvim.api.nvim_buf_is_valid(buffer) then
       nvim.api.nvim_buf_delete(buffer, { force = true })
@@ -86,9 +69,6 @@ function M.prompt(preview, decide)
     return true
   end
   local function settle(accepted, err, wiping)
-    if preview.selection.expires_at_ms <= now_ms() then
-      accepted, err = nil, expiry_error
-    end
     if cancel(wiping) then
       decide(accepted, err)
     end
@@ -97,38 +77,21 @@ function M.prompt(preview, decide)
     buffer = buffer,
     once = true,
     callback = function()
-      settle(false, nil, true)
+      settle(nil, "operator closed promotion review; saved result remains pending", true)
     end,
   })
   nvim.keymap.set("n", "a", function()
     settle(true)
   end, { buffer = buffer, desc = "Accept exact promotion preview" })
-  for _, key in ipairs({ "r", "<Esc>" }) do
-    nvim.keymap.set("n", key, function()
-      settle(false)
-    end, { buffer = buffer, desc = "Reject promotion preview" })
-  end
+  nvim.keymap.set("n", "r", function()
+    settle(false)
+  end, { buffer = buffer, desc = "Discard saved result" })
+  nvim.keymap.set("n", "<Esc>", function()
+    settle(nil, "operator closed promotion review; saved result remains pending")
+  end, { buffer = buffer, desc = "Close promotion review" })
   nvim.keymap.set("n", "q", function()
     settle(nil, "operator stopped promotion review")
   end, { buffer = buffer, desc = "Stop Run without promoting" })
-  local function refresh()
-    timer = nil
-    if finished then
-      return
-    end
-    local remaining = preview.selection.expires_at_ms - now_ms()
-    if remaining <= 0 then
-      return settle(nil, expiry_error)
-    end
-    local seconds = math.ceil(remaining / 1000)
-    nvim.bo[buffer].modifiable = true
-    nvim.api.nvim_buf_set_lines(buffer, 2, 3, false, {
-      string.format("Time remaining: %d:%02d", math.floor(seconds / 60), seconds % 60),
-    })
-    nvim.bo[buffer].modifiable = false
-    timer = nvim.defer_fn(refresh, math.min(1000, remaining))
-  end
-  refresh()
   return function()
     cancel()
   end

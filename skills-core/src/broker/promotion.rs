@@ -1,8 +1,10 @@
 //! Exact operator promotion, with durable per-effect admission and observations.
 
 mod saved;
+mod selection;
 mod service;
-pub use saved::SavedResult;
+pub use saved::{SavedAcceptance, SavedResult};
+pub use selection::SavedSelection;
 
 use super::{BrokerError, BrokerService, read_record, record_name};
 use crate::{

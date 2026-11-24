@@ -6,6 +6,7 @@
 )]
 
 use super::*;
+use crate::launch_supervisor::verification_inputs::check_toolchain;
 use std::{os::unix::fs::PermissionsExt, sync::mpsc};
 
 #[test]
@@ -13,15 +14,15 @@ fn toolchain_check_refuses_missing_or_drifted_installation() {
     let root = tempfile::tempdir().unwrap();
     let program = root.path().join("verifier-toolchain");
     assert_eq!(
-        execution::check_toolchain(&program),
+        check_toolchain(&program),
         Err(SupervisorError::VerifierToolchainUnavailable)
     );
     fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
     fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(execution::check_toolchain(&program), Ok(()));
+    assert_eq!(check_toolchain(&program), Ok(()));
     fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
     assert_eq!(
-        execution::check_toolchain(&program),
+        check_toolchain(&program),
         Err(SupervisorError::VerifierToolchainUnavailable)
     );
 }

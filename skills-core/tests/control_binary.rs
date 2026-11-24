@@ -57,42 +57,29 @@ fn rehearsal_refuses_without_installation_or_consuming_input() {
 }
 
 #[test]
-fn promotion_expiry_is_distinct_and_refusals_do_not_echo_private_input() {
+fn saved_promotion_refusals_do_not_echo_private_input_or_write_the_checkout() {
     let directory = tempfile::TempDir::new().unwrap();
     let marker = directory.path().join("private-source.txt");
     std::fs::write(&marker, b"unchanged").unwrap();
-    let now = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap();
-    // The live e0500a6e preview predated cleanup by more than four minutes
-    // (louiselm-run-promotion-no-commit-pynio); its original stderr was lost.
-    // This replays expiry, not a claim to recover that historical refusal.
+    // Review no longer has a deadline; application lifetime remains a broker check.
     for (expires, expected) in [
-        (1, "promotion preview expired; no changes applied"),
-        (
-            now + 600_000,
-            "promotion preview expiry exceeds five minutes",
-        ),
-        (
-            now + 240_000,
-            "Run worktree is dirty or on the wrong branch",
-        ),
+        (Some(1), "invalid promotion input"),
+        (None, "installed broker unavailable"),
     ] {
-        let input = serde_json::json!({
+        let mut input = serde_json::json!({
             "selection": {
                 "schema": "louiselm.run-promotion-selection/1",
                 "run_id": "run-one", "bead_id": "bead-one",
                 "producer_session_id": "worker-one", "verifier_session_id": "verifier-one",
                 "request_id": "private-request", "checkout": directory.path(),
                 "journal_parent": directory.path().join("private-journals"),
-                "expected_head": "a".repeat(40), "expires_at_ms": expires,
+                "expected_head": "a".repeat(40), "plan": directory.path().join("plan.json"),
             },
             "approval_digest": "private-approval",
         });
+        if let Some(expires) = expires {
+            input["selection"]["expires_at_ms"] = expires.into();
+        }
         let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
             .args(["promotion", "commit", "--json"])
             .env_clear()

@@ -68,6 +68,7 @@ mod relay;
 pub mod sender_guard;
 mod stdio;
 mod system;
+pub mod verification_inputs;
 
 pub use lifecycle::LaunchedSession;
 pub use stdio::RelayStdio;

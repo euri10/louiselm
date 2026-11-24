@@ -110,19 +110,22 @@ the digest-selected snapshot before staging. The dedicated checkout must be clea
 `run/<run-id>`; its journal parent is private and outside the checkout. After a
 passing verification and `on_worker` continuation, the operator CLI rechecks the
 broker record, destination identity, clean tree and branch. `on_promotion`
-receives the exact changed paths, approval digest and expiry; the supplied UI
-helper focuses a scrollable review window showing those fields, the UTC deadline
-and a live countdown. `a` accepts that exact preview; `r`, Escape or closing
-the review rejects it. `q` stops the Run without promoting or starting a
-successor. The default preview expires four minutes after
-construction. At expiry the review closes and stops the Run without applying
-changes, refreshing approval or starting a successor. Acceptance after that deadline stops
-the Run with an explicit expiry message before any checkout changes. It does
-not refresh approval or retry. Rejection makes no checkout change. Acceptance
-reopens the same selection, rechecks the digest, applies through the existing
-broker promotion protocol, and creates one LouiseLM Git commit with
+receives the exact changed paths and stable approval digest, with no review
+deadline. `a` accepts that exact preview; `r` explicitly discards the saved
+result. Escape, closing the review and `q` leave saved work pending and stop this
+controller without starting a successor. Acceptance reopens the saved selection,
+rechecks the digest, current rules/toolchain, destination and policy, then uses a
+fresh four-minute exact application transaction (the broker caps it at five
+minutes and checks every effect). Preview transport is bounded and closes before
+human review; it spends no application authority. Historical matching verification
+is reused, not rerun. Changed inputs require explicit Refresh; uncertain prior
+effects require inspection, not Refresh or replay. Application uses the existing
+broker protocol and creates one LouiseLM Git commit with
 `Refs <bead-id>`. A changed or uncertain operation stops the Run for inspection.
 Only the new commit becomes the `expected_head` of the next Bead.
+If original Run authority has expired, acceptance applies only this result and
+`summary.continuation_required` marks remaining work for separate approval with
+fresh limits. It never renews the old Run or refunds spent budgets.
 The callback's decision may be `nil, error_message` to stop review without
 rejection. Its optional return is an idempotent UI cancellation function,
 called on decision, completion or disposal without granting approval.
@@ -144,10 +147,16 @@ commit failure. Unstructured diagnostics are withheld; an unavailable outcome
 requires inspection before any retry. A pre-application refusal creates no
 promotion journal.
 
-`louiselm-control promotion save --json` accepts the same `selection` object as
-preview and confirms publication plus producer Disposal. `promotion inspect`
-and `promotion discard` take that selection to inspect or explicitly discard
-its `request_id`. These operator-only actions need no live producer. Saved
+`louiselm-control promotion save --json` publishes a `selection` containing the
+Run/Bead/Session/result IDs, checkout, private journal parent, exact expected HEAD
+and operator-selected `plan` path, with no expiry. It confirms publication plus
+producer Disposal. `promotion preview`, `inspect` and `discard` can reopen with
+`{"result_id":"<saved-id>"}`; `commit` additionally requires the preview's
+`approval_digest`. Review actions use the saved ID, not replacement context.
+These operator-only actions need no live producer. Inspection includes the
+durable application status and confirmed accepted commit. Duplicate confirmed
+Accept returns that same commit without a new transaction; a lost/uncertain Git
+commit acknowledgement requires inspection. Saved
 baseline/result bytes and evidence are separate from seven-day Session storage;
 editor/VM restart and ordinary Session cleanup do not remove unresolved work.
 Inspection grants no application or execution permission. Discard is durable and
@@ -514,9 +523,11 @@ chains, Certified conformance, runtime/source bindings and the durable spent
 count, then checks guard cleanup. Its aggregate Lua wait is 270 seconds, inside
 the five-minute fixture approval; production deadlines are unchanged. These
 offline checks do not identify the lost live failure or close paid-Run acceptance.
-Case 8 reuses the passing promotion fixture with an explicit thirty-second
-preview deadline and accepts only after it passes. The real CLI reports expiry,
-the Run starts no successor, HEAD and checkout stay unchanged, no journal is
-created, and worker/verifier disposal still produces terminal receipts. This
-reproduces the delayed-acceptance ordering; the original live refusal text was
-lost and is not claimed as recovered.
+Cases 4 and 8 remove both disposed Session trees with the real retention
+collector, reopen by saved ID, refuse changed rule bytes before application and
+reuse the unchanged evidence after restoration. Case 8 waits beyond the original
+Run's real deadline before explicit Accept. Both create one reviewed commit;
+double Accept returns that commit with one application journal. Case 8 starts no
+successor and reports that remaining work needs fresh approval. These are
+offline delayed-acceptance checks, not recovery of the lost original live refusal
+or maintainer acceptance.

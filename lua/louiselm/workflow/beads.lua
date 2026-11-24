@@ -31,6 +31,7 @@ local advance, next_bead
 ---@field verification? table Broker-owned durable status, including ordered command results.
 ---@field verification_passed? boolean True only for complete passing broker evidence.
 ---@field verifier_session_id? string Distinct verifier's broker Session identity.
+---@field verification_plan? string Current operator-owned rules for later applicability checks.
 ---@field worker_turn_id? string Durable turn observation identity, when prompt was admitted.
 ---@field verification_request_id? string Durable fixed-plan observation identity, when available.
 ---@field promotion? table Exact accepted Run worktree commit.
@@ -51,6 +52,7 @@ local advance, next_bead
 ---@field failed louiselm.workflow.BeadFailure[]
 ---@field provider_hold? { run_id: string, reason: "exhausted"|"expired", held_at_ms: integer } Authenticated Run-wide hold; no automatic extension or retry.
 ---@field startup_failure? { bead_id: string, session_id: string, phase: string, code: string } Local infrastructure failure; no task failure or successor is recorded.
+---@field continuation_required? boolean Original authority expired; remaining work needs separate approval and fresh limits.
 ---@field text string Human-readable host handoff, with no worker output.
 
 ---@class louiselm.workflow.BeadProgress
@@ -164,6 +166,9 @@ local function finish(self, ok, err)
     }
     if summary.branch then
       lines[#lines + 1] = "Branch: " .. summary.branch
+    end
+    if summary.continuation_required then
+      lines[#lines + 1] = "Original Run authority expired; remaining work requires separate approval and fresh limits."
     end
     if summary.provider_hold then
       lines[#lines + 1] = "Provider budget held: " .. summary.provider_hold.reason
@@ -471,6 +476,7 @@ local function promotion_selection(self, result)
     checkout = self.options.worktree.path,
     journal_parent = self.options.worktree.journal_parent,
     expected_head = self.head,
+    plan = result.verification_plan,
   }
 end
 
@@ -496,7 +502,7 @@ end
 ---@param callback fun(accepted: boolean?, error_message?: string)
 local function promote(self, result, callback)
   local selection = promotion_selection(self, result)
-  promotion_control(self, "preview", { selection = selection }, function(preview, preview_error)
+  promotion_control(self, "preview", { result_id = selection.request_id }, function(preview, preview_error)
     if not preview then
       return callback(nil, preview_error)
     end
@@ -511,10 +517,8 @@ local function promote(self, result, callback)
       or preview.selection.verifier_session_id ~= selection.verifier_session_id
       or preview.selection.request_id ~= selection.request_id
       or preview.selection.expected_head ~= self.head
-      or type(preview.selection.expires_at_ms) ~= "number"
-      or preview.selection.expires_at_ms <= 0
-      or preview.selection.expires_at_ms > 9007199254740991
-      or preview.selection.expires_at_ms % 1 ~= 0
+      or preview.selection.plan ~= selection.plan
+      or preview.selection.expires_at_ms ~= nil
     then
       return callback(nil, "Run promotion returned a mismatched preview")
     end
@@ -533,7 +537,7 @@ local function promote(self, result, callback)
         promotion_control(
           self,
           "commit",
-          { selection = preview.selection, approval_digest = preview.approval_digest },
+          { result_id = selection.request_id, approval_digest = preview.approval_digest },
           function(committed, commit_error)
             if not committed then
               return callback(nil, commit_error)
@@ -573,12 +577,17 @@ local function handoff(self, result)
         return finish(self, false, "Run verification outcome is uncertain")
       end
       local function proceed()
+        local seconds, microseconds = nvim.uv.gettimeofday()
+        if seconds * 1000 + math.floor(microseconds / 1000) >= self.options.envelope.expires_at_ms then
+          self.summary.continuation_required = self.index < #self.options.bead_ids or nil
+          return finish(self, true)
+        end
         advance(self, "next", function()
           self.index = self.index + 1
           next_bead(self)
         end)
       end
-      local function reject()
+      local function report_rejection()
         local outcome = result.error and "worker_failed"
           or result.verification_passed ~= true and "verification_failed"
           or "rejected"
@@ -627,6 +636,32 @@ local function handoff(self, result)
           proceed()
         end)
       end
+      local function reject()
+        if result.verification_passed == true and self.options.worktree then
+          return promotion_control(
+            self,
+            "discard",
+            { result_id = promotion_selection(self, result).request_id },
+            function(discarded, err)
+              if
+                not discarded
+                or discarded.kind ~= "saved_result"
+                or type(discarded.result) ~= "table"
+                or discarded.result.discarded ~= true
+              then
+                return finish(self, false, err or "saved result discard unconfirmed")
+              end
+              local seconds, microseconds = nvim.uv.gettimeofday()
+              if seconds * 1000 + math.floor(microseconds / 1000) >= self.options.envelope.expires_at_ms then
+                self.summary.continuation_required = self.index < #self.options.bead_ids or nil
+                return finish(self, true)
+              end
+              report_rejection()
+            end
+          )
+        end
+        report_rejection()
+      end
       if accepted == true and not result.error and result.verification_passed == true then
         if self.options.worktree then
           return promote(
@@ -667,6 +702,7 @@ local function verify_worker(self, result, prepared, input_id, input_digest)
   local grant = prepared.verification.verifier_grant
   local verifier_launch = grant.request
   result.verifier_session_id = verifier_launch.session_id
+  result.verification_plan = prepared.verification.plan
   local reported = false
   local verifier_session
   local function report(status, passed, message)

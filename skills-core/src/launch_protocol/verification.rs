@@ -187,6 +187,8 @@ pub struct VerificationExecution {
     pub job: JobPreview,
     /// Actual verifier Agent/tool isolation measurement.
     pub integration_digest: String,
+    /// Qualified toolchain and installed package fingerprint before and after execution.
+    pub verifier_inputs_digest: String,
     /// Ordered observations; absent trailing commands were never started.
     pub steps: Vec<VerificationStep>,
     /// True only after every started command tree was proved terminated.
@@ -206,6 +208,7 @@ impl VerificationExecution {
         };
         validate_job(&self.job)?;
         validate_digest(&self.integration_digest)?;
+        validate_digest(&self.verifier_inputs_digest)?;
         if job_digest != &self.job.job_digest || self.steps.len() > self.job.command_count {
             return Err(invalid());
         }

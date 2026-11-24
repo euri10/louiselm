@@ -104,6 +104,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// Current qualified verifier tools could not be measured safely.
+    #[error("current verifier inputs are unavailable")]
+    VerificationInputs(#[source] crate::launch_supervisor::SupervisorError),
     /// Startup failed and its authenticated terminal cleanup was stored.
     #[error("launch failed; terminal cleanup receipt stored")]
     LaunchFailed,

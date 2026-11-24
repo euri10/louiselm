@@ -155,7 +155,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     let startup_only = index == 11;
     let startup_failure = index == 9;
     // Case 8 reuses the passing promotion fixture, with an actual human-review
-    // delay crossing its selected expiry before Accept reaches the real CLI.
+    // delay crossing the original Run expiry before Accept reaches the real CLI.
     let delayed_promotion = index == 8;
     let index = if stock_operator {
         5
@@ -333,11 +333,17 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         }
         .digest()
         .to_string();
+        let expiry = now
+            + if index == 4 && delayed_promotion {
+                60_000
+            } else {
+                120_000
+            };
         let grant = GrantRequest {
             role: crate::launch_protocol::LaunchRole::Agent,
             request: launch,
             controller_uid: config.operator_uid,
-            expires_at_ms: now + 120_000,
+            expires_at_ms: expiry,
             broker_loss_grace_ms: crate::launch::MAX_BROKER_LOSS_GRACE_MS,
             require_cold_recovery: false,
             conformance: crate::launch_protocol::ConformanceAuthorization::default(),
@@ -351,7 +357,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
                 issue_ids: vec![bead_id.clone()],
                 effects: vec![crate::beads_mutation::BeadsEffect::CommentAdd],
                 max_mutations: 1,
-                expires_at_ms: now + 120_000,
+                expires_at_ms: expiry,
             }),
         };
         let mut verifier_launch = named_request(&format!("lua-verifier-{index}"));
@@ -361,7 +367,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             role: crate::launch_protocol::LaunchRole::FixedVerifier,
             request: verifier_launch,
             controller_uid: config.operator_uid,
-            expires_at_ms: now + 120_000,
+            expires_at_ms: expiry,
             broker_loss_grace_ms: crate::launch::MAX_BROKER_LOSS_GRACE_MS,
             require_cold_recovery: false,
             conformance: crate::launch_protocol::ConformanceAuthorization::default(),
@@ -382,8 +388,12 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             &serde_json::json!({"schema":"louiselm.workspace.verification-plan/1","commands":[command]}),
         );
         fs::set_permissions(&plan, fs::Permissions::from_mode(0o444)).unwrap();
+        if index == 4 {
+            own(&plan, config.operator_uid);
+        }
         let plan_digest = Digest::of(&fs::read(&plan).unwrap()).to_string();
         let mut envelope = fixture_run_envelope(&grant, plan_digest.clone(), now);
+        envelope.expires_at_ms = expiry;
         envelope.bead_scope.clone_from(&grant.beads_mutations);
         envelope.bead_scope.as_mut().unwrap().role = crate::beads_mutation::BeadsRole::Coordinator;
         envelope.max_sessions = 2;
@@ -664,21 +674,18 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         };
         let head = git(&["rev-parse", "HEAD"]);
         assert_eq!(git(&["status", "--porcelain"]), "");
-        if delayed_promotion {
-            assert_eq!(head, promotion_preview.base_commit);
-            assert!(!checkout.join("accepted.txt").exists());
-            assert_eq!(fs::read_dir(&journal).unwrap().count(), 0);
-        } else {
-            assert_ne!(head, promotion_preview.base_commit);
-            assert_eq!(git(&["rev-parse", "HEAD^"]), promotion_preview.base_commit);
-            assert_eq!(
-                fs::read(checkout.join("accepted.txt")).unwrap(),
-                b"accepted Bead output\n"
-            );
-            assert!(
-                git(&["show", "-s", "--format=%B", &head]).contains(&format!("Refs {bead_id}"))
-            );
-        }
+        assert_ne!(head, promotion_preview.base_commit);
+        assert_eq!(git(&["rev-parse", "HEAD^"]), promotion_preview.base_commit);
+        assert_eq!(
+            fs::read(checkout.join("accepted.txt")).unwrap(),
+            b"accepted Bead output\n"
+        );
+        assert!(git(&["show", "-s", "--format=%B", &head]).contains(&format!("Refs {bead_id}")));
+        assert_eq!(
+            fs::read_dir(&journal).unwrap().count(),
+            1,
+            "double Accept must create only one application journal"
+        );
     }
     if (2..=3).contains(&index) && std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let read = |arguments: &[&str]| {

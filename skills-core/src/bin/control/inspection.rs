@@ -207,13 +207,23 @@ impl Queries {
             VerificationControlRequest as Request, VerificationControlResponse as Response,
         };
         match request {
-            Request::SaveResult { request } => self.verification_worker(
+            Request::SaveResult { request, selection } => self.verification_worker(
                 &request.producer_session_id,
                 Request::SaveResult {
                     request: request.clone(),
+                    selection: selection.clone(),
                 },
                 deadline,
             ),
+            Request::AcceptSavedResult {
+                result_id,
+                accepted,
+            } => broker
+                .accept_saved_result(self.operator_uid, result_id, accepted)
+                .map(|result| Response::SavedResult {
+                    result: Box::new(result),
+                })
+                .map_err(|_| InspectError::StatusUnavailable),
             Request::SavedResult { result_id, discard } => {
                 operator::validate_subject(result_id)?;
                 broker
@@ -600,8 +610,8 @@ impl Queries {
                         uid: self.operator_uid,
                     };
                     let result = match *request {
-                        Request::SaveResult { request } => broker
-                            .save_result(session, &request)
+                        Request::SaveResult { request, selection } => broker
+                            .save_result(session, &request, &selection)
                             .map(|result| Response::SavedResult {
                                 result: Box::new(result),
                             }),
@@ -631,6 +641,7 @@ impl Queries {
                                 record: Box::new(record),
                             }),
                         Request::Stage { .. }
+                        | Request::AcceptSavedResult { .. }
                         | Request::Status { .. }
                         | Request::SavedResult { .. } => Err(BrokerError::InvalidGrant),
                     }

@@ -2,7 +2,10 @@
 
 use super::*;
 use louiselm_skills::{
-    broker::{promotion::SavedResult, verification::VerificationRecord},
+    broker::{
+        promotion::{SavedResult, SavedSelection},
+        verification::VerificationRecord,
+    },
     launch_protocol::{
         VERIFICATION_SCHEMA, VerificationExecution, VerificationExport, VerificationOperation,
         VerificationRequest, VerificationStep,
@@ -81,6 +84,7 @@ fn fixture(root: &Path) -> SavedResult {
             },
             job: job.clone(),
             integration_digest: Digest::of(b"tools").to_string(),
+            verifier_inputs_digest: Digest::of(b"qualified-verifier-inputs").to_string(),
             steps: vec![VerificationStep::Completed {
                 exit_code: 0,
                 timed_out: false,
@@ -97,6 +101,18 @@ fn fixture(root: &Path) -> SavedResult {
     // The fixture stands for an already authenticated publication, not a fabricated verifier execution.
     let saved = SavedResult {
         schema: "louiselm.workspace.saved-result/1".into(),
+        selection: SavedSelection {
+            schema: "louiselm.run-promotion-selection/1".into(),
+            run_id: verification.producer.request.launch.run_id.clone(),
+            bead_id: "bead".into(),
+            producer_session_id: selection.producer_session_id.clone(),
+            verifier_session_id: selection.verifier_session_id.clone(),
+            request_id: selection.request_id.clone(),
+            checkout: root.join("checkout"),
+            journal_parent: root.join("journal"),
+            expected_head: "a".repeat(40),
+            plan: plan.clone(),
+        },
         request: selection,
         verification,
         changes: louiselm_skills::workspace::promotion::ChangePreview {
@@ -105,6 +121,8 @@ fn fixture(root: &Path) -> SavedResult {
             deleted: vec![],
         },
         discarded: false,
+        accepted: None,
+        application: louiselm_skills::broker::promotion::PromotionStatus::NotRequested,
     };
     let directory = root.join("authorizations/saved-results/promotion");
     fs::create_dir_all(directory.join("transfer")).unwrap();
@@ -157,6 +175,91 @@ fn saved_result_survives_reopen_and_producer_removal_until_explicit_discard() {
         root.path()
             .join("authorizations/saved-results/promotion/transfer/job/source/result")
             .exists()
+    );
+}
+
+#[test]
+fn accepted_decision_requires_complete_application_and_is_durable_and_idempotent() {
+    use louiselm_skills::broker::promotion::SavedAcceptance;
+    use louiselm_skills::workspace::promotion::ApplicationResult;
+    use louiselm_skills::workspace::provenance::OutputProvenance;
+    let root = tempfile::tempdir().unwrap();
+    let saved = fixture(root.path());
+    let service = verification::reopen(root.path(), "accept.sock");
+    let accepted = SavedAcceptance {
+        commit: "c".repeat(40),
+        approval_digest: Digest::of(b"exact review").to_string(),
+        request_digest: Digest::of(&serde_json::to_vec(&saved.request).unwrap()).to_string(),
+    };
+    assert!(
+        service
+            .accept_saved_result(1000, "promotion", &accepted)
+            .is_err()
+    );
+    assert!(
+        service
+            .saved_result(1000, "promotion")
+            .unwrap()
+            .accepted
+            .is_none()
+    );
+    let journal = root.path().join("authorizations/promotions/promotion");
+    fs::create_dir_all(&journal).unwrap();
+    fs::write(
+        journal.join("request.json"),
+        serde_json::to_vec(&saved.request).unwrap(),
+    )
+    .unwrap();
+    fs::write(journal.join("0.grant"), b"0").unwrap();
+    assert!(
+        service
+            .accept_saved_result(1000, "promotion", &accepted)
+            .is_err()
+    );
+    fs::write(journal.join("0.done"), b"0").unwrap();
+    fs::write(
+        journal.join("result.json"),
+        serde_json::to_vec(&ApplicationResult {
+            complete: true,
+            completed_steps: 1,
+            output_provenance: OutputProvenance {
+                schema: "louiselm.workspace.output-provenance/1".into(),
+                code: louiselm_skills::workspace::provenance::OutputProvenanceCode::Untainted,
+                taint_digest: None,
+                clean_review_refs: vec![],
+            },
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        service
+            .accept_saved_result(1001, "promotion", &accepted)
+            .is_err()
+    );
+    let first = service
+        .accept_saved_result(1000, "promotion", &accepted)
+        .unwrap();
+    assert_eq!(first.accepted.as_ref(), Some(&accepted));
+    assert_eq!(
+        service
+            .accept_saved_result(1000, "promotion", &accepted)
+            .unwrap(),
+        first
+    );
+    let mut conflict = accepted.clone();
+    conflict.commit = "d".repeat(40);
+    assert!(
+        service
+            .accept_saved_result(1000, "promotion", &conflict)
+            .is_err()
+    );
+    assert!(service.discard_saved_result(1000, "promotion").is_err());
+    drop(service);
+    let reopened = verification::reopen(root.path(), "accepted-reopen.sock");
+    assert_eq!(
+        reopened.saved_result(1000, "promotion").unwrap().accepted,
+        Some(accepted)
     );
 }
 

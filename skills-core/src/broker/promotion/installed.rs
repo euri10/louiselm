@@ -1,7 +1,9 @@
 //! Promotion verifies installed receipt signatures and existing operator ownership.
 
 use super::{BrokerError, BrokerSession, InstalledBroker};
-use crate::broker::promotion::{PromotionRequest, PromotionStatus, SavedResult};
+use crate::broker::promotion::{
+    PromotionRequest, PromotionStatus, SavedAcceptance, SavedResult, SavedSelection,
+};
 use std::os::unix::net::UnixStream;
 
 impl InstalledBroker {
@@ -12,22 +14,26 @@ impl InstalledBroker {
         &self,
         producer: &mut BrokerSession,
         request: &PromotionRequest,
+        selection: &SavedSelection,
     ) -> Result<SavedResult, BrokerError> {
         if producer.authorization().controller_uid != self.verifier.config().operator_uid {
             return Err(BrokerError::ControllerMismatch);
         }
         let mut failure = None;
-        let saved = self
-            .service
-            .save_result(producer, request, |key, bytes, signature| {
-                match self.verifier.verify(key, bytes, signature) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        failure = Some(error);
-                        false
-                    }
-                }
-            });
+        let saved =
+            self.service
+                .save_result(
+                    producer,
+                    request,
+                    selection,
+                    |key, bytes, signature| match self.verifier.verify(key, bytes, signature) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            failure = Some(error);
+                            false
+                        }
+                    },
+                );
         if let Some(error) = failure {
             return Err(BrokerError::Verification(error));
         }
@@ -80,6 +86,21 @@ impl InstalledBroker {
         }
     }
 
+    /// Records the authenticated operator's confirmed commit without checkout access.
+    /// # Errors
+    /// Refuses foreign ownership, incomplete application or conflicting decisions.
+    pub fn accept_saved_result(
+        &self,
+        uid: u32,
+        id: &str,
+        accepted: &SavedAcceptance,
+    ) -> Result<SavedResult, BrokerError> {
+        if uid != self.verifier.config().operator_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        self.service.accept_saved_result(uid, id, accepted)
+    }
+
     /// Applies saved work through the trusted operator after producer Disposal.
     /// # Errors
     /// Refuses missing/discarded work, signature/policy failures and uncertain effects.
@@ -88,6 +109,14 @@ impl InstalledBroker {
         result_id: &str,
         operator: UnixStream,
     ) -> Result<PromotionStatus, BrokerError> {
+        let saved = self
+            .service
+            .saved_result(self.verifier.config().operator_uid, result_id)?;
+        let current = crate::launch_supervisor::verification_inputs::current()
+            .map_err(BrokerError::VerificationInputs)?;
+        if current.to_string() != saved.verification.execution.verifier_inputs_digest {
+            return Err(BrokerError::RequestMismatch);
+        }
         let mut failure = None;
         let result =
             self.service

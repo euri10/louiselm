@@ -9,26 +9,7 @@ use crate::{
     launch_protocol::{VerificationExecution, VerificationStep},
     sandbox::{IdentityPlan, PreparedSession},
 };
-use std::{
-    os::unix::fs::{PermissionsExt, chown},
-    process::{Command, Stdio},
-};
-
-pub(super) fn check_toolchain(program: &Path) -> Result<(), SupervisorError> {
-    let status = Command::new(program)
-        .arg("check")
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if status.is_ok_and(|status| status.success()) {
-        Ok(())
-    } else {
-        Err(SupervisorError::VerifierToolchainUnavailable)
-    }
-}
+use std::os::unix::fs::{PermissionsExt, chown};
 
 impl Storage {
     fn load_job(
@@ -120,9 +101,7 @@ impl Storage {
         cleanup_failed: &AtomicBool,
         deadline: Instant,
     ) -> Result<VerificationExecution, SupervisorError> {
-        check_toolchain(Path::new(
-            "/usr/lib/louiselm/verifier/bin/verifier-toolchain",
-        ))?;
+        let verifier_inputs = crate::launch_supervisor::verification_inputs::current()?;
         let (exported, loaded) = self.load_job(request)?;
         let process = {
             let mut session = session
@@ -145,6 +124,7 @@ impl Storage {
             request: request.clone(),
             job: loaded.preview,
             integration_digest: self.integration_digest.clone(),
+            verifier_inputs_digest: verifier_inputs.to_string(),
             steps: Vec::new(),
             cleanup_proven: true,
             interrupted: false,
@@ -207,6 +187,10 @@ impl Storage {
         if unchanged != evidence.job {
             return Err(SupervisorError::ResolutionFailed);
         }
+        if crate::launch_supervisor::verification_inputs::current()? != verifier_inputs {
+            return Err(SupervisorError::VerifierToolchainUnavailable);
+        }
+        evidence.interrupted |= cancelled.load(Ordering::Acquire) || alive() != Ok(true);
         persist(&directory.join("result.json"), &evidence)?;
         Ok(evidence)
     }

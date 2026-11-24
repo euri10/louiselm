@@ -102,6 +102,8 @@ function M.open(controller)
     local headline
     if not ok then
       headline = (held and "Run held: " or "Run stopped: ") .. (message or "unknown outcome")
+    elseif summary.continuation_required then
+      headline = "Saved decision complete; remaining work needs fresh approval"
     elseif failed > 0 then
       headline = "Run ended with failures"
     elseif rejected > 0 then

@@ -191,6 +191,15 @@ pub enum VerificationControlRequest {
     SaveResult {
         /// Exact publication selection, never permission to apply.
         request: super::promotion::PromotionRequest,
+        /// Reopenable operator context, not authority.
+        selection: Box<super::promotion::SavedSelection>,
+    },
+    /// Confirm complete exact application and the operator-owned Git commit.
+    AcceptSavedResult {
+        /// Exact saved decision.
+        result_id: String,
+        /// Authenticated operator attestation; never a broker checkout write.
+        accepted: super::promotion::SavedAcceptance,
     },
     /// Inspect or explicitly discard a saved result without a live Session.
     SavedResult {
@@ -302,9 +311,16 @@ pub fn verification(
     }
     let valid = match (request, &response) {
         (
-            VerificationControlRequest::SaveResult { request },
+            VerificationControlRequest::SaveResult { request, selection },
             VerificationControlResponse::SavedResult { result },
-        ) => result.request == *request && !result.discarded,
+        ) => result.request == *request && result.selection == **selection && !result.discarded,
+        (
+            VerificationControlRequest::AcceptSavedResult {
+                result_id,
+                accepted,
+            },
+            VerificationControlResponse::SavedResult { result },
+        ) => result.request.request_id == *result_id && result.accepted.as_ref() == Some(accepted),
         (
             VerificationControlRequest::SavedResult { result_id, discard },
             VerificationControlResponse::SavedResult { result },
