@@ -54,6 +54,30 @@ claim. ACP silence establishes neither cleanup nor Provider spending. The
 rehearsal refusal and paid-dispatch gate remain in force under `louiselm-a4r1d`;
 installed live acceptance belongs to the maintainer.
 
+After a failed supervisor exits, the configured operator can deliver saved
+evidence through one digest-pinned managed sudo verb, with the original Session
+id supplied as one bounded stdin line:
+
+```sh
+printf '%s\n' ORIGINAL_SESSION_ID |
+  sudo -n /usr/local/lib/louiselm/current/bin/louiselm-launch deliver-failed-launch
+```
+
+The helper loads only that Session's protected
+saved record, verifies the registered original chain with public keys, and
+delivers the exact envelopes and reports over the authenticated broker socket.
+It opens no signer, consumes no authority, and acquires or clears no identity
+lease. After an exact terminal ACK it completes the original signing reference;
+private-key retirement can then follow the existing rules.
+
+Repeat the same operation after a disconnect, lost ACK or broker restart.
+Already stored bytes must match exactly and are rechecked for durability;
+conflicting, revoked or quarantined history is refused. A successor can keep
+running in the reused identity throughout replay. Missing or invalid saved
+proof requires the separate administrative reboot recovery; this command
+cannot reconstruct it. Delivery completion never turns failed startup into a
+passing rehearsal or enables paid dispatch.
+
 ## Aggregate acceptance map
 
 Criteria below refer to the launch aggregate `louiselm-qbr.5.1.1` and its

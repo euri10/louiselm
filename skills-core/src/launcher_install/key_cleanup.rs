@@ -103,25 +103,46 @@ impl LauncherSigner {
         {
             return Err(LauncherError::Invalid("Session is not terminal".into()));
         }
-        let _lock = history::signing_lock(&self.paths, deadline)?;
-        // The signer was opened against trusted root authority. Use the same
-        // binding validation as signing (including refusal of special files).
-        history::prepare(&self.paths, receipt)?;
-        let mut ring = public_keyring(&self.paths)?;
-        let key = ring
-            .keys
-            .iter_mut()
-            .find(|key| key.key_id == receipt.signing_key_id)
-            .ok_or_else(|| LauncherError::Invalid("unknown completion key".into()))?;
-        let state = key.signing_sessions.as_mut()
+        complete_terminal(&self.paths, receipt, deadline)
+    }
+}
+
+/// Exact delivery completes an existing reference; it opens no signing authority.
+pub(crate) fn complete_failed_delivery(
+    paths: &LauncherPaths,
+    receipt: &ReceiptPayload,
+    deadline: Instant,
+) -> Result<(), LauncherError> {
+    if !receipt.outcome.is_failed_launch() {
+        return Err(LauncherError::Invalid("not failed-launch evidence".into()));
+    }
+    history::load(paths, &receipt.session_id)?.check(receipt)?;
+    complete_terminal(paths, receipt, deadline)
+}
+
+fn complete_terminal(
+    paths: &LauncherPaths,
+    receipt: &ReceiptPayload,
+    deadline: Instant,
+) -> Result<(), LauncherError> {
+    let _lock = history::signing_lock(paths, deadline)?;
+    // The signer was opened against trusted root authority. Use the same
+    // binding validation as signing (including refusal of special files).
+    history::prepare(paths, receipt)?;
+    let mut ring = public_keyring(paths)?;
+    let key = ring
+        .keys
+        .iter_mut()
+        .find(|key| key.key_id == receipt.signing_key_id)
+        .ok_or_else(|| LauncherError::Invalid("unknown completion key".into()))?;
+    let state = key.signing_sessions.as_mut()
             .and_then(|sessions| sessions.get_mut(&receipt.session_id))
             .ok_or_else(|| LauncherError::Invalid(
                 "missing authoritative Session reference; retain the private key and inspect launcher authority".into(),
             ))?;
-        *state = SessionKeyState::Complete;
-        write_json_atomic(&self.paths.keyring(), &ring, 0o444)?;
-        cleanup_if_ready(&self.paths, &receipt.signing_key_id)
-    }
+    *state = SessionKeyState::Complete;
+    write_json_atomic(&paths.keyring(), &ring, 0o444)?;
+    cleanup_if_ready(paths, &receipt.signing_key_id)
 }
 
 /// Caller holds the install lock; live, revoked and unknown keys remain retained.

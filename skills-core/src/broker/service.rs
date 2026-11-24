@@ -31,6 +31,8 @@ mod controller_loss;
 
 #[path = "conformance_transfer.rs"]
 mod conformance_transfer;
+#[path = "failed_launch_delivery.rs"]
+mod failed_launch_delivery;
 
 use crate::{
     broker::{AuditDecision, AuditEntry, AuditLog, AuthorizationStore, BrokerError, ReceiptStore},
@@ -624,6 +626,10 @@ impl BrokerService {
                 }
                 LauncherPacket::Request(ProtocolMessage::BrokerReconnect(request)) => {
                     self.reconnect_on(&channel, &request, now_ms, &mut verify)
+                }
+                LauncherPacket::SignedReceipt(_) => {
+                    self.deliver_failed_on(&channel, packet, now_ms, &mut verify)?;
+                    Err(BrokerError::LaunchFailed)
                 }
                 _ => Err(BrokerError::InvalidGrant),
             }

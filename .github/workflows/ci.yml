@@ -302,6 +302,8 @@ jobs:
             sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 timeout 120 unshare --mount --net --propagation private -- \
               /bin/bash -c "$private_state" fixture "$library_test" launch_supervisor::system::installed_tests::verification::budget::privileged_installed_run_budget --exact --nocapture
             # Exact-job execution requires the trusted verifier provisioned in this guest.
+            sudo -n env LOUISELM_REQUIRE_BROKER_LAUNCH=1 timeout 180 unshare --mount --net --propagation private -- \
+              /bin/bash -c "$private_state" fixture "$library_test" launch_supervisor::system::installed_tests::failed_launch_delivery::privileged_installed_failed_launch_delivery --exact --nocapture
             sudo -n env LOUISELM_REQUIRE_BROKER_LAUNCH=1 timeout 300 unshare --mount --propagation private -- \
               /bin/bash -c "$private_state" fixture "$library_test" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture
             sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain timeout 90 unshare --mount --net --propagation private -- \

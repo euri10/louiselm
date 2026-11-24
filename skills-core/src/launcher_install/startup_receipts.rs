@@ -4,9 +4,121 @@ use super::{
     LauncherError, LauncherPaths, LauncherSigner, history, read_required_json,
     require_root_metadata, write_json_atomic,
 };
+use crate::launch_protocol::{ReceiptAcknowledgement, ReceiptDisposition};
 use crate::launch_receipt::{ReceiptOutcome, SignedReceipt};
+use crate::launch_supervisor::{LaunchBroker, SupervisorError};
 use serde::{Deserialize, Serialize};
 use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, time::Instant};
+use std::{
+    sync::{Arc, mpsc},
+    time::Duration,
+};
+use thiserror::Error;
+
+/// Saved-evidence delivery failure; no alternate cleanup or new signing is attempted.
+#[derive(Debug, Error)]
+pub enum DeliveryError {
+    /// Protected evidence, public trust or signing-lifetime completion failed.
+    #[error("saved failed-launch evidence unavailable; preserve evidence and inspect recovery")]
+    Evidence(#[from] LauncherError),
+    /// The authenticated broker did not acknowledge the exact saved bytes.
+    #[error("failed-launch delivery unconfirmed; inspect exact evidence and broker history")]
+    Broker(#[from] SupervisorError),
+    /// Evidence is incomplete or belongs to another subject.
+    #[error("valid saved failed-launch proof missing; administrative reboot recovery required")]
+    MissingProof,
+}
+
+/// Delivers existing exact failed-startup bytes after the original owner exits.
+///
+/// This blocking root operation reads no private key, acquires no identity or
+/// process tree, and never creates a receipt or authorization. Exact retries
+/// remain valid while a successor holds the reused identity.
+/// # Errors
+/// Refuses foreign operators, missing/incomplete/untrusted/revoked evidence,
+/// unavailable broker or an inexact ACK. Failed delivery does not imply the
+/// broker failed to store the bytes.
+pub fn deliver_failed_launch(
+    paths: &LauncherPaths,
+    operator_uid: u32,
+    session_id: &str,
+) -> Result<ReceiptAcknowledgement, DeliveryError> {
+    if !rustix::process::geteuid().is_root()
+        || crate::launch_protocol::validate_identifier(session_id).is_err()
+    {
+        return Err(DeliveryError::MissingProof);
+    }
+    let config = super::public_runtime_config(paths)?;
+    if config.operator_uid != operator_uid {
+        return Err(DeliveryError::MissingProof);
+    }
+    let directory = directory(paths);
+    require_root_metadata(&directory, 0o700, true, "startup evidence directory")?;
+    let path = directory.join(format!("{session_id}.json"));
+    require_root_metadata(&path, 0o600, false, "startup evidence")?;
+    let records: Vec<StartupReceipt> = read_required_json(&path)?;
+    let receipts = validate(&records)?;
+    let terminal = receipts.last().ok_or(DeliveryError::MissingProof)?;
+    if terminal.payload.session_id != session_id || !terminal.payload.outcome.is_failed_launch() {
+        return Err(DeliveryError::MissingProof);
+    }
+    let verifier = super::LauncherVerifier::open(paths, &directory)?;
+    crate::launch_receipt::verify_chain(
+        &receipts,
+        &verifier.receipt_anchor(session_id)?,
+        |key, payload, signature| verifier.verify(key, payload, signature).is_ok(),
+    )
+    .map_err(|_| DeliveryError::MissingProof)?;
+    let timeout = Duration::from_secs(30);
+    let broker = crate::launch_supervisor::connect_control_broker(&config, timeout)?;
+    let result = deliver_records(&broker, &records, timeout);
+    broker.close();
+    let acknowledgement = result?;
+    super::key_cleanup::complete_failed_delivery(
+        paths,
+        &terminal.payload,
+        Instant::now() + timeout,
+    )?;
+    Ok(acknowledgement)
+}
+
+fn deliver_records(
+    broker: &Arc<dyn LaunchBroker>,
+    records: &[StartupReceipt],
+    timeout: Duration,
+) -> Result<ReceiptAcknowledgement, DeliveryError> {
+    let mut last = None;
+    for record in records {
+        let receipt = SignedReceipt::parse_canonical(&record.receipt_bytes)
+            .map_err(|_| DeliveryError::MissingProof)?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        broker.append_receipt(
+            record.receipt_bytes.clone(),
+            record.report_bytes.clone(),
+            Box::new(move |result| {
+                let _ = sender.try_send(result);
+            }),
+        )?;
+        let ack = receiver
+            .recv_timeout(timeout)
+            .map_err(|_| SupervisorError::BrokerTimeout)??;
+        if ack.exact_disposition(
+            &receipt.payload.session_id,
+            &receipt.payload.run_id,
+            &crate::launch_receipt::ReceiptHead {
+                sequence: receipt.payload.sequence,
+                digest: receipt.digest().to_string(),
+            },
+        ) != Some(ReceiptDisposition::DurablyStored)
+        {
+            return Err(DeliveryError::Broker(
+                SupervisorError::AcknowledgementMismatch,
+            ));
+        }
+        last = Some(ack);
+    }
+    last.ok_or(DeliveryError::MissingProof)
+}
 
 /// One exact envelope and the optional observations its signature binds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

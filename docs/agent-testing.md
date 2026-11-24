@@ -276,6 +276,17 @@ software-signed fixture installations, without implicit thaw, and identity reuse
 only after disposal. Toy source metadata and software keys prove no desktop
 reproduction, fresh clean-build provenance or hardware ceremony.
 
+Failed-launch cleanup or saved-evidence delivery changes require the installed gate
+`launch_supervisor::system::installed_tests::failed_launch_delivery::privileged_installed_failed_launch_delivery`
+with `LOUISELM_REQUIRE_BROKER_LAUNCH=1`, root only in a disposable launcher VM.
+It exercises failures before the first receipt and after restricted initialization,
+exact protected evidence after the original supervisor process exits, broker
+restart, signing-lifetime completion and replay while a real successor holds
+the reused identity. Run it in private mount/network namespaces with a 180s
+watchdog, alongside the existing installed launch-fault and Lua Bead-executor
+case-9 gates. No Provider call or retained guest is involved. A normal-suite
+skip is not installed acceptance.
+
 Consumed-launch recovery changes additionally require
 `python3 scripts/test-consumed-recovery-vm.py` for the host coordinator's
 portable log guards; CI runs it without ripgrep in the fixture PATH.

@@ -466,6 +466,10 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     );
 
     let sudoers = fs::read_to_string(&fixture.paths.sudoers).expect("sudoers is readable");
+    assert!(
+        sudoers.contains(" deliver-failed-launch"),
+        "operator needs exact saved-evidence delivery"
+    );
     let launcher_path = fixture
         .paths
         .release_prefix
@@ -473,7 +477,9 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     assert_eq!(
         sudoers,
         format!(
-            "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#1000 ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify, sha256:{} {} prepare\n",
+            "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#1000 ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify, sha256:{} {} prepare, sha256:{} {} deliver-failed-launch\n",
+            launcher_path.display(),
+            Digest::parse(&fixture.launcher_digest).unwrap().hex(),
             launcher_path.display(),
             Digest::parse(&fixture.launcher_digest).unwrap().hex(),
             launcher_path.display(),

@@ -2242,9 +2242,11 @@ fn render_sudoers(config: &LauncherConfig) -> Result<String, LauncherError> {
     let digest = Digest::parse(&config.launcher_digest)
         .map_err(|error| LauncherError::Malformed(error.to_string()))?;
     Ok(format!(
-        "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#{} ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify, sha256:{} {} prepare\n",
+        "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#{} ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify, sha256:{} {} prepare, sha256:{} {} deliver-failed-launch\n",
         config.launcher_path.display(),
         config.operator_uid,
+        digest.hex(),
+        config.launcher_path.display(),
         digest.hex(),
         config.launcher_path.display(),
         digest.hex(),

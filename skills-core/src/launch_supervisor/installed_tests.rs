@@ -33,6 +33,8 @@ const COMMAND: &str = "printf authorized > effect; printf done";
 const WORKER: &str = "launch_supervisor::system::installed_tests::installed_broker_worker";
 const ACCOUNT: &str = "louiselm-broker-gate";
 
+#[path = "installed_failed_launch_delivery_tests.rs"]
+mod failed_launch_delivery;
 #[path = "installed_failure_tests.rs"]
 mod failures;
 
@@ -412,6 +414,10 @@ fn installed_broker_worker() {
     };
     let root = PathBuf::from(root);
     let broker = Arc::new(InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap());
+    if root.join("saved-delivery").exists() {
+        failed_launch_delivery::broker_worker(&root, &broker);
+        return;
+    }
     if root.join("credential-custody").exists() {
         let handle = broker.provider_credential("acme").unwrap();
         assert_eq!(handle.provider(), "acme");

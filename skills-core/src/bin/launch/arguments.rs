@@ -23,6 +23,8 @@ pub(super) enum Command {
     Certify,
     /// Clean expired retained storage; root authority required.
     Cleanup,
+    /// Deliver exact saved failed-launch evidence for one Session id line on stdin.
+    DeliverFailedLaunch,
     /// Inspect durable recovery evidence; never infer live supervisor state.
     RecoverInspect {
         /// Exact original consumed authorization identity.
@@ -69,6 +71,25 @@ mod tests {
     #[test]
     fn recovery_inspection_has_an_explicit_read_only_verb() {
         assert!(Cli::try_parse_from(["louiselm-launch", "recover-inspect", "approval"]).is_ok());
+    }
+
+    #[test]
+    fn failed_launch_delivery_is_one_fixed_sudo_verb_without_argv_subjects() {
+        assert!(matches!(
+            Cli::try_parse_from(["louiselm-launch", "deliver-failed-launch"]),
+            Ok(Cli {
+                command: Command::DeliverFailedLaunch
+            })
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "louiselm-launch",
+                "deliver-failed-launch",
+                "session",
+                "replacement"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

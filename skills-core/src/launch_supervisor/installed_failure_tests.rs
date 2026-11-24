@@ -138,10 +138,24 @@ fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spa
     );
 }
 
-struct FaultSigner {
+pub(super) struct FaultSigner {
     signer: InstalledLaunchSigner,
     scenario: &'static str,
     root: PathBuf,
+}
+
+impl FaultSigner {
+    pub(super) fn saved_delivery(
+        root: &Path,
+        paths: &LauncherPaths,
+        scenario: &'static str,
+    ) -> Self {
+        Self {
+            signer: InstalledLaunchSigner::open(paths, Duration::from_secs(5)).unwrap(),
+            scenario,
+            root: root.into(),
+        }
+    }
 }
 
 impl LaunchSigner for FaultSigner {
@@ -183,6 +197,24 @@ impl LaunchSigner for FaultSigner {
         complete: SupervisorCompletion<String>,
     ) -> Result<(), SupervisorError> {
         let mut receipt = ReceiptPayload::parse_canonical(&payload).unwrap();
+        if self.scenario == "terminal-storage1"
+            && matches!(receipt.outcome, ReceiptOutcome::Launch { .. })
+        {
+            let path = self.root.join("registry/agents.json");
+            let mut registry: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            registry["entries"][0]["tool_integration"] = serde_json::Value::Null;
+            write_json(&path, &registry);
+        }
+        if self.scenario.starts_with("terminal-storage") && receipt.outcome.is_failed_launch() {
+            let directory = self.root.join("state/receipts/sessions");
+            let directory = if directory.join("session").exists() {
+                directory.join("session")
+            } else {
+                directory
+            };
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o500)).unwrap();
+        }
         let at = u64::from(!self.scenario.ends_with('0'));
         if receipt.sequence == at {
             if self.scenario.starts_with("signer") {

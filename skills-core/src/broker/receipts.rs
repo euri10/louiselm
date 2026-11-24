@@ -266,6 +266,46 @@ impl ReceiptStore {
         }))
     }
 
+    /// Exact saved-evidence retry, never permission to replace an old receipt.
+    pub(super) fn append_saved<F>(
+        &self,
+        authorization: &LaunchAuthorization,
+        bytes: &[u8],
+        report: Option<&[u8]>,
+        verify: &mut F,
+    ) -> Result<ReceiptAcknowledgement, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let receipt = SignedReceipt::parse_canonical(bytes).map_err(BrokerError::ReceiptRefused)?;
+        check_authorized(&receipt, authorization)?;
+        let appending = lock(&self.appending);
+        if self.recovery_exists(&authorization.authorization_id)? {
+            return Err(BrokerError::ReceiptUnauthorized);
+        }
+        let stored = self.verified_chain_locked(authorization, &mut *verify)?;
+        let index = usize::try_from(receipt.payload.sequence)
+            .map_err(|_| BrokerError::ReceiptUnauthorized)?;
+        let Some(prior) = stored.get(index) else {
+            drop(appending);
+            return self.append(authorization, bytes, report, verify);
+        };
+        if prior.canonical_bytes() != bytes {
+            return Err(BrokerError::ReceiptUnauthorized);
+        }
+        self.retain_conformance_report(prior, report)?;
+        self.anchor(authorization, None)?;
+        Ok(ReceiptAcknowledgement {
+            schema: RECEIPT_ACK_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            session_id: receipt.payload.session_id.clone(),
+            run_id: receipt.payload.run_id.clone(),
+            sequence: receipt.payload.sequence,
+            receipt_digest: receipt.digest().to_string(),
+            disposition: ReceiptDisposition::DurablyStored,
+        })
+    }
+
     /// Returns the Session state the last durable receipt reached.
     ///
     /// This is the broker's own truth: the state a signed, verified, durably

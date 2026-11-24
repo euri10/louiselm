@@ -8,7 +8,7 @@ use arguments::{Cli, Command};
 use std::{
     ffi::OsStr,
     fs::File,
-    io::{self, BufReader},
+    io::{self, BufReader, Read},
     os::fd::AsFd,
     path::Path,
     process::ExitCode,
@@ -66,6 +66,7 @@ fn main() -> ExitCode {
         Command::Prepare => preparation(),
         Command::Certify => certification(false),
         Command::Cleanup => cleanup(),
+        Command::DeliverFailedLaunch => deliver_failed_launch(),
         Command::RecoverArm { authorization_id } => consumed_recovery(&authorization_id, false),
         Command::RecoverComplete { authorization_id } => consumed_recovery(&authorization_id, true),
         Command::RecoverInspect { authorization_id } => inspect_recovery(&authorization_id),
@@ -115,6 +116,43 @@ fn cleanup() -> Result<i32, &'static str> {
         .write_all(&bytes)
         .map_err(|_| "cleanup output unavailable")?;
     Ok(i32::from(report.failed != 0))
+}
+
+fn deliver_failed_launch() -> Result<i32, &'static str> {
+    use std::io::Write;
+    let (paths, config) = authority(true)?;
+    let mut input = Vec::new();
+    io::stdin()
+        .lock()
+        .take(130)
+        .read_to_end(&mut input)
+        .map_err(|_| "original Session id input unavailable")?;
+    let session_id = failed_launch_subject(&input)?;
+    let ack = louiselm_skills::launcher_install::startup_receipts::deliver_failed_launch(
+        &paths,
+        config.operator_uid,
+        session_id,
+    )
+    .map_err(|error| {
+        eprintln!("louiselm-launch: {error}");
+        "failed-launch delivery unconfirmed; preserve exact evidence"
+    })?;
+    io::stdout()
+        .lock()
+        .write_all(&ack.canonical_bytes())
+        .map_err(|_| "delivery acknowledgement output unavailable; retry exact saved evidence")?;
+    Ok(0)
+}
+
+fn failed_launch_subject(input: &[u8]) -> Result<&str, &'static str> {
+    let invalid = "one bounded original Session id line is required";
+    let bytes = input.strip_suffix(b"\n").ok_or(invalid)?;
+    if bytes.len() > louiselm_skills::launch_protocol::MAX_IDENTIFIER_BYTES {
+        return Err(invalid);
+    }
+    let subject = std::str::from_utf8(bytes).map_err(|_| invalid)?;
+    louiselm_skills::broker::operator::validate_subject(subject).map_err(|_| invalid)?;
+    Ok(subject)
 }
 
 fn consumed_recovery(id: &str, complete: bool) -> Result<i32, &'static str> {
@@ -354,5 +392,30 @@ mod tests {
     fn session_lifecycle_keeps_original_deadline() {
         assert_eq!(BROKER_TRANSACTION_TIMEOUT, Duration::from_secs(30));
         assert_eq!(BROKER_AUTHORIZATION_TIMEOUT, Duration::from_secs(40));
+    }
+
+    #[test]
+    fn failed_delivery_subject_is_one_bounded_identifier_without_paths_or_trailing_input() {
+        assert_eq!(failed_launch_subject(b"session\n"), Ok("session"));
+        let invalid: &[&[u8]] = &[
+            b"",
+            b"session",
+            b"../other\n",
+            b"session\nother\n",
+            b"session\0\n",
+            b"\xff\n",
+        ];
+        for bytes in invalid {
+            assert_eq!(
+                failed_launch_subject(bytes),
+                Err("one bounded original Session id line is required")
+            );
+        }
+        let mut oversized = vec![b'a'; 129];
+        oversized.push(b'\n');
+        assert_eq!(
+            failed_launch_subject(&oversized),
+            Err("one bounded original Session id line is required")
+        );
     }
 }
