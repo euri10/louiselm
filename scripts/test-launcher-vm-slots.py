@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 import os
+import shutil
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -87,21 +88,43 @@ class PoolContract(unittest.TestCase):
                         "-b", record["base"], str(overlay)], check=True)
         return overlay
 
-    def test_existing_base_is_referenced_once_never_copied_or_changed(self):
+    def test_pool_owns_base_after_source_cache_is_deleted(self):
+        source_cache = self.directory / "cache-a"
+        source_cache.mkdir()
+        original = self.source
+        self.source = source_cache / original.name
+        original.rename(self.source)
+        Path(str(original) + ".vars.fd").rename(str(self.source) + ".vars.fd")
+        backing = source_cache / "debian.qcow2"
+        self.source.rename(backing)
+        backing.chmod(0o600)
+        subprocess.run(["qemu-io", "-f", "qcow2", "-c", "write -P 0x5a 0 4096", str(backing)],
+                       check=True, capture_output=True)
+        backing.chmod(0o400)
+        subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2",
+                        "-b", str(backing), str(self.source)], check=True)
+        self.source.chmod(0o400)
         before = self.source.stat()
         first = self.prepare()
         second = self.prepare("two")
         self.assertEqual(first["base"], second["base"])
-        self.assertEqual(self.pool.base.resolve(), self.source)
+        self.assertFalse(self.pool.base.is_symlink())
         self.assertEqual(self.source.stat(), before)
         self.assertEqual(len(list(self.pool.base.parent.glob("*.qcow2"))), 1)
         self.core.assert_not_called()  # no provisioning when a base already exists
+        shutil.rmtree(source_cache)
         for record in (first, second):
             overlay = self.overlay(record)
-            info = json.loads(subprocess.run(["qemu-img", "info", "--output=json", str(overlay)],
+            chain = json.loads(subprocess.run(["qemu-img", "info", "--backing-chain", "--output=json", str(overlay)],
                                              capture_output=True, text=True, check=True).stdout)
-            self.assertEqual(info["backing-filename"], str(self.pool.base))
+            self.assertEqual(chain[0]["backing-filename"], str(self.pool.base))
+            self.assertEqual(len(chain), 2)
             self.assertLess(slots.allocated(overlay), slots.GIB // 100)
+            subprocess.run(["qemu-io", "-r", "-f", "qcow2", "-c", "read -P 0x5a 0 4096", str(overlay)],
+                           check=True, capture_output=True)
+        self.assertEqual(Path(str(self.pool.base) + ".vars.fd").read_bytes(), b"firmware")
+        self.pool.start(Path(first["state"]).parent)
+        self.core.assert_called_once_with(first, "start")
 
     def test_missing_base_refuses_without_provisioning_or_reserving_slot(self):
         with self.assertRaisesRegex(ValueError, "never provisions or copies another base"):
@@ -120,11 +143,29 @@ class PoolContract(unittest.TestCase):
             self.pool.start(Path(record["state"]).parent)
         self.core.assert_not_called()
 
-    def test_interrupted_base_publication_reuses_firmware_link(self):
+    def test_prepare_replaces_legacy_links_with_owned_bytes(self):
         self.pool.base.parent.mkdir(mode=0o700, parents=True)
+        self.pool.base.symlink_to(self.source)
         Path(str(self.pool.base) + ".vars.fd").symlink_to(str(self.source) + ".vars.fd")
         self.prepare()
-        self.assertEqual(self.pool.base.resolve(), self.source)
+        self.assertFalse(self.pool.base.is_symlink())
+        self.assertFalse(Path(str(self.pool.base) + ".vars.fd").is_symlink())
+
+    def test_missing_and_dangling_bases_are_reported_and_refuse_start(self):
+        record = self.prepare()
+        self.pool.base.unlink()
+        for expected in ("missing", "dangling"):
+            if expected == "dangling":
+                self.pool.base.symlink_to(self.directory / "deleted-cache.qcow2")
+            with patch.object(slots, "owner_state", return_value="live"), patch.object(
+                slots.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="inactive\n")
+            ):
+                status = self.pool.status()
+            self.assertEqual(status["shared_bases"][0]["state"], expected)
+            self.assertEqual(status["slots"][0]["base_state"], expected)
+            with self.assertRaisesRegex(ValueError, "shared base.*--slot prepare"):
+                self.pool.start(Path(record["state"]).parent)
+        self.core.assert_not_called()
 
     def test_cap_and_floor_include_stopped_slot_growth(self):
         first = self.prepare()

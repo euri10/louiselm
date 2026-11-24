@@ -87,7 +87,7 @@ systemctl --user list-units 'louiselm-launcher-vm*'
 slot_cache=$(mktemp -d "$HOME/.cache/louiselm-vm-slot.XXXXXXXX")
 export XDG_CACHE_HOME="$slot_cache"  # keep this value for this Session's commands
 ./scripts/launcher-vm --slot plan
-# First slot only: reference an existing credential-free prepared base in place.
+# First slot only: adopt an existing credential-free prepared base into the pool.
 # Use the current prepared-<digest>.qcow2 filename shown by plan.
 ./scripts/launcher-vm --slot prepare --base /absolute/existing/prepared-DIGEST.qcow2
 # Later Sessions with the same inputs: --slot prepare (no --base needed).
@@ -98,16 +98,26 @@ export XDG_CACHE_HOME="$slot_cache"  # keep this value for this Session's comman
 ```
 
 The per-user pool is always `$HOME/.cache/louiselm-launcher-vm-pool`, independent
-of `XDG_CACHE_HOME`. Under `bases/`, one reference per provisioning digest points
-to the existing read-only base and UEFI template. The complete backing chain
-must already be owned and read-only. No base is copied, rebased, renamed or
-made writable. Keep the original backing files in place. If the current digest
-has no shared base, slot preparation refuses and requests `--base`. Prepare
+of `XDG_CACHE_HOME`. Under `bases/`, one read-only image per provisioning digest
+owns its bytes and UEFI template. Adoption flattens the complete backing chain
+once into the pool, without modifying the original files. The source chain must
+already be owned and read-only. Later prepares reuse the pool copy. If the
+current digest has no shared base, slot preparation refuses and requests `--base`. Prepare
 missing inputs once using the existing default workflow when its unit is free,
 then register that prepared base. Slot preparation never downloads, installs,
-builds another base, or starts a provisioning guest. Subsequent prepares reuse
-the registered reference. Pool commands never remove bases, including when the final slot is
-cleaned. Existing duplicate legacy bases are outside this cleanup's scope.
+builds another base, or starts a provisioning guest. Pool commands never remove
+bases, including when the final slot is cleaned. Existing duplicate legacy bases
+are outside this cleanup's scope.
+`--slot prepare` also replaces an intact legacy pool symlink with owned bytes.
+Missing or dangling bases appear explicitly in `--slot status`; `start` refuses
+until an intact prepared source is adopted.
+
+After `--slot cleanup`, that Session's slot cache is safe to delete (keep any
+logs you need). Deleting a source cache after adoption cannot break the pool.
+Keep `$HOME/.cache/louiselm-launcher-vm-pool/bases`: registered slots depend on
+it. Legacy/default, retained and persistent guests may still depend on their
+original backing files; inspect their complete `qemu-img info --backing-chain`
+before deleting any such cache. This rule never authorizes deleting evidence.
 
 Each slot has only a thin qcow2 overlay backed by that shared image, private
 UEFI variables, cloud-init seed, and newly generated SSH client/host keys. Its

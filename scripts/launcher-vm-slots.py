@@ -14,6 +14,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -102,6 +103,17 @@ def allocated(path):
     return path.stat().st_blocks * 512 if path.exists() else 0
 
 
+def base_state(path):
+    if path.is_symlink():
+        return "external" if path.exists() else "dangling"
+    if not path.is_file():
+        return "missing"
+    firmware = Path(str(path) + ".vars.fd")
+    if not firmware.is_file() or firmware.is_symlink():
+        return "firmware_missing_or_external"
+    return "ready"
+
+
 class Pool:
     def __init__(self, root, base_name):
         self.root = root
@@ -185,17 +197,30 @@ class Pool:
             if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
                     or metadata.st_mode & 0o222):
                 fail(f"base and complete backing chain must already be owned and read-only: {path}")
-        # Reference the existing chain in place. No copy, rebase, rename or chmod
-        # of legacy guests, including bases used by a running default slot.
+        # Flatten once: a hard link to the top image would still depend on its
+        # backing files in the source Session's cache. Never modify that chain.
         firmware = Path(str(self.base) + ".vars.fd")
-        if firmware.is_symlink():
-            if firmware.resolve() != Path(str(source) + ".vars.fd"):
-                fail("incomplete shared base publication points at different firmware; inspect it first")
-        else:
-            firmware.symlink_to(str(source) + ".vars.fd")
-        # Publish the disk last; interrupted publication can be retried without
-        # advertising a base whose firmware link is not present yet.
-        self.base.symlink_to(source)
+        self.admission(self.records(), self.base.parent, sum(allocated(path) for path in paths))
+        with tempfile.TemporaryDirectory(prefix=".publish-", dir=self.base.parent) as directory:
+            disk = Path(directory) / self.base.name
+            template = Path(directory) / firmware.name
+            subprocess.run(["qemu-img", "convert", "-O", "qcow2", str(source), str(disk)], check=True)
+            shutil.copyfile(str(source) + ".vars.fd", template)
+            disk.chmod(0o400)
+            template.chmod(0o400)
+            # Publish the disk last; interrupted publication is retryable.
+            template.replace(firmware)
+            disk.replace(self.base)
+
+    def prepare_base(self, source):
+        if self.base.is_symlink() and self.base.exists():
+            self.publish_base(self.base)
+        if base_state(self.base) != "ready":
+            if not source:
+                fail("no intact pool-owned shared base for current inputs; use --slot prepare --base EXISTING_BASE. "
+                     "Prepare missing inputs once with the default launcher workflow when its unit is free; "
+                     "slot preparation never provisions or copies another base.")
+            self.publish_base(Path(source))
 
     def prepare(self, cache, source=None):
         owner, server = verified_owner()
@@ -211,6 +236,7 @@ class Pool:
                     fail(f"slot owned by {existing['owner']}; choose another XDG_CACHE_HOME")
                 if existing["base"] != str(self.base):
                     fail("slot has older inputs; cleanup your slot before preparing again")
+                self.prepare_base(source)
                 self.admission(records, Path(existing["state"]))
                 return existing
             if len(records) >= self.limit:
@@ -228,13 +254,8 @@ class Pool:
                 if (state / "run.qcow2").exists():
                     fail("unregistered overlay exists; inspect it before reuse")
             self.admission(records, cache, DISK_LIMIT + SLOT_OVERHEAD)
-            if not self.base.exists():
-                if source:
-                    self.publish_base(Path(source))
-                else:
-                    fail("no shared base for current inputs; use --slot prepare --base EXISTING_BASE. "
-                         "Prepare missing inputs once with the default launcher workflow when its unit is free; "
-                         "slot preparation never provisions or copies another base.")
+            self.prepare_base(source)
+            self.admission(records, cache, DISK_LIMIT + SLOT_OVERHEAD)
             private(state, create=True)
             (state / ".slot.json").write_text(json.dumps(marker) + "\n")
             record = {**layout, "owner": owner, "server": server, "created": int(time.time())}
@@ -261,6 +282,10 @@ class Pool:
             self.owned(record)
             if record["base"] != str(self.base):
                 fail("slot has older inputs; cleanup your slot before preparing again")
+            health = base_state(self.base)
+            if health != "ready":
+                fail(f"shared base is {health}: {self.base}; run --slot prepare --base EXISTING_BASE "
+                     "with intact current inputs before starting; keep retained evidence")
             with locked(Path(record["state"]) / "slot.lock"):
                 records = self.records()
                 if len(records) > self.limit:
@@ -298,6 +323,7 @@ class Pool:
     def status(self):
         records = self.records()
         for record in records:
+            record["base_state"] = base_state(Path(record["base"]))
             record["owner_state"] = owner_state(record)
             record["age_seconds"] = max(0, int(time.time()) - record["created"])
             record["disk_bytes"] = sum(p.lstat().st_blocks * 512 for p in Path(record["state"]).rglob("*")
@@ -306,8 +332,10 @@ class Pool:
                                      "-p", "ActiveState", "--value"],
                                     capture_output=True, text=True, check=True)
             record["active_state"] = result.stdout.strip()
-        bases = [{"path": str(path), "disk_bytes": allocated(path)}
-                 for path in sorted(self.base.parent.glob("prepared-*.qcow2"))]
+        paths = set(self.base.parent.glob("prepared-*.qcow2")) | {self.base}
+        paths.update(Path(record["base"]) for record in records)
+        bases = [{"path": str(path), "state": base_state(path), "disk_bytes": allocated(path)}
+                 for path in sorted(paths)]
         return {"slots": records, "shared_bases": bases, "max_slots": self.limit, "floor_bytes": self.floor}
 
 
