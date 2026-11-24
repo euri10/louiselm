@@ -26,10 +26,70 @@ nvim.fn.writefile({ nvim.json.encode(selection) }, private_selection)
 assert(nvim.fn.setfperm(private_selection, "rw-------") == 1)
 nvim.g.louiselm_bead_run_selection = private_selection
 local opened, refusal = pcall(nvim.api.nvim_exec2, "luafile scripts/bead-run.lua", { output = true })
-assert(not opened, "paid entrypoint did not refuse dispatch")
-assert(type(refusal) == "string" and refusal:find("Paid Run requires a passing rehearsal", 1, true), refusal)
-assert(refusal:find("louiselm-rrfgt", 1, true), refusal)
+assert(opened, refusal)
+local check_copies = nvim.fn.glob(selection.snapshot_parent .. "/rehearsal-check-*", false, true)
+assert(#check_copies == 1, "readiness must pin the controller selection in one private copy")
+local check_metadata = assert(nvim.uv.fs_lstat(check_copies[1]))
+assert(check_metadata.type == "file" and check_metadata.mode % 512 == 384 and check_metadata.uid == nvim.uv.getuid())
+assert(nvim.deep_equal(nvim.json.decode(table.concat(nvim.fn.readfile(check_copies[1]), "\n")), selection))
+assert(
+  nvim.wait(120000, function()
+    return nvim.api
+      .nvim_exec2("messages", { output = true }).output
+      :find("Paid Run requires a passing rehearsal", 1, true) ~= nil
+  end, 20),
+  "paid entrypoint did not refuse dispatch"
+)
+assert(nvim.uv.fs_lstat(check_copies[1]) == nil, "readiness selection copy leaked after completion")
 assert(#require("louiselm.session").exit_verdict() == 0, "paid entrypoint started a Session")
+if startup_only then
+  local argv =
+    { "louiselm-control", "run", "rehearse", "--selection", private_selection, "--plugin", nvim.fn.getcwd(), "--json" }
+  local result = nvim.system(argv, { text = true }):wait(240000)
+  local fault = nvim.env.LOUISELM_TEST_REHEARSAL_FAILURE
+  if fault ~= nil and fault ~= "" then
+    assert(result.code ~= 0, "injected failure passed rehearsal")
+    local report = nvim.json.decode(result.stdout)
+    if fault == "replica" then
+      assert(
+        report.status == "refused" and report.phase == "tracker_prepare" and report.code == "unavailable",
+        result.stdout
+      )
+    else
+      assert(report.status == "failed" and #report.workers == 1, result.stdout)
+      local worker = report.workers[1]
+      assert(worker.terminal_head and not worker.recovery_required and worker.provider_attempts == 0, result.stdout)
+      assert(
+        worker.observation.failure.phase == "workspace_prepare" and worker.observation.failure.code == "unavailable",
+        result.stdout
+      )
+      assert(not worker.observation.started and not worker.observation.attached)
+    end
+    nvim.fn.writefile({ nvim.json.encode(report) }, nvim.env.XDG_STATE_HOME .. "/rehearsal.json")
+    argv[3] = "rehearsal-check"
+    assert(nvim.system(argv, { text = true }):wait(120000).code ~= 0, "failed rehearsal enabled paid dispatch")
+    print("REHEARSAL_CHARACTERIZATION " .. fault .. " refused paid dispatch without a Provider request")
+    return
+  end
+  assert(result.code == 0, "real rehearsal failed: " .. result.stdout .. result.stderr)
+  local report = nvim.json.decode(result.stdout)
+  assert(report.status == "passed" and #report.workers == #selection.beads)
+  for _, worker in ipairs(report.workers) do
+    assert(worker.observation.started and worker.observation.attached)
+    assert(worker.terminal_head and not worker.recovery_required and worker.provider_attempts == 0)
+  end
+  nvim.fn.writefile({ nvim.json.encode(report) }, nvim.env.XDG_STATE_HOME .. "/rehearsal.json")
+  argv[3] = "rehearsal-check"
+  assert(nvim.system(argv, { text = true }):wait(120000).code == 0, "same-input rehearsal check failed")
+  local changed = nvim.deepcopy(selection)
+  changed.beads[1].prompt = changed.beads[1].prompt .. " changed"
+  nvim.fn.writefile({ nvim.json.encode(changed) }, private_selection)
+  assert(nvim.system(argv, { text = true }):wait(120000).code ~= 0, "changed selection reused a rehearsal")
+  nvim.fn.writefile({ nvim.json.encode(selection) }, private_selection)
+  print(
+    "REHEARSAL passed: three stock workers, real capture, verified terminal chains, zero Provider attempts; changed selection refused"
+  )
+end
 local attachment
 local started = nvim.uv.hrtime()
 local function progress(phase)

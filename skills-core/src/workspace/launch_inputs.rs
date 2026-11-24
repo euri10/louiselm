@@ -200,6 +200,20 @@ pub fn stage(
     inputs.preview()
 }
 
+/// Reuses a broker publication only after validating every current incoming
+/// input and remeasuring the retained copy against the same complete manifest.
+pub(crate) fn reuse(
+    manifest: &SessionInputManifest,
+    snapshot: &Path,
+    cache: &Path,
+    operator_profile: Option<&[u8]>,
+    input: &Path,
+) -> Result<InputPreview, WorkspaceError> {
+    let manifest = SessionInputManifest::parse(&manifest.canonical_bytes())?;
+    let incoming = LoadedInputs::capture(manifest, snapshot, cache, operator_profile)?;
+    load(input, &incoming.manifest.digest())?.preview()
+}
+
 pub(crate) fn load(input: &Path, expected: &Digest) -> Result<LoadedInputs, WorkspaceError> {
     let root = filesystem::open_directory(input)?;
     let bytes = filesystem::read_source(&root, "manifest.json", MAX_INPUT_MANIFEST_BYTES)?

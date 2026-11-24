@@ -16,16 +16,10 @@ fn parse(bytes: &[u8]) -> Result<AuthorizationRequest, InspectError> {
 }
 
 pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
-    if matches!(super::arguments::operation(arguments), Ok(("rehearse", _))) {
-        // louiselm-rrfgt: preparation can fail after authorization consumption
-        // but before a receipt chain exists. Refuse before stdin, installation
-        // inspection or broker contact; no rehearsal may leave that authority.
-        let refusal = br#"{"schema":"louiselm.run-rehearsal/1","status":"refused","code":"terminal_cleanup_unproven","blocker":"louiselm-rrfgt"}"#;
-        return if io::stderr().lock().write_all(refusal).is_ok() {
-            1
-        } else {
-            InspectError::StatusUnavailable.exit_code()
-        };
+    if let Ok((verb @ ("rehearse" | "rehearsal-check"), arguments)) =
+        super::arguments::operation(arguments)
+    {
+        return super::rehearsal::cli(verb, arguments);
     }
     let result = (|| {
         arguments.map_err(|()| InspectError::InvalidRequest)?;

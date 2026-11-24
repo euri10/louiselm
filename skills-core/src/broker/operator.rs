@@ -389,6 +389,11 @@ pub fn verification(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorizationRequest {
+    /// Independent startup-only Run and exact paid-dispatch prerequisite.
+    Rehearsal {
+        /// Closed rehearsal operation, authenticated as the operator.
+        request: Box<super::rehearsal::Operation>,
+    },
     /// Activate reviewed draft intent once, after current readiness checks.
     Dispatch {
         /// Non-executing policy and reviewed execution limit.
@@ -424,6 +429,11 @@ pub enum AuthorizationRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthorizationResponse {
+    /// Exact rehearsal bindings and cryptographically checked disposition.
+    Rehearsal {
+        /// A ready plan grants no paid Run authority; only passed satisfies the prerequisite.
+        report: Box<super::rehearsal::Report>,
+    },
     /// Exact activated policy and its one-time approval.
     Dispatch {
         /// Broker-time activation of the reviewed intent.
@@ -486,6 +496,9 @@ pub fn authorization(
         return Err(InspectError::StatusUnavailable);
     }
     let matches = match (authorization, &response) {
+        (AuthorizationRequest::Rehearsal { .. }, AuthorizationResponse::Rehearsal { report }) => {
+            report.schema == "louiselm.run-rehearsal/1"
+        }
         (
             AuthorizationRequest::ProviderStatus {
                 run_id,

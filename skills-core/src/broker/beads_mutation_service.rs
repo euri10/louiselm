@@ -167,6 +167,12 @@ impl BrokerService {
         if query.session_id != auth.session_id || query.run_id != auth.run_id {
             return Err(BrokerError::RequestMismatch);
         }
+        if self.provider_requests.is_rehearsal(&auth.run_id)? {
+            return Ok(CommandOperation::BeadsMutationRefused {
+                error: ErrorCode::CapabilityDenied,
+                escalation: None,
+            });
+        }
         if query.envelope_revision != auth.envelope_revision {
             return Err(crate::launch_protocol::ProtocolError::new(
                 ErrorCode::EnvelopeRevisionMismatch,

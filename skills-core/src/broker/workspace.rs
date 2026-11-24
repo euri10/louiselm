@@ -47,7 +47,7 @@ impl InstalledBroker {
     /// This copies only exact manifest-bound bytes and grants no launch authority.
     /// # Errors
     /// Refuses malformed requests, stale source HEAD, changed/unsafe inputs,
-    /// duplicate publication and storage failure.
+    /// stale Admission/profile, corrupt retained bytes and storage failure.
     pub fn stage_operator_launch_inputs(
         &self,
         request: &super::operator::LaunchInputsRequest,
@@ -68,7 +68,7 @@ impl InstalledBroker {
     /// before authorizing the exact request through the existing launch boundary.
     ///
     /// # Errors
-    /// Refuses changed inputs, duplicate publication or unavailable storage.
+    /// Refuses changed inputs, stale Admission/profile or unavailable storage.
     pub fn stage_launch_inputs(
         &self,
         manifest: &SessionInputManifest,
@@ -89,6 +89,19 @@ impl InstalledBroker {
             None if manifest.operator_profile.is_none() => None,
             None => return Err(BrokerError::InvalidGrant),
         };
+        // Rehearsal and dispatch reuse only exact bytes, after all current
+        // Admission/profile checks and fresh measurement of incoming inputs.
+        let staged = self
+            .service
+            .verification_inputs
+            .parent()
+            .ok_or(BrokerError::InvalidGrant)?
+            .join("workspace-inputs")
+            .join(manifest.digest().hex());
+        if staged.try_exists().map_err(BrokerError::Storage)? {
+            return launch_inputs::reuse(manifest, snapshot, cache, profile.as_deref(), &staged)
+                .map_err(Into::into);
+        }
         self.service
             .stage_launch_inputs(manifest, snapshot, cache, profile.as_deref())
     }

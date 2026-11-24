@@ -54,6 +54,7 @@ mod provider_service;
 pub mod provider_transport;
 pub mod receipts;
 pub mod recovery;
+pub mod rehearsal;
 pub mod run_envelope;
 pub mod service;
 pub mod skill_quarantine;

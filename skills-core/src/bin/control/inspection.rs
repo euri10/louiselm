@@ -374,6 +374,11 @@ impl Queries {
                                 AuthorizationRequest, AuthorizationResponse,
                             };
                             let result = match request {
+                                AuthorizationRequest::Rehearsal { request } => broker
+                                    .rehearsal(request)
+                                    .map(|report| AuthorizationResponse::Rehearsal {
+                                        report: Box::new(report),
+                                    }),
                                 AuthorizationRequest::ProviderStatus {
                                     run_id,
                                     expected_envelope_digest,

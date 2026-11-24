@@ -272,34 +272,50 @@ cannot satisfy this requirement.
 In the real guest, the operator runs the installed command:
 
 ```sh
-/usr/local/lib/louiselm/current/bin/louiselm-control run rehearse --json
+/usr/local/lib/louiselm/current/bin/louiselm-control run rehearse \
+  --selection /private/selection.json --plugin /approved/louiselm --json
 ```
 
-**Rehearsal is blocked by `louiselm-rrfgt`.** The command exits 1 and writes
-`louiselm.run-rehearsal/1` JSON on stderr with `status: refused`,
-`code: terminal_cleanup_unproven` and `blocker: louiselm-rrfgt`. It refuses
-before reading stdin, contacting the broker, reserving or consuming authority,
-starting a worker or making a Provider request. There is no selection argument,
-passing attestation or bypass flag while this safety prerequisite is unresolved.
-An older installed release may reject the command as unknown; that also leaves
-paid dispatch blocked. Do not install a development binary to get past it.
+The selection must be an operator-owned mode-0600 file, at most 64KiB. The
+explicit plugin path is the trusted LouiseLM installation used by the operator,
+never Lua from an untrusted candidate repository. The installed binary embeds
+the coordinator. It uses the installed verifier Neovim, production launcher,
+Control broker and capture CLI, and the selected stock runtime. It stages the
+exact current clean Run HEAD and cache without changing the paid Run's inputs.
 
-The current launch transaction consumes authorization before workspace and
-tracker preparation. A failure there can leave no Launcher receipt. Case 11's
-healthy stock startup/disposal does not establish failure safety. The open
-design question decides whether and how that gap may be closed; rehearsal does
-not invent a terminal chain, recover an authorization or use paid Run authority.
-No worker is attempted on refusal, so there is no worker phase/code to report.
-Actual startup failures continue to use the normalized lfkw5.2 diagnostics above.
+Rehearsal creates one independent UUID Run per worker, with the same identity
+in the broker and capture ledger. Before granting these Runs any authority, the
+broker durably denies all their Provider attempts before reservation or upstream
+dispatch, and refuses its canonical Beads mutations. This denial survives restart.
+No prompt is sent, no production TLS
+trust override exists, and the paid Run is neither reserved nor activated.
+Each selected worker starts through the real tracker-replica/workspace/ACP path,
+attaches to a separate real capture record, then is disposed. The broker checks
+each exact Session's reservation ledger and re-verifies its signed terminal
+chain; process absence is not cleanup proof. Read-only input staging is reusable
+by the subsequent paid Run.
 
-The first-Run script below validates its private selection, then refuses paid
-dispatch until this requirement can be met. It cannot accept a fixture result,
-handwritten JSON or a stale success as evidence. Exact-binding execution,
-Nov 16 replica-build/Nov 23 startup rehearsal characterization, and item 7's
-maintainer acceptance remain open in `louiselm-a4r1d`; this refusal is not a
-successful rehearsal. Once unblocked, the implementation must invalidate a
-pass on changes to any binding above, keep TLS fixture trust out of production,
-and verify every consumed slot's signed terminal chain before reporting success.
+Exit 0 and stdout `louiselm.run-rehearsal/1` with `status: passed` means all
+selected workers initialized and attached, all consumed slots ended with verified
+terminal chains, and every Session has zero Provider attempts. The broker keeps
+the result privately. It binds the signed release, kernel boot, complete ordered
+selection, exact staged source/cache/Agent/skills manifest, trusted plugin Lua
+and canonical native tracker export/executable. A new attempt invalidates the
+old pass before preparation. `failed` or `refused` is never a pass; normalized
+phase/code is retained without raw stderr. Ordinary handled startup failures
+still fail rehearsal but retain signed failed-launch terminal evidence. Missing,
+unverified or nonterminal evidence reports `recovery_required`; no recovery or
+retry is automatic. The separately reviewed exact saved-evidence delivery
+operation may finish delivery without making new cleanup claims.
+
+Before opening the paid draft and again on Start, the shipped first-Run script
+remeasures the inputs and asks the broker to require the latest passing result,
+including re-verification of every terminal chain and the zero-attempt ledger.
+A changed boot, release, source, selection, plugin or tracker refuses dispatch.
+A fixture result or handwritten JSON cannot supply that prerequisite. An older
+release that lacks the command also refuses. Item 7 of `louiselm-a4r1d` remains
+open until the maintainer runs this command in the actual guest; disposable
+gates do not certify that guest or authorize a paid request.
 
 `scripts/bead-run.lua` is the concrete caller for a reviewed first Run of three
 to five Beads. In an interactive VM Neovim using the approved LouiseLM checkout,
@@ -312,9 +328,8 @@ nvim --noplugin -u NONE --cmd 'set runtimepath^=/approved/louiselm' \
 ```
 
 The file must be operator-owned mode 0600 and at most 64KiB. Review it before
-Start: after the rehearsal blocker is resolved, Start will recheck current
-readiness and activate the reviewed limits at dispatch. It currently refuses
-before either authorization or capture admission; the saved draft stays intact.
+Start: it rechecks the exact rehearsal and current readiness, then activates the
+reviewed limits at dispatch. A missing pass leaves the saved draft inactive.
 No API key belongs in it. The closed `louiselm.operator.bead-run/2` object
 contains:
 
@@ -426,7 +441,7 @@ done
     --exact --nocapture' bash /path/to/current/louiselm_skills-test-executable
 
 # Required combined stock-runtime gate; see provisioning below.
-for stock_case in 11 10; do
+for stock_case in 11 12 13 10; do
   ./scripts/launcher-vm exec sudo -n env \
     LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$stock_case" \
     LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
@@ -445,6 +460,7 @@ done
 ```
 
 The guest must contain the current Rust build, `lua/`, `scripts/bead-run.lua`,
+`scripts/bead-rehearse.lua`,
 `tests/workflow/installed_beads.lua`, `tests/workflow/installed_operator.lua`,
 the real capture CLI, stable Neovim and SQLite. The VM provisioner
 includes SQLite; CI copies its stable Neovim distribution into the guest. The
@@ -495,21 +511,28 @@ case against a snapshot of the tracked repository. Capture uses the installed
 The source-sized operator case has a bounded three-minute aggregate wait and
 five-minute fixture approval, based on measured complete three-task cycles;
 all production per-operation deadlines and spending caps remain unchanged.
-Cases 11 and 10 require the combined stock/native/operator configuration; missing
+Cases 10–13 require the combined stock/native/operator configuration; missing
 inputs fail rather than substitute a double. Provision the four artifacts and
 discovery inventory with `scripts/fetch-stock-codex-chain`, then verify them
 offline with `scripts/fetch-stock-codex-chain --check DIRECTORY`. Their hashes
 and immutable modes must match Node 24.16.0, Codex/Code Mode 0.156.1 and
 codex-acp 1.10.0. CI builds native `br` at
 `5830c1e49ae0f38b67fc50382c8481f1ff46a7cf` and imports the tracked full export
-into private broker custody. Both cases require a full source snapshot, Skills
+into private broker custody. These cases require a full source snapshot, Skills
 off, Brokered networking and an Enforced installation with a passing real
 certificate, never a waiver or PreCutover evidence.
 
-Case 11 runs the unchanged production daemon through stock ACP initialization,
-its Running receipt and real capture attachment, then disposes before a prompt.
-It verifies one signed terminal chain, the current source HEAD and zero Provider
-attempts. Case 10 compiles the actual daemon dispatcher into the library test;
+Case 11 first runs the production rehearsal CLI for all three selected workers:
+three real capture attachments, three verified terminal chains, zero Provider
+reservations, same-input pass readback and changed-selection refusal. It then
+runs the unchanged production daemon through a fourth stock ACP initialization,
+Running receipt and real capture attachment, disposing before a prompt.
+Cases 12 and 13 inject replica-import and pre-ACP workspace failures through a
+fixture-only wrapper around native Beads. They characterize the Nov 16 and
+Nov 23 failure classes, not the lost historical cause: the first refuses before
+consumption, the second retains the original `workspace_prepare/unavailable`
+failure with a verified terminal failed-launch chain. Both refuse paid dispatch.
+Case 10 compiles the actual daemon dispatcher into the library test;
 only this test process supplies the private TLS CA through the existing test-root
 setter. No installed CLI flag, production trust override or real Provider
 credential is added. A pristine production startup establishes broker state identity; the

@@ -287,7 +287,7 @@ bash "$prepare_vm" prepare >/dev/null
 grep -Eq 'apt-get install .* libssl-dev( |$)' "$VM_TEST_PREPARE_LOG" || {
   echo 'prepare omitted the declared OpenSSL development dependency' >&2; exit 1
 }
-for prerequisite in skills-core/Cargo.toml skills-core/Cargo.lock docs/recovery-ceremony.md \
+for prerequisite in skills-core/Cargo.toml skills-core/Cargo.lock scripts/bead-rehearse.lua docs/recovery-ceremony.md \
   tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
   tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
   tests/fixtures/broker_attention_projection.json tests/fixtures/provider_metadata_disclosure.json; do

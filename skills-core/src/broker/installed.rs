@@ -28,7 +28,8 @@ use crate::{
 /// only private broker state and its rendezvous directory belong to the broker.
 /// All methods perform blocking I/O on the explicitly owned broker worker.
 pub struct InstalledBroker {
-    preparation_paths: LauncherPaths,
+    pub(super) rehearsals: super::rehearsal::Rehearsals,
+    pub(super) preparation_paths: LauncherPaths,
     pub(in crate::broker) run_envelopes: super::run_envelope::RunEnvelopeStore,
     pub(in crate::broker) service: BrokerService,
     pub(in crate::broker) verifier: Arc<LauncherVerifier>,
@@ -663,6 +664,7 @@ impl InstalledBroker {
             config.broker_gid,
         )?;
         Ok(Self {
+            rehearsals: super::rehearsal::Rehearsals::open(&state.join("run-rehearsals"))?,
             preparation_paths: paths.clone(),
             run_envelopes: super::run_envelope::RunEnvelopeStore::open(
                 &state.join("run-envelopes"),
@@ -701,7 +703,7 @@ impl InstalledBroker {
         })
     }
 
-    fn check_unstarted_run(&self, run_id: &str) -> Result<(), BrokerError> {
+    pub(super) fn check_unstarted_run(&self, run_id: &str) -> Result<(), BrokerError> {
         if self
             .service
             .authorizations()
@@ -713,7 +715,7 @@ impl InstalledBroker {
         Ok(())
     }
 
-    fn check_run_operator(
+    pub(super) fn check_run_operator(
         &self,
         envelope: &super::run_envelope::RunEnvelope,
     ) -> Result<(), BrokerError> {
@@ -759,6 +761,13 @@ impl InstalledBroker {
         report: &crate::beads_mutation::BeadFailureRequest,
     ) -> Result<crate::beads_mutation::BeadsMutationStatus, BrokerError> {
         use crate::beads_mutation::{BeadsMutationKind, BeadsMutationRequest};
+        if self
+            .service
+            .provider_requests
+            .is_rehearsal(&report.run_id)?
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
         if !report.valid() {
             return Err(BrokerError::InvalidGrant);
         }
@@ -840,6 +849,7 @@ impl InstalledBroker {
         ),
         BrokerError,
     > {
+        self.rehearsals.check_child(grant)?;
         if grant.controller_uid != self.verifier.config().operator_uid {
             return Err(BrokerError::ControllerMismatch);
         }

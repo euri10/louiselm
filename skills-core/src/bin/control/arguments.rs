@@ -67,7 +67,14 @@ pub(super) fn command() -> Command {
             &["inspect", "reject", "cancel"],
             true,
         ))
-        .subcommand(group("run", &["authorize", "rehearse"], false))
+        .subcommand(group("run", &["authorize"], false).subcommands(
+            ["rehearse", "rehearsal-check"].map(|verb| {
+                Command::new(verb)
+                    .arg(json())
+                    .arg(Arg::new("selection").long("selection").required(true))
+                    .arg(Arg::new("plugin").long("plugin").required(true))
+            }),
+        ))
         .subcommand(group("launch-inputs", &["stage"], false))
         .subcommand(Command::new("verification").arg(json()))
         .subcommand(Command::new("lifecycle").arg(json()))

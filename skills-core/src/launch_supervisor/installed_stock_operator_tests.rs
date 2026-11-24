@@ -142,6 +142,52 @@ pub(super) fn provision_credential() {
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+pub(super) fn inject_rehearsal_failure(
+    root: &Path,
+    config: &LauncherConfig,
+    program: &Path,
+    fault: &str,
+) {
+    // Only disposable fixture provisioning wraps the qualified tracker. Native
+    // operations still run unchanged; one replica import or input disappears.
+    let native = root.join("rehearsal-native-br");
+    fs::rename(program, &native).unwrap();
+    let inputs = config
+        .broker_socket_path
+        .parent()
+        .unwrap()
+        .join("workspace-inputs");
+    let wrapper = r"#!/usr/bin/python3
+import os, sys, shutil
+from pathlib import Path
+native = @NATIVE@
+fault = @FAULT@
+if fault == 'replica' and '--import-only' in sys.argv:
+    sys.exit(1)
+if fault == 'pre_acp' and 'BEADS_JSONL' in os.environ:
+    counter = Path(@STATE@, 'rehearsal-fault-count')
+    count = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(count))
+    if count == 2:
+        inputs = Path(@INPUTS@)
+        for target in inputs.iterdir():
+            for directory, dirs, files in os.walk(target):
+                os.chmod(directory, 0o700)
+            shutil.rmtree(target)
+os.execv(native, [native] + sys.argv[1:])
+"
+    .replace("@NATIVE@", &serde_json::to_string(&native).unwrap())
+    .replace("@FAULT@", &serde_json::to_string(fault).unwrap())
+    .replace("@STATE@", &serde_json::to_string(STATE).unwrap())
+    .replace("@INPUTS@", &serde_json::to_string(&inputs).unwrap());
+    fs::write(program, wrapper).unwrap();
+    fs::set_permissions(program, fs::Permissions::from_mode(0o555)).unwrap();
+    let path = Path::new(beads::TRACKER_CONFIG);
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    record["program_digest"] = Digest::of(&fs::read(program).unwrap()).to_string().into();
+    write_json(path, &record);
+}
+
 pub(super) fn verify_rehearsal_refusal(operator_uid: u32) {
     let authorization_root = Path::new(STATE).join("authorizations");
     let before = tree_bytes(&authorization_root);
@@ -158,15 +204,14 @@ pub(super) fn verify_rehearsal_refusal(operator_uid: u32) {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(output.stdout, [] as [u8; 0]);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&output.stderr).unwrap(),
         serde_json::json!({
-            "schema": "louiselm.run-rehearsal/1",
-            "status": "refused",
-            "code": "terminal_cleanup_unproven",
-            "blocker": "louiselm-rrfgt",
+            "schema": "louiselm.operator-error/1",
+            "error": "invalid_request",
+            "next_action": "check_request",
         })
     );
     assert_eq!(tree_bytes(&authorization_root), before);

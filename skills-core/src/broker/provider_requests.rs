@@ -66,7 +66,7 @@ pub(super) struct ProviderLedger {
 
 impl ProviderLedger {
     pub(super) fn open(root: &Path) -> Result<Self, BrokerError> {
-        for directory in ["runs", "holds", "extensions"] {
+        for directory in ["runs", "holds", "extensions", "rehearsals"] {
             fs::create_dir_all(root.join(directory)).map_err(BrokerError::Storage)?;
         }
         sync_directory(root)?;
@@ -94,6 +94,9 @@ impl ProviderLedger {
             return Err(BrokerError::InvalidGrant);
         }
         let _guard = lock(&self.writing);
+        if self.is_rehearsal(run_id)? {
+            return Err(BrokerError::InvalidGrant);
+        }
         let directory = self.run_directory(run_id);
         if !directory.exists() {
             fs::create_dir(&directory).map_err(BrokerError::Storage)?;
@@ -133,6 +136,52 @@ impl ProviderLedger {
         } else {
             Ok(0)
         }
+    }
+
+    /// Permanently denies upstream attempts before rehearsal authority exists.
+    pub(super) fn deny_rehearsal(&self, run_id: &str) -> Result<(), BrokerError> {
+        super::record_name(run_id)?;
+        let _guard = lock(&self.writing);
+        write_new_record(&self.directory("rehearsals", run_id), &run_id)
+    }
+
+    pub(super) fn is_rehearsal(&self, run_id: &str) -> Result<bool, BrokerError> {
+        let path = self.directory("rehearsals", run_id);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                let recorded: String = read_record(&path)?.ok_or(BrokerError::InvalidGrant)?;
+                if recorded != run_id {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                Ok(true)
+            }
+            Ok(_) => Err(BrokerError::InvalidGrant),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(BrokerError::Storage(error)),
+        }
+    }
+
+    /// Counts the exact Session's durable reservations; absence of ACP proves nothing.
+    pub(super) fn spent_by_session(
+        &self,
+        run_id: &str,
+        session_id: &str,
+    ) -> Result<u32, BrokerError> {
+        let _guard = lock(&self.writing);
+        let directory = self.run_directory(run_id);
+        if !directory.try_exists().map_err(BrokerError::Storage)? {
+            return Ok(0);
+        }
+        let mut spent = 0;
+        for sequence in 0..count(&directory)? {
+            let record: Reservation = read_record(&directory.join(format!("{sequence}.json")))?
+                .ok_or(BrokerError::InvalidGrant)?;
+            if record.run_id != run_id || record.sequence != sequence {
+                return Err(BrokerError::InvalidGrant);
+            }
+            spent += u32::from(record.session_id == session_id);
+        }
+        Ok(spent)
     }
 
     /// Durably holds the Run, or returns the hold already recorded.

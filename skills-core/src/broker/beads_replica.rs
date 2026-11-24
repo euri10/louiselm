@@ -34,6 +34,25 @@ impl Drop for Input {
 }
 
 impl BrokerService {
+    pub(super) fn rehearsal_tracker_digest(&self) -> Result<crate::Digest, BrokerError> {
+        let tracker = self.tracker.as_ref().ok_or(BrokerError::InvalidGrant)?;
+        let files = export(tracker, "rehearsal/controller")?;
+        let mut bytes = tracker.project_digest().into_bytes();
+        bytes.extend_from_slice(tracker.program_digest.to_string().as_bytes());
+        // Native exported records/policy are stable; imported SQLite bytes and locks are not.
+        for name in [
+            ".beads/issues.jsonl",
+            ".beads/issues.history.jsonl",
+            ".beads/policy.yaml",
+        ] {
+            bytes.extend_from_slice(name.as_bytes());
+            if let Some(value) = files.get(name) {
+                bytes.extend_from_slice(crate::Digest::of(value).to_string().as_bytes());
+            }
+        }
+        Ok(crate::Digest::of(&bytes))
+    }
+
     pub(super) fn enable_beads_replicas(
         &mut self,
         sessions: &Path,

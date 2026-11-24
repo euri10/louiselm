@@ -21,9 +21,17 @@ use rustix::net::{
     clippy::panic,
     reason = "The watchdog reaps a stalled CLI before failing the fixture."
 )]
-fn rehearsal_refuses_without_installation_or_consuming_input() {
+fn rehearsal_requires_an_explicit_private_selection_before_installation() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
-        .args(["run", "rehearse", "--json"])
+        .args([
+            "run",
+            "rehearse",
+            "--selection",
+            "/missing-selection",
+            "--json",
+        ])
+        .arg("--plugin")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -43,15 +51,14 @@ fn rehearsal_refuses_without_installation_or_consuming_input() {
     }
     drop(input);
     let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(output.stdout, [] as [u8; 0]);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&output.stderr).unwrap(),
         serde_json::json!({
-            "schema": "louiselm.run-rehearsal/1",
-            "status": "refused",
-            "code": "terminal_cleanup_unproven",
-            "blocker": "louiselm-rrfgt",
+            "schema": "louiselm.operator-error/1",
+            "error": "invalid_request",
+            "next_action": "check_request",
         })
     );
 }

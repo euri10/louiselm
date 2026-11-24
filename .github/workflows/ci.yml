@@ -325,7 +325,7 @@ jobs:
           version: stable
       - name: Run the installed Lua controller gate
         run: |
-          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/bead-run.lua scripts/install-broker-beads.py scripts/install-broker-attention.py scripts/conformance-qa.py scripts/install-qa-runtime.py scripts/fetch-stock-codex-chain |
+          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/bead-run.lua scripts/bead-rehearse.lua scripts/install-broker-beads.py scripts/install-broker-attention.py scripts/conformance-qa.py scripts/install-qa-runtime.py scripts/fetch-stock-codex-chain |
             ./scripts/launcher-vm exec tar -x -C /home/vm
           ./scripts/launcher-vm exec mkdir /var/tmp/louiselm-controller-source
           git archive HEAD | ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-controller-source
@@ -381,7 +381,7 @@ jobs:
             # First the unchanged production daemon through real capture attach,
             # without a prompt; then the same dispatcher with test-only TLS roots
             # through three stock workers, real promotions and six terminal chains.
-            for stock_case in 11 10; do
+            for stock_case in 11 12 13 10; do
               sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$stock_case" \
                 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
                 LOUISELM_TEST_BR=/var/tmp/louiselm-native-br \

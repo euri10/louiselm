@@ -403,7 +403,7 @@ impl RunEnvelopeStore {
         Ok((scope.clone(), current.envelope_revision))
     }
 
-    fn current(&self, run_id: &str) -> Result<Option<RunEnvelope>, BrokerError> {
+    pub(super) fn current(&self, run_id: &str) -> Result<Option<RunEnvelope>, BrokerError> {
         record_name(run_id)?;
         let entries = match fs::read_dir(self.root.join(run_id)) {
             Ok(entries) => entries,

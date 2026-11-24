@@ -84,10 +84,16 @@ operator/capture and Enforced certification. Case 11 proves production-daemon
 startup and disposal before a prompt; case 10 uses the actual dispatcher with
 a test-only TLS root for six local requests, three reviewed promotions and six
 cryptographically verified terminal chains. No real credential or paid request
-is permitted. Both stock cases also require the production rehearsal CLI to
-refuse before changing authorization state, and the shipped first-Run script
-to refuse the valid selection before dispatch (`louiselm-a4r1d`, blocked by
-`louiselm-rrfgt`). Refusal is not a passing rehearsal for any boot or release.
+is permitted. Case 11 additionally runs the production rehearsal CLI for all
+three selected stock workers, requiring real capture attachment, verified
+terminal chains and zero exact-Session Provider reservations; it checks a fresh
+same-input pass and refuses changed selection. Cases 12 and 13 characterize
+replica-import and pre-ACP workspace failures: both refuse paid dispatch, and
+the consumed pre-ACP failure requires the signed failed-launch terminal chain.
+Only these disposable negative fixtures wrap the native tracker to inject the
+failure; production has no fault or TLS trust override. The shipped first-Run
+script refuses a valid selection without a current exact rehearsal before
+dispatch and rechecks on Start. A refusal is not a pass for any boot or release.
 Keep unset/empty fixture coverage; do not replace it with the
 stock variant. Provisioning and exact bounds are in the linked gate recipe.
 A skipped unprivileged Rust fixture is not installed acceptance.

@@ -232,7 +232,7 @@ case $action in
     guest chmod 700 /home/vm/rustup-init
     guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain "$rust_toolchain" --component rustfmt,clippy
     guest sudo -n install -d -o vm -g vm -m 0755 /var/tmp/louiselm-skills-target
-    git -C "$project_root" archive HEAD skills-core docs/recovery-ceremony.md \
+    git -C "$project_root" archive HEAD skills-core scripts/bead-rehearse.lua docs/recovery-ceremony.md \
       tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
       tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
       tests/fixtures/broker_attention_projection.json \

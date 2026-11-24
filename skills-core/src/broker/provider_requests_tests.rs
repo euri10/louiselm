@@ -5,6 +5,39 @@
 )]
 
 use super::*;
+
+#[test]
+fn rehearsal_denial_survives_restart_and_never_spends_provider_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let ledger = ProviderLedger::open(root.path()).unwrap();
+    ledger.deny_rehearsal("probe-one").unwrap();
+    drop(ledger);
+    let ledger = ProviderLedger::open(root.path()).unwrap();
+    assert!(matches!(
+        ledger.reserve("probe-one", "worker-one", 6, 1),
+        Err(BrokerError::InvalidGrant)
+    ));
+    assert_eq!(ledger.spent("probe-one").unwrap(), 0);
+    assert_eq!(
+        ledger.spent_by_session("probe-one", "worker-one").unwrap(),
+        0
+    );
+    assert_eq!(ledger.reserve("paid-one", "worker-one", 6, 1).unwrap(), 0);
+    assert_eq!(
+        ledger.spent_by_session("paid-one", "worker-one").unwrap(),
+        1
+    );
+    assert_eq!(ledger.spent_by_session("paid-one", "other").unwrap(), 0);
+    std::fs::write(
+        ledger.directory("rehearsals", "probe-one"),
+        b"\"other-run\"",
+    )
+    .unwrap();
+    assert!(matches!(
+        ledger.reserve("probe-one", "worker-one", 6, 1),
+        Err(BrokerError::InvalidGrant)
+    ));
+}
 use crate::broker::provider_extension::{Extension, ExtensionError, ExtensionRequest};
 use std::{sync::Arc, thread};
 

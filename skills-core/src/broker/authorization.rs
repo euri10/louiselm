@@ -257,6 +257,8 @@ impl AuthorizationStore {
     /// # Errors
     /// Refuses unreadable or malformed durable authorization state.
     pub fn session_count_for_run(&self, run_id: &str) -> Result<usize, BrokerError> {
+        // Writers hold assignment across direct publication and consumption.
+        let _assignment = lock(&self.assignment);
         let mut sessions = std::collections::BTreeSet::new();
         for directory in [PENDING_DIRECTORY, CONSUMED_DIRECTORY] {
             for entry in fs::read_dir(self.root.join(directory)).map_err(BrokerError::Storage)? {
@@ -772,5 +774,61 @@ impl AuthorizationStore {
 
     fn consumed_path(&self, record_name: &str) -> PathBuf {
         self.root.join(CONSUMED_DIRECTORY).join(record_name)
+    }
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::*;
+    use std::{sync::Arc, sync::mpsc, thread};
+
+    #[test]
+    #[allow(
+        clippy::unwrap_used,
+        reason = "Disposable concurrent authorization write fixture."
+    )]
+    fn run_count_waits_for_the_authorization_write_boundary() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            AuthorizationStore::open(
+                root.path(),
+                IdentityPool {
+                    uid_start: 2_000_000,
+                    gid_start: 3_000_000,
+                    slots: 1,
+                },
+            )
+            .unwrap(),
+        );
+        let writing = lock(&store.assignment);
+        let partial = store.pending_path("unfinished.json");
+        fs::write(&partial, b"").unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let reader = Arc::clone(&store);
+        let counting = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            result_tx
+                .send(reader.session_count_for_run("run-one"))
+                .unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            matches!(
+                result_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "count observed an unfinished authorization write"
+        );
+        fs::remove_file(partial).unwrap();
+        drop(writing);
+        assert_eq!(
+            result_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        counting.join().unwrap();
     }
 }

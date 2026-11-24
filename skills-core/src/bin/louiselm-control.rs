@@ -35,6 +35,8 @@ mod lifecycle;
 mod promotion;
 #[path = "control/provider_extension.rs"]
 mod provider_extension;
+#[path = "control/rehearsal.rs"]
+mod rehearsal;
 #[path = "control/run_authorization.rs"]
 mod run_authorization;
 #[path = "control/verification.rs"]

@@ -150,9 +150,14 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=11).contains(&index));
-    let stock_operator = matches!(index, 10 | 11);
-    let startup_only = index == 11;
+    assert!((1..=13).contains(&index));
+    let rehearsal_fault = match index {
+        12 => "replica",
+        13 => "pre_acp",
+        _ => "",
+    };
+    let stock_operator = matches!(index, 10..=13);
+    let startup_only = matches!(index, 11..=13);
     let startup_failure = index == 9;
     // Case 8 reuses the passing promotion fixture, with an actual human-review
     // delay crossing the original Run expiry before Accept reaches the real CLI.
@@ -194,6 +199,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         chown(&import_running, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
     }
     let (program, tracker, bead_id) = beads::provision(root.path());
+    if !rehearsal_fault.is_empty() {
+        stock::inject_rehearsal_failure(root.path(), &config, &program, rehearsal_fault);
+    }
     let upstream = if stock_operator {
         stock::install(root.path(), &paths, &config, startup_only)
     } else {
@@ -546,6 +554,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         ])
         .current_dir(&project)
         .env_clear()
+        .env("LOUISELM_TEST_REHEARSAL_FAILURE", rehearsal_fault)
         .env(
             "LOUISELM_TEST_STOCK_OPERATOR",
             if stock_operator { "1" } else { "0" },
@@ -766,6 +775,22 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         eprintln!(
             "startup cause preserved; one consumed authorization; authenticated terminal failed launch; no successor"
         );
+    } else if !rehearsal_fault.is_empty() {
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(state.join("rehearsal.json")).unwrap()).unwrap();
+        assert_ne!(report["status"], "passed");
+        let store = crate::broker::AuthorizationStore::open(
+            &Path::new(STATE).join("authorizations"),
+            config.pool.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .session_count_for_run(selected["envelope"]["run_id"].as_str().unwrap())
+                .unwrap(),
+            0
+        );
+        eprintln!("REHEARSAL_CHARACTERIZATION fault={rehearsal_fault} no_paid_authority=true");
     } else if startup_only {
         let run_id = selected["envelope"]["run_id"].as_str().unwrap();
         wait_terminal(&format!("{run_id}-worker-1"));
@@ -791,7 +816,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             wait_terminal(&format!("lua-verifier-{index}"));
         }
     }
-    if stock_operator {
+    if stock_operator && rehearsal_fault.is_empty() {
         stock::verify_run(
             root.path(),
             &paths,
