@@ -213,6 +213,76 @@ class Bounds(unittest.TestCase):
             self.assertEqual(qa.Journal.open(path).value, before)
             self.assertEqual(process.stdin.getvalue(), b"")
 
+    def test_launch_waits_for_current_source_before_reporting_ready(self):
+        proposal, manifest = inputs()
+        request = qa.records(proposal, manifest, 1000, 1000)["grants"][0]["request"]
+        current = {"session_id": request["session_id"], "run_id": request["run_id"], "last_check": {
+            "observed_at_ms": 1000, "last_success_at_ms": 1000, "suspended": False,
+            "check": {"kind": "current", "evidence": {"status": "certified", "report_digest": "sha256:" + "1" * 64}}}}
+        reports = [{**current, "last_check": None}, current]
+        process = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            journal = qa.Journal.create(root / "journal.json")
+            journal.reserve(1000, 10**15)
+            def inspect(binary, arguments, value=None):
+                self.assertEqual(arguments, ["session", "conformance", request["session_id"], "--json"])
+                self.assertEqual(qa.Journal.open(journal.path).value["pending"], "launch")
+                self.assertEqual(qa.Journal.open(journal.path).value["spent"], 0)
+                return reports.pop(0)
+            with patch.object(qa.subprocess, "Popen", return_value=process), \
+                 patch.object(qa, "read_line", return_value=b"READY"), \
+                 patch.object(qa, "cli", side_effect=inspect) as calls, \
+                 patch.object(qa.time, "time", return_value=1), patch.object(qa.time, "sleep"):
+                self.assertIs(qa.launch(journal, root, request), process)
+            self.assertEqual(calls.call_count, 2)
+            self.assertIsNone(qa.Journal.open(journal.path).value["pending"])
+            self.assertEqual(process.stdin.getvalue(), qa.encoded(request) + b"\nREADY\n")
+
+    def test_launch_never_accepts_invalid_stale_or_late_conformance(self):
+        proposal, manifest = inputs()
+        request = qa.records(proposal, manifest, 1000, 1000)["grants"][0]["request"]
+        # Current-check shape observed on QA1 in sey9w.16's original installed
+        # failure log; admission alone and READY were not command readiness.
+        current = {"session_id": request["session_id"], "run_id": request["run_id"], "last_check": {
+            "observed_at_ms": 1000, "last_success_at_ms": 1000, "suspended": False,
+            "check": {"kind": "current", "evidence": {"status": "certified"}}}}
+        for mode in ("missing", "foreign", "suspended", "invalid", "stale", "late", "malformed"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                journal = qa.Journal.create(root / "journal.json")
+                journal.reserve(1000, 10**15)
+                process = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO())
+                report = copy.deepcopy(current)
+                if mode == "missing":
+                    report["last_check"] = None
+                elif mode == "foreign":
+                    report["session_id"] = "other"
+                elif mode == "suspended":
+                    report["last_check"]["suspended"] = True
+                elif mode == "invalid":
+                    report["last_check"]["check"] = {"kind": "invalid", "failure": {"condition": "unavailable"}}
+                elif mode == "malformed":
+                    report["last_check"]["observed_at_ms"] = True
+                clock = [0.0]
+                def inspect(*_args):
+                    if mode == "late":
+                        clock[0] = 21.0
+                    return report
+                def sleep(seconds):
+                    clock[0] += seconds
+                with patch.object(qa.subprocess, "Popen", return_value=process), \
+                     patch.object(qa, "read_line", return_value=b"READY"), \
+                     patch.object(qa, "cli", side_effect=inspect), \
+                     patch.object(qa.time, "monotonic", side_effect=lambda: clock[0]), \
+                     patch.object(qa.time, "time", return_value=6 if mode == "stale" else 1), \
+                     patch.object(qa.time, "sleep", side_effect=sleep):
+                    with self.assertRaises(ValueError):
+                        qa.launch(journal, root, request)
+                stored = qa.Journal.open(journal.path).value
+                self.assertEqual((stored["pending"], stored["spent"], stored["next"]), ("launch", 0, 1))
+                self.assertEqual(process.stdin.getvalue(), qa.encoded(request) + b"\nREADY\n")
+
     def test_lifecycle_receipt_binds_exact_subject_action_and_result(self):
         request = {"session_id": "s", "run_id": "r", "envelope_revision": 1, "request_id": "park-1", "action": "park"}
         receipt = {"signature": "fixture-not-cryptographic-proof", "payload": {

@@ -136,6 +136,14 @@ newline-terminated request to `evidence/launch-SESSION.json` for
 `louiselm-launch prepare`; `launch` records `pending: launch` before starting the
 launcher and keeps its payload-free stderr in `evidence/launcher-SESSION.log`.
 A refused launch is never a certain no-op: the journal stays pending.
+An Agent `READY` token is not command readiness. Within the same original
+20-second launch deadline, the coordinator also waits for the broker to retain
+a fresh, unsuspended Certified current check for this exact Session and Run.
+Only then does it clear `pending: launch` and print `Running`. Missing or stale
+initial evidence causes read-only polling; invalid/suspended evidence or the
+deadline stops launch with its journal retained. This sends no command, spends
+no command use, and never substitutes admission history for current evidence,
+renews authority, resumes a Session, or retries a failed command.
 `status` uses authenticated operator reads, checks report bytes against immutable
 admission and saves bounded private typed evidence. It does not renew anything.
 `resume` explicitly reconnects the deterministic peer only after authenticated

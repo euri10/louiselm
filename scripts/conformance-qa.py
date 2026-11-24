@@ -394,6 +394,30 @@ def authorize(selection, manifest, journal, directory):
     return request
 
 
+def wait_current_conformance(request, deadline):
+    while time.monotonic() < deadline:
+        report = cli("louiselm-control", ["session", "conformance", request["session_id"], "--json"])
+        require(isinstance(report, dict) and report.get("session_id") == request["session_id"]
+                and report.get("run_id") == request["run_id"], "Conformance report mismatch")
+        if time.monotonic() >= deadline:
+            break
+        current = report.get("last_check")
+        if current is not None:
+            require(isinstance(current, dict), "Current conformance record is malformed")
+            check = current.get("check")
+            require(current.get("suspended") is False and isinstance(check, dict)
+                    and check.get("kind") == "current" and isinstance(check.get("evidence"), dict)
+                    and check["evidence"].get("status") == "certified",
+                    "Current conformance is invalid or suspended; inspect before continuing")
+            observed, success = current.get("observed_at_ms"), current.get("last_success_at_ms")
+            require(type(observed) is int and type(success) is int and observed > 0
+                    and success == observed, "Current conformance timestamps are malformed")
+            if 0 <= int(time.time() * 1000) - observed < 5000:
+                return
+        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+    raise ValueError("Current conformance was not ready before the original launch deadline; retain this Session")
+
+
 def launch(journal, directory, request):
     # Recorded before the effect: a refused or lost launch is never a certain no-op.
     journal.value["pending"] = "launch"
@@ -404,8 +428,12 @@ def launch(journal, directory, request):
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, bufsize=0)
     process.stdin.write(encoded(request) + b"\n" + b"READY\n")
     process.stdin.flush()
+    deadline = time.monotonic() + 20
     try:
-        require(read_line(process.stdout, time.monotonic() + 20) == b"READY", "QA launch was not acknowledged")
+        require(read_line(process.stdout, deadline) == b"READY", "QA launch was not acknowledged")
+        # READY proves Agent startup; the broker independently needs a fresh
+        # source observation before it may admit the first command.
+        wait_current_conformance(request, deadline)
     except ValueError as error:
         # The launcher's stderr is payload-free (typed SupervisorError); show its category.
         reason = log.read_bytes()[-1024:].decode(errors="replace").strip().splitlines()
