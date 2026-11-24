@@ -596,6 +596,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         neovim.0.kill().unwrap();
         neovim.0.wait().unwrap()
     } else {
+        if stock_operator {
+            stock::verify_rehearsal_refusal(config.operator_uid);
+        }
         command.status().unwrap()
     };
     if let Some(injector) = hold_injector {

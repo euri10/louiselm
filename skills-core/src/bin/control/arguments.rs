@@ -67,7 +67,7 @@ pub(super) fn command() -> Command {
             &["inspect", "reject", "cancel"],
             true,
         ))
-        .subcommand(group("run", &["authorize"], false))
+        .subcommand(group("run", &["authorize", "rehearse"], false))
         .subcommand(group("launch-inputs", &["stage"], false))
         .subcommand(Command::new("verification").arg(json()))
         .subcommand(Command::new("lifecycle").arg(json()))

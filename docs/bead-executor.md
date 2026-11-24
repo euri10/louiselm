@@ -220,6 +220,45 @@ invoking the caller. Provisioning code changes must be rebuilt into a reviewed
 signed release before installation; a development binary or fixture pass cannot
 stand in for that deployment.
 
+### Required rehearsal before paid dispatch
+
+Before **every** paid Run, require a passing rehearsal for the exact installed
+signed release digest, current boot, source snapshot, ordered selection and
+canonical tracker. A disposable-VM gate, an earlier boot or another release
+cannot satisfy this requirement.
+
+In the real guest, the operator runs the installed command:
+
+```sh
+/usr/local/lib/louiselm/current/bin/louiselm-control run rehearse --json
+```
+
+**Rehearsal is blocked by `louiselm-rrfgt`.** The command exits 1 and writes
+`louiselm.run-rehearsal/1` JSON on stderr with `status: refused`,
+`code: terminal_cleanup_unproven` and `blocker: louiselm-rrfgt`. It refuses
+before reading stdin, contacting the broker, reserving or consuming authority,
+starting a worker or making a Provider request. There is no selection argument,
+passing attestation or bypass flag while this safety prerequisite is unresolved.
+An older installed release may reject the command as unknown; that also leaves
+paid dispatch blocked. Do not install a development binary to get past it.
+
+The current launch transaction consumes authorization before workspace and
+tracker preparation. A failure there can leave no Launcher receipt. Case 11's
+healthy stock startup/disposal does not establish failure safety. The open
+design question decides whether and how that gap may be closed; rehearsal does
+not invent a terminal chain, recover an authorization or use paid Run authority.
+No worker is attempted on refusal, so there is no worker phase/code to report.
+Actual startup failures continue to use the normalized lfkw5.2 diagnostics above.
+
+The first-Run script below validates its private selection, then refuses paid
+dispatch until this requirement can be met. It cannot accept a fixture result,
+handwritten JSON or a stale success as evidence. Exact-binding execution,
+Nov 16 replica-build/Nov 23 startup rehearsal characterization, and item 7's
+maintainer acceptance remain open in `louiselm-a4r1d`; this refusal is not a
+successful rehearsal. Once unblocked, the implementation must invalidate a
+pass on changes to any binding above, keep TLS fixture trust out of production,
+and verify every consumed slot's signed terminal chain before reporting success.
+
 `scripts/bead-run.lua` is the concrete caller for a reviewed first Run of three
 to five Beads. In an interactive VM Neovim using the approved LouiseLM checkout,
 invoke it with a private selection file:
@@ -231,8 +270,9 @@ nvim --noplugin -u NONE --cmd 'set runtimepath^=/approved/louiselm' \
 ```
 
 The file must be operator-owned mode 0600 and at most 64KiB. Review it before
-invocation: starting it approves the exact envelope and admits the real capture
-ledger. No API key belongs in it. The closed `louiselm.operator.bead-run/1` object
+invocation: after the rehearsal blocker is resolved, starting it will approve the
+exact envelope and admit the real capture ledger. It currently refuses before
+either effect. No API key belongs in it. The closed `louiselm.operator.bead-run/1` object
 contains:
 
 - `envelope`: complete `RunEnvelope`, with a fresh UUID Run ID, exact sorted
@@ -354,7 +394,7 @@ for stock_case in 11 10; do
 done
 ```
 
-The guest must contain the current Rust build, `lua/`,
+The guest must contain the current Rust build, `lua/`, `scripts/bead-run.lua`,
 `tests/workflow/installed_beads.lua`, `tests/workflow/installed_operator.lua`,
 the real capture CLI, stable Neovim and SQLite. The VM provisioner
 includes SQLite; CI copies its stable Neovim distribution into the guest. The

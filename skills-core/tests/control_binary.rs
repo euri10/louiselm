@@ -17,6 +17,46 @@ use rustix::net::{
 };
 
 #[test]
+#[expect(
+    clippy::panic,
+    reason = "The watchdog reaps a stalled CLI before failing the fixture."
+)]
+fn rehearsal_refuses_without_installation_or_consuming_input() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
+        .args(["run", "rehearse", "--json"])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Keep stdin open: this refusal must precede even reading a selection.
+    let input = child.stdin.take().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("rehearsal waited for input before its safety refusal");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, [] as [u8; 0]);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stderr).unwrap(),
+        serde_json::json!({
+            "schema": "louiselm.run-rehearsal/1",
+            "status": "refused",
+            "code": "terminal_cleanup_unproven",
+            "blocker": "louiselm-rrfgt",
+        })
+    );
+}
+
+#[test]
 fn promotion_expiry_is_distinct_and_refusals_do_not_echo_private_input() {
     let directory = tempfile::TempDir::new().unwrap();
     let marker = directory.path().join("private-source.txt");

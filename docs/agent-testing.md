@@ -84,7 +84,11 @@ operator/capture and Enforced certification. Case 11 proves production-daemon
 startup and disposal before a prompt; case 10 uses the actual dispatcher with
 a test-only TLS root for six local requests, three reviewed promotions and six
 cryptographically verified terminal chains. No real credential or paid request
-is permitted. Keep unset/empty fixture coverage; do not replace it with the
+is permitted. Both stock cases also require the production rehearsal CLI to
+refuse before changing authorization state, and the shipped first-Run script
+to refuse the valid selection before dispatch (`louiselm-a4r1d`, blocked by
+`louiselm-rrfgt`). Refusal is not a passing rehearsal for any boot or release.
+Keep unset/empty fixture coverage; do not replace it with the
 stock variant. Provisioning and exact bounds are in the linked gate recipe.
 A skipped unprivileged Rust fixture is not installed acceptance.
 

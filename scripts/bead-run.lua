@@ -27,7 +27,13 @@ local controller, err = require("louiselm.workflow.operator").new(selection)
 if not controller then
   return refuse(err or "Run selection refused")
 end
-local buffer, view_error = require("louiselm.ui.bead_run").open(controller)
-if not buffer then
-  return refuse(view_error or "Run could not start")
+local disposed, dispose_error = controller:dispose()
+if not disposed then
+  return refuse(dispose_error or "Run selection could not be released")
 end
+-- louiselm-rrfgt blocks safe rehearsal of failures before the first receipt.
+-- No attestation can pass yet; keep this entrypoint before Run authorization.
+return refuse(
+  "Paid Run requires a passing rehearsal on this boot and release; blocked by louiselm-rrfgt. "
+    .. "Run louiselm-control run rehearse --json"
+)

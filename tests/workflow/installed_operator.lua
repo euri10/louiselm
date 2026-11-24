@@ -19,6 +19,17 @@ local summary
 local approvals, heads = 0, { selection.worktree.head }
 local stock = nvim.env.LOUISELM_TEST_STOCK_OPERATOR == "1"
 local startup_only = nvim.env.LOUISELM_TEST_STOCK_STARTUP_ONLY == "1"
+-- Exercise the shipped first-Run entrypoint with the same valid selection.
+-- A fixture pass is never a rehearsal attestation for this boot/release.
+local private_selection = nvim.env.XDG_STATE_HOME .. "/selection.json"
+nvim.fn.writefile({ nvim.json.encode(selection) }, private_selection)
+assert(nvim.fn.setfperm(private_selection, "rw-------") == 1)
+nvim.g.louiselm_bead_run_selection = private_selection
+local opened, refusal = pcall(nvim.api.nvim_exec2, "luafile scripts/bead-run.lua", { output = true })
+assert(not opened, "paid entrypoint did not refuse dispatch")
+assert(type(refusal) == "string" and refusal:find("Paid Run requires a passing rehearsal", 1, true), refusal)
+assert(refusal:find("louiselm-rrfgt", 1, true), refusal)
+assert(#require("louiselm.session").exit_verdict() == 0, "paid entrypoint started a Session")
 local attachment
 local started = nvim.uv.hrtime()
 local function progress(phase)

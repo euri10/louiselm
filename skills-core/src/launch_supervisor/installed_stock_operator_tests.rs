@@ -7,6 +7,7 @@ use crate::conformance::{
 };
 use crate::launch_transport::SeqpacketListener;
 use std::{
+    collections::BTreeMap,
     io::{Read, Write},
     sync::{
         Arc,
@@ -139,6 +140,56 @@ pub(super) fn provision_credential() {
     fs::write(&credential, b"fixture-secret").unwrap();
     chown(&credential, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+pub(super) fn verify_rehearsal_refusal(operator_uid: u32) {
+    let authorization_root = Path::new(STATE).join("authorizations");
+    let before = tree_bytes(&authorization_root);
+    let output = Command::new("/usr/bin/setpriv")
+        .args([
+            "--reuid",
+            &operator_uid.to_string(),
+            "--regid",
+            &operator_uid.to_string(),
+            "--clear-groups",
+        ])
+        .arg("/usr/local/lib/louiselm/current/bin/louiselm-control")
+        .args(["run", "rehearse", "--json"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, [] as [u8; 0]);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stderr).unwrap(),
+        serde_json::json!({
+            "schema": "louiselm.run-rehearsal/1",
+            "status": "refused",
+            "code": "terminal_cleanup_unproven",
+            "blocker": "louiselm-rrfgt",
+        })
+    );
+    assert_eq!(tree_bytes(&authorization_root), before);
+    assert_eq!(
+        fs::read_dir(Path::new(STATE).join("receipts/sessions"))
+            .unwrap()
+            .count(),
+        0
+    );
+    eprintln!("REHEARSAL refused before authority reservation/consumption; no receipts");
+}
+
+fn tree_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    for entry in fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(tree_bytes(&path));
+        } else {
+            files.insert(path.clone(), fs::read(path).unwrap());
+        }
+    }
+    files
 }
 
 pub(super) fn verify_run(

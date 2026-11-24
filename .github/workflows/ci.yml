@@ -323,7 +323,7 @@ jobs:
           version: stable
       - name: Run the installed Lua controller gate
         run: |
-          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/install-broker-beads.py scripts/install-broker-attention.py scripts/conformance-qa.py scripts/install-qa-runtime.py scripts/fetch-stock-codex-chain |
+          git archive HEAD lua tests/workflow/installed_beads.lua tests/workflow/installed_operator.lua tests/routing/installed_trial.lua scripts/bead-run.lua scripts/install-broker-beads.py scripts/install-broker-attention.py scripts/conformance-qa.py scripts/install-qa-runtime.py scripts/fetch-stock-codex-chain |
             ./scripts/launcher-vm exec tar -x -C /home/vm
           ./scripts/launcher-vm exec mkdir /var/tmp/louiselm-controller-source
           git archive HEAD | ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-controller-source
