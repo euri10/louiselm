@@ -76,6 +76,7 @@ local advance, next_bead
 ---@field on_progress? fun(progress: louiselm.workflow.BeadProgress) Payload-free phase updates on the main loop; suppressed after completion/disposal.
 ---@field session_api? louiselm.session.Api Testable Session boundary; owned Sessions always join this Run.
 ---@field system? fun(command: string[], options: table, callback: fun(result: table)): unknown Testable subprocess boundary.
+---@field prepared? { registration_id: string, revision: integer, selection_sha256: string } Exact owner-selected registration for phone-readable provenance.
 
 ---@class louiselm.workflow.BeadExecutor
 ---@field options louiselm.workflow.BeadExecutorOptions
@@ -1180,6 +1181,7 @@ function M.new(options)
         "on_progress",
         "session_api",
         "system",
+        "prepared",
       }, key)
     then
       return nil, "unknown Bead executor option: " .. tostring(key)
@@ -1226,6 +1228,10 @@ function M.new(options)
   if options.system ~= nil and type(options.system) ~= "function" then
     return nil, "system must be a function"
   end
+  local valid_prepared, prepared_error = Service.validate_prepared(options.prepared)
+  if not valid_prepared then
+    return nil, prepared_error
+  end
   if options.on_progress ~= nil and type(options.on_progress) ~= "function" then
     return nil, "on_progress must be a function"
   end
@@ -1257,6 +1263,7 @@ function M.new(options)
     envelope = nvim.deepcopy(envelope),
     draft = options.draft and nvim.deepcopy(options.draft),
     bead_ids = nvim.deepcopy(options.bead_ids),
+    prepared = options.prepared and nvim.deepcopy(options.prepared),
   })
   local manifest = {}
   for index in ipairs(owned.bead_ids) do
@@ -1359,11 +1366,12 @@ function Controller:start(callback)
         self.executor.ledger = ledger
         next_bead(self)
       end)
-      local started, err = Service.admit(
-        { id = self.options.envelope.run_id, generated_work_max = #self.options.bead_ids, park_ttl_ms = 3600000 },
-        admitted,
-        self.options.system
-      )
+      local started, err = Service.admit({
+        id = self.options.envelope.run_id,
+        generated_work_max = #self.options.bead_ids,
+        park_ttl_ms = 3600000,
+        prepared = self.options.prepared,
+      }, admitted, self.options.system)
       if not started then
         admitted(nil, err)
       end

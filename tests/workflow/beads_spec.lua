@@ -248,6 +248,15 @@ local function fixture()
         if f.wrong_digest and request then
           response.receipt.request_digest = DIGEST
         end
+      elseif argv[2] == "--require-interface=1" and argv[3] == "phone-control" then
+        response = {
+          v = 1,
+          type = "prepared_admitted",
+          run_id = f.wrong_prepared_run and "different" or f.options.envelope.run_id,
+          registration_id = f.options.prepared.registration_id,
+          revision = f.options.prepared.revision,
+          token = "private-ledger-token",
+        }
       else
         response = { token = "private-ledger-token" }
       end
@@ -315,6 +324,42 @@ end
 
 local function wait(predicate)
   MiniTest.expect.equality(nvim.wait(2000, predicate, 1), true)
+end
+
+T["prepared owner admission follows broker authorization before Session attachment"] = function()
+  local f = fixture()
+  f.options.prepared = { registration_id = string.rep("2", 32), revision = 3, selection_sha256 = string.rep("3", 64) }
+  f:start()
+  wait(function()
+    return f.workers[1] and f.workers[1].complete
+  end)
+  local broker, admission, attachment
+  for index, argv in ipairs(f.calls) do
+    if argv[1] == "louiselm-control" and argv[2] == "run" and not broker then
+      broker = index
+    end
+    if argv[3] == "phone-control" and argv[4] == "admit-prepared" then
+      admission = index
+    end
+    if argv[3] == "run" and argv[4] == "attach" then
+      attachment = index
+    end
+  end
+  assert(broker and admission and attachment and broker < admission and admission < attachment)
+  MiniTest.expect.equality(f.calls[admission][6], f.options.prepared.registration_id)
+end
+
+T["mismatched prepared owner admission never starts a Session"] = function()
+  local f = fixture()
+  f.options.prepared = { registration_id = string.rep("2", 32), revision = 3, selection_sha256 = string.rep("3", 64) }
+  f.wrong_prepared_run = true
+  f:start()
+  wait(function()
+    return f.finished > 0
+  end)
+  MiniTest.expect.equality(#f.workers, 0)
+  MiniTest.expect.equality(f.ok, false)
+  assert(f.error)
 end
 
 T["publication precedes finished worker disposal and promotion review"] = function()

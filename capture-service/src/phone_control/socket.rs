@@ -628,6 +628,8 @@ enum AdminRequest {
         registration_id: String,
         revision: u64,
         selection_sha256: String,
+        generated_work_max: u64,
+        park_ttl_ms: u64,
     },
     UnpublishPrepared {
         v: u64,
@@ -1065,9 +1067,17 @@ fn process_prepared_admin(owner: &PreparedOwner, request: AdminRequest) -> Resul
             registration_id,
             revision,
             selection_sha256,
+            generated_work_max,
+            park_ttl_ms,
             ..
         } => {
-            if revision == 0 || revision > MAX_INTEGER {
+            if revision == 0
+                || revision > MAX_INTEGER
+                || generated_work_max == 0
+                || generated_work_max > MAX_INTEGER
+                || park_ttl_ms == 0
+                || park_ttl_ms > MAX_INTEGER
+            {
                 return Err(Refusal::Malformed);
             }
             let token = uuid::Uuid::new_v4().to_string();
@@ -1075,6 +1085,8 @@ fn process_prepared_admin(owner: &PreparedOwner, request: AdminRequest) -> Resul
                 registration_id: &registration_id,
                 revision,
                 selection_sha256: &selection_sha256,
+                generated_work_max,
+                park_ttl_ms,
                 token: &token,
             };
             let run_id = owner
@@ -1419,7 +1431,8 @@ mod tests {
         let admission = exchange(
             &path,
             json!({"v":1,"type":"admit_prepared","capability":token,
-            "registration_id":"22".repeat(16),"revision":1,"selection_sha256":"33".repeat(32)}),
+            "registration_id":"22".repeat(16),"revision":1,"selection_sha256":"33".repeat(32),
+            "generated_work_max":3,"park_ttl_ms":3_600_000}),
         )
         .await;
         assert_eq!(admission["code"], "unsupported");
@@ -1514,8 +1527,10 @@ mod tests {
         let grants = root.path().join("grants/state");
         let authority = Arc::new(Authority::open(&grants, &"01".repeat(32)).unwrap());
         let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
-        let path = root.path().join("operator.sock");
-        let capability = root.path().join("operator-capability");
+        let path = root
+            .path()
+            .join("louiselm/workflow/phone-control-admin.sock");
+        let capability = root.path().join("louiselm/workflow/operator-capability");
         let server = super::AdminSocket::bind(&path, &capability, authority, pairing.clone())
             .await
             .unwrap();
@@ -1646,7 +1661,8 @@ mod tests {
         let admission_request = |capability: &str, digest: &str| {
             json!({"v":1,"type":"admit_prepared",
             "capability":capability,"registration_id":registration["registration_id"],
-            "revision":registration["revision"],"selection_sha256":digest})
+                "revision":registration["revision"],"selection_sha256":digest,
+                "generated_work_max":3,"park_ttl_ms":3_600_000})
         };
         assert_eq!(
             exchange(&path, admission_request("wrong", &selection_sha256)).await["code"],
@@ -1656,8 +1672,42 @@ mod tests {
             exchange(&path, admission_request(&token, &"00".repeat(32))).await["code"],
             "malformed"
         );
+        let mut wrong_limit = admission_request(&token, &selection_sha256);
+        wrong_limit["generated_work_max"] = 4.into();
+        assert_eq!(exchange(&path, wrong_limit).await["code"], "malformed");
         assert!(runs.run(run_id).is_err());
-        let admitted = exchange(&path, admission_request(&token, &selection_sha256)).await;
+        let admitted = if let Some(binary) = std::env::var_os("LOUISELM_TEST_CAPTURE") {
+            let state = root.path().to_path_buf();
+            let registration_id = registration["registration_id"].as_str().unwrap().to_owned();
+            let selection_sha256 = selection_sha256.clone();
+            tokio::task::spawn_blocking(move || {
+                let output = Command::new(binary)
+                    .args([
+                        "--require-interface=1",
+                        "phone-control",
+                        "admit-prepared",
+                        "--registration-id",
+                        &registration_id,
+                        "--revision",
+                        "1",
+                        "--selection-sha256",
+                        &selection_sha256,
+                        "--generated-work-max",
+                        "3",
+                        "--park-ttl-ms",
+                        "3600000",
+                    ])
+                    .env("LOUISELM_CAPTURE_STATE_DIR", state)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                serde_json::from_slice::<Value>(&output.stdout).unwrap()
+            })
+            .await
+            .unwrap()
+        } else {
+            exchange(&path, admission_request(&token, &selection_sha256)).await
+        };
         assert_eq!(admitted["type"], "prepared_admitted");
         assert_eq!(admitted["run_id"], run_id);
         assert!(uuid::Uuid::parse_str(admitted["token"].as_str().unwrap()).is_ok());

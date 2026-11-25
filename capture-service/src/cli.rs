@@ -404,8 +404,11 @@ fn phone_control_prepared_request(
             registration_id,
             revision,
             selection_sha256,
+            generated_work_max,
+            park_ttl_ms,
         } => (
-            serde_json::json!({"v":1,"type":"admit_prepared","capability":capability,"registration_id":registration_id,"revision":revision,"selection_sha256":selection_sha256}),
+            serde_json::json!({"v":1,"type":"admit_prepared","capability":capability,"registration_id":registration_id,
+                "revision":revision,"selection_sha256":selection_sha256,"generated_work_max":generated_work_max,"park_ttl_ms":park_ttl_ms}),
             "prepared_admitted",
         ),
         PhoneControl::UnpublishPrepared {

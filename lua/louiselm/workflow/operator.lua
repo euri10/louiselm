@@ -1,5 +1,6 @@
 ---Concrete operator preparation for a reviewed, finite VM Bead Run.
 local Workflow = require("louiselm.workflow")
+local Service = require("louiselm.workflow.service")
 ---@diagnostic disable-next-line: undefined-global -- Neovim runtime API.
 local nvim = vim
 local M = {}
@@ -20,6 +21,7 @@ local M = {}
 ---@field system? fun(command: string[], options: table, callback: fun(result: table)): unknown Async subprocess seam.
 ---@field session_api? louiselm.session.Api Session seam for deterministic tests.
 ---@field on_promotion? fun(preview: table, decide: fun(accepted: boolean?, error_message?: string)): louiselm.workflow.PromotionCancellation? Defaults to focused manual review; optional return cancels its UI.
+---@field prepared? { registration_id: string, revision: integer, selection_sha256: string } Exact owner-selected registration.
 
 local function digest(value)
   return type(value) == "string" and #value == 71 and value:match("^sha256:[0-9a-f]+$") ~= nil
@@ -60,11 +62,15 @@ local function validate(selection, options)
       "worktree",
     })
     or selection.schema ~= "louiselm.operator.bead-run/2"
-    or not closed(options, { "system", "session_api", "on_promotion" })
+    or not closed(options, { "system", "session_api", "on_promotion", "prepared" })
     or (options.system ~= nil and type(options.system) ~= "function")
     or (options.on_promotion ~= nil and type(options.on_promotion) ~= "function")
   then
     return nil, "invalid closed operator Run selection or options"
+  end
+  local valid_prepared, prepared_error = Service.validate_prepared(options.prepared)
+  if not valid_prepared then
+    return nil, prepared_error
   end
   local envelope, manifest, beads, worktree =
     selection.envelope, selection.manifest, selection.beads, selection.worktree
@@ -458,6 +464,7 @@ function M.new(selection, options)
     on_promotion = options.on_promotion or require("louiselm.ui.run_promotion").prompt,
     system = system,
     session_api = options.session_api,
+    prepared = options.prepared,
   })
   if not controller then
     return nil, construction_error

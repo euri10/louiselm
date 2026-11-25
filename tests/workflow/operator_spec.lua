@@ -150,6 +150,11 @@ T["opening a published revision constructs only a waiting controller"] = functio
   assert(controller, refusal)
   MiniTest.expect.equality(controller.status, "new")
   MiniTest.expect.equality(identity, { registration_id = registration, revision = 3, run_id = binding.run_id })
+  MiniTest.expect.equality(controller.options.prepared, {
+    registration_id = registration,
+    revision = 3,
+    selection_sha256 = nvim.fn.sha256(nvim.json.encode(f.selection)),
+  })
   MiniTest.expect.equality(#f.calls, 1)
   assert(pending:cancel())
   assert(controller:dispose())

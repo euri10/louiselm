@@ -47,6 +47,8 @@ pub(super) struct PreparedAdmission<'a> {
     pub(super) registration_id: &'a str,
     pub(super) revision: u64,
     pub(super) selection_sha256: &'a str,
+    pub(super) generated_work_max: u64,
+    pub(super) park_ttl_ms: u64,
     pub(super) token: &'a str,
 }
 
@@ -265,11 +267,15 @@ pub(super) fn admit_with(
     }
     let selection = parse_saved(&candidate, fs::metadata(&sources.root)?.uid())?;
     let binding = candidate.binding.clone();
+    let generated_work_max = u64::try_from(selection.bead_count())
+        .map_err(|_| OwnerPreparedError::Invalid("too many Beads"))?;
+    if request.generated_work_max != generated_work_max || request.park_ttl_ms != 3_600_000 {
+        return Err(OwnerPreparedError::Invalid("Run accounting limits differ"));
+    }
     let admission = RunAdmission {
         id: binding.run_id.clone(),
-        generated_work_ceiling: u64::try_from(selection.bead_count())
-            .map_err(|_| OwnerPreparedError::Invalid("too many Beads"))?,
-        park_ttl_ms: 3_600_000,
+        generated_work_ceiling: generated_work_max,
+        park_ttl_ms: request.park_ttl_ms,
     };
     sources.with_current_checkout_by(
         &binding.run_id,

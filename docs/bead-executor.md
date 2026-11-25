@@ -343,7 +343,11 @@ be installed. This opens the exact published revision without starting,
 authorizing, allocating Sessions, or consuming a limit; closing the view
 disposes the controller. The waiting view is currently local only: it does not
 register a phone controller or offer Start. A later Start must independently
-perform the normal readiness, rehearsal and broker checks.
+perform the normal readiness, rehearsal and broker checks. The controller
+retains the exact registration revision and selection digest; if an authorized
+caller later starts it, owner-bound Run accounting is admitted after broker
+authorization and before the first Session attachment. Admission refuses a
+changed or unpublished registration and never replaces those native checks.
 
 `scripts/bead-run.lua` is the concrete caller for a reviewed first Run of three
 to five Beads. In an interactive VM Neovim using the approved LouiseLM checkout,

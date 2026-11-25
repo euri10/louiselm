@@ -167,10 +167,10 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   operator to construct a waiting controller; it does not start a Run, register
   a live controller, approve access, or guarantee the checkout is still clean.
   Any later Start must independently recheck the selection and native authority.
-- `{v:1,type:"admit_prepared",capability:string,registration_id:hex16,revision:integer,selection_sha256:hex32}`
+- `{v:1,type:"admit_prepared",capability:string,registration_id:hex16,revision:integer,selection_sha256:hex32,generated_work_max:integer,park_ttl_ms:integer}`
   returns `{v:1,type:"prepared_admitted",registration_id:hex16,revision:integer,run_id:uuid,token:string}`
   only for the exact current publication and selection bytes after rechecking
-  the source and clean checkout. It durably binds that unused Run UUID to the
+  the source and clean checkout and matching accounting limits. It durably binds that unused Run UUID to the
   original project, source, checkout and configured Agent before attachment,
   while serialized with unpublication. The local-only token is sensitive. This
   records generated-work accounting, not broker approval, execution, a Session,

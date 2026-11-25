@@ -40,6 +40,8 @@ fn admission<'a>(id: &'a str, revision: u64, digest: &'a str) -> PreparedAdmissi
         registration_id: id,
         revision,
         selection_sha256: digest,
+        generated_work_max: 3,
+        park_ttl_ms: 3_600_000,
         token: "generate-token-1234",
     }
 }
@@ -75,6 +77,12 @@ fn explicit_owner_admission_binds_exact_published_revision_before_attachment() {
         .is_err()
     );
     assert!(runs.run(RUN).is_err());
+    let mut wrong_limits = admission(&first.id, first.revision, &digest);
+    wrong_limits.generated_work_max = 4;
+    assert!(admit_with(&sources, &prepared, &runs, &wrong_limits, |_| Ok(())).is_err());
+    wrong_limits.generated_work_max = 3;
+    wrong_limits.park_ttl_ms = 1;
+    assert!(admit_with(&sources, &prepared, &runs, &wrong_limits, |_| Ok(())).is_err());
     assert!(
         admit_with(
             &sources,

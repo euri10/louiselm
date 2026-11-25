@@ -178,7 +178,14 @@ function M.open_registered(registration_id, revision, callback, options)
           callback(nil, nil, "registered Run identity is invalid")
           return
         end
-        local constructed, controller, err = pcall(Operator.new, selection, options)
+        local controller_options = nvim.tbl_extend("force", {}, options, {
+          prepared = {
+            registration_id = registration_id,
+            revision = revision,
+            selection_sha256 = nvim.fn.sha256(response.selection),
+          },
+        })
+        local constructed, controller, err = pcall(Operator.new, selection, controller_options)
         if not constructed or not controller then
           callback(
             nil,

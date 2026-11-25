@@ -75,6 +75,7 @@ end
 ---@field id string
 ---@field generated_work_max integer
 ---@field park_ttl_ms integer
+---@field prepared? { registration_id: string, revision: integer, selection_sha256: string } Exact owner-selected snapshot; never an Agent capability.
 
 ---@class louiselm.workflow.RunSessionRecord
 ---@field id string
@@ -83,6 +84,38 @@ end
 ---@field acp_session_id string
 ---@field cwd string
 ---@field load_session boolean
+
+---Validate an optional exact owner-selected registration without side effects.
+---@param prepared unknown
+---@return boolean valid
+---@return string? error_message
+function M.validate_prepared(prepared)
+  if prepared == nil then
+    return true
+  end
+  if
+    type(prepared) ~= "table"
+    or type(prepared.registration_id) ~= "string"
+    or #prepared.registration_id ~= 32
+    or prepared.registration_id == string.rep("0", 32)
+    or prepared.registration_id:match("^[0-9a-f]+$") == nil
+    or type(prepared.revision) ~= "number"
+    or prepared.revision < 1
+    or prepared.revision > 9007199254740991
+    or prepared.revision % 1 ~= 0
+    or type(prepared.selection_sha256) ~= "string"
+    or #prepared.selection_sha256 ~= 64
+    or prepared.selection_sha256:match("^[0-9a-f]+$") == nil
+  then
+    return false, "prepared Run identity is invalid"
+  end
+  for key in pairs(prepared) do
+    if not nvim.tbl_contains({ "registration_id", "revision", "selection_sha256" }, key) then
+      return false, "prepared Run identity is invalid"
+    end
+  end
+  return true
+end
 
 ---Persist one admitted Run before any stage can generate work.
 ---@param record louiselm.workflow.RunAdmissionRecord
@@ -102,24 +135,65 @@ function M.admit(record, callback, system)
   if type(park_ttl) ~= "number" or park_ttl < 1 or park_ttl % 1 ~= 0 then
     return false, "Run admission park_ttl_ms must be a positive integer"
   end
+  local prepared = record.prepared
+  local valid, validation_error = M.validate_prepared(prepared)
+  if not valid then
+    return false, validation_error
+  end
+  if prepared ~= nil then
+    prepared = nvim.deepcopy(prepared)
+  end
+  local requested_id = record.id
   system = system or nvim.system
-  local command = {
-    "louiselm-capture",
-    "--require-interface=1",
-    "run",
-    "admit",
-    "--id",
-    record.id,
-    "--generated-work-max",
-    tostring(maximum),
-    "--park-ttl-ms",
-    tostring(park_ttl),
-  }
-  local started = pcall(system, command, { text = true }, function(result)
+  local command = prepared
+      and {
+        "louiselm-capture",
+        "--require-interface=1",
+        "phone-control",
+        "admit-prepared",
+        "--registration-id",
+        prepared.registration_id,
+        "--revision",
+        tostring(prepared.revision),
+        "--selection-sha256",
+        prepared.selection_sha256,
+        "--generated-work-max",
+        tostring(maximum),
+        "--park-ttl-ms",
+        tostring(park_ttl),
+      }
+    or {
+      "louiselm-capture",
+      "--require-interface=1",
+      "run",
+      "admit",
+      "--id",
+      record.id,
+      "--generated-work-max",
+      tostring(maximum),
+      "--park-ttl-ms",
+      tostring(park_ttl),
+    }
+  local started, spawn_error = pcall(system, command, { text = true }, function(result)
     nvim.schedule(function()
       if result.code == 0 then
         local ok, response = pcall(nvim.json.decode, result.stdout)
-        if ok and type(response) == "table" and type(response.token) == "string" and response.token ~= "" then
+        if
+          ok
+          and type(response) == "table"
+          and type(response.token) == "string"
+          and response.token ~= ""
+          and (
+            prepared == nil
+            or (
+              response.v == 1
+              and response.type == "prepared_admitted"
+              and response.run_id == requested_id
+              and response.registration_id == prepared.registration_id
+              and response.revision == prepared.revision
+            )
+          )
+        then
           callback(response.token)
         else
           callback(nil, "Run admission service returned invalid data")
@@ -130,7 +204,7 @@ function M.admit(record, callback, system)
     end)
   end)
   if not started then
-    return false, "could not start Run admission command"
+    return false, "could not start Run admission command: " .. tostring(spawn_error)
   end
   return true
 end

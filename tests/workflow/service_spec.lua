@@ -62,6 +62,97 @@ T["starts the constrained Run admission command"] = function()
   MiniTest.expect.equality(callback, { "run-token", nil })
 end
 
+T["admits an exact prepared registration through the owner boundary"] = function()
+  local id = "11111111-1111-4111-8111-111111111111"
+  local registration = string.rep("2", 32)
+  local digest = string.rep("3", 64)
+  local command, result
+  assert(Service.admit({
+    id = id,
+    generated_work_max = 3,
+    park_ttl_ms = 3600000,
+    prepared = { registration_id = registration, revision = 4, selection_sha256 = digest },
+  }, function(token, err)
+    result = { token = token, err = err }
+  end, function(argv, _, done)
+    command = argv
+    done({
+      code = 0,
+      stderr = "",
+      stdout = nvim.json.encode({
+        v = 1,
+        type = "prepared_admitted",
+        run_id = id,
+        registration_id = registration,
+        revision = 4,
+        token = "run-token",
+      }),
+    })
+    return true
+  end))
+  assert(nvim.wait(1000, function()
+    return result ~= nil
+  end))
+  MiniTest.expect.equality(result.token, "run-token")
+  MiniTest.expect.equality(command, {
+    "louiselm-capture",
+    "--require-interface=1",
+    "phone-control",
+    "admit-prepared",
+    "--registration-id",
+    registration,
+    "--revision",
+    "4",
+    "--selection-sha256",
+    digest,
+    "--generated-work-max",
+    "3",
+    "--park-ttl-ms",
+    "3600000",
+  })
+end
+
+T["prepared admission refuses malformed inputs and mismatched owner replies"] = function()
+  local id = "11111111-1111-4111-8111-111111111111"
+  local registration = string.rep("2", 32)
+  local digest = string.rep("3", 64)
+  local calls = 0
+  local bad = {
+    id = id,
+    generated_work_max = 3,
+    park_ttl_ms = 3600000,
+    prepared = { registration_id = registration, revision = 1, selection_sha256 = "bad" },
+  }
+  local ok = Service.admit(bad, function() end, function()
+    calls = calls + 1
+    return true
+  end)
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(calls, 0)
+  for _, change in ipairs({ "run_id", "registration_id", "revision", "type" }) do
+    local response =
+      { v = 1, type = "prepared_admitted", run_id = id, registration_id = registration, revision = 1, token = "token" }
+    response[change] = change == "revision" and 2 or "different"
+    local result
+    assert(Service.admit({
+      id = id,
+      generated_work_max = 3,
+      park_ttl_ms = 3600000,
+      prepared = { registration_id = registration, revision = 1, selection_sha256 = digest },
+    }, function(token, err)
+      result = { token = token, err = err }
+    end, function(_, _, done)
+      done({ code = 0, stderr = "", stdout = nvim.json.encode(response) })
+      return true
+    end))
+    assert(nvim.wait(1000, function()
+      return result ~= nil
+    end))
+    MiniTest.expect.equality(result.token, nil)
+    assert(result.err)
+  end
+end
+
 T["starts the constrained Session attachment command"] = function()
   local command
   assert(Service.attach({

@@ -121,6 +121,10 @@ pub(super) enum PhoneControl {
         revision: u64,
         #[arg(long)]
         selection_sha256: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        generated_work_max: u64,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        park_ttl_ms: u64,
     },
     /// Remove one exact revision from phone discovery without deleting it.
     UnpublishPrepared {

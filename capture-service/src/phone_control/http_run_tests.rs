@@ -116,6 +116,8 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         registration_id: &saved.id,
         revision: saved.revision,
         selection_sha256: &digest,
+        generated_work_max: 3,
+        park_ttl_ms: 3_600_000,
         token: "generate-token-1234",
     };
     admit_with(&sources, &prepared, &runs, &admission, |_| Ok(())).unwrap();
@@ -211,6 +213,24 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         ),
         Err(super::Refusal::Unauthenticated)
     );
+    let prepared_list = signed_run(
+        &fixture,
+        &grant,
+        &period,
+        52,
+        &"00".repeat(16),
+        &[0; 16],
+        0,
+        911,
+    );
+    let (_, prepared_list) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &prepared_list.to_string(),
+    )
+    .await;
+    assert_eq!(prepared_list["items"], json!([]));
     let list = signed_run(
         &fixture,
         &grant,
