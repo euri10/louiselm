@@ -419,6 +419,45 @@ fun(page?: louiselm.session.HistoryPage, error_code?: string)
 - `transcript: louiselm.session.Transcript`
 - `transcript_entries: table<louiselm.session.TranscriptEntry, table>` -- Timeline entries keyed by their owner-held transcript entry.
 
+### louiselm.session.TranscriptEntryKind
+
+```lua
+louiselm.session.TranscriptEntryKind:
+    | "user"
+    | "assistant"
+    | "reasoning"
+    | "tool_call"
+    | "compaction"
+```
+
+### louiselm.session.TranscriptEntry
+
+- `compaction: (louiselm.session.Compaction)?` -- Complete compaction snapshot at its first-seen position.
+- `handoff_source_session_id: string?` -- Source Session identity for a Handoff user entry.
+- `id: string?` -- ACP tool call id for a "tool_call" entry.
+- `kind: "assistant"|"compaction"|"reasoning"|"tool_call"|"user"`
+- `raw: table?` -- Every field seen across this tool call's ACP notifications.
+- `retain_from: integer?` -- Earliest entry retained alongside this summary; fixed on first sight.
+- `text: string?` -- Accumulated text for a "user", "assistant", or "reasoning" entry.
+
+### louiselm.session.TranscriptIdentity
+
+```lua
+{ id: string, agent: string, acp_session_id: string|nil }
+```
+
+### louiselm.session.Transcript
+
+- `break_text: boolean` -- A structured interaction separates adjacent text blocks.
+- `dispatched: table<string|number, louiselm.session.TranscriptEntry>` -- Dispatched prompts indexed for Handoff provenance.
+- `entries: louiselm.session.TranscriptEntry[]` -- Recorded blocks, in arrival order.
+- `mark_handoff: fun(self: louiselm.session.Transcript, turn_id: string|number, source_session_id: string)` -- Attach Handoff provenance to an already-dispatched prompt.
+- `open_tool_calls: table<string, louiselm.session.TranscriptEntry>` -- Tool calls awaiting a terminal status, by ACP tool call id.
+- `record: fun(self: louiselm.session.Transcript, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))` -- Ingest one session event.
+- `record_handoff: fun(self: louiselm.session.Transcript, text: string, source_session_id: string)` -- Record a Handoff prompt and its source Session.
+- `record_user: fun(self: louiselm.session.Transcript, text: string)` -- Record a live, client-submitted prompt.
+- `snapshot: fun(self: louiselm.session.Transcript):louiselm.session.TranscriptEntry[]` -- Copy of recorded entries in order.
+
 ### louiselm.session.DiscoveryOptions
 
 - `cwd: string?` -- Exact ACP workspace filter; omit to discover every workspace.

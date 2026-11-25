@@ -23,6 +23,7 @@ M.SECTIONS = {
       "lua/louiselm/session/init.lua",
       "lua/louiselm/session/lifecycle.lua",
       "lua/louiselm/session/history.lua",
+      "lua/louiselm/session/transcript.lua",
       "lua/louiselm/session/registry.lua",
       "lua/louiselm/session/limits.lua",
       "lua/louiselm/session/validation.lua",

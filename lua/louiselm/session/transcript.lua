@@ -46,7 +46,7 @@
 ---@field compaction? louiselm.session.Compaction Complete compaction snapshot at its first-seen position.
 ---@field retain_from? integer Earliest entry retained alongside this summary; fixed on first sight.
 
----@alias louiselm.session.TranscriptIdentity { id: string, agent: string, acp_session_id?: string }
+---@alias louiselm.session.TranscriptIdentity { id: string, agent: string, acp_session_id: string|nil }
 
 ---@class louiselm.session.Transcript
 ---@field entries louiselm.session.TranscriptEntry[] Recorded blocks, in arrival order.
