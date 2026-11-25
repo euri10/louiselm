@@ -250,8 +250,11 @@ async fn phone_control_admin_stream(
     command: PhoneControl,
     stream: tokio::net::UnixStream,
 ) -> Result<serde_json::Value, CliError> {
-    let timeout = if matches!(&command, PhoneControl::FreezeRunSource { .. }) {
-        std::time::Duration::from_secs(135)
+    let timeout = if matches!(
+        &command,
+        PhoneControl::FreezeRunSource { .. } | PhoneControl::PrepareRunCheckout { .. }
+    ) {
+        std::time::Duration::from_secs(195)
     } else {
         std::time::Duration::from_secs(5)
     };
@@ -278,6 +281,19 @@ fn phone_control_admin_request(
     capability: &str,
 ) -> Result<(serde_json::Value, &'static str), CliError> {
     Ok(match command {
+        PhoneControl::PrepareRunCheckout {
+            run_id,
+            source_id,
+            checkout,
+        } => (
+            serde_json::json!({"v":1,"type":"prepare_run_checkout","capability":capability,
+                "run_id":run_id,"source_id":source_id,"checkout":checkout}),
+            "run_checkout",
+        ),
+        PhoneControl::InspectRunCheckout { run_id } => (
+            serde_json::json!({"v":1,"type":"inspect_run_checkout","capability":capability,"run_id":run_id}),
+            "run_checkout",
+        ),
         PhoneControl::FreezeRunSource {
             project_id,
             run_id,
@@ -331,6 +347,15 @@ fn phone_control_admin_request(
                 "scope_digest":scope_digest,"project_id":project_id}),
             "legacy_project_confirmed",
         ),
+        enrollment => return phone_control_enrollment_request(enrollment, capability),
+    })
+}
+
+fn phone_control_enrollment_request(
+    command: PhoneControl,
+    capability: &str,
+) -> Result<(serde_json::Value, &'static str), CliError> {
+    Ok(match command {
         PhoneControl::Start { device_id } => (
             serde_json::json!({"v":1,"type":"start","capability":capability,"device_id":device_id}),
             "enrollment_started",
@@ -369,7 +394,7 @@ fn phone_control_admin_request(
             serde_json::json!({"v":1,"type":"forget","capability":capability,"device_id":device_id}),
             "forgotten",
         ),
-        PhoneControl::Verify | PhoneControl::OwnerJournal => {
+        _ => {
             return Err(CliError::Invalid(
                 "expected an administration command".into(),
             ));

@@ -10,7 +10,9 @@ use std::{os::unix::fs::PermissionsExt, path::Path};
 
 use sha2::{Digest, Sha256};
 
-use super::source::{PhoneSourceError, PhoneSourceStore, SourcePreview, run_skills};
+use super::source::{
+    PhoneSourceError, PhoneSourceStore, SourcePreview, read_bounded, run_skills, run_trusted,
+};
 use crate::{PhoneProjectStore, hex::lower_hex};
 
 const RUN: &str = "11111111-1111-4111-8111-111111111111";
@@ -157,6 +159,32 @@ fn a_nonprivate_frozen_snapshot_is_not_recorded() {
 }
 
 #[test]
+fn a_snapshot_parent_that_becomes_writable_by_others_is_refused() {
+    let temporary = private_temp();
+    let project = temporary.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let projects = PhoneProjectStore::open(temporary.path().join("projects")).unwrap();
+    let root = projects.register_root(&project).unwrap();
+    let project_id = projects.register_project(&project, &[root]).unwrap();
+    let store = PhoneSourceStore::open(temporary.path().join("sources")).unwrap();
+    let result = store.freeze_with(
+        &projects,
+        &project_id,
+        RUN,
+        &temporary.path().join("snapshot"),
+        &[],
+        |path, output, includes| {
+            let preview = frozen(path, output, includes)?;
+            std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(0o777))?;
+            Ok(preview)
+        },
+    );
+    std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.is_err());
+    assert!(store.read(RUN).is_err());
+}
+
+#[test]
 fn damaged_retained_proof_is_not_accepted() {
     let temporary = private_temp();
     let project = temporary.path().join("project");
@@ -260,6 +288,17 @@ fn missing_skills_integration_is_explicitly_unsupported() {
         ),
         Err(PhoneSourceError::Unsupported)
     ));
+}
+
+#[test]
+fn trusted_process_output_is_bounded_and_oversize_is_refused() {
+    assert_eq!(read_bounded(std::io::repeat(b'x'), 64).unwrap().len(), 65);
+    let executable = Path::new("/usr/bin/printf");
+    assert_eq!(
+        run_trusted(executable, &["%s".into(), "ok".into()], "10s", 8).unwrap(),
+        b"ok"
+    );
+    assert!(run_trusted(executable, &["%0100000d".into(), "0".into()], "10s", 64).is_err());
 }
 
 #[test]

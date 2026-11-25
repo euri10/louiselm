@@ -585,6 +585,18 @@ impl AdminSocket {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum AdminRequest {
+    PrepareRunCheckout {
+        v: u64,
+        capability: String,
+        run_id: String,
+        source_id: String,
+        checkout: String,
+    },
+    InspectRunCheckout {
+        v: u64,
+        capability: String,
+        run_id: String,
+    },
     FreezeRunSource {
         v: u64,
         capability: String,
@@ -687,7 +699,9 @@ impl AdminRequest {
 
     fn common(&self) -> (u64, &str, Option<&str>) {
         match self {
-            Self::FreezeRunSource { v, capability, .. }
+            Self::PrepareRunCheckout { v, capability, .. }
+            | Self::InspectRunCheckout { v, capability, .. }
+            | Self::FreezeRunSource { v, capability, .. }
             | Self::InspectRunSource { v, capability, .. }
             | Self::Projects { v, capability, .. }
             | Self::ProjectRoots { v, capability, .. }
@@ -826,7 +840,9 @@ fn process_admin(
         return Err(Refusal::Unauthenticated);
     }
     match request {
-        request @ (AdminRequest::FreezeRunSource { .. }
+        request @ (AdminRequest::PrepareRunCheckout { .. }
+        | AdminRequest::InspectRunCheckout { .. }
+        | AdminRequest::FreezeRunSource { .. }
         | AdminRequest::InspectRunSource { .. }
         | AdminRequest::Projects { .. }
         | AdminRequest::ProjectRoots { .. }
@@ -906,6 +922,19 @@ fn process_project_admin(
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
     match request {
+        AdminRequest::PrepareRunCheckout {
+            run_id,
+            source_id,
+            checkout,
+            ..
+        } => {
+            let proof = authority.prepare_run_checkout(&run_id, &source_id, &checkout)?;
+            Ok(checkout_result(&proof))
+        }
+        AdminRequest::InspectRunCheckout { run_id, .. } => {
+            let proof = authority.inspect_run_checkout(&run_id)?;
+            Ok(checkout_result(&proof))
+        }
         AdminRequest::FreezeRunSource {
             project_id,
             run_id,
@@ -983,6 +1012,12 @@ fn source_result(proof: &super::source::SourceProof) -> Value {
     json!({"v":1,"type":"run_source","run_id":proof.run_id,"project_id":proof.project_id,
         "source_id":proof.source_id,"snapshot_digest":proof.snapshot_digest,
         "base_digest":proof.base_digest,"base_commit":proof.base_commit})
+}
+
+fn checkout_result(proof: &super::source_checkout::CheckoutProof) -> Value {
+    json!({"v":1,"type":"run_checkout","run_id":proof.run_id,"project_id":proof.project_id,
+        "source_id":proof.source_id,"checkout_id":proof.checkout_id,
+        "snapshot_digest":proof.snapshot_digest,"head":proof.head,"reviewed":proof.reviewed})
 }
 
 #[cfg(test)]
@@ -1141,8 +1176,57 @@ mod tests {
         assert_eq!(absent["code"], "unavailable");
     }
 
+    async fn assert_checkout_admin(
+        path: &std::path::Path,
+        root: &std::path::Path,
+        token: &str,
+        source: &Value,
+    ) -> Value {
+        let request = |capability: &str, source_id: &Value, checkout: &std::path::Path| {
+            json!({
+                "v":1,"type":"prepare_run_checkout","capability":capability,
+                "run_id":source["run_id"],"source_id":source_id,"checkout":checkout.to_str().unwrap()
+            })
+        };
+        let denied = exchange(
+            path,
+            request("wrong", &source["source_id"], &root.join("checkout")),
+        )
+        .await;
+        assert_eq!(denied["code"], "unauthenticated");
+        let stale = exchange(
+            path,
+            request(token, &json!("ff".repeat(16)), &root.join("checkout")),
+        )
+        .await;
+        assert_eq!(stale["code"], "stale_subject");
+        let checkout = exchange(
+            path,
+            request(token, &source["source_id"], &root.join("checkout")),
+        )
+        .await;
+        assert_eq!(checkout["type"], "run_checkout");
+        assert_eq!(checkout["source_id"], source["source_id"]);
+        assert_eq!(checkout["reviewed"], false);
+        assert_eq!(
+            std::fs::read(root.join("checkout/source")).unwrap(),
+            b"original"
+        );
+        let duplicate = exchange(
+            path,
+            request(token, &source["source_id"], &root.join("other-checkout")),
+        )
+        .await;
+        assert_eq!(duplicate["code"], "stale_subject");
+        checkout
+    }
+
     #[tokio::test]
     #[ignore = "requires the optional root-owned installed skills integration"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end owner lifecycle verifies source and checkout across restarts"
+    )]
     async fn operator_source_freeze_survives_project_removal_and_restart() {
         use std::{os::unix::fs::PermissionsExt, process::Command};
 
@@ -1229,6 +1313,22 @@ mod tests {
         )
         .await;
         assert_eq!(restored, frozen);
+        let checkout = assert_checkout_admin(&path, root.path(), &token, &restored).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let authority = Arc::new(Authority::open(&grants, &"01".repeat(32)).unwrap());
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
+            .await
+            .unwrap();
+        let task = tokio::spawn(server.serve());
+        let restored_checkout = exchange(
+            &path,
+            json!({"v":1,"type":"inspect_run_checkout",
+            "capability":token,"run_id":run_id}),
+        )
+        .await;
+        assert_eq!(restored_checkout, checkout);
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
     }

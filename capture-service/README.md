@@ -86,6 +86,8 @@ phone-control register-project --path /absolute/project --root-id HEX16
 phone-control link-project-roots --project-id HEX16 --root-id HEX16
 phone-control freeze-run-source --project-id HEX16 --run-id UUID --snapshot /private/new-snapshot [--include relative-file]
 phone-control inspect-run-source --run-id UUID
+phone-control prepare-run-checkout --run-id UUID --source-id HEX16 --checkout /private/new-checkout
+phone-control inspect-run-checkout --run-id UUID
 phone-control inspect-grant --device-id DEVICE_UUID
 phone-control confirm-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16
 phone-control disable --device-id DEVICE_UUID
@@ -122,6 +124,12 @@ inspect the original Run source and output before retrying; never reuse an
 existing Run or infer a binding from the snapshot path. This source proof alone
 does not establish a reviewed checkout, publish a draft, admit a Run, or grant
 phone access.
+`prepare-run-checkout` materializes that exact frozen snapshot into a new
+independent checkout on `run/UUID`, retaining its identity and initial HEAD.
+It remains explicitly unreviewed: the operator must review the exact checkout
+and selection before any later publication. Inspection after restart reports
+the retained creation record, not whether the checkout is still present or
+unchanged. An uncertain result must be inspected before trying again.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver

@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use super::source::{PhoneSourceError, PhoneSourceStore, SourceProof};
+use super::source_checkout::CheckoutProof;
 use super::{
     ActionEvidence, ActionEvidenceStore, Frame, GrantRecord, HistoryQuery, MAX_FRAME, MAX_INTEGER,
     PeriodRecord, PhoneControlError, Proof, Request, fixed, key, validate_history_request_shape,
@@ -236,6 +237,23 @@ impl Authority {
 
     pub(super) fn inspect_run_source(&self, run_id: &str) -> Result<SourceProof, Refusal> {
         self.source_store()?.read(run_id).map_err(source_refusal)
+    }
+
+    pub(super) fn prepare_run_checkout(
+        &self,
+        run_id: &str,
+        source_id: &str,
+        output: &str,
+    ) -> Result<CheckoutProof, Refusal> {
+        self.source_store()?
+            .prepare_checkout(run_id, source_id, Path::new(output))
+            .map_err(source_refusal)
+    }
+
+    pub(super) fn inspect_run_checkout(&self, run_id: &str) -> Result<CheckoutProof, Refusal> {
+        self.source_store()?
+            .read_checkout(run_id)
+            .map_err(source_refusal)
     }
 
     pub(super) fn project_roots(&self, after: &str) -> Result<PhoneProjectRootPage, Refusal> {
@@ -1130,10 +1148,13 @@ fn project_refusal(error: &PhoneProjectError) -> Refusal {
 fn source_refusal(error: PhoneSourceError) -> Refusal {
     match error {
         PhoneSourceError::Unsupported => Refusal::Unsupported,
-        PhoneSourceError::Conflict => Refusal::StaleSubject,
+        PhoneSourceError::Conflict | PhoneSourceError::Invalid("source identity is stale") => {
+            Refusal::StaleSubject
+        }
         PhoneSourceError::Invalid(
             "Run UUID is not canonical"
             | "invalid selected source inputs"
+            | "invalid source identity"
             | "snapshot path must be absolute",
         ) => Refusal::Malformed,
         PhoneSourceError::Project(error) => project_refusal(&error),

@@ -98,6 +98,20 @@ pub(super) enum PhoneControl {
         #[arg(long)]
         run_id: String,
     },
+    /// Materialize a separate, still-unreviewed checkout from the exact freeze.
+    PrepareRunCheckout {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        source_id: String,
+        #[arg(long)]
+        checkout: String,
+    },
+    /// Inspect the retained checkout creation proof.
+    InspectRunCheckout {
+        #[arg(long)]
+        run_id: String,
+    },
     /// List retained private root identities for desktop approval.
     ProjectRoots {
         #[arg(long, default_value = "")]

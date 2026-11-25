@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeSet,
+    ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     os::unix::fs::MetadataExt,
@@ -44,6 +45,7 @@ pub(super) enum PhoneSourceError {
     Project(#[from] PhoneProjectError),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SourcePreview {
     pub(super) snapshot_digest: String,
     pub(super) base_digest: String,
@@ -77,7 +79,7 @@ pub(super) struct SourceProof {
     pub(super) run_id: String,
     pub(super) project_id: String,
     pub(super) source_id: String,
-    snapshot: Directory,
+    pub(super) snapshot: Directory,
     pub(super) snapshot_digest: String,
     pub(super) base_digest: String,
     pub(super) base_commit: String,
@@ -87,7 +89,7 @@ pub(super) struct SourceProof {
 /// Private source records only establish an owner-observed freeze event.
 /// A separate checkout review, Run admission, and current phone scope are required.
 pub(super) struct PhoneSourceStore {
-    root: PathBuf,
+    pub(super) root: PathBuf,
 }
 
 impl PhoneSourceStore {
@@ -157,13 +159,12 @@ impl PhoneSourceStore {
             let project = projects.check_current_project(project_id)?;
             let (output, parent) = self.private_output(output)?;
             let preview = freeze(&project, &output, includes)?;
-            if projects.check_current_project(project_id)? != project
-                || directory(Path::new(&parent.path))? != parent
-            {
+            if projects.check_current_project(project_id)? != project {
                 return Err(PhoneSourceError::Invalid(
                     "selected source identity changed",
                 ));
             }
+            self.check_parent(&parent)?;
             if !fs::symlink_metadata(&output)?.file_type().is_dir() {
                 return Err(PhoneSourceError::Invalid("snapshot output was replaced"));
             }
@@ -173,7 +174,6 @@ impl PhoneSourceStore {
             }
             verify_snapshot(&snapshot, &preview, fs::metadata(&self.root)?.uid())?;
             if projects.check_current_project(project_id)? != project
-                || directory(Path::new(&parent.path))? != parent
                 || !fs::symlink_metadata(&output)?.file_type().is_dir()
                 || directory(&output)? != snapshot
             {
@@ -181,6 +181,7 @@ impl PhoneSourceStore {
                     "selected source identity changed",
                 ));
             }
+            self.check_parent(&parent)?;
             let mut proof = SourceProof {
                 schema: SCHEMA.into(),
                 run_id: run_id.into(),
@@ -210,7 +211,10 @@ impl PhoneSourceStore {
         })
     }
 
-    fn private_output(&self, output: &Path) -> Result<(PathBuf, Directory), PhoneSourceError> {
+    pub(super) fn private_output(
+        &self,
+        output: &Path,
+    ) -> Result<(PathBuf, Directory), PhoneSourceError> {
         if !output.is_absolute() {
             return Err(PhoneSourceError::Invalid("snapshot path must be absolute"));
         }
@@ -221,8 +225,22 @@ impl PhoneSourceStore {
             .file_name()
             .ok_or(PhoneSourceError::Invalid("snapshot has no name"))?;
         let parent = fs::canonicalize(parent)?;
-        let metadata = fs::metadata(&parent)?;
-        if !metadata.is_dir()
+        let parent = directory(&parent)?;
+        self.check_parent(&parent)?;
+        let output = Path::new(&parent.path).join(leaf);
+        match fs::symlink_metadata(&output) {
+            Ok(_) => return Err(PhoneSourceError::Invalid("snapshot output already exists")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok((output, parent))
+    }
+
+    pub(super) fn check_parent(&self, parent: &Directory) -> Result<(), PhoneSourceError> {
+        let path = Path::new(&parent.path);
+        let selected = directory(path)?;
+        let metadata = fs::metadata(path)?;
+        if selected != *parent
             || metadata.uid() != fs::metadata(&self.root)?.uid()
             || metadata.mode() & 0o022 != 0
         {
@@ -230,20 +248,14 @@ impl PhoneSourceStore {
                 "snapshot parent is not owner-controlled",
             ));
         }
-        let output = parent.join(leaf);
-        match fs::symlink_metadata(&output) {
-            Ok(_) => return Err(PhoneSourceError::Invalid("snapshot output already exists")),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        Ok((output, directory(&parent)?))
+        Ok(())
     }
 
     fn path(&self, run_id: &str) -> PathBuf {
         self.root.join(format!("{run_id}.json"))
     }
 
-    fn locked<T>(
+    pub(super) fn locked<T>(
         &self,
         run_id: &str,
         action: impl FnOnce(&File) -> Result<T, PhoneSourceError>,
@@ -265,7 +277,7 @@ impl PhoneSourceStore {
         result
     }
 
-    fn load(&self, run_id: &str) -> Result<SourceProof, PhoneSourceError> {
+    pub(super) fn load(&self, run_id: &str) -> Result<SourceProof, PhoneSourceError> {
         let mut bytes = Vec::new();
         File::open(self.path(run_id))?
             .take(MAX_RECORD + 1)
@@ -296,34 +308,110 @@ pub(super) fn run_skills(
     output: &Path,
     includes: &[String],
 ) -> Result<SourcePreview, PhoneSourceError> {
+    let mut args = vec![
+        "workspace".into(),
+        "prepare".into(),
+        "--repository".into(),
+        project.as_os_str().into(),
+        "--output".into(),
+        output.as_os_str().into(),
+        "--robot-json".into(),
+    ];
+    for selected in includes {
+        args.push("--include".into());
+        args.push(selected.into());
+    }
+    run_workspace(executable, &args)
+}
+
+pub(super) fn materialize_skills(
+    snapshot: &Path,
+    digest: &str,
+    output: &Path,
+) -> Result<SourcePreview, PhoneSourceError> {
+    let args = vec![
+        "workspace".into(),
+        "materialize".into(),
+        "--snapshot".into(),
+        snapshot.as_os_str().into(),
+        "--digest".into(),
+        digest.into(),
+        "--output".into(),
+        output.as_os_str().into(),
+        "--robot-json".into(),
+    ];
+    run_workspace(Path::new(SKILLS), &args)
+}
+
+pub(super) fn run_trusted(
+    executable: &Path,
+    args: &[OsString],
+    deadline: &str,
+    limit: usize,
+) -> Result<Vec<u8>, PhoneSourceError> {
     let executable = trusted_executable(executable)?;
     let timeout = trusted_executable(Path::new("/usr/bin/timeout"))?;
-    let mut command = Command::new(timeout);
-    command
-        .args(["--signal=TERM", "--kill-after=5s", "120s"])
+    let mut child = Command::new(timeout)
+        .args(["--signal=TERM", "--kill-after=5s", deadline])
         .arg(executable)
-        .args(["workspace", "prepare", "--repository"])
-        .arg(project)
-        .arg("--output")
-        .arg(output)
-        .arg("--robot-json");
-    for selected in includes {
-        command.arg("--include").arg(selected);
-    }
-    // The installed integration bounds source/change counts and path lengths.
-    // Keep its diagnostics and content out of logs and the local response.
-    let response = command
+        .args(args)
         .current_dir("/")
         .env_clear()
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()?;
-    if !response.status.success() || response.stdout.len() > MAX_PREVIEW {
+        .spawn()?;
+    let Some(stdout) = child.stdout.take() else {
+        child.wait()?;
         return Err(PhoneSourceError::Invalid(
-            "source freeze failed or is uncertain; inspect the output",
+            "source process output is unavailable",
+        ));
+    };
+    let reader = match std::thread::Builder::new()
+        .name("louiselm-source-output".into())
+        .spawn(move || read_bounded(stdout, limit))
+    {
+        Ok(reader) => reader,
+        Err(error) => {
+            // The failed thread drops the pipe; the timed process is still reaped.
+            child.wait()?;
+            return Err(error.into());
+        }
+    };
+    // Always join the reader, even if waiting fails; the timeout owns the process.
+    let status = child.wait();
+    let bytes = reader
+        .join()
+        .map_err(|_| PhoneSourceError::Invalid("source output reader failed"))??;
+    if !status?.success() || bytes.len() > limit {
+        return Err(PhoneSourceError::Invalid(
+            "source operation failed or is uncertain; inspect the output",
         ));
     }
-    let preview: WorkspacePreview = serde_json::from_slice(&response.stdout)?;
+    Ok(bytes)
+}
+
+pub(super) fn read_bounded(reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
+    let limit = u64::try_from(limit)
+        .map_err(io::Error::other)?
+        .checked_add(1)
+        .ok_or_else(|| io::Error::other("source output limit overflowed"))?;
+    let mut bytes = Vec::new();
+    reader.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn run_workspace(executable: &Path, args: &[OsString]) -> Result<SourcePreview, PhoneSourceError> {
+    // The installed integration bounds source/change counts and path lengths.
+    // Keep its diagnostics and content out of logs and the local response.
+    let output = run_trusted(executable, args, "120s", MAX_PREVIEW)?;
+    let preview: WorkspacePreview = serde_json::from_slice(&output)?;
     if preview.schema != "louiselm.workspace.preview/1"
         || !valid_digest(&preview.snapshot_digest)
         || !valid_digest(&preview.base_digest)
@@ -375,7 +463,7 @@ fn trusted_executable(path: &Path) -> Result<PathBuf, PhoneSourceError> {
     Ok(resolved)
 }
 
-fn verify_snapshot(
+pub(super) fn verify_snapshot(
     snapshot: &Directory,
     preview: &SourcePreview,
     owner: u32,
@@ -420,7 +508,7 @@ fn verify_snapshot(
     Ok(())
 }
 
-fn valid_id(value: &str) -> bool {
+pub(super) fn valid_id(value: &str) -> bool {
     value.len() == 32
         && value
             .bytes()
@@ -428,7 +516,7 @@ fn valid_id(value: &str) -> bool {
         && value.bytes().any(|byte| byte != b'0')
 }
 
-fn valid_digest(value: &str) -> bool {
+pub(super) fn valid_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64
             && hex
@@ -437,7 +525,7 @@ fn valid_digest(value: &str) -> bool {
     })
 }
 
-fn valid_commit(value: &str) -> bool {
+pub(super) fn valid_commit(value: &str) -> bool {
     matches!(value.len(), 40 | 64)
         && value
             .bytes()

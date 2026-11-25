@@ -7,6 +7,9 @@ mod http;
 pub(crate) mod owner_journal;
 mod socket;
 mod source;
+mod source_checkout;
+#[cfg(test)]
+mod source_checkout_tests;
 #[cfg(test)]
 mod source_tests;
 

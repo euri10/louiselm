@@ -130,6 +130,16 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   same `run_source` record, including after the original project disappears. A
   damaged or absent record is unavailable; a retained record is not proof that
   the snapshot files remain present or unchanged.
+- `{v:1,type:"prepare_run_checkout",capability:string,run_id:uuid,source_id:hex16,checkout:string}`
+  materializes the exact retained source into a new separate checkout and returns
+  `{v:1,type:"run_checkout",run_id:uuid,project_id:hex16,source_id:hex16,checkout_id:hex16,snapshot_digest:string,head:string,reviewed:false}`.
+  The output is a new owner-controlled directory on branch `run/UUID`; the
+  integration rechecks the complete source inventory. Creation is not review,
+  publication, admission, or permission. Stale source IDs and duplicate outcomes
+  refuse; inspect the original outcome before retrying an uncertain request.
+- `{v:1,type:"inspect_run_checkout",capability:string,run_id:uuid}` returns the
+  retained `run_checkout` record, not a claim that its checkout remains current
+  or reviewed. Neither request is a phone endpoint.
 - `{v:1,type:"register_root",capability:string,path:string}` returns
   `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a
   fresh local root identity without granting any phone access.
