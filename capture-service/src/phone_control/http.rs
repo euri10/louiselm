@@ -19,7 +19,7 @@ use super::{
 };
 use super::{
     authority::{Authority, EnrollmentStatus, History, ReadPermit, Refusal},
-    prepared_owner::PreparedReader,
+    prepared_owner::OwnerRunReader,
     socket::{ControllerRegistry, validate_read_response},
 };
 use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
@@ -27,6 +27,9 @@ use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
 #[cfg(test)]
 #[path = "http_prepared_tests.rs"]
 mod prepared_tests;
+#[cfg(test)]
+#[path = "http_run_tests.rs"]
+mod run_tests;
 
 #[derive(Clone)]
 struct HttpState {
@@ -34,7 +37,7 @@ struct HttpState {
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
-    prepared: Option<PreparedReader>,
+    prepared: Option<OwnerRunReader>,
 }
 
 pub(super) fn router(
@@ -42,7 +45,7 @@ pub(super) fn router(
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
-    prepared: Option<PreparedReader>,
+    prepared: Option<OwnerRunReader>,
 ) -> Router {
     Router::new()
         .route("/v1/phone-control/enrollment/offer", post(handle))
@@ -191,7 +194,7 @@ async fn process_http(
             .ok_or(Refusal::Unauthenticated)?;
         if path == "/v1/phone-control/request" {
             let signed: SignedRequest = decode(&body, "request")?;
-            if matches!(signed.request.action, 1 | 48 | 49 | 52 | 53) {
+            if matches!(signed.request.action, 1 | 48 | 49 | 52 | 53 | 54 | 55) {
                 let permit =
                     initial_state
                         .authority
@@ -216,8 +219,8 @@ async fn process_http(
     match started {
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
-            if matches!(request.action, 52 | 53) {
-                return finish_prepared(state, credential, *permit).await;
+            if matches!(request.action, 52..=55) {
+                return finish_owner(state, credential, *permit).await;
             }
             let mut listed_controllers = Vec::new();
             let response = if request.action == 48 {
@@ -271,13 +274,13 @@ async fn process_http(
     }
 }
 
-async fn finish_prepared(
+async fn finish_owner(
     state: HttpState,
     credential: String,
     permit: ReadPermit,
 ) -> Result<Value, Refusal> {
     tokio::task::spawn_blocking(move || {
-        state.authority.finish_prepared_delivery(
+        state.authority.finish_owner_delivery(
             &permit,
             &state.pairing,
             &credential,

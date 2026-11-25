@@ -987,6 +987,34 @@ impl RunStore {
         Ok(views)
     }
 
+    /// Bounded private identities for a caller that will independently check scope.
+    pub(crate) fn phone_ids(&self) -> Result<Vec<String>, RunStoreError> {
+        self.locked(|| {
+            let mut ids = Vec::new();
+            for entry in fs::read_dir(&self.root)? {
+                let entry = entry?;
+                let Some(id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.strip_suffix(".json"))
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                if Uuid::parse_str(&id).is_ok_and(|parsed| parsed.to_string() == id) {
+                    ids.push(id);
+                    if ids.len() > 4096 {
+                        return Err(RunStoreError::Invalid(
+                            "too many Runs for phone discovery".to_owned(),
+                        ));
+                    }
+                }
+            }
+            ids.sort();
+            Ok(ids)
+        })
+    }
+
     /// Load one non-sensitive authoritative Run projection.
     ///
     /// # Errors

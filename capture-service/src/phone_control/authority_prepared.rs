@@ -6,28 +6,21 @@ use sha2::{Digest, Sha256};
 
 use super::super::{
     Frame, Request, fixed,
-    prepared_owner::{OwnerPreparedError, PreparedReader},
+    prepared_owner::{OwnerPreparedError, OwnerRunReader},
     prepared_selection::project_detail,
     source::PhoneSourceError,
     verify_phone_control_frame,
 };
-use super::{Authority, ReadPermit, Refusal, State, StoredGrant, refusal};
+use super::{Authority, OwnerReadTiming, ReadPermit, Refusal, State, StoredGrant, refusal};
 use crate::{PairingRegistry, RunProjectBinding};
 
-#[derive(Clone, Copy)]
-struct ReadTiming {
-    now: Instant,
-    wall_ms: u64,
-    started: Instant,
-}
-
 impl Authority {
-    pub(in crate::phone_control) fn finish_prepared_delivery(
+    pub(in crate::phone_control) fn finish_owner_delivery(
         &self,
         permit: &ReadPermit,
         pairing: &PairingRegistry,
         credential: &str,
-        reader: Option<&PreparedReader>,
+        reader: Option<&OwnerRunReader>,
     ) -> Result<serde_json::Value, Refusal> {
         let now = Instant::now();
         let wall_ms = crate::time::now_ms();
@@ -44,7 +37,7 @@ impl Authority {
             let frame: Frame =
                 serde_json::from_slice(&permit.frame).map_err(|_| Refusal::Malformed)?;
             let request = &frame.request;
-            if !matches!(request.action, 52 | 53)
+            if !matches!(request.action, 52..=55)
                 || request.operation_id != permit.operation_id
                 || request.grant_id != permit.grant_id
                 || request.period_id != permit.period_id
@@ -67,15 +60,17 @@ impl Authority {
                 return Err(Refusal::OutOfScope);
             }
             let reader = reader.ok_or(Refusal::Unsupported)?;
-            let timing = ReadTiming {
+            let timing = OwnerReadTiming {
                 now,
                 wall_ms,
                 started,
             };
-            if request.action == 52 {
-                self.prepared_page(&mut state, permit, request, reader, &grant, timing)
-            } else {
-                self.prepared_detail(&mut state, permit, request, reader, &grant, timing)
+            match request.action {
+                52 => self.prepared_page(&mut state, permit, request, reader, &grant, timing),
+                53 => self.prepared_detail(&mut state, permit, request, reader, &grant, timing),
+                54 => self.run_page(&mut state, permit, request, reader, &grant, timing),
+                55 => self.run_detail(&mut state, permit, request, reader, &grant, timing),
+                _ => Err(Refusal::Unsupported),
             }
         });
         if !matches!(&result, Ok(Ok(_))) {
@@ -84,7 +79,7 @@ impl Authority {
         result.map_err(|_| Refusal::Unavailable)?
     }
 
-    fn prepared_in_scope(
+    pub(super) fn binding_in_scope(
         &self,
         grant: &StoredGrant,
         binding: &RunProjectBinding,
@@ -114,12 +109,12 @@ impl Authority {
         state: &mut State,
         permit: &ReadPermit,
         request: &Request,
-        reader: &PreparedReader,
+        reader: &OwnerRunReader,
         grant: &StoredGrant,
-        timing: ReadTiming,
+        timing: OwnerReadTiming,
     ) -> Result<serde_json::Value, Refusal> {
         reader.with_published(&request.subject_id, request.expected_revision, |saved, owner| {
-            if !self.prepared_in_scope(grant, &saved.binding)? {
+            if !self.binding_in_scope(grant, &saved.binding)? {
                 return Err(Refusal::OutOfScope);
             }
             let detail = project_detail(saved, owner).map_err(|_| Refusal::Unavailable)?;
@@ -135,9 +130,9 @@ impl Authority {
         state: &mut State,
         permit: &ReadPermit,
         request: &Request,
-        reader: &PreparedReader,
+        reader: &OwnerRunReader,
         grant: &StoredGrant,
-        timing: ReadTiming,
+        timing: OwnerReadTiming,
     ) -> Result<serde_json::Value, Refusal> {
         let after = if fixed::<16>(&request.payload).map_err(refusal)? == [0; 16] {
             ""
@@ -148,11 +143,11 @@ impl Authority {
             .candidates()
             .map_err(|error| prepared_read_refusal(&error))?
         {
-            if summary.id.as_str() <= after || !self.prepared_in_scope(grant, &binding)? {
+            if summary.id.as_str() <= after || !self.binding_in_scope(grant, &binding)? {
                 continue;
             }
             let result = reader.with_published(&summary.id, summary.revision, |saved, owner| {
-                if saved.binding != binding || !self.prepared_in_scope(grant, &saved.binding)? {
+                if saved.binding != binding || !self.binding_in_scope(grant, &saved.binding)? {
                     return Err(Refusal::OutOfScope);
                 }
                 project_detail(saved, owner).map_err(|_| Refusal::Unavailable)?;

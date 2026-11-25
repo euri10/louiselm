@@ -2,6 +2,8 @@
 
 #[path = "authority_prepared.rs"]
 mod prepared;
+#[path = "authority_run.rs"]
+mod run;
 #[path = "sleep_clock.rs"]
 mod sleep_clock;
 
@@ -36,6 +38,13 @@ const OFFER_LIFETIME: Duration = Duration::from_secs(120);
 const IDLE_LIFETIME: Duration = Duration::from_secs(300);
 const ABSOLUTE_LIFETIME: Duration = Duration::from_secs(3_600);
 const MAX_STORED_BYTES: u64 = 1_048_576;
+
+#[derive(Clone, Copy)]
+struct OwnerReadTiming {
+    now: Instant,
+    wall_ms: u64,
+    started: Instant,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Refusal {
@@ -772,6 +781,8 @@ impl Authority {
             1 => validate_request_shape(request).map_err(refusal)?,
             52 => super::validate_prepared_list_request_shape(request).map_err(refusal)?,
             53 => super::validate_prepared_request_shape(request).map_err(refusal)?,
+            54 => super::validate_run_list_request_shape(request).map_err(refusal)?,
+            55 => super::validate_run_request_shape(request).map_err(refusal)?,
             _ => super::validate_discovery_request_shape(request).map_err(refusal)?,
         }
         let mut state = self.lock()?;
@@ -802,6 +813,8 @@ impl Authority {
                 49 => "list_sessions",
                 52 => "list_prepared",
                 53 => "read_prepared",
+                54 => "list_runs",
+                55 => "read_run",
                 _ => return Err(Refusal::Unsupported),
             }
             .into(),

@@ -151,6 +151,10 @@ The local owner-only `admit-prepared` seam binds the exact published selection
 and its SHA-256 to a new durable Run before Session attachment. Its response
 contains a sensitive generated-work token. This is accounting and provenance,
 not Start or broker authority; existing execution paths do not yet invoke it.
+Protected durable Run reads now expose bounded accounting and lifecycle for an
+owner-bound Run under current project and complete Agent scope, even without a
+live controller. Controller status and linked Session navigation are not yet
+connected, and Android does not yet present this projection.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver

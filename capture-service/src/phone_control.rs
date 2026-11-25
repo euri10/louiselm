@@ -252,7 +252,7 @@ pub fn verify_phone_control_frame(
         Some(kind) if !valid_string(kind) => return Err(Malformed),
         Some(
             "read_session" | "send_prompt" | "list_controllers" | "list_sessions" | "list_prepared"
-            | "read_prepared",
+            | "read_prepared" | "list_runs" | "read_run",
         ) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
@@ -270,6 +270,8 @@ pub fn verify_phone_control_frame(
                 | ("list_sessions", 49)
                 | ("list_prepared", 52)
                 | ("read_prepared", 53)
+                | ("list_runs", 54)
+                | ("read_run", 55)
         )
     {
         return Err(Unsupported);
@@ -293,6 +295,8 @@ impl Frame {
             48 | 49 => validate_discovery_request_shape(request)?,
             52 => validate_prepared_list_request_shape(request)?,
             53 => validate_prepared_request_shape(request)?,
+            54 => validate_run_list_request_shape(request)?,
+            55 => validate_run_request_shape(request)?,
             _ => return Err(Unsupported),
         }
         for number in [
@@ -469,6 +473,34 @@ fn validate_prepared_list_request_shape(request: &Request) -> Result<(), PhoneCo
         return Err(PhoneControlError::Malformed);
     }
     fixed::<16>(&request.payload)?;
+    Ok(())
+}
+
+fn validate_run_list_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.action != 54 || request.interaction > 1 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    let cursor = fixed::<17>(&request.payload)?;
+    if fixed::<16>(&request.controller_id)? != [0; 16]
+        || fixed::<16>(&request.subject_id)? != [0; 16]
+        || request.expected_revision != 0
+        || cursor[0] > 1
+        || (cursor[0] == 0 && cursor[1..] != [0; 16])
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    Ok(())
+}
+
+fn validate_run_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.action != 55 || request.interaction > 1 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    if fixed::<16>(&request.controller_id)? != [0; 16] || !request.payload.is_empty() {
+        return Err(PhoneControlError::Malformed);
+    }
     Ok(())
 }
 

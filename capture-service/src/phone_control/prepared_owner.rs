@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     PreparedRunError, PreparedRunRegistration, PreparedRunRevision, PreparedRunStore,
-    PreparedRunSummary, RunAdmission, RunProjectBinding, RunStore, RunStoreError,
+    PreparedRunSummary, RunAdmission, RunProjectBinding, RunStore, RunStoreError, RunView,
 };
 
 #[derive(Debug, Error)]
@@ -60,7 +60,7 @@ pub(super) struct PreparedOwner {
 
 /// Read-only view; the receiver never receives owner administration methods.
 #[derive(Clone)]
-pub(super) struct PreparedReader(PreparedOwner);
+pub(super) struct OwnerRunReader(PreparedOwner);
 
 impl PreparedOwner {
     pub(super) fn new(root: PathBuf, runs: RunStore) -> Self {
@@ -71,8 +71,8 @@ impl PreparedOwner {
         }
     }
 
-    pub(super) fn reader(&self) -> PreparedReader {
-        PreparedReader(self.clone())
+    pub(super) fn reader(&self) -> OwnerRunReader {
+        OwnerRunReader(self.clone())
     }
 
     #[cfg(test)]
@@ -172,7 +172,7 @@ impl PreparedOwner {
     }
 }
 
-impl PreparedReader {
+impl OwnerRunReader {
     /// Candidate identities are private until the caller checks current scope.
     pub(super) fn candidates(
         &self,
@@ -188,6 +188,55 @@ impl PreparedReader {
         inspect: impl FnOnce(&PreparedRunRevision, u32) -> T,
     ) -> Result<T, OwnerPreparedError> {
         self.0.with_published(id, revision, inspect)
+    }
+
+    pub(super) fn run_ids(&self) -> Result<Vec<String>, OwnerPreparedError> {
+        (self.0.integration)()?;
+        Ok(self.0.runs.phone_ids()?)
+    }
+
+    pub(super) fn run_binding(
+        &self,
+        id: &str,
+    ) -> Result<Option<RunProjectBinding>, OwnerPreparedError> {
+        (self.0.integration)()?;
+        match self
+            .0
+            .runs
+            .with_phone_binding(id, 0, |binding, _| binding.clone())
+        {
+            Ok(binding) => Ok(Some(binding)),
+            Err(RunStoreError::Invalid(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn with_bound_run<T>(
+        &self,
+        id: &str,
+        revision: u64,
+        inspect: impl FnOnce(&RunProjectBinding, &RunView) -> T,
+    ) -> Result<T, OwnerPreparedError> {
+        (self.0.integration)()?;
+        let sources = PhoneSourceStore::open(self.0.root.join("run-sources"))?;
+        let source = sources.read(id)?;
+        let checkout = sources.read_checkout(id)?;
+        self.0
+            .runs
+            .with_phone_binding(id, revision, |binding, view| {
+                if source.project_id != binding.project_id
+                    || source.source_id != binding.source_id
+                    || checkout.project_id != source.project_id
+                    || checkout.source_id != source.source_id
+                    || checkout.checkout_id != binding.checkout_id
+                    || checkout.snapshot_digest != source.snapshot_digest
+                {
+                    return Err(OwnerPreparedError::Invalid(
+                        "retained source binding differs",
+                    ));
+                }
+                Ok(inspect(binding, view))
+            })?
     }
 }
 

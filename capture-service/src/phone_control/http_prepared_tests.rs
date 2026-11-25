@@ -224,7 +224,7 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
     permit.frame = serde_json::to_vec(&frame).unwrap();
     let reader = service.prepared.as_ref().unwrap().reader();
     assert_eq!(
-        service.authority.finish_prepared_delivery(
+        service.authority.finish_owner_delivery(
             &permit,
             &pairing,
             &phone.credential,
@@ -455,7 +455,7 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         .unwrap();
     pairing.revoke(&paired_other.device_id).unwrap();
     assert_eq!(
-        service.authority.finish_prepared_delivery(
+        service.authority.finish_owner_delivery(
             &pending,
             &pairing,
             &paired_other.credential,
@@ -548,7 +548,7 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         .unpublish(&registered.id, registered.revision)
         .unwrap();
     assert_eq!(
-        service.authority.finish_prepared_delivery(
+        service.authority.finish_owner_delivery(
             &pending,
             &pairing,
             &phone.credential,
@@ -558,7 +558,7 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
     );
     let empty = service
         .authority
-        .finish_prepared_delivery(&pending_list, &pairing, &phone.credential, Some(&reader))
+        .finish_owner_delivery(&pending_list, &pairing, &phone.credential, Some(&reader))
         .unwrap();
     assert_eq!(empty["items"], serde_json::json!([]));
     let removed = signed_prepared(
@@ -601,7 +601,7 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         .unwrap();
     service.authority.disable(&phone.device_id).unwrap();
     assert_eq!(
-        service.authority.finish_prepared_delivery(
+        service.authority.finish_owner_delivery(
             &pending,
             &pairing,
             &phone.credential,

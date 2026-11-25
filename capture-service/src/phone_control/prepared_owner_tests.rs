@@ -21,6 +21,20 @@ use crate::{PreparedRunStore, RunAdmission, RunStore};
 
 const RUN: &str = "11111111-1111-4111-8111-111111111111";
 
+#[test]
+fn durable_run_owner_reports_missing_optional_integration() {
+    let root = tempfile::tempdir().unwrap();
+    let runs = RunStore::new(root.path().join("runs")).unwrap();
+    let mut owner = PreparedOwner::new(root.path().to_path_buf(), runs);
+    owner.set_test_integration(|| Err(super::source::PhoneSourceError::Unsupported));
+    assert!(matches!(
+        owner.reader().run_ids(),
+        Err(super::prepared_owner::OwnerPreparedError::Source(
+            super::source::PhoneSourceError::Unsupported
+        ))
+    ));
+}
+
 fn admission<'a>(id: &'a str, revision: u64, digest: &'a str) -> PreparedAdmission<'a> {
     PreparedAdmission {
         registration_id: id,

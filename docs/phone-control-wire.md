@@ -351,6 +351,30 @@ serializing against unpublication and admission. Missing integration is
 `unsupported`; a stale, unpublished or already-admitted item is refused. A read
 does not open a controller, admit a Run, activate its deadline or grant a capability.
 
+Action `54`, `list_runs`, requires `read`. Controller and subject IDs and
+`expected_revision` are zero. The 17-byte payload is `00 | zero[16]` for the
+first page or `01 | uuid[16]` for an exclusive cursor. Success is
+`{v:1,type:"run_page",request_id:hex16,items:[{run_id:uuid,revision:integer,state:string}],next_after:uuid-or-empty-string}`.
+At most one authorized row is returned; a nonempty page uses its Run UUID as
+the cursor and an empty page ends the scan. Old unbound Runs and foreign scope
+are not listed. Discovery refuses rather than truncate when more than 4,096
+canonical Run files exist. This is a current durable projection, not proof of
+a connected controller, and contains no instructions, Session IDs or paths.
+
+Action `55`, `read_run`, requires `read`. The controller ID is zero, the subject
+is the Run UUID's exact 16 bytes, payload is empty, and `expected_revision` is
+zero for current state or an exact nonzero revision. Success is
+`{v:1,type:"run_detail",request_id:hex16,run:RunDetail}` where `RunDetail` is
+`{run_id:uuid,revision:integer,state:string,freshness:"durable_current",controller:"not_checked",has_session:boolean,load_session:boolean-or-null,work:{ceiling:integer,consumed:integer,reserved:integer,remaining:integer},pending_mutations:integer,park_expires_at_ms:integer,park_expired:boolean,resume_pending:boolean,resume_deadline_ms:integer-or-null}`.
+State is `admitted`, `active`, `parked`, `cold_parked`, `resuming`, or
+`disposed`. Park expiry is evaluated against the receiver's clock; it does not
+claim cleanup occurred. `load_session` is the Agent-advertised capability, not
+a promise of lossless recovery. The owner checks the retained source/checkout
+chain, current pairing, Read grant, original-project scope, every contributing
+Agent and the exact locked Run revision through delivery. Missing integration
+is `unsupported`; an unbound, damaged or stale Run is refused. These reads
+neither verify a controller nor change Run state, deadline, spending or Attention.
+
 Action `2`, `read_action_history`, also requires `read`. Its decoded payload is
 one of `00 | operation_id[16]` (one record), `01 | limit:u8` (first page), or
 `02 | after_operation_id[16] | limit:u8` (next page), with limit 1–50. For one
