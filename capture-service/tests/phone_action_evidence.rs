@@ -203,6 +203,33 @@ fn losing_the_receiver_guard_lock_refuses_live_and_restarted_access() {
 }
 
 #[test]
+fn damaged_live_guard_latches_unavailable_until_reopened() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    let guard = path.with_extension("guard");
+    phone_evidence::initialize_store(&path);
+    let store = phone_evidence::open(&path).unwrap();
+    let original = identity(temp.path(), 2);
+    store.reserve(&original).unwrap();
+    let retained_guard = fs::read(&guard).unwrap();
+    fs::write(&guard, b"{}").unwrap();
+    assert_eq!(
+        store.lookup(&original.operation_id),
+        Err(ActionEvidenceError::Unavailable)
+    );
+    fs::write(&guard, retained_guard).unwrap();
+    assert_eq!(
+        store.reserve(&original),
+        Err(ActionEvidenceError::Unavailable)
+    );
+    drop(store);
+    assert_eq!(
+        phone_evidence::open(&path).unwrap().reserve(&original),
+        Ok(ActionReservation::Existing)
+    );
+}
+
+#[test]
 fn interrupted_proven_update_completes_without_losing_prior_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("actions");

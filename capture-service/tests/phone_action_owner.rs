@@ -174,6 +174,51 @@ fn owner_cli_recovers_a_proven_interrupted_update_and_rejects_rollback() {
 }
 
 #[test]
+fn owner_can_report_proven_evidence_when_capture_archive_is_lost() {
+    let temp = tempfile::tempdir().unwrap();
+    let receiver = initialize(temp.path());
+    let archive = temp
+        .path()
+        .join("louiselm/capture/phone-control/action-evidence");
+    phone_evidence::initialize(
+        &archive,
+        &temp
+            .path()
+            .join("louiselm/capture/tls/phone-action-evidence.json"),
+        &receiver,
+    );
+    let request = identity(temp.path(), 13);
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
+    fs::remove_dir_all(&archive).unwrap();
+    fs::remove_file(archive.with_extension("lock")).unwrap();
+
+    let outcome = serde_json::json!({"accepted":{"evidence":"aa".repeat(32)}});
+    let report = serde_json::json!({"v":1,"type":"report","identity":request,"outcome":outcome,"at_ms":2000});
+    assert_eq!(invoke(temp.path(), &report)["type"], "recorded");
+    let inspect = serde_json::json!({"v":1,"type":"inspect","identity":request});
+    assert_eq!(invoke(temp.path(), &inspect)["outcome"], outcome);
+}
+
+#[test]
+fn caller_cannot_choose_a_different_receiver_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let request = identity(temp.path(), 14);
+    let mut wrong = request.clone();
+    let replacement = if wrong.receiver_identity.starts_with("00") {
+        "01"
+    } else {
+        "00"
+    };
+    wrong.receiver_identity.replace_range(..2, replacement);
+    let attempt = serde_json::json!({"v":1,"type":"begin","identity":wrong});
+    assert_eq!(invoke(temp.path(), &attempt)["code"], "unavailable");
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
+}
+
+#[test]
 fn local_owner_command_persists_a_fence_across_processes() {
     let temp = tempfile::tempdir().unwrap();
     initialize(temp.path());

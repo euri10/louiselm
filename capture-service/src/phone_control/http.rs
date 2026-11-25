@@ -1239,6 +1239,24 @@ mod tests {
         )
         .await;
         assert_eq!(result["controllers"], json!([controller]));
+        let history = signed_history_page(&fixture, &grant, &period, None, 1, 200);
+        let (_, result) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &history.to_string(),
+        )
+        .await;
+        assert_eq!(result["code"], "unavailable");
+        let discovery = signed_discovery(&fixture, &grant, &period, &zero, 48, 201);
+        let (_, result) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &discovery.to_string(),
+        )
+        .await;
+        assert_eq!(result["controllers"], json!([controller]));
         let offer = pairing
             .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
             .unwrap();
@@ -1501,6 +1519,87 @@ mod tests {
             replay,
             json!({"v":1,"type":"error","code":"unauthenticated"})
         );
+    }
+
+    #[tokio::test]
+    async fn lost_archive_and_lock_are_unavailable_after_receiver_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let receiver = "01".repeat(32);
+        let offer = pairing
+            .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
+            .unwrap();
+        let phone = pairing.consume(&offer.token, "phone", 1_001).unwrap();
+        let archive = root.path().join("phone/action-evidence");
+        super::super::evidence::initialize_receiver_fixture(
+            &archive,
+            &root.path().join("tls/phone-action-evidence.json"),
+            &receiver,
+        );
+        let service = Service::open(
+            &root.path().join("phone/grants"),
+            &receiver,
+            pairing.clone(),
+        )
+        .unwrap();
+        let app = service.router();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../android/app/src/test/resources/phone-control-v1.json"
+        ))
+        .unwrap();
+        let (grant, period) = history_grant(
+            &service,
+            &app,
+            &phone,
+            &fixture,
+            root.path(),
+            vec!["read".into()],
+        )
+        .await;
+        let original = ActionIdentity {
+            operation_id: "10".repeat(16),
+            receiver_identity: receiver.clone(),
+            controller_id: "11".repeat(16),
+            subject_id: "12".repeat(16),
+            action: 3,
+            payload_hash: "13".repeat(32),
+            grant_id: grant.grant_id.clone(),
+            grant_revision: grant.grant_revision,
+            period_id: period,
+            expected_revision: 9,
+            project: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1_000,
+        };
+        service
+            .evidence
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .reserve(&original)
+            .unwrap();
+        drop(app);
+        drop(service);
+        std::fs::remove_dir_all(&archive).unwrap();
+        std::fs::remove_file(archive.with_extension("lock")).unwrap();
+
+        let service = Service::open(&root.path().join("phone/grants"), &receiver, pairing).unwrap();
+        let app = service.router();
+        let period = history_period(&app, &phone, &fixture, &grant).await;
+        let page = signed_history_page(&fixture, &grant, &period, None, 10, 400);
+        let (_, response) = post(
+            app,
+            "/v1/phone-control/request",
+            &phone.credential,
+            &page.to_string(),
+        )
+        .await;
+        assert_eq!(response["code"], "unavailable");
+        assert!(!archive.exists());
     }
 
     #[tokio::test]
