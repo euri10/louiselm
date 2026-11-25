@@ -67,7 +67,7 @@ T["detaching a begun unadmitted action persists a fence before recovery"] = func
   MiniTest.expect.equality(reports[2].outcome.fenced_no_effect.evidence, recovery.evidence)
   MiniTest.expect.equality(old_reply, nil)
   local released = false
-  authorize({
+  assert(authorize)({
     valid = function()
       return true
     end,
@@ -79,7 +79,9 @@ T["detaching a begun unadmitted action persists a fence before recovery"] = func
 end
 
 T["detaching during admission cannot fence an accepted action"] = function()
-  local reports, recovery = {}, nil
+  local reports = {}
+  ---@type { state?: string, evidence?: string, code?: string }?
+  local recovery
   local journal = {}
   function journal:run(message, callback)
     reports[#reports + 1] = message
@@ -88,18 +90,15 @@ T["detaching during admission cannot fence an accepted action"] = function()
     end)
   end
   local owner = { sessions = {} }
-  local session, action = { owner = owner }, nil
+  local session = { owner = owner }
   owner.sessions.s = session
+  function session:on()
+    return function() end
+  end
   function session:inspect()
     return { id = "s", status = "ready" }
   end
-  function session:prompt()
-    action:detach(function(result)
-      recovery = result
-    end)
-    return "turn-1"
-  end
-  action = Action.new({
+  local action = Action.new({
     journal = journal,
     session = session,
     projection = {
@@ -121,6 +120,12 @@ T["detaching during admission cannot fence an accepted action"] = function()
       end)
     end,
   })
+  function session:prompt()
+    action:detach(function(result)
+      recovery = result
+    end)
+    return "turn-1"
+  end
   MiniTest.finally(function()
     action:dispose()
   end)
@@ -141,7 +146,7 @@ T["detaching during admission cannot fence an accepted action"] = function()
   assert(nvim.wait(5000, function()
     return recovery ~= nil
   end))
-  MiniTest.expect.equality(recovery.state, "accepted")
+  MiniTest.expect.equality(assert(recovery).state, "accepted")
   MiniTest.expect.equality(type(reports[2].outcome.accepted.evidence), "string")
   MiniTest.expect.equality(old_reply, nil)
 end
@@ -189,6 +194,7 @@ T["a failed fence write cannot confirm safe recovery"] = function()
   assert(nvim.wait(5000, function()
     return authorize ~= nil
   end))
+  ---@type { state?: string, evidence?: string, code?: string, v?: integer, type?: string }?
   local recovery
   action:detach(function(result)
     recovery = result
@@ -205,7 +211,86 @@ T["a failed fence write cannot confirm safe recovery"] = function()
   assert(nvim.wait(5000, function()
     return recovery ~= nil
   end))
-  MiniTest.expect.equality(recovery.state, "fenced_no_effect")
+  MiniTest.expect.equality(assert(recovery).state, "fenced_no_effect")
+end
+
+T["detaching after admission but before its journal reply never fences"] = function()
+  local writes = {}
+  local journal = {}
+  function journal:run(message, callback)
+    if message.type == "begin" then
+      nvim.schedule(function()
+        callback({ v = 1, type = "begun" })
+      end)
+    else
+      writes[#writes + 1] = { message = message, callback = callback }
+    end
+  end
+  local owner = { sessions = {} }
+  local session = { owner = owner }
+  owner.sessions.s = session
+  function session:inspect()
+    return { id = "s", status = "ready" }
+  end
+  function session:on()
+    return function() end
+  end
+  function session:prompt()
+    return "turn-1"
+  end
+  local action = Action.new({
+    journal = journal,
+    session = session,
+    projection = {
+      page = function()
+        return {}
+      end,
+    },
+    current = function()
+      return true
+    end,
+    authorize = function(done)
+      nvim.schedule(function()
+        done({
+          valid = function()
+            return true
+          end,
+          release = function() end,
+        })
+      end)
+    end,
+  })
+  MiniTest.finally(function()
+    action:dispose()
+  end)
+  local text = "phone text"
+  action:send(
+    {
+      action = 3,
+      operation_id = string.rep("04", 16),
+      expected_revision = 1,
+      payload_hash = nvim.fn.sha256(string.char(1) .. text),
+    },
+    text,
+    function()
+      error("detached reply must not be delivered")
+    end
+  )
+  assert(nvim.wait(5000, function()
+    return #writes == 1
+  end))
+  local recovery
+  action:detach(function(result)
+    recovery = result
+  end)
+  MiniTest.expect.equality(#writes, 1)
+  nvim.schedule(function()
+    writes[1].callback({ v = 1, type = "recorded" })
+  end)
+  assert(nvim.wait(5000, function()
+    return recovery ~= nil
+  end))
+  MiniTest.expect.equality(recovery.state, "accepted")
 end
 
 return T
