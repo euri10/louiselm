@@ -2,6 +2,16 @@ package dev.louiselm.capture
 
 internal enum class PhoneRunState { ADMITTED, ACTIVE, PARKED, COLD_PARKED, RESUMING, DISPOSED }
 internal enum class PhoneRunLoad { UNKNOWN, SUPPORTED, UNSUPPORTED }
+internal enum class PhoneRunController { CONNECTED, ABSENT, UNREACHABLE }
+internal enum class PhoneRunOwnerStatus { NEW, ACTIVE, HELD, COMPLETED, FAILED }
+internal enum class PhoneRunPhase { NONE, AUTHORIZING, PREPARING, WORKING, VERIFYING, AWAITING_PROMOTION, PROMOTING }
+
+internal data class PhoneRunLiveSession(val subjectId: String, val agent: String, val status: String)
+internal data class PhoneRunLiveView(
+    val controllerId: String, val ownerId: String, val status: PhoneRunOwnerStatus, val phase: PhoneRunPhase,
+    val beadIndex: Long, val beadTotal: Long, val beadId: String, val sessions: List<PhoneRunLiveSession>,
+    val sessionsTruncated: Boolean,
+)
 
 internal data class PhoneRunSummary(val runId: String, val revision: Long, val state: PhoneRunState) {
     init {
@@ -61,4 +71,46 @@ internal fun parseRunDetail(fields: Map<String, Any>): PhoneControlReply.RunDeta
     require(resume == (summary.state == PhoneRunState.RESUMING) && if (resume) deadline > 0 else deadline == 0L)
     return PhoneControlReply.RunDetail(fields.wireHex("request_id", 16),
         PhoneRunView(summary, hasSession, load, work, body.wireNumber("pending_mutations"), parkExpires, parkExpired, resume, deadline))
+}
+
+internal fun parseRunLive(fields: Map<String, Any>): PhoneControlReply.RunLive {
+    fields.wireKeys("v", "type", "request_id", "run_id", "durable_revision", "controller", "live")
+    val runId = fields.wireString("run_id").also { phoneControlRunIdBytes(it) }
+    val revision = fields.wireNumber("durable_revision").also { require(it in 1L..9_007_199_254_740_991L) }
+    val controller = PhoneRunController.entries.firstOrNull { it.name.lowercase() == fields.wireString("controller") }
+        ?: throw UnsupportedReply()
+    val raw = fields["live"] ?: throw IllegalArgumentException("missing live Run")
+    val live = if (controller != PhoneRunController.CONNECTED) {
+        require(raw === PhoneWireNull)
+        null
+    } else {
+        val body = raw.wireObject()
+        body.wireKeys("controller_id", "owner_id", "status", "phase", "bead_index", "bead_total", "bead_id",
+            "sessions", "sessions_truncated")
+        val controllerId = body.wireHex("controller_id", 16).also { require(it != "00".repeat(16)) }
+        val ownerId = body.wireHex("owner_id", 16).also { require(it != "00".repeat(16)) }
+        val status = PhoneRunOwnerStatus.entries.firstOrNull { it.name.lowercase() == body.wireString("status") }
+            ?: throw UnsupportedReply()
+        require(status != PhoneRunOwnerStatus.NEW)
+        val phase = PhoneRunPhase.entries.firstOrNull { it.name.lowercase() == body.wireString("phase") }
+            ?: throw UnsupportedReply()
+        val index = body.wireNumber("bead_index")
+        val total = body.wireNumber("bead_total")
+        val beadId = body.wireString("bead_id", 512)
+        require(total in 1L..4096L && (phase == PhoneRunPhase.NONE && index == 0L && beadId.isEmpty() ||
+            status == PhoneRunOwnerStatus.ACTIVE && phase != PhoneRunPhase.NONE && index in 1L..total && beadId.isNotEmpty()))
+        val sessions = body.wireArray("sessions").map {
+            val row = requireNotNull(it).wireObject()
+            row.wireKeys("subject_id", "agent", "status")
+            val subject = row.wireHex("subject_id", 16).also { require(it != "00".repeat(16)) }
+            val agent = row.wireString("agent", 512).also { require(it.isNotEmpty()) }
+            val sessionStatus = row.wireString("status")
+            if (sessionStatus !in setOf("starting", "ready", "admitting", "configuring", "preparing", "prompting",
+                    "running", "waiting_permission", "cancelling", "error")) throw UnsupportedReply()
+            PhoneRunLiveSession(subject, agent, sessionStatus)
+        }
+        require(sessions.size <= 50 && sessions.map { it.subjectId }.toSet().size == sessions.size)
+        PhoneRunLiveView(controllerId, ownerId, status, phase, index, total, beadId, sessions, body.wireBoolean("sessions_truncated"))
+    }
+    return PhoneControlReply.RunLive(fields.wireHex("request_id", 16), runId, revision, controller, live)
 }

@@ -107,6 +107,37 @@ class PhoneControlWireTest {
     }
 
     @Test
+    fun liveRunAndLinkedSessionBindExactOwners() {
+        val existing = fixture.getJSONObject("request")
+        val zero = "00".repeat(16)
+        val run = "11111111111141118111111111111111"
+        val controller = "12".repeat(16)
+        val subject = "34".repeat(16)
+        val owner = "56".repeat(16)
+        fun request(action: Int, targetController: String, target: String, payload: ByteArray, revision: Long) = PhoneControlRequest(
+            existing.getString("grant_id"), existing.getLong("grant_revision"), existing.getString("period_id"),
+            existing.getString("receiver_identity"), targetController, target, payload,
+            existing.getString("operation_id"), revision, true, action = action,
+        )
+        val live = request(56, zero, run, ByteArray(0), 7)
+        assertEquals(56, live.json(ByteArray(8)).getInt("action"))
+        val payload = byteArrayOf(1) + phoneControlHex(run, 16) + phoneControlHex(owner, 16) +
+            java.nio.ByteBuffer.allocate(8).putLong(7).array() + phoneControlReadPayload(0, 20)
+        assertArrayEquals(payload, phoneControlRunSessionPayload("11111111-1111-4111-8111-111111111111", owner, 7, 0, 20))
+        val linked = request(57, controller, subject, payload, 0)
+        assertEquals(57, linked.json(ByteArray(8)).getInt("action"))
+        assertEquals(phoneControlHex(payload), linked.json(ByteArray(8)).getString("payload"))
+        assertFalse(live.transcript().contentEquals(linked.transcript()))
+        assertThrows(IllegalArgumentException::class.java) { request(57, zero, subject, payload, 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(57, controller, subject, payload.dropLast(1).toByteArray(), 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(56, controller, run, ByteArray(0), 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(57, controller, zero, payload, 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(57, controller, subject, payload.clone().also { it[0] = 2 }, 0) }
+        assertThrows(IllegalArgumentException::class.java) { phoneControlRunSessionPayload("11111111-1111-4111-8111-111111111111", zero, 7, 0, 20) }
+        assertThrows(IllegalArgumentException::class.java) { phoneControlRunSessionPayload("11111111-1111-4111-8111-111111111111", owner, 0, 0, 20) }
+    }
+
+    @Test
     fun invalidReadRangesAndNoncanonicalIdentifiersAreRejected() {
         for ((before, limit) in listOf(-1L to 1, 0L to 0, 0L to 51, 9_007_199_254_740_992L to 1)) {
             try {

@@ -74,4 +74,36 @@ class PhoneRunReplyTest {
         val future = JSONObject().put("v", 1).put("type", "future_run").put("live", JSONObject.NULL)
         assertEquals(PhoneControlReply.Failure(PhoneControlOutcome.UNSUPPORTED), parse(future))
     }
+
+    @Test
+    fun acceptsBoundedLiveRunObservationsAndExplicitUnavailableOwners() {
+        val absent = JSONObject().put("v", 1).put("type", "run_live").put("request_id", operation)
+            .put("run_id", run).put("durable_revision", 2).put("controller", "absent").put("live", JSONObject.NULL)
+        val absentReply = parse(absent) as PhoneControlReply.RunLive
+        assertEquals(PhoneRunController.ABSENT, absentReply.controller)
+        assertEquals(null, absentReply.live)
+        val unreachable = JSONObject(absent.toString()).put("controller", "unreachable")
+        assertEquals(PhoneRunController.UNREACHABLE, (parse(unreachable) as PhoneControlReply.RunLive).controller)
+        val live = JSONObject().put("controller_id", "12".repeat(16)).put("owner_id", "34".repeat(16))
+            .put("status", "active").put("phase", "working").put("bead_index", 1).put("bead_total", 2)
+            .put("bead_id", "b-1").put("sessions", JSONArray().put(JSONObject().put("subject_id", "56".repeat(16))
+                .put("agent", "codex").put("status", "ready"))).put("sessions_truncated", false)
+        val connected = JSONObject(absent.toString()).put("controller", "connected").put("live", live)
+        val reply = parse(connected) as PhoneControlReply.RunLive
+        assertEquals(PhoneRunPhase.WORKING, reply.live?.phase)
+        assertEquals("56".repeat(16), reply.live?.sessions?.single()?.subjectId)
+        val malformed = PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED)
+        assertEquals(malformed, parse(JSONObject(absent.toString()).put("controller", "connected")))
+        assertEquals(malformed, parse(JSONObject(connected.toString()).put("controller", "absent")))
+        val wrongOwner = JSONObject(connected.toString())
+        wrongOwner.getJSONObject("live").put("owner_id", "00".repeat(16))
+        assertEquals(malformed, parse(wrongOwner))
+        val duplicate = JSONObject(connected.toString())
+        val sessions = duplicate.getJSONObject("live").getJSONArray("sessions")
+        sessions.put(sessions.getJSONObject(0))
+        assertEquals(malformed, parse(duplicate))
+        val future = JSONObject(connected.toString())
+        future.getJSONObject("live").put("phase", "future")
+        assertEquals(PhoneControlReply.Failure(PhoneControlOutcome.UNSUPPORTED), parse(future))
+    }
 }

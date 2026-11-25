@@ -39,6 +39,15 @@ internal fun phoneControlRunIdBytes(value: String): ByteArray {
 internal fun phoneControlRunCursor(after: String?): ByteArray =
     if (after == null) ByteArray(17) else byteArrayOf(1) + phoneControlRunIdBytes(after)
 
+internal fun phoneControlRunSessionPayload(runId: String, ownerId: String, revision: Long, before: Long, limit: Int): ByteArray {
+    val run = phoneControlRunIdBytes(runId)
+    val owner = phoneControlHex(ownerId, 16)
+    require(run.any { it != 0.toByte() } && owner.any { it != 0.toByte() } && revision in 1L..MAX_WIRE_INTEGER) {
+        "invalid Run owner"
+    }
+    return byteArrayOf(1) + run + owner + ByteBuffer.allocate(8).putLong(revision).array() + phoneControlReadPayload(before, limit)
+}
+
 internal fun phoneControlHistoryPagePayload(after: String?, limit: Int): ByteArray {
     require(limit in 1..50) { "invalid history limit" }
     return if (after == null) byteArrayOf(1, limit.toByte())
@@ -160,7 +169,23 @@ internal class PhoneControlRequest(
                 expectedRevision == 0L && controllerId == "00".repeat(16) && subjectId == "00".repeat(16)) {
                 "invalid Run discovery"
             }
-            55 -> require(this.payload.isEmpty() && controllerId == "00".repeat(16)) { "invalid Run detail" }
+            55, 56 -> require(this.payload.isEmpty() && controllerId == "00".repeat(16)) { "invalid Run detail" }
+            57 -> {
+                require(this.payload.size == 51 && controllerId != "00".repeat(16) && subjectId != "00".repeat(16)) {
+                    "invalid Run Session target"
+                }
+                val decoded = ByteBuffer.wrap(this.payload)
+                require(decoded.get().toInt() == 1) { "invalid Run Session version" }
+                val run = ByteArray(16).also { decoded.get(it) }
+                val owner = ByteArray(16).also { decoded.get(it) }
+                val runRevision = decoded.long
+                val before = decoded.long
+                val limit = decoded.short.toInt() and 0xffff
+                require(run.any { it != 0.toByte() } && owner.any { it != 0.toByte() } && runRevision in 1L..MAX_WIRE_INTEGER) {
+                    "invalid Run owner"
+                }
+                phoneControlReadPayload(before, limit)
+            }
             else -> throw IllegalArgumentException("unsupported action")
         }
     }
