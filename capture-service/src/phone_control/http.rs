@@ -767,25 +767,7 @@ mod tests {
             .unwrap();
         let controller = target["controller_id"].as_str().unwrap();
         let subject = target["subject_id"].as_str().unwrap();
-        attention
-            .upsert(crate::AttentionDraft {
-                subject_kind: crate::AttentionSubjectKind::Session,
-                subject_id: "fixture-session".into(),
-                session_name: Some("Fixture Session".into()),
-                phone_control: Some(Box::new(crate::AttentionPhoneControl {
-                    controller_id: controller.into(),
-                    subject_id: subject.into(),
-                })),
-                kind: crate::AttentionKind::TurnReady,
-                source_operation_id: "11111111-2222-4333-8444-555555555555".into(),
-                created_at_ms: 1,
-                linked_run_id: None,
-                stage: None,
-                code: None,
-                withdrawal: None,
-                result_id: None,
-            })
-            .unwrap();
+        let other_subject = target["other_subject_id"].as_str().unwrap();
         let request = signed_read(&fixture, &grant, &period, controller, subject, 100);
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -834,6 +816,53 @@ mod tests {
                 .iter()
                 .any(|entry| entry["text"] == "fixture request")
         );
+        assert!(attention.snapshot().unwrap().items.is_empty());
+        if std::env::var("LOUISELM_TEST_ANDROID").as_deref() == Ok("1") {
+            let android = project.join("android");
+            let url = format!("https://localhost:{}", address.port());
+            let receiver = tls.public_key_sha256().to_owned();
+            let credential = phone.credential.clone();
+            let device = phone.device_id.clone();
+            let grant_id = grant.grant_id.clone();
+            let other = other_subject.to_owned();
+            let status = tokio::task::spawn_blocking(move || {
+                let status = Command::new(android.join("gradlew"))
+                    .current_dir(&android)
+                    .args(["--no-daemon", "--max-workers=1", "--rerun-tasks", "-PlouiselmFirebase=false",
+                        "testDebugUnitTest", "--tests", "dev.louiselm.capture.PhoneControlBrowseEndToEndTest"])
+                    .env("LOUISELM_E2E_URL", url).env("LOUISELM_E2E_RECEIVER", receiver)
+                    .env("LOUISELM_E2E_CREDENTIAL", credential).env("LOUISELM_E2E_DEVICE", device)
+                    .env("LOUISELM_E2E_GRANT", grant_id).env("LOUISELM_E2E_OTHER_SUBJECT", other)
+                    .status().unwrap();
+                let report = std::fs::read_to_string(android.join("app/build/test-results/testDebugUnitTest/TEST-dev.louiselm.capture.PhoneControlBrowseEndToEndTest.xml")).unwrap();
+                assert!(report.contains("tests=\"1\"") && report.contains("skipped=\"0\"")
+                    && report.contains("failures=\"0\"") && report.contains("errors=\"0\""));
+                status
+            }).await.unwrap();
+            assert!(
+                status.success(),
+                "Android Session discovery integration failed"
+            );
+        }
+        attention
+            .upsert(crate::AttentionDraft {
+                subject_kind: crate::AttentionSubjectKind::Session,
+                subject_id: "fixture-session".into(),
+                session_name: Some("Fixture Session".into()),
+                phone_control: Some(Box::new(crate::AttentionPhoneControl {
+                    controller_id: controller.into(),
+                    subject_id: subject.into(),
+                })),
+                kind: crate::AttentionKind::TurnReady,
+                source_operation_id: "11111111-2222-4333-8444-555555555555".into(),
+                created_at_ms: 1,
+                linked_run_id: None,
+                stage: None,
+                code: None,
+                withdrawal: None,
+                result_id: None,
+            })
+            .unwrap();
         if std::env::var("LOUISELM_TEST_ANDROID").as_deref() == Ok("1") {
             let android = project.join("android");
             let url = format!("https://localhost:{}", address.port());
@@ -863,10 +892,19 @@ mod tests {
         let last_period = history_period(&app, &phone, &fixture, &grant).await;
         let old = signed_read(&fixture, &grant, &last_period, controller, subject, 101);
         let (_, stale) = post(
-            app,
+            app.clone(),
             "/v1/phone-control/request",
             &phone.credential,
             &old.to_string(),
+        )
+        .await;
+        assert_eq!(stale["code"], "stale_subject");
+        let old_list = signed_discovery(&fixture, &grant, &last_period, controller, 49, 102);
+        let (_, stale) = post(
+            app,
+            "/v1/phone-control/request",
+            &phone.credential,
+            &old_list.to_string(),
         )
         .await;
         assert_eq!(stale["code"], "stale_subject");
@@ -1158,6 +1196,20 @@ mod tests {
         )
         .await;
         assert_eq!(result["controllers"], json!([controller]));
+        let offer = pairing
+            .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
+            .unwrap();
+        let capture_only = pairing
+            .consume(&offer.token, "capture only", 1_001)
+            .unwrap();
+        let (_, denied) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &capture_only.credential,
+            &list.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "revoked");
         let (_, replay) = post(
             app.clone(),
             "/v1/phone-control/request",
@@ -1201,6 +1253,36 @@ mod tests {
         let (_, result) = pending.await.unwrap();
         assert_eq!(result["sessions"][0]["name"], "same");
 
+        let request = signed_discovery(&fixture, &grant, &period, &controller, 49, 4);
+        let pending = tokio::spawn({
+            let app = app.clone();
+            let credential = phone.credential.clone();
+            async move {
+                post(
+                    app,
+                    "/v1/phone-control/request",
+                    &credential,
+                    &request.to_string(),
+                )
+                .await
+            }
+        });
+        let mut line = String::new();
+        BufReader::new(&mut stream)
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        service.authority.disable(&phone.device_id).unwrap();
+        let response = json!({"v":1,"type":"session_list","controller_id":controller,
+            "operation_id":frame["request"]["operation_id"],"sessions":[],"next_after":""});
+        stream
+            .write_all(format!("{response}\n").as_bytes())
+            .await
+            .unwrap();
+        let (_, result) = pending.await.unwrap();
+        assert_eq!(result["code"], "revoked");
+
         let (no_read, period) = history_grant(
             &service,
             &app,
@@ -1210,7 +1292,7 @@ mod tests {
             vec!["operate_sessions".into()],
         )
         .await;
-        let denied = signed_discovery(&fixture, &no_read, &period, &zero, 48, 4);
+        let denied = signed_discovery(&fixture, &no_read, &period, &zero, 48, 5);
         let (_, result) = post(
             app,
             "/v1/phone-control/request",

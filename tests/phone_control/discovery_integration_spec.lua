@@ -38,6 +38,7 @@ T["discovers real registry Sessions without Attention and fences replacements"] 
       end))
     end
     nvim.fn.delete(directory, "rf")
+    nvim.fn.delete(directory .. "-replacement", "rf")
   end)
   assert(controller:attach(controller_id))
   local first = assert(api:create_session("mock", { cwd = root, name = "same" }))

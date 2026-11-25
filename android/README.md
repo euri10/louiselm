@@ -125,8 +125,14 @@ lock, expiry, or screen destruction; switching briefly to another app retains it
 The computer also enforces five minutes of interaction inactivity and a one-hour
 absolute limit. Disabling workspace access on the computer leaves capture pairing
 and recordings intact. Forgetting the phone also revokes pairing. To read a
-Session, enable `phone_control.enabled` and Attention in the owning Neovim,
-then tap its Session card and unlock the workspace. The page follows current
+Session, enable `phone_control.enabled` in the owning Neovim and unlock the
+workspace. **Phone control** lists live Sessions in the approved project and
+Agent scope, even without Attention. Each row includes its current state and
+exact controller and Session identities; use **More Sessions** to continue a
+large list and **Refresh** to start again. Select a row to open that Session,
+or enable Attention and tap its Session card. **Sessions** returns to the list.
+Disconnected or replaced controllers and disposed Sessions are unavailable;
+they never redirect to another Session. The conversation follows current
 state and offers **Load older messages** for available history. Updates refresh
 the snapshot; load older pages again if it changes. The screen keeps at most
 500 entries at once and offers Refresh to return to the newest messages.
