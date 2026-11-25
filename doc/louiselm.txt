@@ -1038,6 +1038,14 @@ Session API                                                     *louiselm-api*
   events on the Session. doc/api.md in the repository is the complete typed
   surface, generated from the same annotations.
 
+  session:read_history({ before = 0, limit = 50, revision = 0 }, callback)
+  reads a bounded conversation page. Continue with its subject, revision and
+  next_before as before; changes or Disposal return stale_subject and require
+  a fresh first page. The page reports replay and archive availability,
+  redaction, missing content and truncation. The returned function cancels the
+  callback. Remote delivery requires independent authorization for the exact
+  Session.
+
   Grok question and plan-review requests arrive as validated
   interaction_requested events. A synchronous consumer can respond during
   delivery; an asynchronous consumer must call event.claim() during delivery

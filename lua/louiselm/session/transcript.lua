@@ -52,6 +52,7 @@
 ---@field entries louiselm.session.TranscriptEntry[] Recorded blocks, in arrival order.
 ---@field open_tool_calls table<string, louiselm.session.TranscriptEntry> Tool calls awaiting a terminal status, by ACP tool call id.
 ---@field dispatched table<string|number, louiselm.session.TranscriptEntry> Dispatched prompts indexed for Handoff provenance.
+---@field break_text boolean A structured interaction separates adjacent text blocks.
 ---@field record fun(self: louiselm.session.Transcript, event: louiselm.session.Event) Ingest one session event.
 ---@field record_user fun(self: louiselm.session.Transcript, text: string) Record a live, client-submitted prompt.
 ---@field record_handoff fun(self: louiselm.session.Transcript, text: string, source_session_id: string) Record a Handoff prompt and its source Session.
@@ -101,10 +102,11 @@ end
 ---@param text string
 local function append_text(self, kind, text)
   local last = self.entries[#self.entries]
-  if last ~= nil and last.kind == kind then
+  if not self.break_text and last ~= nil and last.kind == kind then
     last.text = last.text .. text
     return
   end
+  self.break_text = false
   self.entries[#self.entries + 1] = { kind = kind, text = text }
 end
 
@@ -138,27 +140,34 @@ end
 ---@param event louiselm.session.Event
 function Transcript:record(event)
   if event.type == "prompt_dispatched" then
-    local parts = {}
-    for _, block in ipairs(event.data.prompt) do
-      if type(block) == "table" then
-        if block.type == "text" and type(block.text) == "string" then
-          parts[#parts + 1] = block.text
-        elseif
-          block.type == "resource"
-          and type(block.resource) == "table"
-          and type(block.resource.text) == "string"
-        then
-          parts[#parts + 1] = block.resource.text
-        elseif block.type == "resource_link" and type(block.uri) == "string" then
-          parts[#parts + 1] = "[resource: " .. block.uri .. "]"
-        elseif type(block.type) == "string" then
-          parts[#parts + 1] = "[" .. block.type .. "]"
+    local text = event.data.display_text
+    if text == nil then
+      local parts = {}
+      for _, block in ipairs(event.data.prompt) do
+        if type(block) == "table" then
+          if block.type == "text" and type(block.text) == "string" then
+            parts[#parts + 1] = block.text
+          elseif
+            block.type == "resource"
+            and type(block.resource) == "table"
+            and type(block.resource.text) == "string"
+          then
+            parts[#parts + 1] = block.resource.text
+          elseif block.type == "resource_link" and type(block.uri) == "string" then
+            parts[#parts + 1] = "[resource: " .. block.uri .. "]"
+          elseif type(block.type) == "string" then
+            parts[#parts + 1] = "[" .. block.type .. "]"
+          end
         end
       end
+      text = table.concat(parts, "\n")
     end
-    local entry = { kind = "user", text = event.data.display_text or table.concat(parts, "\n") }
+    local entry = { kind = "user", text = text }
     self.entries[#self.entries + 1] = entry
     self.dispatched[event.data.turn_id] = entry
+    self.break_text = false
+  elseif event.type == "interaction_requested" then
+    self.break_text = true
   elseif event.type == "compaction_updated" then
     for _, entry in ipairs(self.entries) do
       if entry.kind == "compaction" and entry.id == event.data.id then
@@ -251,6 +260,7 @@ function Transcript:record_handoff(text, source_session_id)
     text = text,
     handoff_source_session_id = source_session_id,
   }
+  self.break_text = false
 end
 
 ---Return a deep copy of the recorded entries, in arrival order.
@@ -263,7 +273,7 @@ end
 ---Create an empty transcript recorder.
 ---@return louiselm.session.Transcript transcript
 function M.new()
-  return setmetatable({ entries = {}, open_tool_calls = {}, dispatched = {} }, Transcript)
+  return setmetatable({ entries = {}, open_tool_calls = {}, dispatched = {}, break_text = false }, Transcript)
 end
 
 ---Collapse a value onto one line so it can be interpolated into a single-line

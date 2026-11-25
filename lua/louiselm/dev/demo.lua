@@ -1,4 +1,5 @@
 local Events = require("louiselm.session.events")
+local Transcript = require("louiselm.session.transcript")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -324,9 +325,12 @@ end
 
 ---Start one deterministic browser-local turn.
 ---@param prompt louiselm.session.Prompt
+---@param _callback? fun(result: unknown, error?: string)
+---@param _metadata? louiselm.routing.SubmissionMetadata
+---@param display_text? string
 ---@return integer? request_id
 ---@return string? error_message
-function Session:prompt(prompt)
+function Session:prompt(prompt, _callback, _metadata, display_text)
   if self.state.status ~= "ready" then
     return nil, "session is not ready"
   end
@@ -338,6 +342,12 @@ function Session:prompt(prompt)
   local revision = self.revision
   local handoff = prompt_contains(prompt, "## Handoff")
   set_status(self, "prompting")
+  emit(self, "admission_settled", { turn_id = self.state.current_turn, result = "dispatched" })
+  emit(self, "prompt_dispatched", {
+    turn_id = self.state.current_turn,
+    prompt = type(prompt) == "string" and { { type = "text", text = prompt } } or prompt,
+    display_text = display_text,
+  })
   self.api.schedule(120, function()
     if handoff then
       acknowledge_handoff(self, revision)
@@ -414,6 +424,7 @@ local function add_session(api, agent_name, options, source, acp_session_id, sta
   local session = setmetatable({
     api = api,
     emitter = Events.new(),
+    transcript = Transcript.new(),
     revision = 0,
     calculator_path = api.project_root .. "/lua/calculator.lua",
     client = { agent_capabilities = { loadSession = true } },
@@ -432,6 +443,9 @@ local function add_session(api, agent_name, options, source, acp_session_id, sta
       embedded_context = true,
     },
   }, Session)
+  session:on(function(event)
+    session.transcript:record(event)
+  end)
   if type(options.on_event) == "function" then
     session:on(options.on_event)
   end

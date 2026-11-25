@@ -264,6 +264,15 @@ Session creation/loading options when an operation needs no supplied servers.
   lifecycle, permission policies, and typed events are available without the
   chat buffer.
 
+The local `session:read_history({ before = 0, limit = 50, revision = 0 }, callback)`
+reads a bounded page of the Session's conversation. For older pages, pass the
+returned `subject`, `revision`, and `next_before` as `before`; a changed or
+disposed Session returns `stale_subject` and requires a fresh first page. The
+page reports replay, unavailable archive binding, redaction, missing content,
+and truncation. The returned function cancels the pending callback. A remote
+consumer must independently authorize access to the exact Session before
+delivering this content.
+
 The chat winbar shows turn state, a useful Session name, Agent, and current
 Model and effort while you scroll. The example below includes Account limits
 from an adapter advertising the extension; Agents without support, including

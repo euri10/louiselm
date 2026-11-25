@@ -67,6 +67,12 @@ T["demo API"]["startup opens an idle chat before any prompt or diff"] = function
   MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0):match("^louiselm://demo%-") ~= nil, true)
   local content = table.concat(nvim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
   MiniTest.expect.equality(content:find("calculator.lua", 1, true) ~= nil, true)
+  assert(runtime.chat:submit("fix the calculator"))
+  local view = runtime.chat.views[runtime.session:inspect().id]
+  assert(nvim.wait(1000, function()
+    return view.pending_admission == nil
+  end))
+  MiniTest.expect.equality(view.transcript:snapshot()[1], { kind = "user", text = "fix the calculator" })
 end
 
 T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted file-edit turn"] = function()
@@ -90,13 +96,13 @@ T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted f
     { type = "text", text = "surprise me with a fix" },
   }))
   MiniTest.expect.equality(session:inspect().status, "prompting")
-  MiniTest.expect.equality(#events, 1)
+  MiniTest.expect.equality({ events[2].type, events[3].type }, { "admission_settled", "prompt_dispatched" })
 
   drain(queued)
   MiniTest.expect.equality(session:inspect().status, "waiting_permission")
-  MiniTest.expect.equality(events[2].type, "chunk")
-  MiniTest.expect.equality(events[2].data.content.text:find("scripted demo", 1, true) ~= nil, true)
-  MiniTest.expect.equality(events[3].type, "tool_call_started")
+  MiniTest.expect.equality(events[4].type, "chunk")
+  MiniTest.expect.equality(events[4].data.content.text:find("scripted demo", 1, true) ~= nil, true)
+  MiniTest.expect.equality(events[5].type, "tool_call_started")
   MiniTest.expect.equality(permission.data.operation, {
     kind = "file_edit",
     path = path,
@@ -189,7 +195,7 @@ T["demo API"]["drops scheduled Agent work after disposal"] = function()
   assert(session:dispose())
   drain(queued)
 
-  MiniTest.expect.equality(events, { "state_changed", "state_changed" })
+  MiniTest.expect.equality(events, { "state_changed", "admission_settled", "prompt_dispatched", "state_changed" })
   MiniTest.expect.equality(session:inspect().status, "disposed")
   assert(api:dispose())
   nvim.fn.delete(root, "rf")
@@ -291,8 +297,8 @@ T["demo API"]["answers reviewed Handoff content without proposing a file edit"] 
     types[event.type] = true
   end
   MiniTest.expect.equality(types.permission_requested, nil)
-  MiniTest.expect.equality(events[2].type, "chunk")
-  MiniTest.expect.equality(events[2].data.content.text:find("Handoff received", 1, true) ~= nil, true)
+  MiniTest.expect.equality(events[4].type, "chunk")
+  MiniTest.expect.equality(events[4].data.content.text:find("Handoff received", 1, true) ~= nil, true)
   MiniTest.expect.equality(session:inspect().status, "ready")
 
   assert(api:dispose())

@@ -12,6 +12,7 @@ local chats = {}
 local function fake_session(id, agent, working_dir)
   local listeners = {}
   local session = {
+    transcript = require("louiselm.session.transcript").new(),
     state = {
       id = id,
       agent = agent,
@@ -75,6 +76,7 @@ local function fake_session(id, agent, working_dir)
   end
 
   function session:emit(event)
+    self.transcript:record(event)
     for _, listener in ipairs(listeners) do
       listener(event)
     end

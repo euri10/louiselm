@@ -281,6 +281,11 @@ local function emit_api(lines, context)
   )
   append_prose(
     lines,
+    "session:read_history({ before = 0, limit = 50, revision = 0 }, callback) reads a bounded conversation page. Continue with its subject, revision and next_before as before; changes or Disposal return stale_subject and require a fresh first page. The page reports replay and archive availability, redaction, missing content and truncation. The returned function cancels the callback. Remote delivery requires independent authorization for the exact Session.",
+    context
+  )
+  append_prose(
+    lines,
     "Grok question and plan-review requests arrive as validated interaction_requested events. A synchronous consumer can respond during delivery; an asynchronous consumer must call event.claim() during delivery before retaining event.respond. Only the first claim succeeds. Without an owner, both requests return cancelled; a headless Session never approves a plan automatically. interaction_cancelled retires consumer authority on completion, failure, cancellation, disposal or process exit. Late responses cannot send twice. See docs/grok-interactions.md for wire outcomes and pending live acceptance.",
     context
   )

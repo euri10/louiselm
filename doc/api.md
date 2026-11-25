@@ -261,6 +261,7 @@ string|table
 - `definition: louiselm.agent.Definition` -- Agent process definition.
 - `dispose: fun(self: louiselm.session.Session, reason?: string):boolean, string?`
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
+- `history: louiselm.session.History` -- Bounded projection of this Session's owned conversation.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `interactions: louiselm.session.InteractionEntry[]` -- Pending vendor interactions, in arrival order.
 - `load_session_id: string?` -- Agent-side session identifier to load.
@@ -279,6 +280,7 @@ string|table
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
 - `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string):string?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
+- `read_history: fun(self: louiselm.session.Session, request: louiselm.session.HistoryRequest, callback: fun(page?: louiselm.session.HistoryPage, error_code?: string)):fun()`
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
 - `recording_turn: { id: string, sequence: integer, finished: boolean, dispatched: boolean }?` -- Active recording identity.
@@ -324,6 +326,98 @@ string|table
 ```lua
 fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError)
 ```
+
+### louiselm.session.HistoryRequest
+
+- `before: integer` -- Exclusive sequence cursor; zero starts at the newest entry.
+- `limit: integer` -- Maximum entries examined, from 1 through 50.
+- `revision: integer` -- Exact first-page revision for continuation, or zero for current state.
+- `subject: string?` -- Incarnation from the first page; required for continuation.
+
+### louiselm.session.HistorySource
+
+- `archive: "unavailable"` -- No archive has been bound to this Session by its owner.
+- `missing: boolean` -- Unsupported or missing source material was observed.
+- `redaction: "present"|"unknown"` -- Known exclusions, or no source redaction evidence.
+- `replay: "not_applicable"|"unverified"` -- ACP replay has no completeness guarantee.
+- `truncated: boolean` -- An entry on this page was shortened.
+
+### louiselm.session.HistoryMessage
+
+- `kind: "message"`
+- `role: "assistant"|"user"`
+- `seq: integer`
+- `text: string`
+- `truncated: boolean`
+
+### louiselm.session.HistoryTool
+
+- `content: string`
+- `id: string`
+- `kind: "tool"`
+- `seq: integer`
+- `status: "completed"|"failed"|"in_progress"|"pending"|"unknown"`
+- `title: string`
+- `truncated: boolean`
+
+### louiselm.session.HistoryOption
+
+- `description: string`
+- `label: string`
+- `preview: string`
+
+### louiselm.session.HistoryQuestion
+
+- `kind: "question"`
+- `multi_select: boolean`
+- `options: louiselm.session.HistoryOption[]`
+- `question: string`
+- `request_id: string`
+- `seq: integer`
+- `truncated: boolean`
+
+### louiselm.session.HistoryPlan
+
+- `kind: "plan"`
+- `request_id: string`
+- `seq: integer`
+- `text: string`
+- `truncated: boolean`
+
+### louiselm.session.HistoryEntry
+
+```lua
+louiselm.session.HistoryMessage|louiselm.session.HistoryPlan|louiselm.session.HistoryQuestion|louiselm.session.HistoryTool
+```
+
+### louiselm.session.HistoryPage
+
+- `complete: boolean` -- Whether the projected snapshot and this page have no known gaps.
+- `entries: louiselm.session.HistoryMessage|louiselm.session.HistoryPlan|louiselm.session.HistoryQuestion|louiselm.session.HistoryTool[]` -- Closed variants, ascending by sequence.
+- `next_before: integer` -- Exclusive cursor, or zero when no older entries remain.
+- `revision: integer` -- Snapshot revision, invalidated by a projected update.
+- `source: louiselm.session.HistorySource` -- Source and projection limitations.
+- `status: "admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6)` -- Session status at this revision.
+- `subject: string` -- Exact Session incarnation; never authority on its own.
+
+### louiselm.session.HistoryCallback
+
+```lua
+fun(page?: louiselm.session.HistoryPage, error_code?: string)
+```
+
+### louiselm.session.History
+
+- `entries: table[]` -- References to owned transcript entries or bounded interaction projections.
+- `missing: boolean`
+- `read: fun(self: louiselm.session.History, request: louiselm.session.HistoryRequest, callback: fun(page?: louiselm.session.HistoryPage, error_code?: string)):fun()`
+- `record: fun(self: louiselm.session.History, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))`
+- `recorded: integer`
+- `redacted: boolean`
+- `revision: integer`
+- `session: louiselm.session.Session`
+- `transcript: louiselm.session.Transcript`
+- `transcript_entries: table<louiselm.session.TranscriptEntry, table>` -- Timeline entries keyed by their owner-held transcript entry.
 
 ### louiselm.session.DiscoveryOptions
 

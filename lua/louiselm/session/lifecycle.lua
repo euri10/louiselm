@@ -3,6 +3,7 @@ local Interactions = require("louiselm.acp.interactions")
 local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
 local Transcript = require("louiselm.session.transcript")
+local History = require("louiselm.session.history")
 local Validation = require("louiselm.session.validation")
 local Compaction = require("louiselm.session.compaction")
 local Provider = require("louiselm.agent.provider")
@@ -100,6 +101,7 @@ local nvim = vim
 ---@field state louiselm.session.State Internal mutable state.
 ---@field emitter louiselm.session.EventEmitter Event subscribers.
 ---@field transcript louiselm.session.Transcript Conversation owned for this Session's lifetime.
+---@field history louiselm.session.History Bounded projection of this Session's owned conversation.
 ---@field client louiselm.acp.Client? ACP client.
 ---@field acp_session_id string? Agent-side session identifier.
 ---@field load_session_id string? Agent-side session identifier to load.
@@ -135,6 +137,7 @@ local nvim = vim
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
+---@field read_history fun(self: louiselm.session.Session, request: louiselm.session.HistoryRequest, callback: louiselm.session.HistoryCallback): fun()
 ---@field usage_history fun(self: louiselm.session.Session, callback: louiselm.session.UsageHistoryCallback)
 ---@field option_usage fun(self: louiselm.session.Session, option_id: string, callback: louiselm.session.OptionUsageCallback)
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
@@ -1598,8 +1601,10 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     start_timeout_ms = options.start_timeout_ms or DEFAULT_START_TIMEOUT_MS,
     stderr_buffer = "",
   }, Session)
+  session.history = History.new(session)
   session:on(function(event)
     session.transcript:record(event)
+    session.history:record(event)
   end)
   if options.on_event ~= nil then
     session:on(options.on_event)
@@ -1675,6 +1680,22 @@ function Session:inspect()
   state.acp_session_id = self.acp_session_id
   ---@cast state louiselm.session.State
   return state
+end
+
+---Read a bounded, closed history page from this exact live Session.
+---The first page returns an incarnation and revision; continuations must use
+---both. Updates, disposal or a replacement Session refuse stale reads. The
+---reader examines at most 50 entries and returns at most 240 KiB of encoded
+---entries per page. It never reads raw archives; source limitations are explicit.
+---It grants no remote authority. The callback is scheduled on the main loop and
+---cancellation suppresses delivery. Errors are `malformed`, `stale_subject` or
+---`unavailable`.
+---@param self louiselm.session.Session
+---@param request louiselm.session.HistoryRequest Cursor, limit and expected revision.
+---@param callback louiselm.session.HistoryCallback Page or closed error code.
+---@return fun() cancel Suppress a queued callback.
+function Session:read_history(request, callback)
+  return self.history:read(request, callback)
 end
 
 ---Read committed usage associations for this Session, even before load completes.

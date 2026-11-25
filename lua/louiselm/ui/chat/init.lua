@@ -1847,7 +1847,13 @@ local function attach_session(self, session, event_relay, background)
   if self.disposed then
     return false, "chat UI is disposed"
   end
-  if type(session) ~= "table" or type(session.inspect) ~= "function" or type(session.on) ~= "function" then
+  if
+    type(session) ~= "table"
+    or type(session.inspect) ~= "function"
+    or type(session.on) ~= "function"
+    or type(session.transcript) ~= "table"
+    or type(session.transcript.snapshot) ~= "function"
+  then
     return false, "chat requires a session"
   end
   local state = session:inspect()

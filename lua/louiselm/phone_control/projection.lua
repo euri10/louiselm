@@ -97,6 +97,7 @@ local function tool_fields(self, value, names)
   for name in pairs(value) do
     if not allowed[name] then
       self.omitted = true
+      break
     end
   end
   local text, shortened = bounded(table.concat(parts, "\n"))
