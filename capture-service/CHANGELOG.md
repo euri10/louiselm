@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.0](https://github.com/euri10/louiselm/compare/capture-v0.1.0...capture-v0.2.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **attention:** Attention and receiver interfaces require revision 2. Update the plugin, capture service and Android app together.
+* **attention:** request status requires scope and origin identifiers.
+
+### Features
+
+* **attention:** improve Android inbox ([faa1b79](https://github.com/euri10/louiselm/commit/faa1b7910556403a7c63f8b24d71dfc5d8f67fda))
+* **attention:** persist supply conditions ([6d3714f](https://github.com/euri10/louiselm/commit/6d3714f54deaa65d1ff5a04ea8cd7c22e9f1edbf))
+
+
+### Bug Fixes
+
+* **capture:** isolate one-shot blocking work ([223c339](https://github.com/euri10/louiselm/commit/223c339086da7375526314b8fd98c8e694c29a33))
+* **capture:** replace transcription default ([8155389](https://github.com/euri10/louiselm/commit/8155389e9d44c97a1142289dde6d591abc0691a8))
+* retain withdrawal alerts for parked pins ([1ce4b16](https://github.com/euri10/louiselm/commit/1ce4b164315f5638548958d294c8388a4f7572dd))
+
 ## 0.1.0 (2026-10-08)
 
 
