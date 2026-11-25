@@ -57,6 +57,7 @@ private object PhoneScreenFixture {
     var latestSource = PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false)
     var olderSource = latestSource
     var nextBefore = 0L
+    var olderNextBefore = 0L
     var staleOlder = false
     var olderOutcome: PhoneControlOutcome? = null
     val readRequests = mutableListOf<Triple<Long, Long, Boolean>>()
@@ -66,7 +67,7 @@ private object PhoneScreenFixture {
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
-        older = emptyList(); nextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
+        older = emptyList(); nextBefore = 0; olderNextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
         latestSource = PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false); olderSource = latestSource
     }
 }
@@ -139,7 +140,7 @@ class PhoneScreenClientFixture {
         val complete = source.replay == "not_applicable" && source.redaction == "unknown" && !source.missing && !source.truncated
         return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),
             PhoneScreenFixture.revision, "ready", if (before == 0L) PhoneScreenFixture.latest else PhoneScreenFixture.older,
-            if (before == 0L) PhoneScreenFixture.nextBefore else 0, complete, source))
+            if (before == 0L) PhoneScreenFixture.nextBefore else PhoneScreenFixture.olderNextBefore, complete, source))
     }
 
     @Implementation(methodName = "listControllers")
@@ -441,6 +442,34 @@ class PhoneControlActivityTest {
             R.string.phone_redacted, R.string.phone_missing, R.string.phone_truncated)) {
             assertTrue(displayed.contains(activity.getString(id)))
         }
+    }
+
+    @Test
+    fun historyCanLoadPastAnEmptyPage() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(4, "assistant", "recent", false))
+        PhoneScreenFixture.nextBefore = 4
+        PhoneScreenFixture.olderNextBefore = 3
+        PhoneScreenFixture.olderSource = PhoneHistorySource("not_applicable", "unavailable", "unknown", true, false)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        drain()
+        buttonText("Load older messages").performClick()
+        drain()
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("recent") })
+        PhoneScreenFixture.older = listOf(PhoneControlEntry.Message(2, "user", "earlier", false))
+        PhoneScreenFixture.olderNextBefore = 0
+        buttonText("Load older messages").performClick()
+        drain()
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("earlier") })
+        assertEquals(listOf(4L, 3L), PhoneScreenFixture.readRequests.takeLast(2).map { it.first })
     }
 
     @Test

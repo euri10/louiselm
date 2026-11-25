@@ -300,11 +300,14 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             source,
         } => {
             let payload = fixed::<10>(&request.payload).map_err(|_| Refusal::Unavailable)?;
+            let mut before_bytes = [0_u8; 8];
+            before_bytes.copy_from_slice(&payload[..8]);
+            let before = u64::from_be_bytes(before_bytes);
             let limit = usize::from(u16::from_be_bytes([payload[8], payload[9]]));
             let mut previous = 0;
             for entry in &entries {
                 let seq = entry.valid_sequence().ok_or(Refusal::Unavailable)?;
-                if seq <= previous {
+                if seq <= previous || (before != 0 && seq >= before) {
                     return Err(Refusal::Unavailable);
                 }
                 previous = seq;
@@ -322,11 +325,18 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
                         || source.missing
                         || source.truncated))
                 || next_before > MAX_INTEGER
+                || (next_before != 0 && before != 0 && next_before >= before)
                 || (next_before != 0
                     && entries
                         .first()
                         .and_then(ReadEntry::valid_sequence)
-                        .is_none_or(|seq| next_before > seq))
+                        .is_some_and(|seq| next_before > seq))
+                || (next_before != 0
+                    && !source.missing
+                    && entries
+                        .first()
+                        .and_then(ReadEntry::valid_sequence)
+                        .is_none_or(|seq| next_before < seq))
                 || !matches!(
                     status.as_str(),
                     "starting"
@@ -1046,6 +1056,31 @@ mod tests {
         assert_eq!(
             super::validate_read_response(&serde_json::to_vec(&page).unwrap(), &request).unwrap(),
             page
+        );
+        let mut older_request = request.clone();
+        older_request.payload = "000000000000000a0032".into();
+        older_request.expected_revision = 1;
+        let mut skipped = page.clone();
+        skipped["entries"] = json!([]);
+        skipped["next_before"] = json!(9);
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&skipped).unwrap(), &older_request)
+                .unwrap(),
+            skipped
+        );
+        skipped["entries"] =
+            json!([{"kind":"message","seq":9,"role":"user","text":"visible","truncated":false}]);
+        skipped["next_before"] = json!(8);
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&skipped).unwrap(), &older_request)
+                .unwrap(),
+            skipped
+        );
+        skipped["entries"] = json!([]);
+        skipped["next_before"] = json!(10);
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&skipped).unwrap(), &older_request),
+            Err(super::Refusal::Unavailable)
         );
         let mut wrong = page.clone();
         wrong["subject_id"] = json!("08".repeat(16));

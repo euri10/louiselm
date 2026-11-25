@@ -53,4 +53,41 @@ class PhoneControlPagesTest {
         assertEquals(3L, refresh.page.nextBefore)
         assertTrue(refresh.missingOlder)
     }
+
+    @Test
+    fun refreshAdvancesAcrossAnEmptyPageWithoutLosingEarlierMessages() {
+        val newest = page(2, listOf(5), 5)
+        val previous = page(1, listOf(1, 2))
+        val calls = mutableListOf<Long>()
+        val result = reconcilePhoneSessionPages(newest, previous, 500, { before, _, _ ->
+            calls += before
+            PhoneControlResult.Value(if (before == 5L) page(2, emptyList(), 3).copy(complete = false,
+                source = PhoneHistorySource("not_applicable", "unavailable", "unknown", true, false))
+            else page(2, listOf(1, 2)))
+        }, { throw AssertionError("unexpected restart") })
+        val refresh = (result as PhoneControlResult.Value).value
+        assertEquals(listOf(5L, 3L), calls)
+        assertEquals(listOf(1L, 2L, 5L), refresh.page.entries.map { it.seq })
+        assertTrue(refresh.page.source.missing)
+    }
+
+    @Test
+    fun refreshBoundsEmptyPagesAndRejectsAStalledCursor() {
+        val newest = page(2, listOf(10), 10)
+        val previous = page(1, listOf(1))
+        val source = PhoneHistorySource("not_applicable", "unavailable", "unknown", true, false)
+        var reads = 0
+        val bounded = reconcilePhoneSessionPages(newest, previous, 100, { before, _, _ ->
+            reads++
+            PhoneControlResult.Value(page(2, emptyList(), before - 1).copy(complete = false, source = source))
+        }, { throw AssertionError("unexpected restart") })
+        val refresh = (bounded as PhoneControlResult.Value).value
+        assertEquals(2, reads)
+        assertEquals(8L, refresh.page.nextBefore)
+        assertTrue(refresh.missingOlder)
+        val stalled = reconcilePhoneSessionPages(newest, previous, 100, { before, _, _ ->
+            PhoneControlResult.Value(page(2, emptyList(), before).copy(complete = false, source = source))
+        }, { throw AssertionError("unexpected restart") })
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED), stalled)
+    }
 }

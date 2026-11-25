@@ -84,6 +84,8 @@ class PhoneControlClientTest {
         var expectedInteraction = true
         var badRevision = false
         var badCursor = false
+        var skippedCursor = 0L
+        var partialPage = false
         val transport: PhoneControlTransport = { _, path, body, _ ->
             assertEquals("request", path)
             val wire = body.getJSONObject("request")
@@ -100,8 +102,10 @@ class PhoneControlClientTest {
             })
             PhoneControlReply.SessionPage(request.controllerId, if (mismatched) "44".repeat(16) else request.subjectId,
                 request.operationId, if (badRevision) expectedRevision + 1 else if (expectedRevision == 0L) 1 else expectedRevision,
-                "ready", if (badCursor) listOf(PhoneControlEntry.Message(expectedBefore, "user", "wrong page", false)) else emptyList(),
-                0, true, PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false))
+                "ready", if (badCursor) listOf(PhoneControlEntry.Message(expectedBefore, "user", "wrong page", false))
+                    else if (partialPage) listOf(PhoneControlEntry.Message(40, "user", "visible", false)) else emptyList(),
+                skippedCursor, skippedCursor == 0L,
+                PhoneHistorySource("not_applicable", "unavailable", "unknown", skippedCursor != 0L, false))
         }
         val client = PhoneControlClient(context, keys, transport)
         val target = PhoneControlTarget("33".repeat(16), "44".repeat(16))
@@ -122,6 +126,19 @@ class PhoneControlClientTest {
             client.readSession(period, target, 1, before = expectedBefore, limit = expectedLimit,
                 expectedRevision = expectedRevision, interaction = false) { mayDeliver })
         badCursor = false
+        skippedCursor = 41
+        assertTrue(client.readSession(period, target, 1, before = expectedBefore, limit = expectedLimit,
+            expectedRevision = expectedRevision, interaction = false) { mayDeliver } is PhoneControlResult.Value)
+        partialPage = true
+        skippedCursor = 39
+        assertTrue(client.readSession(period, target, 1, before = expectedBefore, limit = expectedLimit,
+            expectedRevision = expectedRevision, interaction = false) { mayDeliver } is PhoneControlResult.Value)
+        partialPage = false
+        skippedCursor = 42
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
+            client.readSession(period, target, 1, before = expectedBefore, limit = expectedLimit,
+                expectedRevision = expectedRevision, interaction = false) { mayDeliver })
+        skippedCursor = 0
         expectedBefore = 0
         expectedLimit = 50
         expectedRevision = 0

@@ -18,12 +18,14 @@ internal fun reconcilePhoneSessionPages(
 ): PhoneControlResult<PhoneSessionRefresh> {
     val oldest = previous?.entries?.firstOrNull()?.seq ?: return PhoneControlResult.Value(PhoneSessionRefresh(newest, false))
     if (previous.revision == newest.revision) return PhoneControlResult.Value(PhoneSessionRefresh(newest, false))
-    if (newest.entries.isEmpty()) return PhoneControlResult.Value(PhoneSessionRefresh(newest, true))
     var entries = newest.entries
     var cursor = newest.nextBefore
     var complete = newest.complete
     var source = newest.source
-    while (entries.first().seq > oldest && cursor != 0L && entries.size < window) {
+    var reads = 0
+    val maxReads = (window + 49) / 50
+    while ((entries.firstOrNull()?.seq ?: Long.MAX_VALUE) > oldest && cursor != 0L && entries.size < window && reads < maxReads) {
+        reads++
         when (val result = readOlder(cursor, newest.revision, minOf(50, window - entries.size))) {
             is PhoneControlResult.Failure -> {
                 if (result.outcome != PhoneControlOutcome.STALE_SUBJECT) return result
@@ -35,8 +37,9 @@ internal fun reconcilePhoneSessionPages(
             is PhoneControlResult.Value -> {
                 val older = result.value
                 if (older.controllerId != newest.controllerId || older.subjectId != newest.subjectId ||
-                    older.revision != newest.revision || older.status != newest.status || older.entries.isEmpty() ||
-                    older.entries.last().seq >= entries.first().seq || older.entries.last().seq >= cursor) {
+                    older.revision != newest.revision || older.status != newest.status ||
+                    older.entries.any { it.seq >= cursor } || (older.nextBefore != 0L && older.nextBefore >= cursor) ||
+                    (older.entries.isNotEmpty() && entries.isNotEmpty() && older.entries.last().seq >= entries.first().seq)) {
                     return PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)
                 }
                 entries = older.entries + entries
@@ -46,6 +49,6 @@ internal fun reconcilePhoneSessionPages(
             }
         }
     }
-    val missing = entries.first().seq > oldest
+    val missing = (entries.firstOrNull()?.seq ?: Long.MAX_VALUE) > oldest
     return PhoneControlResult.Value(PhoneSessionRefresh(newest.copy(entries = entries, nextBefore = cursor, complete = complete, source = source), missing))
 }

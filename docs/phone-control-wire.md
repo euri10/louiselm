@@ -322,7 +322,9 @@ shortened on this page. A complete page cannot have unverified replay, known
 redaction, missing content or truncation. Clients combine page-local omissions
 when assembling a snapshot and show the limitations with the content.
 Return fewer than `limit` entries if necessary to keep the whole response
-within the byte bound; a nonzero cursor must advance. Never include unsubmitted
+within the byte bound; a nonzero cursor must advance. An omitted entry can make
+the page empty, or put the cursor before its first visible entry; such a page
+sets `source.missing` and remains usable for the next bounded read. Never include unsubmitted
 desktop drafts/Staged context, ambient files, raw ACP objects, arbitrary RPC,
 Lua, shell or environment data.
 

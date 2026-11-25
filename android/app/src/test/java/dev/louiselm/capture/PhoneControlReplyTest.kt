@@ -42,6 +42,8 @@ class PhoneControlReplyTest {
         assertTrue(parsed is PhoneControlReply.SessionPage)
         assertEquals(2, (parsed as PhoneControlReply.SessionPage).entries.size)
         assertEquals(PhoneHistorySource("unverified", "unavailable", "present", true, false), parsed.source)
+        val emptyPage = page.replace(Regex("\\\"entries\\\":\\[.*?\\],\\\"next_before\\\":0"), "\"entries\":[],\"next_before\":5")
+        assertTrue(parse(emptyPage) is PhoneControlReply.SessionPage)
         for (bad in listOf(
             page.replace("\"seq\":2", "\"seq\":1"),
             page.replace("\"role\":\"assistant\"", "\"role\":\"system\""),

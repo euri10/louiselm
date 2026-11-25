@@ -60,8 +60,8 @@ T["reads replay that predates phone observation and rejects stale pages"] = func
       expected_revision = 0,
     },
   }
-  local function read(before, revision)
-    request.request.payload = string.format("%016x0032", before)
+  local function read(before, revision, limit)
+    request.request.payload = string.format("%016x%04x", before, limit or 50)
     request.request.expected_revision = revision
     local result
     controller:read(nvim.json.encode(request), function(value)
@@ -116,6 +116,16 @@ T["reads replay that predates phone observation and rejects stale pages"] = func
   local withheld = read(0, 0)
   MiniTest.expect.equality(withheld.source.redaction, "present")
   MiniTest.expect.equality(nvim.json.encode(withheld):find("private reasoning", 1, true), nil)
+
+  session.emitter:emit({
+    type = "tool_call_started",
+    session_id = session:inspect().id,
+    data = { toolCallId = string.rep("x", 8193), title = "oversized id", status = "pending" },
+  })
+  local skipped = read(0, 0, 1)
+  MiniTest.expect.equality(#skipped.entries, 0)
+  MiniTest.expect.equality(skipped.next_before > 0, true)
+  MiniTest.expect.equality(skipped.source.missing, true)
 end
 
 return T

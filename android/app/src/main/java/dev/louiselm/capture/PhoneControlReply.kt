@@ -227,7 +227,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 val entries = fields.wireArray("entries").map { parseEntry(requireNotNull(it)) }
                 require(entries.zipWithNext().all { (left, right) -> left.seq < right.seq })
                 val nextBefore = number("next_before")
-                require(nextBefore == 0L || entries.isNotEmpty() && nextBefore <= entries.first().seq)
+                require(nextBefore == 0L || entries.isEmpty() || nextBefore <= entries.first().seq)
                 val source = requireNotNull(fields["source"]).wireObject()
                 source.wireKeys("replay", "archive", "redaction", "missing", "truncated")
                 val replay = source.wireString("replay")
@@ -236,6 +236,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 if (replay !in setOf("unverified", "not_applicable") || archive != "unavailable" ||
                     redaction !in setOf("present", "unknown")) throw UnsupportedReply()
                 val details = PhoneHistorySource(replay, archive, redaction, source.wireBoolean("missing"), source.wireBoolean("truncated"))
+                require(nextBefore == 0L || details.missing || entries.firstOrNull()?.seq == nextBefore)
                 val complete = fields.wireBoolean("complete")
                 require(!complete || replay == "not_applicable" && redaction == "unknown" && !details.missing && !details.truncated)
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,

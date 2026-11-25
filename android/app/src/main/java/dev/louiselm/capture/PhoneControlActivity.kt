@@ -551,8 +551,10 @@ class PhoneControlActivity : Activity() {
             val page = refresh.page
             val unchanged = !older && !interaction && !refresh.missingOlder && previous != null && page.revision == previous.revision
             if (older) {
-                if (previous == null || page.revision != previous.revision || page.entries.isEmpty() ||
-                    previous.entries.isEmpty() || page.entries.last().seq >= previous.entries.first().seq) {
+                if (previous == null || page.revision != previous.revision || page.status != previous.status ||
+                    page.entries.any { it.seq >= before } || (page.nextBefore != 0L && page.nextBefore >= before) ||
+                    (page.entries.isNotEmpty() && previous.entries.isNotEmpty() &&
+                        page.entries.last().seq >= previous.entries.first().seq)) {
                     showFailure(PhoneControlOutcome.MALFORMED)
                     return@task
                 }

@@ -195,9 +195,11 @@ internal class PhoneControlClient(
         if (reply.controllerId != target.controllerId || reply.subjectId != target.subjectId || reply.operationId != operationId) {
             return@guarded malformed()
         }
+        val first = reply.entries.firstOrNull()?.seq
         if ((expectedRevision != 0L && reply.revision != expectedRevision) || reply.entries.size > limit ||
             (before != 0L && reply.entries.any { it.seq >= before }) ||
-            (reply.nextBefore != 0L && (reply.entries.isEmpty() || reply.nextBefore != reply.entries.first().seq))) {
+            (reply.nextBefore != 0L && ((before != 0L && reply.nextBefore >= before) ||
+                (first != null && reply.nextBefore > first) || (!reply.source.missing && reply.nextBefore != first)))) {
             return@guarded malformed()
         }
         PhoneControlResult.Value(reply)
