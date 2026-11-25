@@ -101,3 +101,38 @@ fn contributor_updates_are_serialized() {
     assert!(agents.contains(&"agent-a".to_owned()));
     assert!(agents.contains(&"agent-b".to_owned()));
 }
+
+#[test]
+fn protected_projection_checks_current_revision_while_contributors_are_locked() {
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+
+    let root = tempfile::tempdir().unwrap();
+    let store = RunStore::new(root.path()).unwrap();
+    store
+        .admit_phone_bound(admission(), TOKEN, binding())
+        .unwrap();
+    let competing_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.path().join(".lock"))
+        .unwrap();
+    let project = store
+        .with_phone_binding(RUN, 1, |binding, view| {
+            assert_eq!(view.revision, 1);
+            assert!(competing_lock.try_lock_exclusive().is_err());
+            binding.project_id.clone()
+        })
+        .unwrap();
+    assert_eq!(project, binding().project_id);
+    competing_lock.try_lock_exclusive().unwrap();
+    FileExt::unlock(&competing_lock).unwrap();
+    store.add_phone_contributor(RUN, "other").unwrap();
+    assert!(store.with_phone_binding(RUN, 1, |_, _| ()).is_err());
+    assert_eq!(
+        store
+            .with_phone_binding(RUN, 0, |binding, _| binding.agents.len())
+            .unwrap(),
+        2
+    );
+}

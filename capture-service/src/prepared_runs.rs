@@ -288,19 +288,37 @@ impl PreparedRunStore {
     /// # Errors
     /// Refuses missing, unpublished or stale registrations and storage errors.
     pub fn read(&self, id: &str, expected: u64) -> Result<PreparedRunRevision, PreparedRunError> {
+        self.with_published(id, expected, Clone::clone)
+    }
+
+    /// Inspect a published revision while publication and updates are locked.
+    ///
+    /// Callers checking a phone grant must acquire the current authority and
+    /// pairing locks before this store lock. The short synchronous callback
+    /// must not perform blocking I/O or retain a reference. The store itself
+    /// never authenticates the caller or grants protected access.
+    ///
+    /// # Errors
+    /// Refuses missing, unpublished or stale registrations and storage errors.
+    pub fn with_published<T>(
+        &self,
+        id: &str,
+        expected: u64,
+        inspect: impl FnOnce(&PreparedRunRevision) -> T,
+    ) -> Result<T, PreparedRunError> {
         self.locked(|| {
             let state = self.load()?;
             let entry = state
                 .registrations
-                .into_iter()
+                .iter()
                 .find(|entry| entry.id == id && entry.published)
                 .ok_or(PreparedRunError::Invalid("registration is unavailable"))?;
-            entry
+            let revision = entry
                 .revisions
-                .into_iter()
                 .last()
                 .filter(|revision| revision.revision == expected)
-                .ok_or(PreparedRunError::Invalid("registration revision is stale"))
+                .ok_or(PreparedRunError::Invalid("registration revision is stale"))?;
+            Ok(inspect(revision))
         })
     }
 

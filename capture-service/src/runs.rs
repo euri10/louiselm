@@ -513,6 +513,35 @@ impl RunStore {
         })
     }
 
+    /// Inspect one bound Run while its contributor set and revision are locked.
+    ///
+    /// `expected_revision` is zero for current state, or the exact nonzero
+    /// revision being checked. Callers checking a phone grant must acquire the
+    /// current authority and pairing locks before this Run lock. The short
+    /// synchronous callback must not perform blocking I/O or retain a reference.
+    /// This operation does not authenticate a caller or grant access.
+    ///
+    /// # Errors
+    /// Refuses unbound, missing, damaged or stale Runs and storage errors.
+    pub fn with_phone_binding<T>(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        inspect: impl FnOnce(&RunProjectBinding, &RunView) -> T,
+    ) -> Result<T, RunStoreError> {
+        self.locked(|| {
+            let run = self.run(id)?;
+            if expected_revision != 0 {
+                require_revision(&run, expected_revision)?;
+            }
+            let binding = run.phone_binding.clone().ok_or_else(|| {
+                RunStoreError::Invalid("Run has no owner project binding".to_owned())
+            })?;
+            let view = run_view(run);
+            Ok(inspect(&binding, &view))
+        })
+    }
+
     /// Reserve generated-work capacity before an external mutation begins.
     ///
     /// # Errors

@@ -120,6 +120,32 @@ fn concurrent_republication_has_only_one_winner() {
 }
 
 #[test]
+fn publication_check_serializes_with_revision_and_unpublication() {
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("prepared");
+    let store = PreparedRunStore::open(&path).unwrap();
+    let first = store.publish(None, &binding(), "{}").unwrap();
+    let competing_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.join(".lock"))
+        .unwrap();
+    store
+        .with_published(&first.id, 1, |revision| {
+            assert_eq!(revision.selection, "{}");
+            assert!(competing_lock.try_lock_exclusive().is_err());
+        })
+        .unwrap();
+    competing_lock.try_lock_exclusive().unwrap();
+    FileExt::unlock(&competing_lock).unwrap();
+    store.unpublish(&first.id, 1).unwrap();
+    assert!(store.with_published(&first.id, 1, |_| ()).is_err());
+}
+
+#[test]
 fn missing_or_damaged_existing_store_fails_closed() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("prepared");
