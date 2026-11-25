@@ -230,7 +230,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     )
     .unwrap();
     if saved_review {
-        fs::set_permissions(&operator, fs::Permissions::from_mode(0o700)).unwrap();
+        // The broker reads the explicitly shared snapshot; private phone state
+        // and the destination remain protected by their own directories.
+        fs::set_permissions(&operator, fs::Permissions::from_mode(0o755)).unwrap();
     }
     let checkout = operator.join(if saved_review { "checkout" } else { "run" });
     let source_repository = if saved_review {
@@ -342,6 +344,31 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         fs::Permissions::from_mode(0o444),
     )
     .unwrap();
+    if saved_review {
+        let readable_by_broker = |path: &Path| {
+            Command::new("/usr/bin/setpriv")
+                .args([
+                    "--reuid",
+                    &config.broker_uid.to_string(),
+                    "--regid",
+                    &config.broker_gid.to_string(),
+                    "--clear-groups",
+                    "/usr/bin/test",
+                    "-r",
+                ])
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(readable_by_broker(
+            &promotion_snapshot.join("snapshot.json")
+        ));
+        let private_source =
+            operator.join("phone/run-sources/44444444-4444-4444-8444-444444444444.json");
+        assert!(private_source.is_file());
+        assert!(!readable_by_broker(&private_source));
+    }
     chown(
         &journal,
         Some(config.operator_uid),

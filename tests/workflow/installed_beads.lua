@@ -205,7 +205,13 @@ local controller = assert(Workflow.new_bead_executor({
       end)
     end
     stage(request, function(stale)
-      assert(stale.code == 2, "stale HEAD must refuse before publication")
+      if saved_review then
+        print("SAVED_REVIEW_STALE_HEAD code=" .. tostring(stale.code) .. " stderr=" .. (stale.stderr or ""))
+      end
+      assert(
+        stale.code == 2,
+        "stale HEAD must refuse before publication: code=" .. tostring(stale.code) .. " stderr=" .. (stale.stderr or "")
+      )
       assert(nvim.json.decode(stale.stderr).error == "invalid_request")
       stage(case.stage_inputs, function(result)
         if result.code ~= 0 then
