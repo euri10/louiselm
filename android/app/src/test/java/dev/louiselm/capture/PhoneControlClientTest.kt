@@ -1,6 +1,7 @@
 package dev.louiselm.capture
 
 import android.content.Context
+import java.io.File
 import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -109,6 +110,8 @@ class PhoneControlClientTest {
         }
         val client = PhoneControlClient(context, keys, transport)
         val target = PhoneControlTarget("33".repeat(16), "44".repeat(16))
+        // Online reads do not require the optional download store to be writable.
+        File(context.filesDir, "phone-offline-v1").writeText("unavailable")
         assertTrue(client.readSession(period, target, 1) { mayDeliver } is PhoneControlResult.Value)
         expectedBefore = 42
         expectedLimit = 12

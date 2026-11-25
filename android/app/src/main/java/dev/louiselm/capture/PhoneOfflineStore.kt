@@ -215,13 +215,23 @@ internal class PhoneOfflineStore(private val root: File) {
         purgeDeniedSource(directory, id)
     }
 
-    /** Clear a subject fence only after a new authorized, explicit read. */
-    fun allowSource(source: PhoneOfflineSource) = locked {
+    /** Observe the fence before an explicit read, so a later refusal cannot be undone by that read. */
+    fun sourceFence(source: PhoneOfflineSource): String? = locked {
+        validateSource(source)
+        val directory = directory(source.receiver)
+        if (hasMarker(revocationFile(directory))) throw SecurityException("downloads were revoked")
+        markerValue(denialFile(directory, copyId(source)))
+    }
+
+    /** Clear only the exact fence observed before a successful authorized, explicit read. */
+    fun allowSource(source: PhoneOfflineSource, observed: String?): Boolean = locked {
         validateSource(source)
         val directory = directory(source.receiver)
         if (hasMarker(revocationFile(directory))) throw SecurityException("downloads were revoked")
         val marker = denialFile(directory, copyId(source))
-        if (hasMarker(marker)) deleteFile(marker)
+        if (markerValue(marker) != observed) return@locked false
+        if (observed != null) deleteFile(marker)
+        true
     }
 
     /** Recheck before explicitly removing an unreadable download, leaving other copies and keys intact. */
@@ -441,7 +451,16 @@ internal class PhoneOfflineStore(private val root: File) {
 
     private fun writeMarker(file: File) {
         if (Files.isSymbolicLink(file.toPath())) throw IOException("invalid download path")
-        FileOutputStream(file, true).use { it.fd.sync() }
+        FileOutputStream(file).use {
+            it.write(ByteArray(16).also { bytes -> SecureRandom().nextBytes(bytes) })
+            it.fd.sync()
+        }
+    }
+
+    private fun markerValue(file: File): String? {
+        if (!hasMarker(file)) return null
+        if (Files.isSymbolicLink(file.toPath()) || file.length() != 16L) throw IOException("invalid download fence")
+        return phoneControlHex(file.readBytes().also { if (it.size != 16) throw IOException("invalid download fence") })
     }
 
     private fun purgeDeniedSource(directory: File, id: String) {

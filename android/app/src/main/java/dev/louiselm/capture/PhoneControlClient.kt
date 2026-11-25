@@ -215,7 +215,6 @@ internal class PhoneControlClient(
                 (first != null && reply.nextBefore > first) || (!reply.source.missing && reply.nextBefore != first)))) {
             return@guarded malformed()
         }
-        if (interaction) offlineStore.allowSource(source)
         PhoneControlResult.Value(reply)
     }
 

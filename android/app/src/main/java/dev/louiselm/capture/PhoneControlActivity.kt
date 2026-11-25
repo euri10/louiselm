@@ -966,6 +966,9 @@ class PhoneControlActivity : Activity() {
             return
         }
         task({ maySend ->
+            val fence = if (interaction && local != null) offlineResult {
+                PhoneControlResult.Value(offlineStore.sourceFence(storedSource))
+            } else null
             fun read(cursor: Long, revision: Long, limit: Int, userInteraction: Boolean) =
                 client.readSession(current, requested, SystemClock.elapsedRealtime(), before = cursor, limit = limit,
                     expectedRevision = revision, interaction = userInteraction) {
@@ -990,6 +993,10 @@ class PhoneControlActivity : Activity() {
                                     val save = offlineResult {
                                         val key = local.key(SystemClock.elapsedRealtime())
                                             ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                                        if (!foreground || !maySend() || fence !is PhoneControlResult.Value ||
+                                            !offlineStore.allowSource(storedSource, fence.value)) {
+                                            return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                                        }
                                         PhoneControlResult.Value(offlineStore.save(storedSource, pages.asSequence(), false, openedAt,
                                             System.currentTimeMillis(), offlineBudget(), key) {
                                             foreground && maySend() && pairing.binding() == binding &&

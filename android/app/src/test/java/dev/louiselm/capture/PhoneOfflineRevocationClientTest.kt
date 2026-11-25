@@ -93,7 +93,11 @@ class PhoneOfflineRevocationClientTest {
         assertTrue(client.readSession(period, target, started, interaction = false) { true } is PhoneControlResult.Value)
         assertEquals(PhoneOfflineSave.REVOKED, store.save(source, sequenceOf(original), true, 2, 2, 1_000_000, key) { true })
         assertTrue(client.readSession(period, target, started) { true } is PhoneControlResult.Value)
-        assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(original), true, 2, 2, 1_000_000, key) { true })
+        assertEquals(PhoneOfflineSave.REVOKED, store.save(source, sequenceOf(original), true, 2, 2, 1_000_000, key) { true })
+        val saved = downloadPhoneOffline(store, source, key, 1_000_000, 2, true, { true }, {}) { cursor, revision, interaction ->
+            client.readSession(period, target, started, before = cursor, expectedRevision = revision, interaction = interaction) { true }
+        }
+        assertEquals(PhoneControlResult.Value(PhoneOfflineDownload(PhoneOfflineSave.SAVED, null)), saved)
     }
 
     @Test

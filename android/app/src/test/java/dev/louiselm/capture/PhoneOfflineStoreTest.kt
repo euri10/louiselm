@@ -156,9 +156,13 @@ class PhoneOfflineStoreTest {
         store.save(source, sequenceOf(page("one")), true, 1, 1, 1_000_000, key) { true }
         store.save(other, sequenceOf(page("two", otherTarget)), true, 1, 1, 1_000_000, key) { true }
         store.denySource(source)
+        val oldFence = store.sourceFence(source)
         assertEquals(listOf(other), store.listAll(key).copies.map { it.source })
         assertEquals(PhoneOfflineSave.REVOKED, store.save(source, sequenceOf(page("late")), false, 2, 2, 1_000_000, key) { true })
-        store.allowSource(source)
+        store.denySource(source)
+        assertFalse(store.allowSource(source, oldFence))
+        assertEquals(PhoneOfflineSave.REVOKED, store.save(source, sequenceOf(page("late")), false, 2, 2, 1_000_000, key) { true })
+        assertTrue(store.allowSource(source, store.sourceFence(source)))
         assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(page("authorized")), false, 3, 3, 1_000_000, key) { true })
     }
 }

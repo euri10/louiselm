@@ -18,6 +18,7 @@ internal fun downloadPhoneOffline(
     read: (Long, Long, Boolean) -> PhoneControlResult<PhoneControlReply.SessionPage>,
 ): PhoneControlResult<PhoneOfflineDownload> {
     val existing = store.list(source.receiver, key).copies.firstOrNull { it.source.target == source.target }
+    val fence = if (interaction) store.sourceFence(source) else null
     var interruption: PhoneControlOutcome? = null
     var count = 0
     val pages = sequence {
@@ -35,6 +36,10 @@ internal fun downloadPhoneOffline(
                 }
                 is PhoneControlResult.Value -> {
                     val page = response.value
+                    if (!mayContinue()) throw DownloadRefusal(PhoneControlOutcome.UNAVAILABLE)
+                    if (interaction && count == 0 && !store.allowSource(source, fence)) {
+                        throw DownloadRefusal(PhoneControlOutcome.REVOKED)
+                    }
                     yield(page)
                     count++
                     progress(count)
