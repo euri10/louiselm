@@ -249,7 +249,8 @@ internal class PhoneControlClient(
     /** Read one bounded page of explicitly published drafts under current phone authority. */
     fun listPrepared(period: PhoneControlPeriod, nowMs: Long, after: String? = null,
         interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.PreparedPage> = guarded {
-        val result = preparedRequest(period, nowMs, null, after, interaction, maySend)
+        val payload = after?.let { phoneControlHex(it, 16) } ?: ByteArray(16)
+        val result = ownerRead(period, nowMs, "00".repeat(16), payload, 0, 52, interaction, maySend)
         if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
         val (reply, operationId) = result.value
         if (reply !is PhoneControlReply.PreparedPage) return@guarded refusal(reply)
@@ -265,7 +266,7 @@ internal class PhoneControlClient(
     /** Read the exact registered revision and Run identity selected from a protected page. */
     fun readPrepared(period: PhoneControlPeriod, target: PhonePreparedSummary, nowMs: Long,
         interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.PreparedDetail> = guarded {
-        val result = preparedRequest(period, nowMs, target, null, interaction, maySend)
+        val result = ownerRead(period, nowMs, target.registrationId, ByteArray(0), target.revision, 53, interaction, maySend)
         if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
         val (reply, operationId) = result.value
         if (reply !is PhoneControlReply.PreparedDetail) return@guarded refusal(reply)
@@ -274,18 +275,44 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
-    private fun preparedRequest(period: PhoneControlPeriod, nowMs: Long, target: PhonePreparedSummary?, after: String?,
-        interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<Pair<PhoneControlReply, String>> {
+    /** Discover one bounded page of currently authorized durable Runs. */
+    fun listRuns(period: PhoneControlPeriod, nowMs: Long, after: String? = null,
+        interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.RunPage> = guarded {
+        val result = ownerRead(period, nowMs, "00".repeat(16), phoneControlRunCursor(after), 0, 54, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.RunPage) return@guarded refusal(reply)
+        val item = reply.items.singleOrNull()
+        if (reply.requestId != operationId || reply.items.size > 1 ||
+            (item == null && reply.nextAfter.isNotEmpty()) ||
+            (item != null && (reply.nextAfter != item.runId || after != null && item.runId <= after))) {
+            return@guarded malformed()
+        }
+        PhoneControlResult.Value(reply)
+    }
+
+    /** Read one exact durable Run; revision zero requests its current revision. */
+    fun readRun(period: PhoneControlPeriod, runId: String, expectedRevision: Long, nowMs: Long,
+        interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.RunDetail> = guarded {
+        val subject = phoneControlHex(phoneControlRunIdBytes(runId))
+        val result = ownerRead(period, nowMs, subject, ByteArray(0), expectedRevision, 55, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.RunDetail) return@guarded refusal(reply)
+        if (reply.requestId != operationId || reply.run.summary.runId != runId ||
+            expectedRevision != 0L && reply.run.summary.revision != expectedRevision) return@guarded malformed()
+        PhoneControlResult.Value(reply)
+    }
+
+    private fun ownerRead(period: PhoneControlPeriod, nowMs: Long, subject: String, payload: ByteArray,
+        revision: Long, action: Int, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<Pair<PhoneControlReply, String>> {
         if (!period.isActive(nowMs)) return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
         if (!maySend()) return unavailable()
         val config = pairingStore.load() ?: return unavailable()
         if (currentGrant(config) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
-        val subject = target?.registrationId ?: "00".repeat(16)
-        val payload = if (target == null) after?.let { phoneControlHex(it, 16) } ?: ByteArray(16) else ByteArray(0)
         val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
-            period.grant.receiverIdentity, "00".repeat(16), subject, payload, operationId,
-            target?.revision ?: 0, interaction, action = if (target == null) 52 else 53)
+            period.grant.receiverIdentity, "00".repeat(16), subject, payload, operationId, revision, interaction, action = action)
         val signature = period.sign(request, nowMs) ?: return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
         val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
         if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return unavailable()
