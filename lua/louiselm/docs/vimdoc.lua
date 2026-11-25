@@ -347,7 +347,7 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "The Session picker uses vim.ui.select with kind louiselm_session and plain id/label items. Snacks is optional: its select.kinds configuration can bind Ctrl-d to close marked Sessions, falling back to the cursor row only when nothing is marked. Enter still switches. See docs/tutorial.md for the configuration recipe; plain Neovim supports the same bulk-close command without a picker plugin.",
+        "The Session picker uses vim.ui.select with kind louiselm_session and plain id/label items. Chunk-aware pickers such as Snacks color the status cell with the same group as the Session's window-bar entry, so an unseen response shows as a warning. Snacks is optional: its select.kinds configuration can bind Ctrl-d to close marked Sessions, falling back to the cursor row only when nothing is marked. Enter still switches. See docs/tutorial.md for the configuration recipe; plain Neovim supports the same bulk-close command without a picker plugin.",
         context
       )
       append_prose(

@@ -8106,6 +8106,47 @@ T["chat"]["keeps autonomous processing active and queues input until idle"] = fu
   MiniTest.expect.equality(session.prompts, { "next synthetic prompt" })
 end
 
+T["chat"]["Session picker colors an unseen completed turn like the window bar"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2" }
+  end
+  local chat = assert(Chat.new(api, { start_insert_on_switch = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  assert(nvim.wait(1000, function()
+    return chat.views["session-1"].unread_turn
+  end))
+  local rendered
+  nvim.ui.select = function(items, options, callback)
+    rendered = {}
+    for index, item in ipairs(items) do
+      local plain = options.format_item(item)
+      local chunks = options.format_item(item, true)
+      local text, group = "", nil
+      for _, chunk in ipairs(chunks) do
+        text = text .. chunk[1]
+        group = group or chunk[2]
+      end
+      MiniTest.expect.equality(type(plain), "string")
+      MiniTest.expect.equality(text, plain)
+      rendered[index] = { item.id, group }
+    end
+    callback(nil)
+  end
+  assert(chat:switch_session())
+  MiniTest.expect.equality(rendered, {
+    { "session-1", "LouiselmStatusWarning" },
+    { "session-2", "LouiselmStatusReady" },
+  })
+end
+
 T["chat"]["marks an autonomous background response unread only when processing stops"] = function()
   local session = fake_session("session-1", "claude")
   session.state.status = "running"

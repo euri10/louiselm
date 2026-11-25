@@ -304,4 +304,37 @@ T["aligns corresponding options advertised with different Agent ids"] = function
   MiniTest.expect.equality(rows[1]:find("Effort=Xhigh", 1, true) ~= nil, true)
 end
 
+T["colors the picker status cell with the winbar group for the same Session"] = function()
+  local idle = snapshot("idle", "claude")
+  local unseen = snapshot("unseen", "codex")
+  local working = snapshot("working", "claude")
+  working.status = "prompting"
+  local failed = snapshot("failed", "claude")
+  failed.status = "error"
+  local states = { idle, unseen, working, failed }
+  local labels, chunks = Status.session_labels(states, { false, true, false, false })
+  local groups = {}
+  for index, row in ipairs(chunks) do
+    local text = ""
+    for _, chunk in ipairs(row) do
+      text = text .. chunk[1]
+      if chunk[2] ~= nil then
+        groups[index] = { nvim.trim(chunk[1]), chunk[2] }
+      end
+    end
+    -- Chunks redraw exactly the plain label, so filtering and display agree.
+    MiniTest.expect.equality(text, labels[index])
+  end
+  MiniTest.expect.equality(groups, {
+    { "ready", "LouiselmStatusReady" },
+    { "ready", "LouiselmStatusWarning" },
+    { "prompting", "LouiselmStatusActive" },
+    { "error", "LouiselmStatusError" },
+  })
+
+  -- Callers without unread knowledge keep plain status colors.
+  local _, plain = Status.session_labels({ unseen })
+  MiniTest.expect.equality(plain[1][2], { "ready", "LouiselmStatusReady" })
+end
+
 return T

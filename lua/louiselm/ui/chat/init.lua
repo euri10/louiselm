@@ -2317,28 +2317,31 @@ function Chat:switch_session()
     return false, "a Session picker is already open"
   end
   local states = {}
+  local unread_turns = {}
   -- Retained views remain navigable after their Session leaves the live registry.
   for _, id in ipairs(self.view_order) do
     local view = self.views[id]
     if view ~= nil then
       states[#states + 1] = view.session:inspect()
+      unread_turns[#states] = view.unread_turn
     end
   end
   if #states == 0 then
     return false, "no chat sessions are attached"
   end
-  local rows = Status.session_labels(states)
+  local rows, chunks = Status.session_labels(states, unread_turns)
   local choices = {}
   for index, state in ipairs(states) do
-    choices[index] = { id = state.id, label = rows[index] }
+    choices[index] = { id = state.id, label = rows[index], chunks = chunks[index] }
   end
   local suspension = self.decisions:suspend()
   self.session_picker_suspension = suspension
   local opened, picker_error = pcall(Picker.select, choices, {
     prompt = "louiselm session: ",
     kind = "louiselm_session",
-    format_item = function(choice)
-      return choice.label
+    -- Chunk-aware pickers (Snacks) pass `supports_chunks`; matching and stock select use the plain label.
+    format_item = function(choice, supports_chunks)
+      return supports_chunks and choice.chunks or choice.label
     end,
   }, function(choice)
     if self.disposed or self.session_picker_suspension ~= suspension then

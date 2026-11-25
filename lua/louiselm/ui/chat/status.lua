@@ -119,10 +119,25 @@ local function session_option_column(option)
   return "option:" .. option.id
 end
 
+---Pick the highlight group shared by a Session's window-bar entry and picker status cell.
+---@param state louiselm.session.State
+---@param unread_turn boolean Whether a completed response is unseen.
+---@return string group
+local function session_group(state, unread_turn)
+  -- Errors outrank an unseen response, matching the window bar's precedence.
+  if unread_turn and state.status ~= "error" then
+    return "LouiselmStatusWarning"
+  end
+  return STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning"
+end
+
 ---Render aligned picker labels from one opening's snapshots; inputs are unchanged.
 ---@param states louiselm.session.State[]
+---@param unread_turns? boolean[] Unseen completed responses, parallel to `states`.
 ---@return string[] labels Labels in snapshot order; empty for no Sessions.
-function M.session_labels(states)
+---@return {[1]: string, [2]?: string}[][] chunks Per-label text/highlight chunks whose
+---text concatenates to the label; only the status cell carries a group.
+function M.session_labels(states, unread_turns)
   local columns = { "id", "name", "status", "skills", "agent", "loaded" }
   local seen_options = {}
   local rows = {}
@@ -166,18 +181,33 @@ function M.session_labels(states)
   end
 
   local labels = {}
+  local chunks = {}
   for index, row in ipairs(rows) do
     local parts = {}
+    local before, status_cell
     for _, column in ipairs(columns) do
       local width = widths[column]
       if width > 0 then
         local value = row[column]
-        parts[#parts + 1] = value .. string.rep(" ", width - nvim.fn.strdisplaywidth(value))
+        local cell = value .. string.rep(" ", width - nvim.fn.strdisplaywidth(value))
+        if column == "status" then
+          before = table.concat(parts, " · ") .. (#parts > 0 and " · " or "")
+          status_cell = cell
+        end
+        parts[#parts + 1] = cell
       end
     end
-    labels[index] = table.concat(parts, " · ")
+    local label = table.concat(parts, " · ")
+    labels[index] = label
+    -- The status column is never empty ("unknown" fallback), so it always splits the label.
+    local group = session_group(states[index], unread_turns ~= nil and unread_turns[index] == true)
+    chunks[index] = {
+      { before },
+      { status_cell, group },
+      { label:sub(#before + #status_cell + 1) },
+    }
   end
-  return labels
+  return labels, chunks
 end
 
 ---@param state louiselm.session.State
@@ -371,40 +401,23 @@ local function background_winbar_entry(view)
   local state = view.state
   local label = state.name ~= nil and state.name ~= "" and state.name or state.agent
   label = single_line(label)
+  local group = session_group(state, view.unread_turn)
   if state.status == "waiting_permission" then
-    return { id = state.id, group = "LouiselmStatusWarning", text = "! " .. label, attention = true }
+    return { id = state.id, group = group, text = "! " .. label, attention = true }
   end
   if state.status == "error" then
-    return { id = state.id, group = "LouiselmStatusError", text = "✗ " .. label, attention = true }
+    return { id = state.id, group = group, text = "✗ " .. label, attention = true }
   end
   if view.unread_turn then
-    return {
-      id = state.id,
-      group = "LouiselmStatusWarning",
-      text = "● " .. label,
-      attention = true,
-      overflow_glyph = "●",
-    }
+    return { id = state.id, group = group, text = "● " .. label, attention = true, overflow_glyph = "●" }
   end
   if state.status == "ready" then
-    return {
-      id = state.id,
-      group = "LouiselmStatusReady",
-      text = "● " .. label,
-      attention = false,
-      overflow_glyph = "●",
-    }
+    return { id = state.id, group = group, text = "● " .. label, attention = false, overflow_glyph = "●" }
   end
   if state.status == "disposed" then
-    return { id = state.id, group = "LouiselmStatusWarning", text = "✗ " .. label, attention = true }
+    return { id = state.id, group = group, text = "✗ " .. label, attention = true }
   end
-  return {
-    id = state.id,
-    group = STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning",
-    text = "… " .. label,
-    attention = false,
-    overflow_glyph = "…",
-  }
+  return { id = state.id, group = group, text = "… " .. label, attention = false, overflow_glyph = "…" }
 end
 
 ---@param entries louiselm.ui.WinbarEntry[]

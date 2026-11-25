@@ -161,7 +161,10 @@ group. Duplicate IDs close once. Keep or Escape closes nothing.
 With Snacks, add this entry to `picker.sources.select.kinds` in your Snacks
 configuration. Tab marks a row and advances; Ctrl-d closes the marked group,
 or the cursor's Session when no rows are marked. Enter continues switching.
-The picker closes before the native confirmation opens. Other picker providers
+The picker closes before the native confirmation opens. Snacks also colors
+each row's status cell like the Session's window-bar entry: blue while
+working, yellow for an unseen response or a pending permission, green when
+ready. Other picker providers
 can use the same `louiselm_session` kind and each item's `id` and `label` fields;
 plain Neovim supports the command above without any picker plugin.
 
