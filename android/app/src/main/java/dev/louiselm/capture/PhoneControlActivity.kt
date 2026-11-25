@@ -50,6 +50,8 @@ class PhoneControlActivity : Activity() {
     private lateinit var sessionsButton: Button
     private lateinit var moreSessionsButton: Button
     private lateinit var olderButton: Button
+    private lateinit var actionHistoryButton: Button
+    private lateinit var moreActionHistoryButton: Button
     private lateinit var conversation: LinearLayout
     private var target: PhoneControlTarget? = null
     private var attentionNavigation = false
@@ -65,9 +67,11 @@ class PhoneControlActivity : Activity() {
     private var newerOmitted = false
     private var historyChanged = false
     private var browsePage: PhoneBrowsePage? = null
+    private var actionHistoryPage: PhoneControlReply.ActionHistoryPage? = null
+    private var showingActionHistory = false
     private val expiryCheck = Runnable { scheduleExpiry() }
     private val refreshPoll = Runnable {
-        if (foreground && !busy && period != null && target != null && hasReceiverNetworkAccess(this)) {
+        if (foreground && !busy && !showingActionHistory && period != null && target != null && hasReceiverNetworkAccess(this)) {
             readTarget(interaction = false)
         }
     }
@@ -129,7 +133,8 @@ class PhoneControlActivity : Activity() {
                 showFailure(PhoneControlOutcome.REVOKED)
             } else {
                 render()
-                if (target == null && hasReceiverNetworkAccess(this)) readSessions(interaction = false)
+                if (showingActionHistory && hasReceiverNetworkAccess(this)) readActionHistory()
+                else if (target == null && hasReceiverNetworkAccess(this)) readSessions(interaction = false)
                 else if (target == null) render(R.string.phone_unavailable)
                 else if (hasReceiverNetworkAccess(this)) readTarget(interaction = false)
                 else render(R.string.phone_unavailable)
@@ -194,9 +199,14 @@ class PhoneControlActivity : Activity() {
         add(lockButton)
         sessionsButton = Button(this).apply { text = getString(R.string.phone_sessions); setOnClickListener { withNetwork { showSessions() } } }
         add(sessionsButton)
+        actionHistoryButton = Button(this).apply {
+            text = getString(R.string.phone_action_history)
+            setOnClickListener { withNetwork { readActionHistory() } }
+        }
+        add(actionHistoryButton)
         refreshButton = Button(this).apply {
             text = getString(R.string.phone_refresh)
-            setOnClickListener { withNetwork { if (target == null) readSessions() else readTarget() } }
+            setOnClickListener { withNetwork { if (showingActionHistory) readActionHistory() else if (target == null) readSessions() else readTarget() } }
         }
         add(refreshButton)
         moreSessionsButton = Button(this).apply {
@@ -206,6 +216,11 @@ class PhoneControlActivity : Activity() {
         add(moreSessionsButton)
         olderButton = Button(this).apply { text = getString(R.string.phone_load_older); setOnClickListener { withNetwork { readTarget(older = true) } } }
         add(olderButton)
+        moreActionHistoryButton = Button(this).apply {
+            text = getString(R.string.phone_more_actions)
+            setOnClickListener { withNetwork { readActionHistory(actionHistoryPage?.nextAfter) } }
+        }
+        add(moreActionHistoryButton)
         conversation = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         add(conversation)
         add(TextView(this).apply { text = getString(R.string.phone_admin) })
@@ -226,14 +241,18 @@ class PhoneControlActivity : Activity() {
         checkButton.visibility = if (currentStatus is PhoneControlStatus.Pending) View.VISIBLE else View.GONE
         unlockButton.visibility = if (currentStatus is PhoneControlStatus.Granted && !unlocked) View.VISIBLE else View.GONE
         lockButton.visibility = if (unlocked) View.VISIBLE else View.GONE
-        sessionsButton.visibility = if (unlocked && target != null) View.VISIBLE else View.GONE
+        sessionsButton.visibility = if (unlocked && (target != null || showingActionHistory)) View.VISIBLE else View.GONE
         sessionsButton.isEnabled = !busy
+        actionHistoryButton.visibility = if (unlocked) View.VISIBLE else View.GONE
+        actionHistoryButton.isEnabled = !busy
         refreshButton.visibility = if (unlocked) View.VISIBLE else View.GONE
         refreshButton.isEnabled = !busy
-        moreSessionsButton.visibility = if (unlocked && target == null && browsePage?.next != null) View.VISIBLE else View.GONE
+        moreSessionsButton.visibility = if (unlocked && !showingActionHistory && target == null && browsePage?.next != null) View.VISIBLE else View.GONE
         moreSessionsButton.isEnabled = !busy
-        olderButton.visibility = if (unlocked && (sessionPage?.nextBefore ?: 0) != 0L) View.VISIBLE else View.GONE
+        olderButton.visibility = if (unlocked && !showingActionHistory && (sessionPage?.nextBefore ?: 0) != 0L) View.VISIBLE else View.GONE
         olderButton.isEnabled = !busy
+        moreActionHistoryButton.visibility = if (unlocked && showingActionHistory && !actionHistoryPage?.nextAfter.isNullOrEmpty()) View.VISIBLE else View.GONE
+        moreActionHistoryButton.isEnabled = !busy
         enableButton.isEnabled = !busy
         checkButton.isEnabled = !busy
         unlockButton.isEnabled = !busy
@@ -372,6 +391,8 @@ class PhoneControlActivity : Activity() {
 
     private fun showSessions() {
         handler.removeCallbacks(refreshPoll)
+        showingActionHistory = false
+        actionHistoryPage = null
         target = null
         sessionPage = null
         loadedOlder = false
@@ -379,6 +400,51 @@ class PhoneControlActivity : Activity() {
         historyChanged = false
         conversation.removeAllViews()
         readSessions()
+    }
+
+    private fun readActionHistory(after: String? = null) {
+        val current = period ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding()
+        if (binding == null) {
+            lockWorkspace()
+            render(R.string.phone_unavailable)
+            return
+        }
+        showingActionHistory = true
+        handler.removeCallbacks(refreshPoll)
+        task({ maySend ->
+            client.readActionHistoryPage(current, SystemClock.elapsedRealtime(), after = after) {
+                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }, { outcome -> if (foreground) showFailure(outcome) }) { page, _ ->
+            busy = false
+            if (!foreground) return@task
+            if (pairing.binding() != binding || period !== current || !current.isActive(SystemClock.elapsedRealtime())) {
+                lockWorkspace()
+                return@task
+            }
+            actionHistoryPage = page
+            scheduleExpiry()
+            render()
+            conversation.removeAllViews()
+            conversation.visibility = View.VISIBLE
+            if (page.records.isEmpty()) {
+                conversation.addView(TextView(this).apply { text = getString(R.string.phone_no_actions) })
+            }
+            for (record in page.records) {
+                val state = when (record.state) {
+                    PhoneActionState.UNKNOWN -> R.string.phone_action_unknown
+                    PhoneActionState.ACCEPTED -> R.string.phone_action_accepted
+                    PhoneActionState.REJECTED -> R.string.phone_action_rejected
+                    PhoneActionState.FENCED_NO_EFFECT -> R.string.phone_action_fenced
+                }
+                conversation.addView(TextView(this).apply {
+                    text = getString(R.string.phone_action_row, record.action, getString(state), record.operationId)
+                    textSize = 16f
+                })
+            }
+        }
     }
 
     private fun readSessions(cursor: PhoneBrowseCursor? = null, interaction: Boolean = true) {
@@ -545,6 +611,7 @@ class PhoneControlActivity : Activity() {
 
     private fun showFailure(outcome: PhoneControlOutcome) {
         browsePage = null
+        actionHistoryPage = null
         sessionPage = null
         loadedOlder = false
         newerOmitted = false
@@ -581,6 +648,8 @@ class PhoneControlActivity : Activity() {
         cancellation = null
         period?.lock()
         period = null
+        showingActionHistory = false
+        actionHistoryPage = null
         sessionPage = null
         loadedOlder = false
         newerOmitted = false

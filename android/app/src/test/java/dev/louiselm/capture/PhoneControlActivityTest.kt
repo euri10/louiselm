@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.CancellationSignal
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -46,6 +47,9 @@ private object PhoneScreenFixture {
     var reads = 0
     var lastTarget: PhoneControlTarget? = null
     var sessionRows = emptyList<PhoneControlSessionSummary>()
+    var actionHistoryReads = 0
+    var moreActionHistory = false
+    val actionHistoryCursors = mutableListOf<String?>()
     var revision = 1L
     var latest = listOf<PhoneControlEntry>(PhoneControlEntry.Message(1, "assistant", "private session text", false))
     var older = emptyList<PhoneControlEntry>()
@@ -56,6 +60,7 @@ private object PhoneScreenFixture {
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); pairingBinding = "fixture"
+        actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; staleOlder = false; readRequests.clear()
     }
@@ -144,6 +149,18 @@ class PhoneScreenClientFixture {
         val next = if (remaining.size > limit) rows.last().subjectId else ""
         return PhoneControlResult.Value(PhoneControlReply.SessionList(controllerId, "88".repeat(16), rows, next))
     }
+
+    @Implementation(methodName = "readActionHistoryPage")
+    internal fun readActionHistoryPage(period: PhoneControlPeriod, now: Long, after: String?, limit: Int,
+        maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.ActionHistoryPage> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.actionHistoryReads++
+        PhoneScreenFixture.actionHistoryCursors += after
+        val record = PhoneActionRecord((if (after == null) "12" else "34").repeat(16), "aa".repeat(32), "ab".repeat(16), "cd".repeat(16),
+            3, "23".repeat(32), "34".repeat(16), 1, 2, 100, 101, PhoneActionState.UNKNOWN, "")
+        val next = if (after == null && PhoneScreenFixture.moreActionHistory) record.operationId else ""
+        return PhoneControlResult.Value(PhoneControlReply.ActionHistoryPage("88".repeat(16), listOf(record), next))
+    }
 }
 
 @Implements(PhoneControlAuthenticator::class, isInAndroidSdk = false)
@@ -211,6 +228,50 @@ class PhoneControlActivityTest {
         .single { it.text.toString() == text }
     private fun hasText(id: Int) = views(activity.window.decorView).filterIsInstance<TextView>()
         .any { it.text.toString() == activity.getString(id) }
+
+    @Test
+    fun actionHistoryIsAvailableWithoutALiveSessionAndIsHiddenOnLock() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.moreActionHistory = true
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(3) { drain() }
+        val period = requireNotNull(PhoneScreenFixture.lastPeriod)
+        val now = SystemClock.elapsedRealtime()
+        val remaining = period.remainingMs(now)
+        button(R.string.phone_action_history).performClick()
+        drain()
+        assertEquals(1, PhoneScreenFixture.actionHistoryReads)
+        assertEquals(remaining, period.remainingMs(now))
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("12".repeat(16)) && it.text.toString().contains(activity.getString(R.string.phone_action_unknown)) })
+        button(R.string.phone_more_actions).performClick()
+        drain()
+        assertEquals(listOf(null, "12".repeat(16)), PhoneScreenFixture.actionHistoryCursors)
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("34".repeat(16)) })
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("34".repeat(16)) })
+    }
+
+    @Test
+    fun screenLockFencesACompletedActionHistoryRead() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(3) { drain() }
+        button(R.string.phone_action_history).performClick()
+        executor.runAll()
+        assertEquals(1, PhoneScreenFixture.actionHistoryReads)
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("12".repeat(16)) })
+    }
 
     @Test
     fun browsesSessionsWithoutAttentionAndOpensTheExactIdenticalName() {

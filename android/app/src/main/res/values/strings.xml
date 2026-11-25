@@ -33,6 +33,14 @@
     <string name="phone_refresh">Refresh</string>
     <string name="phone_sessions">Sessions</string>
     <string name="phone_more_sessions">More Sessions</string>
+    <string name="phone_action_history">Action history</string>
+    <string name="phone_more_actions">More actions</string>
+    <string name="phone_no_actions">No retained actions on this page.</string>
+    <string name="phone_action_row">Action %1$d · %2$s\nOperation: %3$s</string>
+    <string name="phone_action_unknown">Unknown: delivery is not proven</string>
+    <string name="phone_action_accepted">Accepted; completion is not proven</string>
+    <string name="phone_action_rejected">Rejected</string>
+    <string name="phone_action_fenced">No effect; original fenced</string>
     <string name="phone_no_sessions">No authorized live Sessions on this page.</string>
     <string name="phone_session_row">%1$s\n%2$s · %3$s · %4$s\nController: %5$s\nSession: %6$s\n%7$s</string>
     <string name="phone_load_older">Load older messages</string>
