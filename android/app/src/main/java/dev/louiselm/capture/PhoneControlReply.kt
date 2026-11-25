@@ -65,6 +65,7 @@ internal sealed class PhoneControlEntry(open val seq: Long, open val truncated: 
 }
 
 internal class UnsupportedReply : Exception()
+internal data object PhoneWireNull
 
 private fun readWireValue(reader: JsonReader, depth: Int): Any {
     require(depth <= 5) { "nested wire value" }
@@ -95,6 +96,7 @@ private fun readWireValue(reader: JsonReader, depth: Int): Any {
             require(it.matches(Regex("0|[1-9][0-9]*"))) { "invalid integer" }
         }.toLong().also { require(it <= 9_007_199_254_740_991L) }
         JsonToken.BOOLEAN -> reader.nextBoolean()
+        JsonToken.NULL -> { reader.nextNull(); PhoneWireNull }
         else -> throw IllegalArgumentException("invalid field")
     }
 }

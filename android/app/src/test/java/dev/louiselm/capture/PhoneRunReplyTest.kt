@@ -68,4 +68,10 @@ class PhoneRunReplyTest {
         extra.getJSONObject("run").put("working_dir", "/private")
         assertEquals(malformed, parse(extra))
     }
+
+    @Test
+    fun validNullDoesNotTurnAnUnknownReplyIntoMalformedJson() {
+        val future = JSONObject().put("v", 1).put("type", "future_run").put("live", JSONObject.NULL)
+        assertEquals(PhoneControlReply.Failure(PhoneControlOutcome.UNSUPPORTED), parse(future))
+    }
 }
