@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "keys": {
+    "enrolled": {
+      "spki": "3059301306072a8648ce3d020106082a8648ce3d030107034200047b4e2286b9f8c516afdd521de65248a93ee025acbc63a3ae7c71233f2098b3f218809ef2165310a18e43f451699ad39764c7e1aa902bbb24dc2f1d62f255fbb6",
+      "sec1": "047b4e2286b9f8c516afdd521de65248a93ee025acbc63a3ae7c71233f2098b3f218809ef2165310a18e43f451699ad39764c7e1aa902bbb24dc2f1d62f255fbb6",
+      "pkcs8": "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420fdeaaaa962af0bd372113b02cb437e3511817f987d42a86051a9aa45d803ce3ba144034200047b4e2286b9f8c516afdd521de65248a93ee025acbc63a3ae7c71233f2098b3f218809ef2165310a18e43f451699ad39764c7e1aa902bbb24dc2f1d62f255fbb6"
+    },
+    "working": {
+      "spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004afdc53b540dd0de0570ce5ad9a5091866775ffdab395ec99137e8c35b61f7718febae35d4ed457b9063dce43880de4c256b7466e9c2c6bfd8e754892dcfd5c66",
+      "sec1": "04afdc53b540dd0de0570ce5ad9a5091866775ffdab395ec99137e8c35b61f7718febae35d4ed457b9063dce43880de4c256b7466e9c2c6bfd8e754892dcfd5c66",
+      "pkcs8": "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420dbed7a177eb0fed53035a9bbbd9dcb56ea2b8b763afe93b584e538cb62042b35a14403420004afdc53b540dd0de0570ce5ad9a5091866775ffdab395ec99137e8c35b61f7718febae35d4ed457b9063dce43880de4c256b7466e9c2c6bfd8e754892dcfd5c66"
+    },
+    "wrong": {
+      "spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004e718d8b154f6e8ce80c7ac8b72b24ea6463574a91d5af38d82c4c5e11372659d4904d45cd6224a2edad00014fbcc369653f09940746a56d1c7337d0c30207fed",
+      "sec1": "04e718d8b154f6e8ce80c7ac8b72b24ea6463574a91d5af38d82c4c5e11372659d4904d45cd6224a2edad00014fbcc369653f09940746a56d1c7337d0c30207fed",
+      "pkcs8": "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420ede8416c2849e094580c9652a1ffec4c60b681ef0a1037047a9bcb2366dfb103a14403420004e718d8b154f6e8ce80c7ac8b72b24ea6463574a91d5af38d82c4c5e11372659d4904d45cd6224a2edad00014fbcc369653f09940746a56d1c7337d0c30207fed"
+    }
+  },
+  "proof": {
+    "grant_id": "00112233445566778899aabbccddeeff",
+    "grant_revision": 7,
+    "enrolled_key_hash": "aeba9a7bf500fd6a0561f2dae06952262031d7dfc5c815e407ee8cedb778d1e9",
+    "receiver_identity": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "challenge_id": "102132435465768798a9bacbdcedfe0f",
+    "challenge": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "working_key": "04afdc53b540dd0de0570ce5ad9a5091866775ffdab395ec99137e8c35b61f7718febae35d4ed457b9063dce43880de4c256b7466e9c2c6bfd8e754892dcfd5c66",
+    "transcript": "6c6f756973656c6d2d70686f6e652d636f6e74726f6c00010100112233445566778899aabbccddeeff0000000000000007aeba9a7bf500fd6a0561f2dae06952262031d7dfc5c815e407ee8cedb778d1e90102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20102132435465768798a9bacbdcedfe0f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f04afdc53b540dd0de0570ce5ad9a5091866775ffdab395ec99137e8c35b61f7718febae35d4ed457b9063dce43880de4c256b7466e9c2c6bfd8e754892dcfd5c66",
+    "signature_der": "3045022100e88613c2e8e3c4676dbb116ad27e92cc2f5c29ea3b7379e2740503a5b4194df902206e5700e56216e5761d50e991d28eed2ec5a496dc4d4a597cae7cf103ae1ac28c",
+    "signature_raw": "e88613c2e8e3c4676dbb116ad27e92cc2f5c29ea3b7379e2740503a5b4194df96e5700e56216e5761d50e991d28eed2ec5a496dc4d4a597cae7cf103ae1ac28c"
+  },
+  "request": {
+    "grant_id": "00112233445566778899aabbccddeeff",
+    "grant_revision": 7,
+    "period_id": "112233445566778899aabbccddeeff00",
+    "receiver_identity": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "controller_id": "2233445566778899aabbccddeeff0011",
+    "subject_id": "33445566778899aabbccddeeff001122",
+    "action": 1,
+    "before": 0,
+    "limit": 20,
+    "payload": "00000000000000000014",
+    "operation_id": "445566778899aabbccddeeff00112233",
+    "expected_revision": 12,
+    "interaction": 1,
+    "payload_hash": "8e44c560fb945e8644510e5421cb1ab1adb4ca80355a815c8b7610fc0ccf8cb2",
+    "transcript": "6c6f756973656c6d2d70686f6e652d636f6e74726f6c00010200112233445566778899aabbccddeeff0000000000000007112233445566778899aabbccddeeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202233445566778899aabbccddeeff001133445566778899aabbccddeeff001122018e44c560fb945e8644510e5421cb1ab1adb4ca80355a815c8b7610fc0ccf8cb2445566778899aabbccddeeff00112233000000000000000c01",
+    "signature_der": "304502200cf93004d2759a9f080d719254f950c2fd7c7be70cbb22fce7a5a10921191b79022100bc4483c95817a7b376351e2604750611acd3bf49e241251a3fd387ce6e550117",
+    "signature_raw": "0cf93004d2759a9f080d719254f950c2fd7c7be70cbb22fce7a5a10921191b79bc4483c95817a7b376351e2604750611acd3bf49e241251a3fd387ce6e550117"
+  },
+  "cases": [
+    {
+      "name": "valid proof",
+      "kind": "proof",
+      "key": "enrolled",
+      "outcome": "ok"
+    },
+    {
+      "name": "wrong enrolled key",
+      "kind": "proof",
+      "key": "wrong",
+      "outcome": "unauthenticated"
+    },
+    {
+      "name": "stale challenge",
+      "kind": "proof",
+      "key": "enrolled",
+      "current_challenge_id": "ffeeddccbbaa99887766554433221100",
+      "outcome": "expired"
+    },
+    {
+      "name": "replayed challenge",
+      "kind": "proof",
+      "key": "enrolled",
+      "consumed_id": "102132435465768798a9bacbdcedfe0f",
+      "outcome": "unauthenticated"
+    },
+    {
+      "name": "valid request",
+      "kind": "request",
+      "key": "working",
+      "outcome": "ok"
+    },
+    {
+      "name": "altered payload",
+      "kind": "request",
+      "key": "working",
+      "payload": "00000000000000000015",
+      "outcome": "unauthenticated"
+    },
+    {
+      "name": "wrong working key",
+      "kind": "request",
+      "key": "wrong",
+      "outcome": "unauthenticated"
+    },
+    {
+      "name": "cross subject",
+      "kind": "request",
+      "key": "working",
+      "current_subject_id": "ffffffffffffffffffffffffffffffff",
+      "outcome": "stale_subject"
+    },
+    {
+      "name": "replayed request",
+      "kind": "request",
+      "key": "working",
+      "consumed_id": "445566778899aabbccddeeff00112233",
+      "outcome": "unauthenticated"
+    }
+  ]
+}
