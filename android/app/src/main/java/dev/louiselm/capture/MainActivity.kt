@@ -629,13 +629,15 @@ class MainActivity : Activity() {
                     }, matchWidth())
                 } else if (item.subjectKind == AttentionSubjectKind.RUN) {
                     val open = {
-                        startActivity(Intent(this@MainActivity, PhoneControlActivity::class.java)
+                        val intent = Intent(this@MainActivity, PhoneControlActivity::class.java)
                             .putExtra(PhoneControlActivity.ATTENTION, true)
-                            .putExtra(PhoneControlActivity.RUN_ID, item.subjectId))
+                            .putExtra(PhoneControlActivity.RUN_ID, item.subjectId)
+                        item.resultId?.let { intent.putExtra(PhoneControlActivity.RESULT_ID, it) }
+                        startActivity(intent)
                     }
                     card.setOnClickListener { open() }
                     card.addView(Button(this).apply {
-                        text = getString(R.string.phone_open_run)
+                        text = getString(if (item.resultId == null) R.string.phone_open_run else R.string.phone_saved_open)
                         setOnClickListener { open() }
                     }, matchWidth())
                 }
@@ -676,7 +678,7 @@ class MainActivity : Activity() {
                         text = getString(R.string.attention_saved_result, result)
                     }, matchWidth())
                     card.addView(TextView(this).apply {
-                        text = getString(R.string.attention_saved_result_review)
+                        text = getString(R.string.phone_saved_pending_note)
                     }, matchWidth())
                 }
                 item.withdrawal?.let { withdrawal ->

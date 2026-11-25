@@ -99,6 +99,7 @@ class PhoneControlActivity : Activity() {
     private var target: PhoneControlTarget? = null
     private var attentionNavigation = false
     private var attentionRunId: String? = null
+    private var attentionResultId: String? = null
     private var currentStatus: PhoneControlStatus = PhoneControlStatus.Disabled
     private var period: PhoneControlPeriod? = null
     private var offlinePeriod: PhoneOfflinePeriod? = null
@@ -128,6 +129,7 @@ class PhoneControlActivity : Activity() {
     private var runPage: PhoneControlReply.RunPage? = null
     private var runAfter: String? = null
     private var selectedRunId: String? = null
+    private var selectedSavedResult: String? = null
     private var linkedRunSession: PhoneRunSessionTarget? = null
     private var draftTarget: PhoneControlTarget? = null
     private var draftReceiver: String? = null
@@ -160,7 +162,7 @@ class PhoneControlActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         attentionNavigation = intent.getBooleanExtra(ATTENTION, false) || intent.hasExtra(CONTROLLER_ID) ||
-            intent.hasExtra(SUBJECT_ID) || intent.hasExtra(RUN_ID)
+            intent.hasExtra(SUBJECT_ID) || intent.hasExtra(RUN_ID) || intent.hasExtra(RESULT_ID)
         target = try {
             val controller = intent.getStringExtra(CONTROLLER_ID)
             val subject = intent.getStringExtra(SUBJECT_ID)
@@ -177,8 +179,15 @@ class PhoneControlActivity : Activity() {
             target = null
             attentionRunId = null
         }
+        attentionResultId = intent.getStringExtra(RESULT_ID)?.takeIf(::validSavedResultId)
+        if (intent.hasExtra(RESULT_ID) && (attentionResultId == null || attentionRunId == null)) {
+            target = null
+            attentionRunId = null
+            attentionResultId = null
+        }
         showingRuns = attentionRunId != null
         selectedRunId = attentionRunId
+        selectedSavedResult = attentionResultId
         client = PhoneControlClient(applicationContext)
         pendingActionsStore = PendingPhoneActionStore(applicationContext)
         val downloadRoot = File(filesDir, "phone-offline-v1")
@@ -238,8 +247,7 @@ class PhoneControlActivity : Activity() {
                 render()
                 scheduleReconciliation(0)
                 if (showingRuns && hasReceiverNetworkAccess(this)) {
-                    val selected = selectedRunId
-                    if (selected == null) readRunPage(runAfter, interaction = false) else readRun(selected, interaction = false)
+                    readSelectedRun(interaction = false)
                 }
                 else if (showingRuns) render(R.string.phone_unavailable)
                 else if (showingPrepared && hasReceiverNetworkAccess(this)) {
@@ -296,6 +304,7 @@ class PhoneControlActivity : Activity() {
         selectedPrepared = null
         preparedPage = null
         selectedRunId = null
+        selectedSavedResult = null
         linkedRunSession = null
         runPage = null
         openedPages = emptyList()
@@ -391,9 +400,7 @@ class PhoneControlActivity : Activity() {
             text = getString(R.string.phone_refresh)
             setOnClickListener { withNetwork {
                 val selected = selectedPrepared
-                val selectedRun = selectedRunId
-                if (showingRuns && selectedRun != null) readRun(selectedRun)
-                else if (showingRuns) readRunPage()
+                if (showingRuns) readSelectedRun()
                 else if (showingPrepared && selected != null) readPreparedDetail(selected)
                 else if (showingPrepared) readPreparedPage()
                 else if (showingActionHistory) readActionHistory()
@@ -644,6 +651,7 @@ class PhoneControlActivity : Activity() {
         val current = offlinePeriod ?: return
         clearRunSession()
         attentionRunId = null
+        attentionResultId = null
         clearRuns()
         clearPrepared()
         showingOffline = true
@@ -944,7 +952,7 @@ class PhoneControlActivity : Activity() {
                         scheduleReconciliation(0)
                         render()
                         val continueOnline = {
-                            if (showingRuns && selectedRunId != null) withNetwork { readRun(requireNotNull(selectedRunId)) }
+                            if (showingRuns && selectedRunId != null) withNetwork { readSelectedRun() }
                             else if (target != null) withNetwork { readTarget() }
                             else if (!attentionNavigation) withNetwork { readSessions() }
                         }
@@ -1152,17 +1160,19 @@ class PhoneControlActivity : Activity() {
         runPage = null
         runAfter = null
         selectedRunId = null
+        selectedSavedResult = null
     }
 
     private fun clearRunsForLock() {
         clearRuns()
-        attentionRunId?.let { showingRuns = true; selectedRunId = it }
+        attentionRunId?.let { showingRuns = true; selectedRunId = it; selectedSavedResult = attentionResultId }
     }
 
     private fun showRuns() {
         clearRunSession()
         handler.removeCallbacks(refreshPoll)
         attentionRunId = null
+        attentionResultId = null
         clearPrepared()
         showingOffline = false
         showingActionHistory = false
@@ -1176,8 +1186,17 @@ class PhoneControlActivity : Activity() {
         runPage = null
         runAfter = null
         selectedRunId = null
+        selectedSavedResult = null
         conversation.removeAllViews()
         readRunPage()
+    }
+
+    private fun readSelectedRun(interaction: Boolean = true) {
+        val run = selectedRunId
+        val result = selectedSavedResult
+        if (run == null) readRunPage(runAfter, interaction)
+        else if (result == null) readRun(run, interaction = interaction)
+        else readSavedReview(run, result, interaction = interaction)
     }
 
     private fun readRunPage(after: String? = null, interaction: Boolean = true) {
@@ -1205,6 +1224,7 @@ class PhoneControlActivity : Activity() {
             runPage = page
             runAfter = after
             selectedRunId = null
+            selectedSavedResult = null
             scheduleExpiry()
             render()
             conversation.removeAllViews()
@@ -1264,6 +1284,40 @@ class PhoneControlActivity : Activity() {
         }
     }
 
+    private fun readSavedReview(runId: String, resultId: String, revision: String? = null,
+        cursor: PhoneSavedCursor? = null, interaction: Boolean = true) {
+        val current = period ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding()
+        if (binding == null) {
+            lockWorkspace()
+            render(R.string.phone_unavailable)
+            return
+        }
+        conversation.removeAllViews()
+        task({ maySend ->
+            client.readSavedReview(current, runId, resultId, revision, cursor, SystemClock.elapsedRealtime(), interaction) {
+                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }, { outcome -> if (foreground) showFailure(outcome) }) { reply, _ ->
+            busy = false
+            if (!foreground || !showingRuns || selectedRunId != runId || selectedSavedResult != resultId) return@task
+            val now = SystemClock.elapsedRealtime()
+            if (pairing.binding() != binding || period !== current ||
+                !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
+                lockWorkspace()
+                return@task
+            }
+            scheduleExpiry()
+            render()
+            conversation.removeAllViews()
+            for (view in phoneSavedReviewViews(this, reply.review) { next ->
+                withNetwork { readSavedReview(runId, resultId, reply.review.revision, next) }
+            }) conversation.addView(view)
+            conversation.visibility = View.VISIBLE
+        }
+    }
+
     private fun openRunSession(selected: PhoneRunSessionTarget) {
         val current = period ?: return
         if (!foreground || !showingRuns || selectedRunId != selected.runId || !current.isActive(SystemClock.elapsedRealtime())) return
@@ -1284,6 +1338,7 @@ class PhoneControlActivity : Activity() {
         clearRunSession()
         handler.removeCallbacks(refreshPoll)
         attentionRunId = null
+        attentionResultId = null
         clearRuns()
         clearPrepared()
         showingOffline = false
@@ -1313,6 +1368,7 @@ class PhoneControlActivity : Activity() {
         clearRunSession()
         handler.removeCallbacks(refreshPoll)
         attentionRunId = null
+        attentionResultId = null
         clearRuns()
         showingOffline = false
         showingActionHistory = false
@@ -1414,6 +1470,7 @@ class PhoneControlActivity : Activity() {
             return
         }
         attentionRunId = null
+        attentionResultId = null
         clearRunSession()
         clearRuns()
         clearPrepared()
@@ -1920,6 +1977,7 @@ class PhoneControlActivity : Activity() {
         internal const val CONTROLLER_ID = "dev.louiselm.capture.CONTROLLER_ID"
         internal const val SUBJECT_ID = "dev.louiselm.capture.SUBJECT_ID"
         internal const val RUN_ID = "dev.louiselm.capture.RUN_ID"
+        internal const val RESULT_ID = "dev.louiselm.capture.RESULT_ID"
         private const val LOCAL_NETWORK_REQUEST = 1
         private const val HISTORY_WINDOW = 500
         private const val REFRESH_INTERVAL_MS = 5_000L

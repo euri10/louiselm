@@ -65,10 +65,10 @@ internal fun parseSavedReview(fields: Map<String, Any>): PhoneControlReply.Saved
     val run = fields.wireString("run_id").also { phoneControlRunIdBytes(it) }
     val result = fields.wireString("result_id").also { require(validSavedResultId(it)) }
     val revision = fields.wireHex("revision", 32).also { require(it != "00".repeat(32)) }
-    val producer = fields.wireString("producer_agent", 128).also { require(it.isNotEmpty()) }
+    val producer = fields.wireString("producer_agent", 512).also { require(it.isNotEmpty()) }
     val agents = fields.wireArray("agents").map {
         (it as? String ?: throw IllegalArgumentException("invalid Agent")).also { agent ->
-            require(agent.isNotEmpty() && agent.toByteArray(Charsets.UTF_8).size <= 128)
+            require(agent.isNotEmpty() && agent.toByteArray(Charsets.UTF_8).size <= 512)
         }
     }
     require(agents.isNotEmpty() && agents.distinct().size == agents.size && producer in agents)

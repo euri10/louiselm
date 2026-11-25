@@ -227,7 +227,6 @@
     <string name="attention_run_parked">Run is Parked</string>
     <string name="attention_promotion_pending">Saved result awaits review</string>
     <string name="attention_saved_result">Saved result: %1$s</string>
-    <string name="attention_saved_result_review">Review locally. Only acceptance or explicit discard resolves this decision.</string>
     <string name="attention_session_failed">Session failed</string>
     <string name="attention_skill_approval_pending">Skill approval is pending</string>
     <string name="attention_skill_unverified">Skill supply is unverified</string>

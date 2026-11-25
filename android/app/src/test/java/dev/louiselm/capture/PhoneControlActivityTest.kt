@@ -95,6 +95,8 @@ private object PhoneScreenFixture {
     var runLiveFailure: PhoneControlOutcome? = null
     val runLiveReads = mutableListOf<Triple<String, Long, Boolean>>()
     val runSessionReads = mutableListOf<PhoneRunSessionTarget>()
+    val savedReads = mutableListOf<Triple<String, String, PhoneSavedCursor?>>()
+    var savedReadOnMain = false
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
@@ -102,7 +104,8 @@ private object PhoneScreenFixture {
         sendCalls = 0; sendOutcome = PhoneControlOutcome.UNSUPPORTED; sendFailure = null; evidenceState = null; evidenceReads = 0; evidenceReadOnMain = false
         evidenceOperationIds.clear()
         preparedReads = 0; preparedFailure = null; preparedInteractions.clear(); runReads.clear(); runFailure = null
-        runController = PhoneRunController.ABSENT; runLiveFailure = null; runLiveReads.clear(); runSessionReads.clear()
+        runController = PhoneRunController.ABSENT; runLiveFailure = null; runLiveReads.clear(); runSessionReads.clear(); savedReads.clear()
+        savedReadOnMain = false
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; olderNextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
@@ -140,6 +143,23 @@ class PhoneScreenClientFixture {
         PhoneScreenFixture.runFailure?.let { return PhoneControlResult.Failure(it) }
         if (runId != PhoneScreenFixture.runSummary.runId) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
         return PhoneControlResult.Value(PhoneControlReply.RunDetail("88".repeat(16), PhoneScreenFixture.runView))
+    }
+
+    @Implementation(methodName = "readSavedReview")
+    internal fun readSavedReview(period: PhoneControlPeriod, runId: String, resultId: String, revision: String?,
+        cursor: PhoneSavedCursor?, now: Long, interaction: Boolean,
+        maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SavedReview> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.savedReadOnMain = Looper.myLooper() == Looper.getMainLooper()
+        PhoneScreenFixture.savedReads += Triple(runId, resultId, cursor)
+        val digest = "sha256:" + "44".repeat(32)
+        val page = PhoneSavedReview(runId, resultId, revision ?: "33".repeat(32), "codex", listOf("codex"),
+            "/checkout", "a".repeat(40), digest, digest, digest, digest, 1, PhoneSavedVerification.MATCHING,
+            PhoneSavedProvenance.UNKNOWN, PhoneSavedFile("src/file", PhoneSavedChange.MODIFIED,
+                if (cursor == null) PhoneSavedSide.BEFORE else PhoneSavedSide.AFTER, 0,
+                if (cursor == null) "private before" else "private after", false, false),
+            if (cursor == null) PhoneSavedCursor(0, PhoneSavedSide.AFTER, 0) else null)
+        return PhoneControlResult.Value(PhoneControlReply.SavedReview("88".repeat(16), page))
     }
 
     @Implementation(methodName = "readRunLive")
@@ -615,6 +635,33 @@ class PhoneControlActivityTest {
         repeat(5) { drain() }
         assertEquals(Triple(PhoneScreenFixture.runSummary.runId, 0L, true), PhoneScreenFixture.runReads.single())
         assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("Cold Parked") })
+    }
+
+    @Test
+    fun savedAttentionOpensAndPagesTheExactResultWithoutRunReads() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        val run = PhoneScreenFixture.runSummary.runId
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.ATTENTION, true)
+            .putExtra("dev.louiselm.capture.RUN_ID", run)
+            .putExtra("dev.louiselm.capture.RESULT_ID", "result")
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drain() }
+        assertEquals(listOf(Triple(run, "result", null)), PhoneScreenFixture.savedReads)
+        assertTrue(PhoneScreenFixture.runReads.isEmpty())
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private before") })
+        buttonText("Next page").performClick()
+        drainBackground()
+        assertEquals(PhoneSavedCursor(0, PhoneSavedSide.AFTER, 0), PhoneScreenFixture.savedReads.last().third)
+        assertFalse(PhoneScreenFixture.savedReadOnMain)
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private after") })
+        assertEquals(View.GONE, button(R.string.phone_send).visibility)
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private after") })
     }
 
     @Test

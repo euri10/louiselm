@@ -125,10 +125,14 @@ class MainActivityTest {
             val labels = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
             assertTrue(labels.contains("Saved result awaits review"))
             assertTrue(labels.contains("Saved result: saved-result-1"))
-            assertTrue(labels.contains(activity.getString(R.string.attention_saved_result_review)))
+            assertTrue(labels.contains(activity.getString(R.string.phone_saved_pending_note)))
             assertFalse(views(activity.window.decorView).filterIsInstance<Button>().any { it.text.toString() in listOf("Accept", "Discard", "Resume") })
         }
         checkCard()
+        views(activity.window.decorView).filterIsInstance<Button>().single { it.text.toString() == "Review saved work" }.performClick()
+        val launched = shadowOf(activity).nextStartedActivity
+        assertEquals("11111111-2222-4333-8444-555555555555", launched.getStringExtra(PhoneControlActivity.RUN_ID))
+        assertEquals("saved-result-1", launched.getStringExtra("dev.louiselm.capture.RESULT_ID"))
         assertEquals("saved-result-1", AttentionState(activity).cached("fixture-pair")?.items?.single()?.resultId)
         options.edit().putBoolean("offline", true).commit()
         controller.close()

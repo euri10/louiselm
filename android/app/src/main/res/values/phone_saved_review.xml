@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phone_saved_open">Review saved work</string>
+    <string name="phone_saved_pending_note">Only acceptance or explicit discard resolves this decision.</string>
+    <string name="phone_saved_title">Saved result: %1$s</string>
+    <string name="phone_saved_run">Run: %1$s</string>
+    <string name="phone_saved_destination">Destination: %1$s\nBase commit: %2$s</string>
+    <string name="phone_saved_agents">Producer: %1$s\nRun Agents: %2$s</string>
+    <string name="phone_saved_commands">Historical verification passed %1$d commands.</string>
+    <string name="phone_saved_verification_matching">Broker verification: matches retained evidence.</string>
+    <string name="phone_saved_verification_changed">Broker verification: evidence changed.</string>
+    <string name="phone_saved_verification_quarantined">Broker verification: quarantined.</string>
+    <string name="phone_saved_verification_unavailable">Broker verification: unavailable.</string>
+    <string name="phone_saved_provenance_untainted">Current producer provenance: untainted.</string>
+    <string name="phone_saved_provenance_tainted">Current producer provenance: Session output tainted.</string>
+    <string name="phone_saved_provenance_unknown">Current producer provenance: unknown.</string>
+    <string name="phone_saved_historical">This is online review of retained evidence. Current tools, rules, destination state and permission to act must be checked separately.</string>
+    <string name="phone_saved_evidence">Verification: %1$s\nRules: %2$s\nVerifier inputs: %3$s\nCandidate: %4$s</string>
+    <string name="phone_saved_file">%1$s · %2$s · %3$s · byte %4$d</string>
+    <string name="phone_saved_executable">Executable file</string>
+    <string name="phone_saved_binary">Binary content cannot be displayed.</string>
+    <string name="phone_saved_empty">No changed file on this page.</string>
+    <string name="phone_saved_next">Next page</string>
+</resources>
