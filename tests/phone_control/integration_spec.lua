@@ -109,17 +109,40 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   assert(nvim.wait(6000, function()
     return done
   end))
+  local view
+  local ordering, dispatched_prompt = {}, nil
+  session:on(function(event)
+    if event.type == "state_changed" and event.data.status == "ready" and session:inspect().current_turn == 2 then
+      -- The Session becomes ready before Chat handles its scheduled ready event.
+      nvim.schedule(function()
+        assert(chat:queue_context({ label = "private", text = "UNSENT CONTEXT" }))
+        view.renderer:replace_prompt("UNSENT DRAFT")
+        view.draft:queue("UNSENT QUEUED")
+        ordering[#ordering + 1] = "queued"
+      end)
+    elseif event.type == "prompt_dispatched" and event.data.display_text == "UNSENT QUEUED" then
+      ordering[#ordering + 1] = "dispatched"
+      dispatched_prompt = event.data.prompt
+    end
+  end)
   chat = assert(Chat.new(api, { agents = { "mock" }, start_insert_on_switch = false }))
   assert(chat:attach(session))
+  view = chat.views[session:inspect().id]
   assert(chat:queue_context({ label = "sent", text = "HIDDEN SENT CONTEXT" }))
   assert(chat:submit("visible typed message"))
   assert(nvim.wait(6000, function()
-    return session:inspect().current_turn == 2 and session:inspect().status == "ready"
+    return session:inspect().current_turn == 3 and session:inspect().status == "ready"
   end))
-  assert(chat:queue_context({ label = "private", text = "UNSENT CONTEXT" }))
-  local view = chat.views[session:inspect().id]
-  view.renderer:replace_prompt("UNSENT DRAFT")
-  view.draft:queue("UNSENT QUEUED")
+  local chat_idle = false
+  nvim.schedule(function()
+    chat_idle = true
+  end)
+  assert(nvim.wait(6000, function()
+    return chat_idle
+  end))
+  assert(chat:queue_context({ label = "still private", text = "PRIVATE STAGED CONTEXT" }))
+  view.renderer:replace_prompt("PRIVATE DESKTOP DRAFT")
+  view.draft:queue("PRIVATE WAITING QUEUE")
   local request = {
     v = 1,
     type = "read_session",
@@ -143,15 +166,52 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   MiniTest.expect.equality(responses[1].type, "session_page")
   MiniTest.expect.equality(responses[1].entries[1].text, "sent from headless")
   MiniTest.expect.equality(responses[1].entries[2].role, "assistant")
-  MiniTest.expect.equality(nvim.json.encode(responses[1]):find("UNSENT", 1, true), nil)
+  MiniTest.expect.equality(ordering, { "queued", "dispatched" })
+  MiniTest.expect.no_equality(nvim.json.encode(dispatched_prompt):find("UNSENT CONTEXT", 1, true), nil)
+  MiniTest.expect.equality(responses[1].entries[5].text, "UNSENT QUEUED")
+  MiniTest.expect.equality(nvim.json.encode(responses[1]):find("UNSENT CONTEXT", 1, true), nil)
+  MiniTest.expect.equality(nvim.json.encode(responses[1]):find("UNSENT DRAFT", 1, true), nil)
   MiniTest.expect.equality(nvim.json.encode(responses[1]):find("HIDDEN SENT CONTEXT", 1, true), nil)
   MiniTest.expect.equality(responses[1].entries[3].text, "visible typed message")
+  local private = { "PRIVATE STAGED CONTEXT", "PRIVATE DESKTOP DRAFT", "PRIVATE WAITING QUEUE" }
+  for _, marker in ipairs(private) do
+    MiniTest.expect.equality(nvim.json.encode(responses[1]):find(marker, 1, true), nil)
+  end
+  MiniTest.expect.equality(view.draft.contexts[1].text, private[1])
+  MiniTest.expect.equality(view.renderer:prompt_text(), private[2])
+  MiniTest.expect.equality(view.draft.queued_prompt, private[3])
+
+  request.request.payload = "00000000000000000002"
+  local pages, queued_visible = 0, false
+  repeat
+    local response_index = #responses + 1
+    assert(peer):write(nvim.json.encode(request) .. "\n")
+    assert(nvim.wait(6000, function()
+      return #responses == response_index
+    end))
+    local page = responses[response_index]
+    MiniTest.expect.equality(page.type, "session_page")
+    for _, marker in ipairs(private) do
+      MiniTest.expect.equality(nvim.json.encode(page):find(marker, 1, true), nil)
+    end
+    for _, entry in ipairs(page.entries) do
+      queued_visible = queued_visible or entry.text == "UNSENT QUEUED"
+    end
+    pages = pages + 1
+    request.request.expected_revision = page.revision
+    request.request.payload = string.format("%016x%04x", page.next_before, 2)
+  until page.next_before == 0
+  MiniTest.expect.no_equality(pages, 1)
+  MiniTest.expect.equality(queued_visible, true)
+  MiniTest.expect.equality(session:inspect().current_turn, 3)
+  MiniTest.expect.equality(view.draft.queued_prompt, private[3])
   assert(session:dispose())
+  local response_index = #responses + 1
   assert(peer):write(nvim.json.encode(request) .. "\n")
   assert(nvim.wait(6000, function()
-    return #responses == 2
+    return #responses == response_index
   end))
-  MiniTest.expect.equality(responses[2].code, "stale_subject")
+  MiniTest.expect.equality(responses[response_index].code, "stale_subject")
   replacement_api = assert(Session.new({ mock = definition }, nil, { usage_directory = directory .. "/usage2" }))
   local replacement = assert(replacement_api:create_session("mock", { cwd = root }))
   assert(nvim.wait(6000, function()
