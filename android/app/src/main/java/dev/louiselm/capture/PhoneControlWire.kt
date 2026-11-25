@@ -21,6 +21,15 @@ internal fun phoneControlReadPayload(before: Long, limit: Int): ByteArray {
     return ByteBuffer.allocate(10).putLong(before).putShort(limit.toShort()).array()
 }
 
+internal fun phoneControlHistoryPagePayload(after: String?, limit: Int): ByteArray {
+    require(limit in 1..50) { "invalid history limit" }
+    return if (after == null) byteArrayOf(1, limit.toByte())
+    else byteArrayOf(2) + phoneControlHex(after, 16) + byteArrayOf(limit.toByte())
+}
+
+internal fun phoneControlHistoryRecordPayload(operationId: String): ByteArray =
+    byteArrayOf(0) + phoneControlHex(operationId, 16)
+
 private fun ByteArrayOutputStream.field(value: String, size: Int) = write(phoneControlHex(value, size))
 private fun ByteArrayOutputStream.number(value: Long) {
     require(value in 0..MAX_WIRE_INTEGER) { "invalid wire integer" }
@@ -70,14 +79,33 @@ internal class PhoneControlRequest(
     val operationId: String,
     val expectedRevision: Long,
     val interaction: Boolean,
+    val action: Int = 1,
 ) {
     private val payload = payload.copyOf()
     private val payloadHash = phoneControlHex(MessageDigest.getInstance("SHA-256").digest(this.payload))
 
     init {
-        require(this.payload.size == 10) { "invalid read payload" }
-        val decoded = ByteBuffer.wrap(this.payload)
-        phoneControlReadPayload(decoded.long, decoded.short.toInt() and 0xffff)
+        when (action) {
+            1 -> {
+                require(this.payload.size == 10) { "invalid read payload" }
+                val decoded = ByteBuffer.wrap(this.payload)
+                phoneControlReadPayload(decoded.long, decoded.short.toInt() and 0xffff)
+            }
+            2 -> {
+                require(!interaction && expectedRevision == 0L) { "history is observation only" }
+                when (this.payload.firstOrNull()?.toInt()) {
+                    0 -> require(this.payload.size == 17) { "invalid history lookup" }
+                    1, 2 -> {
+                        require((this.payload.size == 2 && this.payload[0].toInt() == 1 ||
+                            this.payload.size == 18 && this.payload[0].toInt() == 2) &&
+                            this.payload.last().toInt() in 1..50 && controllerId == "00".repeat(16) &&
+                            subjectId == "00".repeat(16)) { "invalid history page" }
+                    }
+                    else -> throw IllegalArgumentException("invalid history payload")
+                }
+            }
+            else -> throw IllegalArgumentException("unsupported action")
+        }
     }
 
     fun transcript(): ByteArray = ByteArrayOutputStream().apply {
@@ -89,7 +117,7 @@ internal class PhoneControlRequest(
         field(receiverIdentity, 32)
         field(controllerId, 16)
         field(subjectId, 16)
-        write(1)
+        write(action)
         field(payloadHash, 32)
         field(operationId, 16)
         number(expectedRevision)
@@ -101,7 +129,7 @@ internal class PhoneControlRequest(
         require(signature.size in 8..72) { "invalid signature" }
         return JSONObject().put("grant_id", grantId).put("grant_revision", grantRevision)
             .put("period_id", periodId).put("receiver_identity", receiverIdentity)
-            .put("controller_id", controllerId).put("subject_id", subjectId).put("action", 1)
+            .put("controller_id", controllerId).put("subject_id", subjectId).put("action", action)
             .put("payload", phoneControlHex(payload)).put("payload_hash", payloadHash)
             .put("operation_id", operationId).put("expected_revision", expectedRevision)
             .put("interaction", if (interaction) 1 else 0).put("signature", phoneControlHex(signature))

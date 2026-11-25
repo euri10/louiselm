@@ -203,6 +203,35 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
+    /** Inspect scoped retained evidence without a live Session or idle-period renewal. */
+    fun readActionHistoryPage(
+        period: PhoneControlPeriod,
+        nowMs: Long,
+        after: String? = null,
+        limit: Int = 50,
+        maySend: () -> Boolean,
+    ): PhoneControlResult<PhoneControlReply.ActionHistoryPage> = guarded {
+        if (!period.isActive(nowMs)) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend()) return@guarded unavailable()
+        val config = pairingStore.load() ?: return@guarded unavailable()
+        if (currentGrant(config) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        val zeros = "00".repeat(16)
+        val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
+            period.grant.receiverIdentity, zeros, zeros, phoneControlHistoryPagePayload(after, limit), operationId, 0, false, action = 2)
+        val signature = period.sign(request, nowMs) ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
+        val currentConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (currentGrant(currentConfig) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (reply !is PhoneControlReply.ActionHistoryPage) return@guarded refusal(reply)
+        if (reply.requestId != operationId || reply.records.size > limit ||
+            reply.records.any { it.receiverIdentity != period.grant.receiverIdentity || after != null && it.operationId <= after }) {
+            return@guarded malformed()
+        }
+        PhoneControlResult.Value(reply)
+    }
+
     private fun currentGrant(config: PairingConfig): PhoneControlGrant? {
         val grant = store.grant() ?: return null
         if (!matches(config, grant.receiverIdentity, grant.pairingBinding)) {
