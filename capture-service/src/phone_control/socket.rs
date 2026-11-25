@@ -21,7 +21,7 @@ use tokio::{
 
 use super::{
     MAX_FRAME, MAX_INTEGER, Request,
-    authority::{Authority, EnrollmentStatus, Refusal, Scope, random_hex},
+    authority::{Authority, EnrollmentStatus, LegacyScopeApproval, Refusal, Scope, random_hex},
     fixed,
     prepared_owner::{OwnerPreparedError, PreparedAdmission, PreparedOwner, Publication},
     source::PhoneSourceError,
@@ -701,6 +701,12 @@ enum AdminRequest {
         capability: String,
         device_id: String,
     },
+    ApproveLegacyScope {
+        v: u64,
+        capability: String,
+        device_id: String,
+        approval: LegacyScopeApproval,
+    },
     ConfirmLegacyProject {
         v: u64,
         capability: String,
@@ -749,7 +755,7 @@ enum AdminRequest {
 
 impl AdminRequest {
     fn version(&self) -> u64 {
-        if matches!(self, Self::Approve { .. }) {
+        if matches!(self, Self::Approve { .. } | Self::InspectGrant { .. }) {
             2
         } else {
             1
@@ -787,6 +793,12 @@ impl AdminRequest {
                 v,
                 capability,
                 device_id,
+            }
+            | Self::ApproveLegacyScope {
+                v,
+                capability,
+                device_id,
+                ..
             }
             | Self::ConfirmLegacyProject {
                 v,
@@ -927,6 +939,7 @@ fn process_admin(
         | AdminRequest::LinkProjectRoots { .. }
         | AdminRequest::RegisterRoot { .. }
         | AdminRequest::InspectGrant { .. }
+        | AdminRequest::ApproveLegacyScope { .. }
         | AdminRequest::ConfirmLegacyProject { .. }) => {
             process_project_admin(authority, pairing, request)
         }
@@ -1206,9 +1219,24 @@ fn process_project_admin(
         AdminRequest::InspectGrant { device_id, .. } => {
             let review = authority.inspect_grant(pairing, &device_id)?;
             Ok(
-                json!({"v":1,"type":"grant_inspection","device_id":device_id,
+                json!({"v":2,"type":"grant_inspection","device_id":device_id,
                 "grant_id":review.grant_id,"grant_revision":review.grant_revision,
-                "scope":review.scope,"scope_digest":review.scope_digest}),
+                "enrolled_key":review.enrolled_key,"receiver_identity":review.receiver_identity,
+                "scope":review.scope,"scope_digest":review.scope_digest,
+                "scope_approved":review.scope_approved,
+                "project_confirmations_valid":review.project_confirmations_valid}),
+            )
+        }
+        AdminRequest::ApproveLegacyScope {
+            device_id,
+            approval,
+            ..
+        } => {
+            let (scope, project_confirmations_valid) =
+                authority.approve_legacy_scope(pairing, &device_id, approval)?;
+            Ok(
+                json!({"v":1,"type":"legacy_scope_approved","device_id":device_id,
+                "scope":scope,"project_confirmations_valid":project_confirmations_valid}),
             )
         }
         AdminRequest::ConfirmLegacyProject {
@@ -1257,13 +1285,19 @@ fn checkout_result(proof: &super::source_checkout::CheckoutProof) -> Value {
 mod tests {
     use std::{sync::Arc, time::Instant};
 
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
     use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::UnixStream,
     };
+    use tower::ServiceExt;
 
-    use super::super::authority::Authority;
+    use super::super::authority::{Authority, Scope};
     use crate::PairingRegistry;
 
     async fn exchange(path: &std::path::Path, message: Value) -> Value {
@@ -1276,6 +1310,148 @@ mod tests {
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).await.unwrap();
         serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One paired phone exercises capture, locked control and local re-approval."
+    )]
+    async fn legacy_scope_approval_requires_the_local_operator_and_complete_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = "01".repeat(32);
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let offer = pairing
+            .issue("https://127.0.0.1:7391", &identity, 1_000, 10_000)
+            .unwrap();
+        let phone = pairing.consume(&offer.token, "phone", 1_001).unwrap();
+        let grants = root.path().join("grants/state");
+        let authority = Authority::open(&grants, &identity).unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../android/app/src/test/resources/phone-control-v1.json"
+        ))
+        .unwrap();
+        let key = fixture["keys"]["enrolled"]["sec1"].as_str().unwrap();
+        let now = Instant::now();
+        let offer = authority.start(&phone.device_id, now, 1_000).unwrap();
+        authority
+            .submit(
+                &phone.device_id,
+                &offer.enrollment_id,
+                &offer.matching_code,
+                key,
+                now,
+            )
+            .unwrap();
+        let scope = Scope {
+            projects: vec![root.path().to_str().unwrap().into()],
+            agents: vec!["codex".into()],
+            groups: vec!["read".into()],
+        };
+        authority
+            .approve(&phone.device_id, &offer.enrollment_id, key, scope, &[], now)
+            .unwrap();
+        drop(authority);
+        let mut persisted: Value =
+            serde_json::from_slice(&std::fs::read(&grants).unwrap()).unwrap();
+        let legacy = persisted["grants"][&phone.device_id]
+            .as_object_mut()
+            .unwrap();
+        legacy.remove("project_root_ids");
+        legacy.remove("project_roots_sha256");
+        legacy.remove("grant_scope_sha256");
+        legacy["scope"]["agents"] = json!(["codex", "foreign"]);
+        std::fs::write(&grants, serde_json::to_vec(&persisted).unwrap()).unwrap();
+
+        let service = super::super::Service::open(&grants, &identity, pairing.clone()).unwrap();
+        let authority = service.authority.clone();
+        let captures = crate::Store::new(root.path().join("captures")).unwrap();
+        let app = crate::Receiver::new(
+            captures.clone(),
+            pairing.clone(),
+            root.path().join("uploads"),
+            &identity,
+        )
+        .unwrap()
+        .with_phone_control(service.router())
+        .router();
+        let path = root.path().join("operator.sock");
+        let capability = root.path().join("operator-capability");
+        let server =
+            super::AdminSocket::bind(&path, &capability, authority.clone(), pairing.clone())
+                .await
+                .unwrap();
+        let token = std::fs::read_to_string(capability).unwrap();
+        let task = tokio::spawn(server.serve());
+        let inspect =
+            json!({"v":2,"type":"inspect_grant","capability":token,"device_id":phone.device_id});
+        let review = exchange(&path, inspect).await;
+        assert_eq!(review["scope_approved"], false);
+        assert_eq!(review["scope"]["agents"], json!(["codex", "foreign"]));
+        let challenge = || {
+            Request::post("/v1/phone-control/challenge")
+                .header("authorization", format!("Bearer {}", phone.credential))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"v":1,"type":"challenge","grant_id":review["grant_id"],
+                "grant_revision":review["grant_revision"]})
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        let denied = app.clone().oneshot(challenge()).await.unwrap();
+        assert_eq!(denied.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(denied.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(body["code"], "unavailable");
+        let capture_id = uuid::Uuid::new_v4().to_string();
+        let audio = b"offline capture";
+        let digest = crate::hex::lower_hex(&Sha256::digest(audio));
+        let upload = Request::put(format!("/v1/captures/{capture_id}"))
+            .header("authorization", format!("Bearer {}", phone.credential))
+            .header("content-type", "audio/mp4")
+            .header("x-louiselm-source", "android")
+            .header("x-louiselm-recorded-at-ms", "1765000000000")
+            .header("x-louiselm-duration-ms", "4200")
+            .header("x-louiselm-sha256", &digest)
+            .body(Body::from(audio.as_slice()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(upload).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+        assert_eq!(captures.capture(&capture_id).unwrap().record.sha256, digest);
+        let mut approval = json!({"v":1,"type":"approve_legacy_scope","capability":token,
+            "device_id":phone.device_id,"approval":{"grant_id":review["grant_id"],
+            "grant_revision":review["grant_revision"],"scope_digest":review["scope_digest"],
+            "enrolled_key":key,"scope":{"projects":[root.path().to_str().unwrap()],
+            "agents":["codex"],"groups":["read"]}}});
+        approval["capability"] = json!("wrong");
+        assert_eq!(
+            exchange(&path, approval.clone()).await["code"],
+            "unauthenticated"
+        );
+        approval["capability"] = json!(token);
+        approval["approval"]["scope"]["unexpected"] = json!(true);
+        assert_eq!(exchange(&path, approval.clone()).await["code"], "malformed");
+        approval["approval"]["scope"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unexpected");
+        let approved = exchange(&path, approval).await;
+        assert_eq!(approved["type"], "legacy_scope_approved");
+        assert_eq!(approved["scope"]["agents"], json!(["codex"]));
+        assert_eq!(approved["project_confirmations_valid"], true);
+        assert_eq!(
+            app.oneshot(challenge()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            pairing.authenticate_device(&phone.credential).unwrap(),
+            Some(phone.device_id)
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 
     async fn assert_project_admin(
@@ -1369,7 +1545,7 @@ mod tests {
         assert_source_admin(path, project, token, &registered["project_id"]).await;
         let review = exchange(
             path,
-            json!({"v":1,"type":"inspect_grant","capability":token,"device_id":device}),
+            json!({"v":2,"type":"inspect_grant","capability":token,"device_id":device}),
         )
         .await;
         assert_eq!(review["type"], "grant_inspection");

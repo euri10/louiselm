@@ -345,7 +345,7 @@ fn phone_control_admin_request(
             "root_registered",
         ),
         PhoneControl::InspectGrant { device_id } => (
-            serde_json::json!({"v":1,"type":"inspect_grant","capability":capability,"device_id":device_id}),
+            serde_json::json!({"v":2,"type":"inspect_grant","capability":capability,"device_id":device_id}),
             "grant_inspection",
         ),
         PhoneControl::ConfirmLegacyProject {
@@ -457,6 +457,30 @@ fn phone_control_enrollment_request(
                 "project_root_ids":project_root_ids}),
             "enrollment_approved",
         ),
+        PhoneControl::ApproveLegacyScope {
+            device_id,
+            grant_id,
+            grant_revision,
+            scope_digest,
+            enrolled_key,
+            projects,
+            agents,
+            groups,
+            confirm_complete_scope,
+        } => {
+            if !confirm_complete_scope {
+                return Err(CliError::Invalid(
+                    "confirm the complete intended scope".into(),
+                ));
+            }
+            (
+                serde_json::json!({"v":1,"type":"approve_legacy_scope","capability":capability,
+                    "device_id":device_id,"approval":{"grant_id":grant_id,"grant_revision":grant_revision,
+                    "scope_digest":scope_digest,"enrolled_key":enrolled_key,
+                    "scope":{"projects":projects,"agents":agents,"groups":groups}}}),
+                "legacy_scope_approved",
+            )
+        }
         PhoneControl::Disable { device_id } => (
             serde_json::json!({"v":1,"type":"disable","capability":capability,"device_id":device_id}),
             "disabled",
@@ -1093,6 +1117,49 @@ fn configured_root(
 mod tests {
     use super::*;
     use crate::Transcriber;
+
+    #[test]
+    fn legacy_reapproval_cli_requires_explicit_complete_scope() {
+        let base = [
+            "louiselm-capture",
+            "phone-control",
+            "approve-legacy-scope",
+            "--device-id",
+            "phone",
+            "--grant-id",
+            "grant",
+            "--grant-revision",
+            "1",
+            "--scope-digest",
+            "digest",
+            "--enrolled-key",
+            "key",
+            "--project",
+            "/project",
+            "--agent",
+            "codex",
+            "--group",
+            "read",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        let parsed = Cli::try_parse_from(base.into_iter().chain(["--confirm-complete-scope"]))
+            .expect("explicit approval");
+        assert!(matches!(
+            &parsed.command,
+            Some(Command::PhoneControl { .. })
+        ));
+        if let Some(Command::PhoneControl { command }) = parsed.command {
+            let (request, expected) =
+                phone_control_admin_request(command, "capability").expect("request");
+            assert_eq!(expected, "legacy_scope_approved");
+            assert_eq!(
+                request["approval"]["scope"],
+                serde_json::json!({
+                    "projects":["/project"], "agents":["codex"], "groups":["read"]
+                })
+            );
+        }
+    }
 
     #[test]
     fn prepared_publication_cli_requires_an_exact_revision_pair() {

@@ -93,6 +93,7 @@ phone-control list-prepared
 phone-control inspect-prepared --registration-id HEX16 --revision N
 phone-control unpublish-prepared --registration-id HEX16 --expected-revision N
 phone-control inspect-grant --device-id DEVICE_UUID
+phone-control approve-legacy-scope --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --enrolled-key HEX65 --project /absolute/project --agent AGENT --group read --confirm-complete-scope
 phone-control confirm-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16
 phone-control disable --device-id DEVICE_UUID
 phone-control forget --device-id DEVICE_UUID
@@ -114,10 +115,24 @@ selected roots. To relate a later-approved root to the same project, explicitly
 use `link-project-roots` while both directories still match their recorded
 identities. This can make that project's historical Runs visible to phones
 already granted the root; it grants no new Agents or action groups.
-For a legacy path-only grant, inspect and review its complete current scope on
-the computer, then confirm each exact project with that grant ID, revision and
-scope digest. These identity records alone do not make Runs phone-readable;
-source/checkout binding and protected Run reads remain separate work.
+Legacy path-only grants need computer-side scope re-approval before they can
+unlock the workspace. Capture pairing stays active. Run `inspect-grant` and
+review the device, receiver and enrolled key; its displayed old scope is
+unverified and must not be treated as evidence of the original selection.
+Use `approve-legacy-scope` with the displayed grant ID, revision, digest and
+key, and explicitly supply the complete intended projects, Agents and groups.
+Repeat each option as needed; an omitted list is empty. The required
+`--confirm-complete-scope` affirms that all three lists are deliberate. The
+response shows the canonical approved scope and whether prior individual
+project confirmations remain valid. This preserves the phone's existing grant
+and pairing, ends any old working period, and needs no new pairing. If the
+inspection changes before approval, inspect and review again.
+
+For protected Run reads, confirm each exact legacy project separately with
+`confirm-legacy-project` after scope re-approval. Existing intact project
+confirmations are retained. Damaged confirmations remain unavailable; the
+scope re-approval does not repair them. These identity records alone do not
+make Runs phone-readable; source/checkout binding remains required.
 For contained Run preparation, `freeze-run-source` explicitly freezes a selected
 original project using the optional root-owned installed `louiselm-skills` and
 records that event for the exact new Run UUID. The snapshot must be a new path

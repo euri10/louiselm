@@ -123,6 +123,7 @@ impl Authority {
                 .get(&permit.device)
                 .cloned()
                 .ok_or(Refusal::Revoked)?;
+            grant.require_approved_scope()?;
             if grant.grant_id != permit.grant_id
                 || grant.grant_revision != request.grant_revision
                 || grant.enrolled_key != frame.grant.enrolled_key
@@ -186,6 +187,7 @@ impl Authority {
         grant: &StoredGrant,
         binding: &RunProjectBinding,
     ) -> Result<bool, Refusal> {
+        grant.require_approved_scope()?;
         if !binding
             .agents
             .iter()

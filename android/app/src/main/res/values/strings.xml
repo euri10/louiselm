@@ -25,7 +25,7 @@
     <string name="phone_expired">This challenge or working period expired. Unlock again.</string>
     <string name="phone_revoked">Phone control was revoked. Enable it again with approval on the computer.</string>
     <string name="phone_out_of_scope">This phone is not permitted to use the requested workspace.</string>
-    <string name="phone_unavailable">Phone control is unavailable. Check pairing and the receiver, then retry.</string>
+    <string name="phone_unavailable">Phone control is unavailable. Check pairing and the receiver. Legacy workspace grants may need approval on the computer.</string>
     <string name="phone_invalid">The receiver could not authenticate or validate phone control. Check pairing and enrollment.</string>
     <string name="phone_unsupported">This receiver does not support the requested phone-control operation.</string>
     <string name="phone_admin">Disable workspace or forget this phone on your computer. Capture recordings are kept.</string>

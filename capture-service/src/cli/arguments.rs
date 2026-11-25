@@ -192,10 +192,32 @@ pub(super) enum PhoneControl {
         #[arg(long)]
         path: String,
     },
-    /// Inspect the exact current phone grant before legacy project confirmation.
+    /// Inspect a phone grant and whether its scope needs re-approval.
     InspectGrant {
         #[arg(long)]
         device_id: String,
+    },
+    /// Re-approve the complete scope of a legacy phone grant.
+    ApproveLegacyScope {
+        #[arg(long)]
+        device_id: String,
+        #[arg(long)]
+        grant_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        grant_revision: u64,
+        #[arg(long)]
+        scope_digest: String,
+        #[arg(long)]
+        enrolled_key: String,
+        #[arg(long = "project")]
+        projects: Vec<String>,
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+        #[arg(long = "group", value_parser = ["read", "operate_sessions", "control_runs", "saved_results"])]
+        groups: Vec<String>,
+        /// Confirm the supplied lists are the complete intended scope, including empty lists.
+        #[arg(long, required = true)]
+        confirm_complete_scope: bool,
     },
     /// Confirm one project for a reviewed legacy path-only grant.
     ConfirmLegacyProject {

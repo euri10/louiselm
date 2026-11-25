@@ -15,7 +15,7 @@ All network traffic uses the existing paired-device bearer and receiver-key-pinn
 HTTPS. A bearer is necessary but insufficient for protected access. All messages
 below are UTF-8 JSON objects, including nested objects. `v` is integer `1`
 except for the version-2 Session page, action history responses and local
-approval below; `type` is the exact string shown.
+grant inspection and enrollment approval below; `type` is the exact string shown.
 Objects have exactly the listed fields; no
 duplicates, unknown fields, implicit defaults, coercions, nulls, or trailing
 values are accepted. Unknown versions, message types, action values or enum
@@ -185,13 +185,31 @@ Run execution authority. Root and project IDs are private `hex16` identities.
 - `{v:1,type:"register_root",capability:string,path:string}` returns
   `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a
   fresh local root identity without granting any phone access.
-- `{v:1,type:"inspect_grant",capability:string,device_id:string}` returns
-  `{v:1,type:"grant_inspection",device_id:string,grant_id:hex16,grant_revision:integer,scope:Scope,scope_digest:hex32}`.
-  The computer operator reviews the exact displayed paths, Agents and groups.
+- `{v:2,type:"inspect_grant",capability:string,device_id:string}` returns
+  `{v:2,type:"grant_inspection",device_id:string,grant_id:hex16,grant_revision:integer,enrolled_key:hex65,receiver_identity:hex32,scope:Scope,scope_digest:hex32,scope_approved:boolean,project_confirmations_valid:boolean}`.
+  The scope of a legacy path-only grant without explicit base-scope approval is
+  unverified, even when an older project confirmation sealed it. The digest
+  identifies the current candidate for review; it does not prove its history.
+  `scope_approved=false` prevents challenges and protected access while keeping
+  the grant and capture pairing. Damaged individual project confirmations do
+  not disable an otherwise approved Session scope.
+- `{v:1,type:"approve_legacy_scope",capability:string,device_id:string,approval:LegacyScopeApproval}`
+  returns `{v:1,type:"legacy_scope_approved",device_id:string,scope:Scope,project_confirmations_valid:boolean}`.
+  `LegacyScopeApproval` is exactly `{grant_id:hex16,grant_revision:integer,scope_digest:hex32,enrolled_key:hex65,scope:Scope}`.
+  The desktop operator explicitly selects the complete new project, Agent and
+  group lists, including any empty list, and approves the displayed enrolled
+  key. The candidate ID, revision, digest, key, receiver identity and pairing
+  must still match. Projects resolve to current canonical directories; the
+  returned scope is what was approved. Existing verified project confirmations
+  remain separately bound to the new scope. Invalid confirmations stay
+  unavailable and are reported as such. This operation does not re-pair or
+  change the grant ID/revision; it invalidates pending challenges and working
+  periods. Already-approved or non-legacy grants reject this operation.
+  On an uncertain reply, inspect the grant before trying again.
 - `{v:1,type:"confirm_legacy_project",capability:string,device_id:string,grant_id:hex16,grant_revision:integer,scope_digest:hex32,project_id:hex16}`
   returns `{v:1,type:"legacy_project_confirmed",device_id:string,project_id:hex16}`.
   It confirms one retained project for this exact legacy path-only grant after
-  the operator reviews the displayed scope. A changed grant, revision or scope
+  its base scope is approved. A changed grant, revision or scope
   refuses the confirmation; a currently paired device and Read group are
   required. A retained project-to-root relationship may be used after the
   original project directory disappears, but a matching root must still be the
