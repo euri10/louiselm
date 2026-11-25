@@ -81,6 +81,8 @@ impl CacheBase {
     }
 
     /// Captures a complete bounded tree using descriptor-relative reads.
+    /// Ancestors require search permission only; the selected root and its
+    /// contents must be readable. No ancestor or root symlink is followed.
     ///
     /// # Errors
     /// Rejects links, special files, noncanonical/colliding paths, mutation

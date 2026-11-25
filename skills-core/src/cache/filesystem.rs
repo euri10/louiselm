@@ -25,21 +25,27 @@ fn open_directory(path: &Path) -> Result<File, CacheError> {
     if !path.is_absolute() {
         return Err(CacheError::Refused("cache path must be absolute"));
     }
+    // Ancestors need search permission, not permission to list the operator's
+    // home. Pin each without following links; only the selected root is read.
+    let traversal = DIRECTORY | OFlags::PATH;
     let mut directory =
-        File::from(rustix::fs::open("/", DIRECTORY, Mode::empty()).map_err(std::io::Error::from)?);
+        File::from(rustix::fs::open("/", traversal, Mode::empty()).map_err(std::io::Error::from)?);
     for part in path.components() {
         match part {
             Component::RootDir => (),
             Component::Normal(name) => {
                 directory = File::from(
-                    rustix::fs::openat(&directory, name, DIRECTORY, Mode::empty())
+                    rustix::fs::openat(&directory, name, traversal, Mode::empty())
                         .map_err(std::io::Error::from)?,
                 );
             }
             _ => return Err(CacheError::Refused("noncanonical cache root")),
         }
     }
-    Ok(directory)
+    Ok(File::from(
+        rustix::fs::openat(&directory, ".", DIRECTORY, Mode::empty())
+            .map_err(std::io::Error::from)?,
+    ))
 }
 
 pub(super) fn capture(source: &Path) -> Result<Vec<CacheFile>, CacheError> {

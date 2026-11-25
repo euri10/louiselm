@@ -86,6 +86,51 @@ fn stage(temp: &TempDir, manifest: &SessionInputManifest) -> Output {
 }
 
 #[test]
+fn launch_staging_accepts_search_only_cache_ancestors() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("SKIP: ancestor-read denial requires the unprivileged broker identity");
+        return;
+    }
+    let temp = fixture();
+    let manifest = inputs(&temp);
+    let ancestor = temp.path().join("operator-home");
+    let cache = ancestor.join("cache");
+    fs::create_dir(&ancestor).unwrap();
+    fs::rename(temp.path().join("cache"), &cache).unwrap();
+    fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o100)).unwrap();
+    let listing = fs::read_dir(&ancestor);
+    // The broker has already validated the source before reaching cache capture.
+    // Exercise its actual staging boundary, not a replacement cache reader.
+    let output = temp.path().join("staged");
+    let staged = louiselm_skills::workspace::launch_inputs::stage(
+        &manifest,
+        &temp.path().join("snapshot"),
+        &cache,
+        None,
+        &output,
+    );
+    fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        listing.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        staged.unwrap().manifest_digest,
+        manifest.digest().to_string()
+    );
+    assert_eq!(
+        fs::read(output.join("cache/dependency")).unwrap(),
+        b"warm cache"
+    );
+    assert_eq!(
+        louiselm_skills::workspace::launch_inputs::inspect(&output, &manifest.digest())
+            .unwrap()
+            .cache_base_digest,
+        manifest.cache_base_digest
+    );
+}
+
+#[test]
 fn profile_staging_requires_exact_private_bytes_and_detects_later_substitution() {
     use louiselm_skills::session_manifest::{MeasuredInput, OperatorProfileInput};
     let temp = fixture();

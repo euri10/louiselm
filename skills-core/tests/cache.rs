@@ -1,7 +1,11 @@
 //! Measured warm bytes never become shared writable Session state.
 #![allow(clippy::unwrap_used, reason = "Tests abort on fixture failures.")]
 
-use louiselm_skills::{Digest, cache::CacheBase, sandbox::IdentityPlan};
+use louiselm_skills::{
+    Digest,
+    cache::{CacheBase, CacheError},
+    sandbox::IdentityPlan,
+};
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
@@ -11,6 +15,82 @@ fn private_home() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     root
+}
+
+#[test]
+fn capture_traverses_ancestors_without_listing_them() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("SKIP: ancestor-read denial requires an unprivileged reader");
+        return;
+    }
+    let root = private_home();
+    let ancestor = root.path().join("operator-home");
+    let source = ancestor.join("cache");
+    fs::create_dir_all(&source).unwrap();
+    // sey9w.19.4: broker GID1500 can traverse /home/vm (0710) and read the
+    // selected cache, but cannot list the home. Model those effective rights
+    // as the fixture owner, without changing identities or real directories.
+    for populated in [false, true] {
+        if populated {
+            fs::write(source.join("dependency"), b"warm").unwrap();
+        }
+        let expected = CacheBase::capture(&source).unwrap();
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o100)).unwrap();
+        let listing = fs::read_dir(&ancestor);
+        let captured = CacheBase::capture(&source);
+        let mode = fs::metadata(&ancestor).unwrap().mode() & 0o7777;
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            listing.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(mode, 0o100, "capture must not widen ancestor permissions");
+        assert_eq!(captured.unwrap().digest(), expected.digest());
+    }
+}
+
+#[test]
+fn capture_still_requires_ancestor_search_and_selected_tree_read_access() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("SKIP: search/read denial requires an unprivileged reader");
+        return;
+    }
+    let root = private_home();
+    let ancestor = root.path().join("operator-home");
+    let source = ancestor.join("cache");
+    fs::create_dir_all(&source).unwrap();
+    let file = source.join("dependency");
+    fs::write(&file, b"private").unwrap();
+    for (path, denied_mode, restored_mode) in [
+        (&ancestor, 0o400, 0o700),
+        (&source, 0o100, 0o700),
+        (&file, 0o000, 0o600),
+    ] {
+        fs::set_permissions(path, fs::Permissions::from_mode(denied_mode)).unwrap();
+        let captured = CacheBase::capture(&source);
+        fs::set_permissions(path, fs::Permissions::from_mode(restored_mode)).unwrap();
+        assert!(matches!(captured, Err(CacheError::Io(error))
+            if error.kind() == std::io::ErrorKind::PermissionDenied));
+    }
+}
+
+#[test]
+fn capture_refuses_links_in_the_root_and_its_ancestors() {
+    let root = private_home();
+    let ancestor = root.path().join("operator-home");
+    let source = ancestor.join("cache");
+    fs::create_dir_all(&source).unwrap();
+    let alias = root.path().join("alias");
+    let linked_cache = ancestor.join("linked-cache");
+    symlink(&ancestor, &alias).unwrap();
+    symlink(&source, &linked_cache).unwrap();
+    for path in [alias.join("cache"), linked_cache] {
+        assert!(
+            matches!(CacheBase::capture(&path), Err(CacheError::Io(error))
+            if error.raw_os_error() == Some(rustix::io::Errno::NOTDIR.raw_os_error())
+                || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()))
+        );
+    }
 }
 
 #[test]
