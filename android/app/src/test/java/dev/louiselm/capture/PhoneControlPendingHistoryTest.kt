@@ -35,7 +35,7 @@ class PhoneControlPendingHistoryTest {
             3, "66".repeat(32), grant.grantId, grant.revision, period.periodId, 9)
         var record = PhoneActionRecord(pending.operationId, pending.receiverIdentity, pending.controllerId,
             pending.subjectId, pending.action, pending.payloadHash, pending.grantId, pending.grantRevision,
-            pending.expectedRevision, 100, 101, PhoneActionState.FENCED_NO_EFFECT, "77".repeat(32))
+            pending.expectedRevision, 100, 101, PhoneActionState.FENCED_NO_EFFECT, "77".repeat(32), "", "", "")
         var permitted = true
         var calls = 0
         val client = PhoneControlClient(context, keys) { _, path, body, maySend ->

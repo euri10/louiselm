@@ -12,10 +12,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::hex::lower_hex;
-use crate::phone_control::evidence::{same_identity, validate_identity};
+use crate::phone_control::evidence::{phase_evidence, same_identity, validate_identity};
 use crate::phone_control::{
-    ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome, ActionReservation,
-    MAX_FRAME, MAX_INTEGER,
+    ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
+    ActionReservation, MAX_FRAME, MAX_INTEGER,
 };
 
 #[cfg(test)]
@@ -54,6 +54,10 @@ enum Command {
         v: u8,
         identity: ActionIdentity,
     },
+    InspectPhases {
+        v: u8,
+        identity: ActionIdentity,
+    },
     Fence {
         v: u8,
         identity: ActionIdentity,
@@ -78,6 +82,7 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
         let version = match &command {
             Command::Begin { v, .. }
             | Command::Inspect { v, .. }
+            | Command::InspectPhases { v, .. }
             | Command::Fence { v, .. }
             | Command::Report { v, .. } => *v,
         };
@@ -85,7 +90,7 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
             return Err(ActionEvidenceError::Malformed);
         }
         let journal = match &command {
-            Command::Inspect { identity, .. } => {
+            Command::Inspect { identity, .. } | Command::InspectPhases { identity, .. } => {
                 validate_identity(identity)?;
                 OwnerJournal::open_existing(path)?
             }
@@ -97,8 +102,16 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
                 Begin::Existing(outcome) => Ok(json!({"v":1,"type":"existing","outcome":outcome})),
             },
             Command::Inspect { identity, .. } => {
-                let outcome = journal.inspect(&identity)?;
-                Ok(json!({"v":1,"type":"existing","outcome":outcome}))
+                let record = journal.inspect(&identity)?;
+                Ok(json!({"v":1,"type":"existing","outcome":record.outcome}))
+            }
+            Command::InspectPhases { identity, .. } => {
+                let record = journal.inspect(&identity)?;
+                let (accepted, dispatched, completed) = phase_evidence(&record);
+                Ok(
+                    json!({"v":1,"type":"action_phases","outcome":record.outcome,
+                    "accepted_evidence":accepted,"dispatched_evidence":dispatched,"completed_evidence":completed}),
+                )
             }
             Command::Fence {
                 identity, at_ms, ..
@@ -140,13 +153,13 @@ impl OwnerJournal {
         })
     }
 
-    fn inspect(&self, identity: &ActionIdentity) -> Result<ActionOutcome, ActionEvidenceError> {
+    fn inspect(&self, identity: &ActionIdentity) -> Result<ActionEvidence, ActionEvidenceError> {
         validate_identity(identity)?;
         let record = self.store.lookup(&identity.operation_id)?;
         if !same_identity(&record.identity, identity) {
             return Err(ActionEvidenceError::Conflict);
         }
-        Ok(record.outcome)
+        Ok(record)
     }
 
     pub(super) fn begin(&self, identity: &ActionIdentity) -> Result<Begin, ActionEvidenceError> {
@@ -164,14 +177,6 @@ impl OwnerJournal {
         outcome: &ActionOutcome,
         at_ms: u64,
     ) -> Result<(), ActionEvidenceError> {
-        if !matches!(
-            outcome,
-            ActionOutcome::Accepted { .. }
-                | ActionOutcome::Rejected { .. }
-                | ActionOutcome::FencedNoEffect { .. }
-        ) {
-            return Err(ActionEvidenceError::Malformed);
-        }
         self.store.report(identity, outcome, at_ms)
     }
 

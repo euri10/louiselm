@@ -186,7 +186,7 @@ class PhoneScreenClientFixture {
         PhoneScreenFixture.actionHistoryReads++
         PhoneScreenFixture.actionHistoryCursors += after
         val record = PhoneActionRecord((if (after == null) "12" else "34").repeat(16), "aa".repeat(32), "ab".repeat(16), "cd".repeat(16),
-            3, "23".repeat(32), "34".repeat(16), 1, 2, 100, 101, PhoneActionState.UNKNOWN, "")
+            3, "23".repeat(32), "34".repeat(16), 1, 2, 100, 101, PhoneActionState.UNKNOWN, "", "", "", "")
         val next = if (after == null && PhoneScreenFixture.moreActionHistory) record.operationId else ""
         return PhoneControlResult.Value(PhoneControlReply.ActionHistoryPage("88".repeat(16), listOf(record), next))
     }
@@ -214,7 +214,10 @@ class PhoneScreenClientFixture {
         val state = PhoneScreenFixture.evidenceState ?: return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
         return PhoneControlResult.Value(PhoneActionRecord(pending.operationId, pending.receiverIdentity, pending.controllerId,
             pending.subjectId, pending.action, pending.payloadHash, pending.grantId, pending.grantRevision,
-            pending.expectedRevision, 1, 2, state, if (state == PhoneActionState.UNKNOWN) "" else "66".repeat(32)))
+            pending.expectedRevision, 1, 2, state, if (state == PhoneActionState.UNKNOWN) "" else "66".repeat(32),
+            if (state in setOf(PhoneActionState.ACCEPTED, PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)) "66".repeat(32) else "",
+            if (state in setOf(PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)) "66".repeat(32) else "",
+            if (state == PhoneActionState.COMPLETED) "66".repeat(32) else ""))
     }
 }
 
@@ -482,6 +485,16 @@ class PhoneControlActivityTest {
         assertTrue(hasText(R.string.phone_action_accepted))
         assertFalse(button(R.string.phone_send).isEnabled)
         assertFalse(PhoneScreenFixture.evidenceReadOnMain)
+        PhoneScreenFixture.evidenceState = PhoneActionState.DISPATCHED
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        repeat(4) { drainBackground() }
+        assertTrue(hasText(R.string.phone_action_dispatched))
+        assertFalse(button(R.string.phone_send).isEnabled)
+        PhoneScreenFixture.evidenceState = PhoneActionState.COMPLETED
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        repeat(4) { drainBackground() }
+        assertTrue(hasText(R.string.phone_action_completed))
+        assertFalse(button(R.string.phone_send).isEnabled)
         controller.close()
         create(intent)
         ReflectionHelpers.setField(activity, "pendingActionsStore", store)
@@ -491,7 +504,7 @@ class PhoneControlActivityTest {
         repeat(7) { drainBackground() }
         val reopened = views(activity.window.decorView).filterIsInstance<EditText>().single()
         reopened.setText("deliver once")
-        assertTrue(hasText(R.string.phone_action_accepted))
+        assertTrue(hasText(R.string.phone_action_completed))
         assertFalse(button(R.string.phone_send).isEnabled)
         assertEquals(1, PhoneScreenFixture.sendCalls)
     }

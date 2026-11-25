@@ -376,18 +376,21 @@ fn process(
 
 fn history_response(history: &History, request_id: &str) -> Value {
     match history {
-        History::Record(record) => json!({"v":1,"type":"action_history",
+        History::Record(record) => json!({"v":2,"type":"action_history",
             "request_id":request_id,"record":history_record(record)}),
-        History::Page { records, next } => json!({"v":1,"type":"action_history_page",
+        History::Page { records, next } => json!({"v":2,"type":"action_history_page",
             "request_id":request_id,"records":records.iter().map(history_record).collect::<Vec<_>>(),
             "next_after":next.as_deref().unwrap_or("")}),
     }
 }
 
 fn history_record(record: &ActionEvidence) -> Value {
+    let (accepted, dispatched, completed) = super::evidence::phase_evidence(record);
     let (state, evidence) = match &record.outcome {
         ActionOutcome::Unknown => ("unknown", ""),
         ActionOutcome::Accepted { evidence } => ("accepted", evidence.as_str()),
+        ActionOutcome::Dispatched { evidence } => ("dispatched", evidence.as_str()),
+        ActionOutcome::Completed { evidence } => ("completed", evidence.as_str()),
         ActionOutcome::Rejected { evidence } => ("rejected", evidence.as_str()),
         ActionOutcome::FencedNoEffect { evidence } => ("fenced_no_effect", evidence.as_str()),
     };
@@ -397,7 +400,8 @@ fn history_record(record: &ActionEvidence) -> Value {
         "subject_id":identity.subject_id,"action":identity.action,"payload_hash":identity.payload_hash,
         "grant_id":identity.grant_id,"grant_revision":identity.grant_revision,
         "expected_revision":identity.expected_revision,"recorded_at_ms":identity.recorded_at_ms,
-        "updated_at_ms":record.updated_at_ms,"state":state,"evidence":evidence})
+        "updated_at_ms":record.updated_at_ms,"state":state,"evidence":evidence,
+        "accepted_evidence":accepted,"dispatched_evidence":dispatched,"completed_evidence":completed})
 }
 
 fn outcome(result: Result<Value, Refusal>) -> (StatusCode, Json<Value>) {
@@ -1552,11 +1556,42 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(history["type"], "action_history");
+        assert_eq!(history["v"], 2);
         assert_eq!(history["request_id"], format!("{:032x}", 100));
         assert_eq!(history["record"]["operation_id"], original.operation_id);
         assert_eq!(history["record"]["state"], "accepted");
         assert_eq!(history["record"]["evidence"], "14".repeat(32));
+        assert_eq!(history["record"]["accepted_evidence"], "14".repeat(32));
+        assert_eq!(history["record"]["dispatched_evidence"], "");
+        assert_eq!(history["record"]["completed_evidence"], "");
         assert!(history["record"].get("payload").is_none());
+
+        for (operation, phase, evidence, time) in [
+            (111, "dispatched", "16", 2500),
+            (112, "completed", "17", 3000),
+        ] {
+            let outcome = if phase == "dispatched" {
+                ActionOutcome::Dispatched {
+                    evidence: evidence.repeat(32),
+                }
+            } else {
+                ActionOutcome::Completed {
+                    evidence: evidence.repeat(32),
+                }
+            };
+            store.report(&original, &outcome, time).unwrap();
+            let request = signed_history(&fixture, &grant, &period, &original, operation);
+            let (status, history) = post(
+                app.clone(),
+                "/v1/phone-control/request",
+                &replacement.credential,
+                &request.to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(history["record"]["state"], phase);
+            assert_eq!(history["record"]["evidence"], evidence.repeat(32));
+        }
 
         let page = signed_history_page(&fixture, &grant, &period, None, 1, 108);
         let (_, first) = post(
@@ -1662,7 +1697,10 @@ mod tests {
             &resumed.to_string(),
         )
         .await;
-        assert_eq!(history["record"]["state"], "accepted");
+        assert_eq!(history["record"]["state"], "completed");
+        assert_eq!(history["record"]["accepted_evidence"], "14".repeat(32));
+        assert_eq!(history["record"]["dispatched_evidence"], "16".repeat(32));
+        assert_eq!(history["record"]["completed_evidence"], "17".repeat(32));
         let other_root = tempfile::tempdir().unwrap();
         let (out_of_scope, next_period) = history_grant(
             &service,

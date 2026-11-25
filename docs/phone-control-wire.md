@@ -14,7 +14,8 @@ same-user software or a compromised phone.
 All network traffic uses the existing paired-device bearer and receiver-key-pinned
 HTTPS. A bearer is necessary but insufficient for protected access. All messages
 below are UTF-8 JSON objects, including nested objects. `v` is integer `1`
-except for the version-2 Session page and local approval below; `type` is the exact string shown.
+except for the version-2 Session page, action history responses and local
+approval below; `type` is the exact string shown.
 Objects have exactly the listed fields; no
 duplicates, unknown fields, implicit defaults, coercions, nulls, or trailing
 values are accepted. Unknown versions, message types, action values or enum
@@ -280,8 +281,8 @@ replay guard and each retained operation's locally established project and
 Agent scope before delivery. A replacement phone with a matching current read
 grant may discover and inspect history; a revoked or out-of-scope phone cannot.
 
-One-record success is `{v,type:"action_history",request_id:hex16,record:ActionRecord}`.
-A page is `{v,type:"action_history_page",request_id:hex16,records:[ActionRecord],
+One-record success is `{v:2,type:"action_history",request_id:hex16,record:ActionRecord}`.
+A page is `{v:2,type:"action_history_page",request_id:hex16,records:[ActionRecord],
 next_after:hex16-or-empty-string}`. `request_id` is the lookup's operation ID.
 Records are ordered by their original operation IDs; `next_after` is the last
 returned ID when another authorized record remains, otherwise the empty string.
@@ -291,10 +292,16 @@ Restart at the first page to discover records added before a prior cursor.
 controller_id:hex16,subject_id:hex16,action:integer,payload_hash:hex32,
 grant_id:hex16,grant_revision:integer,expected_revision:integer,
 recorded_at_ms:integer,updated_at_ms:integer,state:string,
-evidence:hex32-or-empty-string}`. Its operation ID is the original write.
-State is `unknown`, `accepted`, `rejected`, or `fenced_no_effect`. Empty
-evidence is used only for `unknown`; other states carry the native owner's
-opaque evidence digest. Acceptance does not mean the action completed.
+evidence:hex32-or-empty-string,accepted_evidence:hex32-or-empty-string,
+dispatched_evidence:hex32-or-empty-string,completed_evidence:hex32-or-empty-string}`.
+Its operation ID is the original write.
+State is `unknown`, `accepted`, `dispatched`, `completed`, `rejected`, or
+`fenced_no_effect`. Empty evidence is used only for `unknown`; other states
+carry the native owner's
+opaque evidence digest. Acceptance does not mean dispatch; dispatch records
+local transport acceptance, not peer receipt. Completion is a successful
+native Session callback. The archive retains each known phase's evidence even
+when the current outcome becomes unknown.
 `fenced_no_effect` may be archived only after the native owner has proved no
 effect and durably fenced late execution. Capture-service neither supplies
 that proof nor authorizes a new attempt. Missing or damaged evidence returns
@@ -496,6 +503,7 @@ canonical project and configured Agent independently.
 
 The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
 `{v:1,type:"inspect",identity:ActionIdentity}`,
+`{v:1,type:"inspect_phases",identity:ActionIdentity}`,
 `{v:1,type:"fence",identity:ActionIdentity,at_ms:integer}`, or
 `{v:1,type:"report",identity:ActionIdentity,outcome:OwnerOutcome,at_ms:integer}`.
 `ActionIdentity` contains exactly `operation_id`, `receiver_identity`,
@@ -503,8 +511,9 @@ The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
 `grant_revision`, `period_id`, `expected_revision`, `project`, `agent` and
 `recorded_at_ms`, using the bounds and encodings above. The project and Agent
 come from the native owner, never phone claims. `OwnerOutcome` is exactly
-`{accepted:{evidence:hex32}}`, `{rejected:{evidence:hex32}}`, or
-`{fenced_no_effect:{evidence:hex32}}`. The last form is permitted only after
+`"unknown"`, `{accepted:{evidence:hex32}}`, `{dispatched:{evidence:hex32}}`,
+`{completed:{evidence:hex32}}`, `{rejected:{evidence:hex32}}`, or
+`{fenced_no_effect:{evidence:hex32}}`. The fence form is permitted only after
 the living native owner proves that a begun attempt had no effect and cannot
 execute later; its durable begin prevents another begin but does not invalidate
 an already outstanding native gate. The owner reports only a fact it has
@@ -518,6 +527,12 @@ Inspect returns the same `existing` outcome for an exact identity without
 creating a journal or reserving an absent operation. Missing or damaged records
 return `unavailable`; different bindings return `conflict`. The reservation's
 `recorded_at_ms` is retained metadata, not a request binding.
+
+`inspect_phases` returns the closed object
+`{v:1,type:"action_phases",outcome:OwnerOutcome,accepted_evidence:hex32-or-empty-string,dispatched_evidence:hex32-or-empty-string,completed_evidence:hex32-or-empty-string}`.
+Each nonempty digest is retained owner evidence. It has the same exact-binding
+and missing-store refusals as `inspect`. A later unknown never erases earlier
+phase evidence or permits a no-effect fence after acceptance.
 
 Fence returns `{v:1,type:"fenced",evidence:hex32}` only after it wins
 reservation and the fence is durable; an already begun operation returns

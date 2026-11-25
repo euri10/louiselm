@@ -67,6 +67,16 @@ pub enum ActionOutcome {
         /// Digest identifying the owner's evidence.
         evidence: String,
     },
+    /// The native transport accepted the prompt; peer receipt is not proven.
+    Dispatched {
+        /// Digest identifying the owner's dispatch evidence.
+        evidence: String,
+    },
+    /// The native Session reported completion of the prompt.
+    Completed {
+        /// Digest identifying the owner's completion evidence.
+        evidence: String,
+    },
     /// The owner reports rejection, with an opaque evidence digest.
     Rejected {
         /// Digest identifying the owner's evidence.
@@ -87,6 +97,9 @@ pub struct ActionEvidence {
     pub identity: ActionIdentity,
     /// The last proven outcome, never inferred from a missing response.
     pub outcome: ActionOutcome,
+    /// Proven admission, dispatch, and completion evidence in owner order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<ActionOutcome>,
     /// Computer timestamp of the retained report, or of the reservation.
     pub updated_at_ms: u64,
 }
@@ -310,6 +323,7 @@ impl ActionEvidenceStore {
                 ActionEvidence {
                     identity: identity.clone(),
                     outcome: ActionOutcome::Unknown,
+                    phases: Vec::new(),
                     updated_at_ms: identity.recorded_at_ms,
                 },
             );
@@ -408,14 +422,35 @@ impl ActionEvidenceStore {
             if !same_identity(&record.identity, identity) {
                 return Err(ActionEvidenceError::Conflict);
             }
-            if &record.outcome == outcome {
+            if &record.outcome == outcome || record.phases.contains(outcome) {
                 return Ok(((), false));
             }
-            if record.outcome != ActionOutcome::Unknown {
+            if matches!(
+                record.outcome,
+                ActionOutcome::Completed { .. }
+                    | ActionOutcome::Rejected { .. }
+                    | ActionOutcome::FencedNoEffect { .. }
+            ) {
                 return Err(ActionEvidenceError::Conflict);
             }
             if at_ms < record.updated_at_ms {
                 return Err(ActionEvidenceError::Malformed);
+            }
+            if record.phases.is_empty() && phase_rank(&record.outcome).is_some() {
+                record.phases.push(record.outcome.clone());
+            }
+            if let Some(rank) = phase_rank(outcome) {
+                if record
+                    .phases
+                    .last()
+                    .and_then(phase_rank)
+                    .is_some_and(|last| rank <= last)
+                {
+                    return Err(ActionEvidenceError::Conflict);
+                }
+                record.phases.push(outcome.clone());
+            } else if !matches!(outcome, ActionOutcome::Unknown) && !record.phases.is_empty() {
+                return Err(ActionEvidenceError::Conflict);
             }
             record.outcome = outcome.clone();
             record.updated_at_ms = at_ms;
@@ -495,10 +530,52 @@ fn validate_outcome(outcome: &ActionOutcome) -> Result<(), ActionEvidenceError> 
     match outcome {
         ActionOutcome::Unknown => Ok(()),
         ActionOutcome::Accepted { evidence }
+        | ActionOutcome::Dispatched { evidence }
+        | ActionOutcome::Completed { evidence }
         | ActionOutcome::Rejected { evidence }
         | ActionOutcome::FencedNoEffect { evidence } => fixed::<32>(evidence)
             .map(|_| ())
             .map_err(|_| ActionEvidenceError::Malformed),
+    }
+}
+
+fn phase_rank(outcome: &ActionOutcome) -> Option<u8> {
+    match outcome {
+        ActionOutcome::Accepted { .. } => Some(1),
+        ActionOutcome::Dispatched { .. } => Some(2),
+        ActionOutcome::Completed { .. } => Some(3),
+        _ => None,
+    }
+}
+
+pub(super) fn phase_evidence(record: &ActionEvidence) -> (&str, &str, &str) {
+    let (mut accepted, mut dispatched, mut completed) = ("", "", "");
+    for phase in record.phases.iter().chain(std::iter::once(&record.outcome)) {
+        match phase {
+            ActionOutcome::Accepted { evidence } => accepted = evidence,
+            ActionOutcome::Dispatched { evidence } => dispatched = evidence,
+            ActionOutcome::Completed { evidence } => completed = evidence,
+            _ => {}
+        }
+    }
+    (accepted, dispatched, completed)
+}
+
+fn valid_phases(record: &ActionEvidence) -> bool {
+    let mut previous = 0;
+    for phase in &record.phases {
+        let Some(rank) = phase_rank(phase) else {
+            return false;
+        };
+        if rank <= previous || validate_outcome(phase).is_err() {
+            return false;
+        }
+        previous = rank;
+    }
+    match &record.outcome {
+        ActionOutcome::Unknown => previous < 3,
+        ActionOutcome::Rejected { .. } | ActionOutcome::FencedNoEffect { .. } => previous == 0,
+        outcome => record.phases.is_empty() || record.phases.last() == Some(outcome),
     }
 }
 
@@ -520,6 +597,7 @@ fn load(directory: &Path) -> Result<Snapshot, ActionEvidenceError> {
             id != &record.identity.operation_id
                 || validate_identity(&record.identity).is_err()
                 || validate_outcome(&record.outcome).is_err()
+                || !valid_phases(record)
                 || record.updated_at_ms > MAX_INTEGER
                 || record.updated_at_ms < record.identity.recorded_at_ms
         })
@@ -647,6 +725,7 @@ mod tests {
                     ActionEvidence {
                         identity,
                         outcome: ActionOutcome::Unknown,
+                        phases: Vec::new(),
                         updated_at_ms: 1,
                     },
                 );

@@ -28,6 +28,22 @@ local function digest(value)
   return type(value) == "string" and #value == 64 and value:match("^[0-9a-f]+$") ~= nil
 end
 
+local function outcome_name(outcome)
+  if outcome == "unknown" then
+    return "unknown"
+  end
+  if type(outcome) ~= "table" then
+    return nil
+  end
+  for _, name in ipairs({ "accepted", "dispatched", "completed", "rejected", "fenced_no_effect" }) do
+    local item = outcome[name]
+    if keys(outcome, { [name] = true }) and keys(item, { evidence = true }) and digest(item.evidence) then
+      return name
+    end
+  end
+  return nil
+end
+
 local function parse(output)
   if type(output) ~= "string" or #output > 1024 or output:find("\\", 1, true) then
     return nil
@@ -56,22 +72,49 @@ local function parse(output)
     local valid = { malformed = true, conflict = true, unavailable = true }
     return keys(value, { v = true, type = true, code = true }) and valid[value.code] and value or nil
   end
+  if value.type == "action_phases" then
+    if
+      not keys(value, {
+        v = true,
+        type = true,
+        outcome = true,
+        accepted_evidence = true,
+        dispatched_evidence = true,
+        completed_evidence = true,
+      })
+    then
+      return nil
+    end
+    local name = outcome_name(value.outcome)
+    for _, field in ipairs({ "accepted_evidence", "dispatched_evidence", "completed_evidence" }) do
+      if value[field] ~= "" and not digest(value[field]) then
+        return nil
+      end
+    end
+    if name == nil then
+      return nil
+    elseif name == "accepted" or name == "dispatched" or name == "completed" then
+      if value[name .. "_evidence"] ~= value.outcome[name].evidence then
+        return nil
+      end
+      if name == "accepted" and (value.dispatched_evidence ~= "" or value.completed_evidence ~= "") then
+        return nil
+      elseif name == "dispatched" and value.completed_evidence ~= "" then
+        return nil
+      end
+    elseif name == "unknown" then
+      if value.completed_evidence ~= "" then
+        return nil
+      end
+    elseif value.accepted_evidence ~= "" or value.dispatched_evidence ~= "" or value.completed_evidence ~= "" then
+      return nil
+    end
+    return value
+  end
   if value.type ~= "existing" or not keys(value, { v = true, type = true, outcome = true }) then
     return nil
   end
-  if value.outcome == "unknown" then
-    return value
-  end
-  if type(value.outcome) ~= "table" then
-    return nil
-  end
-  for _, name in ipairs({ "accepted", "rejected", "fenced_no_effect" }) do
-    local item = value.outcome[name]
-    if keys(value.outcome, { [name] = true }) and keys(item, { evidence = true }) and digest(item.evidence) then
-      return value
-    end
-  end
-  return nil
+  return outcome_name(value.outcome) and value or nil
 end
 
 local function environment()

@@ -2,6 +2,7 @@
 
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns scheduling and SHA-256.
 local nvim = vim
+local ActionPhases = require("louiselm.phone_control.action_phases")
 local M = {}
 local Action = {}
 Action.__index = Action
@@ -73,7 +74,7 @@ function Action:send(identity, text, callback)
   end
   self.pending = true
   local finished, began, authorized = false, false, false
-  local reserved, detached, transitioning, reporting = false, false, false, false
+  local reserved, detached, transitioning, reporting, admitted = false, false, false, false, false
   local detach_callback
   local function finish(result)
     if finished or self.disposed then
@@ -88,7 +89,7 @@ function Action:send(identity, text, callback)
       callback(result)
     end
   end
-  local function report(state, code, turn_id, cannot_confirm)
+  local function report(state, code, turn_id)
     reporting = true
     local evidence =
       nvim.fn.sha256("louiselm-phone-owner-" .. state .. "-v1:" .. identity.operation_id .. ":" .. (turn_id or code))
@@ -108,8 +109,6 @@ function Action:send(identity, text, callback)
         else
           finish(failure("unavailable"))
         end
-      elseif cannot_confirm then
-        finish(failure("unavailable"))
       else
         finish({
           v = 1,
@@ -124,7 +123,7 @@ function Action:send(identity, text, callback)
   end
   self.detach_action = function(done)
     if detached then
-      if detach_callback == nil and reserved and not transitioning and not reporting then
+      if detach_callback == nil and reserved and not transitioning and not reporting and not admitted then
         detach_callback = done
         report("fenced_no_effect", "unavailable")
       else
@@ -135,7 +134,7 @@ function Action:send(identity, text, callback)
       return
     end
     detached, detach_callback = true, done
-    if reserved and not transitioning and not reporting then
+    if reserved and not transitioning and not reporting and not admitted then
       report("fenced_no_effect", "unavailable")
     elseif began and not reserved and not reporting then
       finish(failure("unavailable"))
@@ -199,20 +198,49 @@ function Action:send(identity, text, callback)
         end
         return
       end
+      local phases = ActionPhases.new(self.session, self.journal, identity)
+      self.phases[#self.phases + 1] = phases
       transitioning = true
-      local turn_id, prompt_error = self.session:prompt(text, nil, nil, text)
+      local turn_id, prompt_error = self.session:prompt(text, function(result, err)
+        phases:completed(err == nil and result ~= nil)
+      end, nil, text)
       transitioning = false
+      admitted = turn_id ~= nil
       local released = release(self, permit)
+      if turn_id == nil then
+        phases:dispose()
+        table.remove(self.phases)
+      end
       if turn_id == nil and not released then
         finish(failure("unavailable"))
       elseif turn_id == nil then
         self.last_error = prompt_error
         report("fenced_no_effect", "unavailable")
       else
-        report("accepted", "", turn_id, not released)
+        phases:admitted(turn_id, function(evidence)
+          if evidence == nil or not released then
+            finish(failure("unavailable"))
+          else
+            finish({
+              v = 1,
+              type = "action_result",
+              operation_id = identity.operation_id,
+              state = "accepted",
+              code = "",
+              evidence = evidence,
+            })
+          end
+        end)
       end
     end)
   end)
+end
+
+---Retry unconfirmed native phase reports when storage becomes available.
+function Action:retry_phases()
+  for _, phases in ipairs(self.phases) do
+    phases:retry()
+  end
 end
 
 ---Fence an unadmitted action after its controller connection is lost.
@@ -234,6 +262,9 @@ function Action:dispose()
   end
   self.disposed = true
   release(self, self.permit)
+  for _, phases in ipairs(self.phases) do
+    phases:dispose()
+  end
 end
 
 ---Create a Session-bound action owner with asynchronous journal and authority callbacks.
@@ -246,6 +277,7 @@ function M.new(options)
     projection = options.projection,
     current = options.current,
     authorize = options.authorize,
+    phases = {},
     pending = false,
     disposed = false,
   }, Action)

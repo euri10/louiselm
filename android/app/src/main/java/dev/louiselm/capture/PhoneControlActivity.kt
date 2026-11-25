@@ -412,9 +412,11 @@ class PhoneControlActivity : Activity() {
         sendButton.visibility = if (showComposer) View.VISIBLE else View.GONE
         sendStatus.visibility = if (showComposer) View.VISIBLE else View.GONE
         val related = relatedPendingActions()
-        val unresolved = related.any { actionEvidence[it.operationId]?.state !in setOf(PhoneActionState.ACCEPTED, PhoneActionState.FENCED_NO_EFFECT) }
+        val acceptedStates = setOf(PhoneActionState.ACCEPTED, PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)
+        val resolvedStates = acceptedStates + PhoneActionState.FENCED_NO_EFFECT
+        val unresolved = related.any { actionEvidence[it.operationId]?.state !in resolvedStates }
         val reviewNeeded = related.any { actionEvidence[it.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT && it.operationId !in reviewedFences }
-        val acceptedDraft = related.any { actionEvidence[it.operationId]?.state == PhoneActionState.ACCEPTED && it.payloadHash == sendDigest() }
+        val acceptedDraft = related.any { actionEvidence[it.operationId]?.state in acceptedStates && it.payloadHash == sendDigest() }
         val wrongTarget = draftTarget != null &&
             (draftTarget != target || draftReceiver != period?.grant?.receiverIdentity)
         sendStatus.text = getString(when {
@@ -422,6 +424,8 @@ class PhoneControlActivity : Activity() {
             reviewNeeded -> R.string.phone_send_review
             unresolved && related.any { actionEvidence[it.operationId]?.state == PhoneActionState.REJECTED } -> R.string.phone_send_rejected
             unresolved -> sendNotice ?: R.string.phone_send_unknown
+            related.any { actionEvidence[it.operationId]?.state == PhoneActionState.COMPLETED } -> R.string.phone_action_completed
+            related.any { actionEvidence[it.operationId]?.state == PhoneActionState.DISPATCHED } -> R.string.phone_action_dispatched
             related.any { actionEvidence[it.operationId]?.state == PhoneActionState.ACCEPTED } -> R.string.phone_action_accepted
             related.any { actionEvidence[it.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT } -> R.string.phone_send_fenced
             sendNotice in setOf(R.string.phone_send_pending, R.string.phone_send_unknown, R.string.phone_send_unsupported) -> R.string.phone_send_ready
@@ -1107,8 +1111,14 @@ class PhoneControlActivity : Activity() {
             }
             for (record in page.records) {
                 val state = when (record.state) {
-                    PhoneActionState.UNKNOWN -> R.string.phone_action_unknown
+                    PhoneActionState.UNKNOWN -> when {
+                        record.dispatchedEvidence.isNotEmpty() -> R.string.phone_action_dispatched_unknown
+                        record.acceptedEvidence.isNotEmpty() -> R.string.phone_action_accepted_unknown
+                        else -> R.string.phone_action_unknown
+                    }
                     PhoneActionState.ACCEPTED -> R.string.phone_action_accepted
+                    PhoneActionState.DISPATCHED -> R.string.phone_action_dispatched
+                    PhoneActionState.COMPLETED -> R.string.phone_action_completed
                     PhoneActionState.REJECTED -> R.string.phone_action_rejected
                     PhoneActionState.FENCED_NO_EFFECT -> R.string.phone_action_fenced
                 }

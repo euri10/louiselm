@@ -39,6 +39,10 @@
     <string name="phone_action_row">Action %1$d · %2$s\nOperation: %3$s</string>
     <string name="phone_action_unknown">Unknown: delivery is not proven</string>
     <string name="phone_action_accepted">Accepted; completion is not proven</string>
+    <string name="phone_action_dispatched">Dispatched; completion is not proven</string>
+    <string name="phone_action_completed">Completed</string>
+    <string name="phone_action_accepted_unknown">Accepted; later outcome unknown</string>
+    <string name="phone_action_dispatched_unknown">Dispatched; later outcome unknown</string>
     <string name="phone_action_rejected">Rejected</string>
     <string name="phone_action_fenced">No effect; original fenced</string>
     <string name="phone_send">Send</string>

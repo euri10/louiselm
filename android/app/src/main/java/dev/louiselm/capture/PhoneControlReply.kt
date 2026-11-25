@@ -36,13 +36,14 @@ internal data class PhoneControlSessionSummary(
     val status: String, val truncated: Boolean,
 )
 
-internal enum class PhoneActionState { UNKNOWN, ACCEPTED, REJECTED, FENCED_NO_EFFECT }
+internal enum class PhoneActionState { UNKNOWN, ACCEPTED, DISPATCHED, COMPLETED, REJECTED, FENCED_NO_EFFECT }
 
 internal data class PhoneActionRecord(
     val operationId: String, val receiverIdentity: String, val controllerId: String, val subjectId: String,
     val action: Int, val payloadHash: String, val grantId: String, val grantRevision: Long,
     val expectedRevision: Long, val recordedAtMs: Long, val updatedAtMs: Long,
     val state: PhoneActionState, val evidence: String,
+    val acceptedEvidence: String, val dispatchedEvidence: String, val completedEvidence: String,
 )
 
 internal data class PhoneControlOption(val label: String, val description: String, val preview: String)
@@ -109,11 +110,24 @@ private fun Map<String, Any>.wireHex(name: String, size: Int): String = wireStri
 private fun parseActionRecord(value: Any): PhoneActionRecord {
     val record = value.wireObject()
     record.wireKeys("operation_id", "receiver_identity", "controller_id", "subject_id", "action", "payload_hash",
-        "grant_id", "grant_revision", "expected_revision", "recorded_at_ms", "updated_at_ms", "state", "evidence")
+        "grant_id", "grant_revision", "expected_revision", "recorded_at_ms", "updated_at_ms", "state", "evidence",
+        "accepted_evidence", "dispatched_evidence", "completed_evidence")
     val state = PhoneActionState.entries.firstOrNull { it.name.lowercase() == record.wireString("state") }
         ?: throw UnsupportedReply()
     val evidence = record.wireString("evidence")
     if (state == PhoneActionState.UNKNOWN) require(evidence.isEmpty()) else phoneControlHex(evidence, 32)
+    val accepted = record.wireString("accepted_evidence")
+    val dispatched = record.wireString("dispatched_evidence")
+    val completed = record.wireString("completed_evidence")
+    listOf(accepted, dispatched, completed).filter { it.isNotEmpty() }.forEach { phoneControlHex(it, 32) }
+    when (state) {
+        PhoneActionState.UNKNOWN -> require(completed.isEmpty())
+        PhoneActionState.ACCEPTED -> require(evidence == accepted && dispatched.isEmpty() && completed.isEmpty())
+        PhoneActionState.DISPATCHED -> require(evidence == dispatched && completed.isEmpty())
+        PhoneActionState.COMPLETED -> require(evidence == completed)
+        PhoneActionState.REJECTED, PhoneActionState.FENCED_NO_EFFECT ->
+            require(accepted.isEmpty() && dispatched.isEmpty() && completed.isEmpty())
+    }
     val action = record.wireNumber("action")
     val grantRevision = record.wireNumber("grant_revision")
     val recorded = record.wireNumber("recorded_at_ms")
@@ -122,7 +136,7 @@ private fun parseActionRecord(value: Any): PhoneActionRecord {
     return PhoneActionRecord(record.wireHex("operation_id", 16), record.wireHex("receiver_identity", 32),
         record.wireHex("controller_id", 16), record.wireHex("subject_id", 16), action.toInt(),
         record.wireHex("payload_hash", 32), record.wireHex("grant_id", 16), grantRevision,
-        record.wireNumber("expected_revision"), recorded, updated, state, evidence)
+        record.wireNumber("expected_revision"), recorded, updated, state, evidence, accepted, dispatched, completed)
 }
 
 private fun parseEntry(value: Any): PhoneControlEntry {
@@ -177,7 +191,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
         fun hex(name: String, size: Int): String = string(name).also { phoneControlHex(it, size) }
         fun keys(vararg names: String) = require(fields.keys == names.toSet() + setOf("v", "type")) { "invalid fields" }
         val type = string("type")
-        if (number("v") != if (type == "session_page") 2L else 1L) throw UnsupportedReply()
+        if (number("v") != if (type in setOf("session_page", "action_history", "action_history_page")) 2L else 1L) throw UnsupportedReply()
         when (type) {
             "error" -> {
                 keys("code")

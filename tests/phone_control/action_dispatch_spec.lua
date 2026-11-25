@@ -88,6 +88,9 @@ T["a lost owner report never confirms or repeats an admitted prompt"] = function
   end
   local owner = { sessions = {} }
   local session = { owner = owner }
+  function session:on()
+    return function() end
+  end
   function session:inspect()
     return { id = "s", status = "ready" }
   end
@@ -255,6 +258,23 @@ T["one explicit phone action enters the real Session without consuming the deskt
   assert(nvim.wait(6000, function()
     return session:inspect().status == "ready"
   end))
+  local phases
+  local function inspect_phases()
+    journal:run({ v = 1, type = "inspect_phases", identity = identity }, function(result)
+      if result.type == "action_phases" and result.completed_evidence ~= "" then
+        phases = result
+      else
+        nvim.defer_fn(inspect_phases, 20)
+      end
+    end)
+  end
+  inspect_phases()
+  assert(nvim.wait(6000, function()
+    return phases ~= nil
+  end))
+  MiniTest.expect.equality(phases.accepted_evidence, first.evidence)
+  MiniTest.expect.equality(#phases.dispatched_evidence, 64)
+  MiniTest.expect.equality(#phases.completed_evidence, 64)
   MiniTest.expect.equality(session:inspect().current_turn, 1)
   MiniTest.expect.equality(view.renderer:prompt_text(), "UNSENT DRAFT")
   local lines = nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false)
