@@ -83,6 +83,99 @@ fn old_unbound_runs_never_gain_a_binding_by_retroactive_admission() {
 }
 
 #[test]
+fn differently_cased_old_run_cannot_be_reused_for_phone_admission() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RunStore::new(root.path()).unwrap();
+    let lower = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let upper = lower.to_ascii_uppercase();
+    let mut old = admission();
+    old.id = upper.clone();
+    store.admit(old.clone(), TOKEN).unwrap();
+    store.admit(old, TOKEN).unwrap();
+    let mut new = admission();
+    new.id = lower.into();
+    let mut proposed = binding();
+    proposed.run_id = lower.into();
+    assert!(matches!(
+        store.admit_phone_bound(new, TOKEN, proposed),
+        Err(RunStoreError::Invalid(error)) if error == "Run UUID conflicts with existing record"
+    ));
+    assert_eq!(store.run(&upper).unwrap().phone_binding, None);
+    assert!(!root.path().join(format!("{lower}.json")).exists());
+}
+
+#[test]
+fn ambiguous_retained_uuid_spellings_are_never_phone_readable() {
+    let root = tempfile::tempdir().unwrap();
+    let separate = tempfile::tempdir().unwrap();
+    let lower = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let upper = lower.to_ascii_uppercase();
+    let store = RunStore::new(root.path()).unwrap();
+    let mut old = admission();
+    old.id = upper.clone();
+    store.admit(old, TOKEN).unwrap();
+    let other = RunStore::new(separate.path()).unwrap();
+    let mut new = admission();
+    new.id = lower.into();
+    let mut proposed = binding();
+    proposed.run_id = lower.into();
+    other.admit_phone_bound(new, TOKEN, proposed).unwrap();
+    std::fs::copy(
+        separate.path().join(format!("{lower}.json")),
+        root.path().join(format!("{lower}.json")),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.with_phone_binding(lower, 0, |_, _| ()),
+        Err(RunStoreError::Invalid(error)) if error == "Run UUID conflicts with existing record"
+    ));
+    assert!(store.add_phone_contributor(lower, "other").is_err());
+    assert!(
+        store
+            .attach(RunSession {
+                id: lower.into(),
+                session_id: "codex/acp".into(),
+                agent: "codex".into(),
+                acp_session_id: "acp".into(),
+                working_dir: "/temporary/worker".into(),
+                load_session: false,
+            })
+            .is_err()
+    );
+    assert_eq!(store.run(&upper).unwrap().phone_binding, None);
+}
+
+#[test]
+fn competing_case_alias_admissions_cannot_both_win() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RunStore::new(root.path()).unwrap();
+    let lower = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let upper = lower.to_ascii_uppercase();
+    let mut local = admission();
+    local.id = upper.clone();
+    let mut phone = admission();
+    phone.id = lower.into();
+    let mut proposed = binding();
+    proposed.run_id = lower.into();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let local_store = store.clone();
+    let local_barrier = barrier.clone();
+    let local = std::thread::spawn(move || {
+        local_barrier.wait();
+        local_store.admit(local, TOKEN)
+    });
+    let phone = std::thread::spawn(move || {
+        barrier.wait();
+        store.admit_phone_bound(phone, TOKEN, proposed)
+    });
+    assert_ne!(local.join().unwrap().is_ok(), phone.join().unwrap().is_ok());
+    assert_ne!(
+        root.path().join(format!("{upper}.json")).exists(),
+        root.path().join(format!("{lower}.json")).exists()
+    );
+}
+
+#[test]
 fn contributor_updates_are_serialized() {
     let root = tempfile::tempdir().unwrap();
     let store = RunStore::new(root.path()).unwrap();

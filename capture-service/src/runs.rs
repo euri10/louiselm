@@ -421,6 +421,7 @@ impl RunStore {
         validate_admission(&admission)?;
         validate_token(token)?;
         self.locked(|| {
+            self.require_unambiguous_id(&admission.id)?;
             let path = self.path(&admission.id);
             let mut run = Run {
                 schema_version: 4,
@@ -486,6 +487,7 @@ impl RunStore {
                 ));
             }
             if let Some(binding) = &mut run.phone_binding {
+                self.require_unambiguous_id(&session.id)?;
                 add_contributor(binding, &session.agent)?;
             }
             run.session_id = Some(session.session_id);
@@ -508,6 +510,7 @@ impl RunStore {
     /// Refuses unbound Runs, invalid Agents, excessive contributors and storage errors.
     pub fn add_phone_contributor(&self, id: &str, agent: &str) -> Result<(), RunStoreError> {
         self.locked(|| {
+            self.require_unambiguous_id(id)?;
             let mut run = self.run(id)?;
             let binding = run.phone_binding.as_mut().ok_or_else(|| {
                 RunStoreError::Invalid("Run has no owner project binding".to_owned())
@@ -529,7 +532,7 @@ impl RunStore {
     /// This operation does not authenticate a caller or grant access.
     ///
     /// # Errors
-    /// Refuses unbound, missing, damaged or stale Runs and storage errors.
+    /// Refuses unbound, missing, damaged, stale or UUID-ambiguous Runs and storage errors.
     pub fn with_phone_binding<T>(
         &self,
         id: &str,
@@ -537,6 +540,7 @@ impl RunStore {
         inspect: impl FnOnce(&RunProjectBinding, &RunView) -> T,
     ) -> Result<T, RunStoreError> {
         self.locked(|| {
+            self.require_unambiguous_id(id)?;
             let run = self.run(id)?;
             if expected_revision != 0 {
                 require_revision(&run, expected_revision)?;
@@ -832,6 +836,27 @@ impl RunStore {
             return Err(RunStoreError::Invalid("stored Run is invalid".to_owned()));
         }
         Ok(Some(run))
+    }
+
+    // Call under the Run lock: older local records may use uppercase UUID text.
+    // Preserve those records, but never bind or deliver an ambiguous UUID.
+    fn require_unambiguous_id(&self, id: &str) -> Result<(), RunStoreError> {
+        let wanted = Uuid::parse_str(id)
+            .map_err(|_| RunStoreError::Invalid("Run id must be a UUID".to_owned()))?;
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(candidate) = name.to_str().and_then(|value| value.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            if candidate != id && Uuid::parse_str(candidate) == Ok(wanted) {
+                return Err(RunStoreError::Invalid(
+                    "Run UUID conflicts with existing record".to_owned(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn find_view(&self, id: &str) -> Result<Option<RunView>, RunStoreError> {
