@@ -4,6 +4,8 @@ mod authority;
 mod discovery;
 mod evidence;
 mod http;
+#[cfg(test)]
+mod legacy_recovery_tests;
 pub(crate) mod owner_journal;
 mod prepared_owner;
 #[cfg(test)]

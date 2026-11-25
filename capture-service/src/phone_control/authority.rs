@@ -244,6 +244,7 @@ pub(super) enum History {
 #[derive(Default)]
 struct State {
     failed: bool,
+    damaged_preserved: bool,
     grants: BTreeMap<String, StoredGrant>,
     revisions: BTreeMap<String, u64>,
     enrollments: BTreeMap<String, PendingEnrollment>,
@@ -435,6 +436,10 @@ impl Authority {
         Ok((approved_scope, project_confirmations_valid))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The desktop must bind recovery to the exact paired grant, reviewed scope and selected project."
+    )]
     pub(super) fn confirm_legacy_project(
         &self,
         pairing: &PairingRegistry,
@@ -443,6 +448,7 @@ impl Authority {
         grant_revision: u64,
         scope_digest: &str,
         project_id: &str,
+        recover: bool,
     ) -> Result<(), Refusal> {
         fixed::<16>(grant_id).map_err(|_| Refusal::Malformed)?;
         fixed::<16>(project_id).map_err(|_| Refusal::Malformed)?;
@@ -455,6 +461,7 @@ impl Authority {
         let current_digest = grant_scope_hash(grant).map_err(|_| Refusal::Unavailable)?;
         if grant.grant_id != grant_id
             || grant.grant_revision != grant_revision
+            || grant.receiver_identity != self.receiver_identity
             || current_digest != scope_digest
         {
             return Err(Refusal::StaleSubject);
@@ -465,7 +472,10 @@ impl Authority {
         if !grant.scope.groups.iter().any(|group| group == "read") {
             return Err(Refusal::OutOfScope);
         }
-        if grant.legacy_project_confirmed(project_id)? {
+        if recover && grant.legacy_confirmations_valid {
+            return Err(Refusal::Unsupported);
+        }
+        if !recover && grant.legacy_project_confirmed(project_id)? {
             return Ok(());
         }
         let within_scope = self
@@ -476,6 +486,9 @@ impl Authority {
             .map_err(|_| Refusal::Unavailable)?;
         if !within_scope {
             return Err(Refusal::OutOfScope);
+        }
+        if recover {
+            grant.confirmed_project_ids.clear();
         }
         if grant.confirmed_project_ids.len() >= 50 {
             return Err(Refusal::Unavailable);
@@ -505,6 +518,15 @@ impl Authority {
         grants: &BTreeMap<String, StoredGrant>,
         revisions: &BTreeMap<String, u64>,
     ) -> Result<(), Refusal> {
+        if !state.damaged_preserved
+            && state
+                .grants
+                .values()
+                .any(|grant| !grant.legacy_confirmations_valid)
+        {
+            preserve_damaged(&self.path).map_err(|_| Refusal::Unavailable)?;
+            state.damaged_preserved = true;
+        }
         if persist(&self.path, grants, revisions).is_err() {
             state.failed = true;
             state.enrollments.clear();
@@ -1486,6 +1508,43 @@ fn validate_scope(scope: &Scope) -> Result<(), Refusal> {
     Ok(())
 }
 
+fn preserve_damaged(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("grant path has no parent"))?;
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(MAX_STORED_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_STORED_BYTES {
+        return Err(io::Error::other("phone-control grant store is too large"));
+    }
+    let id = uuid::Uuid::new_v4();
+    let temporary = parent.join(format!(".grants-damaged-{id}.tmp"));
+    let snapshot = parent.join(format!("grants-damaged-{id}.json"));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        set_private_permissions(&temporary, false)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::hard_link(&temporary, snapshot)?;
+        fs::remove_file(&temporary)?;
+        File::open(parent)?.sync_all()
+    })();
+    if temporary.exists() {
+        // A partial snapshot is never authority; failure leaves the original file untouched.
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
 fn persist(
     path: &Path,
     grants: &BTreeMap<String, StoredGrant>,
@@ -2196,7 +2255,20 @@ mod tests {
                 &grant.grant_id,
                 grant.grant_revision,
                 &review.scope_digest,
-                &project_id
+                &project_id,
+                false,
+            ),
+            Err(Refusal::Unavailable)
+        );
+        assert_eq!(
+            authority.confirm_legacy_project(
+                &pairing,
+                &phone.device_id,
+                &grant.grant_id,
+                grant.grant_revision,
+                &review.scope_digest,
+                &project_id,
+                true,
             ),
             Err(Refusal::Unavailable)
         );
@@ -2214,7 +2286,8 @@ mod tests {
                 &grant.grant_id,
                 grant.grant_revision,
                 &"00".repeat(32),
-                &project_id
+                &project_id,
+                false,
             ),
             Err(Refusal::StaleSubject)
         );
@@ -2226,6 +2299,7 @@ mod tests {
                 grant.grant_revision,
                 &review.scope_digest,
                 &project_id,
+                false,
             )
             .unwrap();
         // A project confirmation created before scope re-approval is not itself
@@ -2262,6 +2336,7 @@ mod tests {
                 grant.grant_revision,
                 &review.scope_digest,
                 &project_id,
+                false,
             )
             .unwrap();
         drop(authority);
@@ -2289,7 +2364,8 @@ mod tests {
                 &second_review.grant_id,
                 second_review.grant_revision,
                 &second_review.scope_digest,
-                &project_id
+                &project_id,
+                false,
             ),
             Err(Refusal::Revoked)
         );
@@ -2312,9 +2388,32 @@ mod tests {
                 grant.grant_revision,
                 &review.scope_digest,
                 &project_id,
+                false,
             ),
             Err(Refusal::Unavailable)
         );
+        let challenge = authority
+            .challenge(
+                &phone.device_id,
+                &grant.grant_id,
+                grant.grant_revision,
+                now,
+                1_000,
+            )
+            .unwrap();
+        let lease = authority
+            .unlock(
+                &phone.device_id,
+                &signed_proof(&grant, &challenge),
+                now,
+                1_000,
+            )
+            .unwrap();
+        let request = signed_request(&grant, &lease, 0, 1234);
+        let permit = authority
+            .begin_read(&phone.device_id, &request, now)
+            .unwrap();
+        assert!(authority.finish_read(&permit, true, now, 1_000).is_ok());
     }
 
     #[test]

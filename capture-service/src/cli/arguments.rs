@@ -232,6 +232,22 @@ pub(super) enum PhoneControl {
         #[arg(long)]
         project_id: String,
     },
+    /// Replace damaged legacy confirmations with one explicitly selected project.
+    RecoverLegacyProject {
+        #[arg(long)]
+        device_id: String,
+        #[arg(long)]
+        grant_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        grant_revision: u64,
+        #[arg(long)]
+        scope_digest: String,
+        #[arg(long)]
+        project_id: String,
+        /// Acknowledge that all damaged confirmations will be discarded.
+        #[arg(long, required = true)]
+        discard_damaged_confirmations: bool,
+    },
     /// Start an enrollment for an already paired device.
     Start {
         #[arg(long)]

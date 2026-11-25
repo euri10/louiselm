@@ -866,6 +866,77 @@ fn command(data: &std::path::Path, state: &std::path::Path) -> Command {
         .env("LOUISELM_CAPTURE_CONFIG_DIR", state);
     command
 }
+
+#[cfg(unix)]
+#[test]
+fn legacy_project_recovery_cli_sends_the_explicit_desktop_request() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+    };
+
+    let temporary = tempfile::tempdir().unwrap();
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let workflow = state.join("louiselm/workflow");
+    fs::create_dir_all(&workflow).unwrap();
+    let capability = "11111111-1111-4111-8111-111111111111";
+    fs::write(workflow.join("operator-capability"), capability).unwrap();
+    let listener = UnixListener::bind(workflow.join("phone-control-admin.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "CLI never connected");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("admin listener: {error}"),
+            }
+        };
+        let mut line = String::new();
+        BufReader::new(&mut stream).read_line(&mut line).unwrap();
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            request,
+            serde_json::json!({
+                "v":1,"type":"recover_legacy_project","capability":capability,
+                "device_id":"device","grant_id":"grant","grant_revision":7,
+                "scope_digest":"digest","project_id":"project"
+            })
+        );
+        stream.write_all(b"{\"v\":1,\"type\":\"legacy_project_recovered\",\"device_id\":\"device\",\"project_id\":\"project\"}\n").unwrap();
+    });
+    let output = command(&data, &state)
+        .args([
+            "phone-control",
+            "recover-legacy-project",
+            "--device-id",
+            "device",
+            "--grant-id",
+            "grant",
+            "--grant-revision",
+            "7",
+            "--scope-digest",
+            "digest",
+            "--project-id",
+            "project",
+            "--discard-damaged-confirmations",
+        ])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["type"], "legacy_project_recovered");
+}
+
 #[test]
 fn metadata_and_interface_refusal_do_not_create_state() {
     let temporary = tempfile::tempdir().unwrap();

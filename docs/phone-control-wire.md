@@ -92,11 +92,12 @@ role is a scope grant. A revision change invalidates old proofs and periods.
 Re-enabling requires fresh local approval. Disable workspace keeps capture;
 Forget phone revokes both.
 
-If the persisted grant store cannot be validated, phone-control authority is
-unavailable for every phone; capture remains usable and the damaged store is
-retained unchanged. Forget still revokes pairing, fencing that phone. Recovery
-requires an explicit desktop operator action and fresh enrollment; the receiver
-never derives or repairs scope from damaged records.
+If the persisted grant structure or a sealed base scope cannot be validated,
+phone-control authority is unavailable for every phone; capture remains usable
+and the damaged store is retained unchanged. Forget still revokes pairing,
+fencing that phone. Recovery requires an explicit desktop operator action and
+fresh enrollment; the receiver never derives or repairs scope from damaged
+records.
 
 ### Local project administration
 
@@ -220,6 +221,15 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   required. A retained project-to-root relationship may be used after the
   original project directory disappears, but a matching root must still be the
   recorded current directory. Confirmation does not re-pair or grant an action.
+- `{v:1,type:"recover_legacy_project",capability:string,device_id:string,grant_id:hex16,grant_revision:integer,scope_digest:hex32,project_id:hex16}`
+  returns `{v:1,type:"legacy_project_recovered",device_id:string,project_id:hex16}`.
+  The authenticated desktop operator explicitly discards a damaged legacy
+  confirmation list and selects exactly this project within the intact approved
+  base scope. The same pairing, grant, revision, receiver, Read-group and
+  current project-root checks apply. An intact confirmation list rejects
+  recovery; ordinary confirmation adds further projects. Before rewriting a
+  store with damaged confirmations, preserve its original bytes privately.
+  The snapshot is never authority. Neither operation changes the base scope.
 - Local enrollment approval is version 2:
   `{v:2,type:"approve",capability:string,device_id:string,enrollment_id:hex16,enrolled_key:hex65,scope:Scope,project_root_ids:[hex16]}`.
   `Scope` is exactly `{projects:[string],agents:[string],groups:[string]}`.

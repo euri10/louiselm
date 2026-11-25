@@ -95,6 +95,7 @@ phone-control unpublish-prepared --registration-id HEX16 --expected-revision N
 phone-control inspect-grant --device-id DEVICE_UUID
 phone-control approve-legacy-scope --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --enrolled-key HEX65 --project /absolute/project --agent AGENT --group read --confirm-complete-scope
 phone-control confirm-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16
+phone-control recover-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16 --discard-damaged-confirmations
 phone-control disable --device-id DEVICE_UUID
 phone-control forget --device-id DEVICE_UUID
 ```
@@ -128,9 +129,10 @@ project confirmations remain valid. This preserves the phone's existing grant
 and pairing, ends any old working period, and needs no new pairing. If the
 inspection changes before approval, inspect and review again.
 
-If the grant store is unreadable or fails its integrity checks, capture and
-pairing remain available, but phone control returns `unavailable` for every
-phone. The service logs a warning and leaves the damaged store untouched.
+If the grant store is unreadable, structurally invalid, or has an invalid base
+scope seal, capture and pairing remain available, but phone control returns
+`unavailable` for every phone. The service logs a warning and leaves the
+damaged store untouched.
 `revoke-device` or `phone-control forget` still revokes a phone's pairing;
 workspace-only `disable` cannot safely edit an unreadable store.
 
@@ -145,9 +147,23 @@ resumes. A phone whose pairing was revoked must also be paired again.
 
 For protected Run reads, confirm each exact legacy project separately with
 `confirm-legacy-project` after scope re-approval. Existing intact project
-confirmations are retained. Damaged confirmations remain unavailable; the
-scope re-approval does not repair them. These identity records alone do not
-make Runs phone-readable; source/checkout binding remains required.
+confirmations are retained. Scope re-approval does not repair damaged project
+confirmations. If `inspect-grant` reports `project_confirmations_valid=false`,
+review the approved base scope and the exact project from `projects`, then use
+`recover-legacy-project` with the current grant ID, revision, scope digest,
+selected project ID, and `--discard-damaged-confirmations`. This explicitly
+replaces the entire untrusted confirmation list for that phone with just the
+selected project. Use `confirm-legacy-project` for any additional projects.
+It does not change the base scope or pairing. After an uncertain response,
+inspect again; recovery refuses once the confirmation list is valid.
+
+Before any grant-store write while confirmations are damaged, the service
+retains the original bytes in a private `grants-damaged-*.json` file alongside
+`grants.json`; if preservation fails, the write is refused. These snapshots
+can contain sensitive local paths and are never used as authority. Keep or
+remove them deliberately after review; never restore an unverified snapshot.
+Project confirmation alone does not make Runs phone-readable; source/checkout
+binding remains required.
 For contained Run preparation, `freeze-run-source` explicitly freezes a selected
 original project using the optional root-owned installed `louiselm-skills` and
 records that event for the exact new Run UUID. The snapshot must be a new path

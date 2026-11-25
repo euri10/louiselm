@@ -360,6 +360,26 @@ fn phone_control_admin_request(
                 "scope_digest":scope_digest,"project_id":project_id}),
             "legacy_project_confirmed",
         ),
+        PhoneControl::RecoverLegacyProject {
+            device_id,
+            grant_id,
+            grant_revision,
+            scope_digest,
+            project_id,
+            discard_damaged_confirmations,
+        } => {
+            if !discard_damaged_confirmations {
+                return Err(CliError::Invalid(
+                    "recovery requires --discard-damaged-confirmations".into(),
+                ));
+            }
+            (
+                serde_json::json!({"v":1,"type":"recover_legacy_project","capability":capability,
+                    "device_id":device_id,"grant_id":grant_id,"grant_revision":grant_revision,
+                    "scope_digest":scope_digest,"project_id":project_id}),
+                "legacy_project_recovered",
+            )
+        }
         enrollment => return phone_control_enrollment_request(enrollment, capability),
     })
 }
@@ -1117,6 +1137,40 @@ fn configured_root(
 mod tests {
     use super::*;
     use crate::Transcriber;
+
+    #[test]
+    fn legacy_confirmation_recovery_cli_requires_explicit_discard() {
+        let base = [
+            "louiselm-capture",
+            "phone-control",
+            "recover-legacy-project",
+            "--device-id",
+            "phone",
+            "--grant-id",
+            "grant",
+            "--grant-revision",
+            "1",
+            "--scope-digest",
+            "digest",
+            "--project-id",
+            "project",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        let parsed =
+            Cli::try_parse_from(base.into_iter().chain(["--discard-damaged-confirmations"]))
+                .expect("explicit recovery");
+        assert!(matches!(
+            &parsed.command,
+            Some(Command::PhoneControl { .. })
+        ));
+        if let Some(Command::PhoneControl { command }) = parsed.command {
+            let (request, expected) =
+                phone_control_admin_request(command, "capability").expect("request");
+            assert_eq!(expected, "legacy_project_recovered");
+            assert_eq!(request["type"], "recover_legacy_project");
+            assert_eq!(request["project_id"], "project");
+        }
+    }
 
     #[test]
     fn legacy_reapproval_cli_requires_explicit_complete_scope() {

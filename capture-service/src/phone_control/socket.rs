@@ -716,6 +716,15 @@ enum AdminRequest {
         scope_digest: String,
         project_id: String,
     },
+    RecoverLegacyProject {
+        v: u64,
+        capability: String,
+        device_id: String,
+        grant_id: String,
+        grant_revision: u64,
+        scope_digest: String,
+        project_id: String,
+    },
     Start {
         v: u64,
         capability: String,
@@ -801,6 +810,12 @@ impl AdminRequest {
                 ..
             }
             | Self::ConfirmLegacyProject {
+                v,
+                capability,
+                device_id,
+                ..
+            }
+            | Self::RecoverLegacyProject {
                 v,
                 capability,
                 device_id,
@@ -940,7 +955,8 @@ fn process_admin(
         | AdminRequest::RegisterRoot { .. }
         | AdminRequest::InspectGrant { .. }
         | AdminRequest::ApproveLegacyScope { .. }
-        | AdminRequest::ConfirmLegacyProject { .. }) => {
+        | AdminRequest::ConfirmLegacyProject { .. }
+        | AdminRequest::RecoverLegacyProject { .. }) => {
             process_project_admin(authority, pairing, request)
         }
         AdminRequest::Start { device_id, .. } => {
@@ -1156,11 +1172,16 @@ fn prepared_refusal(error: &OwnerPreparedError) -> Refusal {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "The closed desktop project and grant protocol dispatch keeps replies together."
+)]
 fn process_project_admin(
     authority: &Authority,
     pairing: &PairingRegistry,
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
+    let recover = matches!(&request, AdminRequest::RecoverLegacyProject { .. });
     match request {
         AdminRequest::PrepareRunCheckout {
             run_id,
@@ -1246,6 +1267,14 @@ fn process_project_admin(
             scope_digest,
             project_id,
             ..
+        }
+        | AdminRequest::RecoverLegacyProject {
+            device_id,
+            grant_id,
+            grant_revision,
+            scope_digest,
+            project_id,
+            ..
         } => {
             authority.confirm_legacy_project(
                 pairing,
@@ -1254,10 +1283,14 @@ fn process_project_admin(
                 grant_revision,
                 &scope_digest,
                 &project_id,
+                recover,
             )?;
-            Ok(
-                json!({"v":1,"type":"legacy_project_confirmed","device_id":device_id,"project_id":project_id}),
-            )
+            let kind = if recover {
+                "legacy_project_recovered"
+            } else {
+                "legacy_project_confirmed"
+            };
+            Ok(json!({"v":1,"type":kind,"device_id":device_id,"project_id":project_id}))
         }
         _ => Err(Refusal::Malformed),
     }
