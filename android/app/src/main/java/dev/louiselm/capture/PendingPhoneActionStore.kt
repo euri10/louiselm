@@ -10,6 +10,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.GeneralSecurityException
@@ -57,10 +58,16 @@ internal class PendingPhoneActionStore(
     // The application runs in one process; Android shares this monitor across store instances.
     private val lock = context.applicationContext.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE)
 
-    /** Persist the exact identity before transmission; existing identities must never be resent. */
-    fun reserve(action: PendingPhoneAction): PendingReservation = synchronized(lock) {
-        try {
-            validate(action)
+    /**
+     * Persist the exact Send request before transmission. NEW is evidence, not authority;
+     * EXISTING must never be resent. Refusals throw [PendingPhoneActionStoreException].
+     */
+    fun reserve(request: PhoneControlRequest): PendingReservation = synchronized(lock) {
+        val action = try {
+            require(request.action == 3)
+            PendingPhoneAction(request.operationId, request.receiverIdentity, request.controllerId, request.subjectId,
+                request.action, request.payloadHash, request.grantId, request.grantRevision, request.periodId,
+                request.expectedRevision).also(::validate)
         } catch (_: IllegalArgumentException) {
             throw PendingPhoneActionStoreException(PendingPhoneActionFailure.MALFORMED)
         }
@@ -143,16 +150,23 @@ internal class PendingPhoneActionStore(
             cipher.updateAAD(ACTION_AAD)
             require(cipher.iv.size == 12)
             val encrypted = cipher.iv + cipher.doFinal(plain)
-            val temporary = File.createTempFile(".phone-action-pending-", ".tmp", directory)
+            val temporary = File(directory, ".phone-action-pending-v1.tmp")
+            val temporaryPath = temporary.toPath()
+            // Only the renamed snapshot is evidence; an interrupted write leaves this one staging slot.
+            if (Files.exists(temporaryPath, LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.isRegularFile(temporaryPath, LinkOption.NOFOLLOW_LINKS)) throw IOException("invalid pending action staging file")
+                Files.delete(temporaryPath)
+            }
+            Files.createFile(temporaryPath)
             try {
                 FileOutputStream(temporary).use { output ->
                     output.write(encrypted)
                     syncFile(output.fd)
                 }
-                Files.move(temporary.toPath(), snapshot.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                Files.move(temporaryPath, snapshot.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                 syncDirectory(directory)
             } finally {
-                Files.deleteIfExists(temporary.toPath())
+                Files.deleteIfExists(temporaryPath)
             }
         } catch (error: PendingPhoneActionStoreException) {
             throw error

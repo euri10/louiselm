@@ -102,7 +102,7 @@ internal class PhoneControlRequest(
     val action: Int = 1,
 ) {
     private val payload = payload.copyOf()
-    private val payloadHash = phoneControlHex(MessageDigest.getInstance("SHA-256").digest(this.payload))
+    val payloadHash = phoneControlHex(MessageDigest.getInstance("SHA-256").digest(this.payload))
 
     init {
         when (action) {
