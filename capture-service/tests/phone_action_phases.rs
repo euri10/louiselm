@@ -7,13 +7,14 @@
     reason = "test fixtures and assertions"
 )]
 
-use louiselm_capture::{
-    ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome, ActionReservation,
-};
+use louiselm_capture::{ActionEvidenceError, ActionIdentity, ActionOutcome, ActionReservation};
 use std::{
     io::Write,
     process::{Command, Stdio},
 };
+
+#[path = "support/phone_evidence.rs"]
+mod phone_evidence;
 
 fn owner(root: &std::path::Path, message: &serde_json::Value) -> serde_json::Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
@@ -60,6 +61,7 @@ fn owner_phases_survive_restart_and_late_reports_cannot_downgrade() {
     let root = tempfile::tempdir().unwrap();
     let request = identity(root.path());
     let path = root.path().join("evidence");
+    phone_evidence::initialize_store(&path);
     let accepted = ActionOutcome::Accepted {
         evidence: "11".repeat(32),
     };
@@ -70,14 +72,14 @@ fn owner_phases_survive_restart_and_late_reports_cannot_downgrade() {
         evidence: "33".repeat(32),
     };
     {
-        let store = ActionEvidenceStore::open(&path).unwrap();
+        let store = phone_evidence::open(&path).unwrap();
         store.reserve(&request).unwrap();
         store.report(&request, &accepted, 2000).unwrap();
         store.report(&request, &dispatched, 3000).unwrap();
         store.report(&request, &completed, 4000).unwrap();
         store.report(&request, &accepted, 5000).unwrap();
     }
-    let store = ActionEvidenceStore::open(&path).unwrap();
+    let store = phone_evidence::open(&path).unwrap();
     let retained = store.lookup(&request.operation_id).unwrap();
     assert_eq!(retained.outcome, completed);
     assert_eq!(retained.phases, vec![accepted, dispatched, completed]);
@@ -87,7 +89,9 @@ fn owner_phases_survive_restart_and_late_reports_cannot_downgrade() {
 fn unknown_after_acceptance_preserves_evidence_and_cannot_be_fenced() {
     let root = tempfile::tempdir().unwrap();
     let request = identity(root.path());
-    let store = ActionEvidenceStore::open(root.path().join("evidence")).unwrap();
+    let path = root.path().join("evidence");
+    phone_evidence::initialize_store(&path);
+    let store = phone_evidence::open(&path).unwrap();
     let accepted = ActionOutcome::Accepted {
         evidence: "11".repeat(32),
     };
@@ -125,7 +129,15 @@ fn unknown_after_acceptance_preserves_evidence_and_cannot_be_fenced() {
 #[test]
 fn native_owner_inspection_returns_every_durable_phase() {
     let root = tempfile::tempdir().unwrap();
-    let request = identity(root.path());
+    let tls = root.path().join("louiselm/capture/tls");
+    let receiver = louiselm_capture::TlsIdentity::load_or_create(&tls).unwrap();
+    let mut request = identity(root.path());
+    request.receiver_identity = receiver.public_key_sha256().to_owned();
+    phone_evidence::initialize(
+        &root.path().join("louiselm/workflow/phone-action-owner"),
+        &tls.join("phone-action-owner.json"),
+        &request.receiver_identity,
+    );
     let inspect = serde_json::json!({"v":1,"type":"inspect_phases","identity":request});
     assert_eq!(owner(root.path(), &inspect)["code"], "unavailable");
     assert_eq!(

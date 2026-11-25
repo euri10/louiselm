@@ -57,11 +57,19 @@ impl Service {
             .parent()
             .ok_or_else(|| io::Error::other("phone-control state has no parent"))?;
         let evidence_path = state_root.join("action-evidence");
+        let guard_path = state_root
+            .parent()
+            .ok_or_else(|| io::Error::other("receiver identity state has no parent"))?
+            .join("tls/phone-action-evidence.json");
         Ok(Self {
             authority: Arc::new(authority),
             pairing,
             controllers: Arc::default(),
-            evidence: Arc::new(ActionEvidenceStore::open(evidence_path)),
+            evidence: Arc::new(ActionEvidenceStore::open_bound(
+                evidence_path,
+                guard_path,
+                receiver,
+            )),
             state_root: state_root.to_owned(),
             prepared: None,
         })

@@ -1,5 +1,7 @@
 //! Payload-free, durable evidence for phone actions.
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -145,6 +147,22 @@ struct Seal {
     sha256: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiverGuard {
+    v: u8,
+    receiver_identity: String,
+    generation: String,
+    bytes: u64,
+    sha256: String,
+}
+
+struct GuardBinding {
+    path: PathBuf,
+    receiver: String,
+    generation: String,
+}
+
 struct StoreLock(File);
 
 impl Drop for StoreLock {
@@ -161,24 +179,54 @@ impl Drop for StoreLock {
 /// the service lifetime; its advisory lock is explicitly released on drop.
 pub struct ActionEvidenceStore {
     directory: PathBuf,
-    _lock: StoreLock,
+    lock_path: PathBuf,
+    lock: StoreLock,
     failed: Mutex<bool>,
+    guard: Option<GuardBinding>,
 }
 
 impl ActionEvidenceStore {
-    /// Open or initialize the private evidence store at `directory`.
+    /// Open a receiver-bound, already initialized private evidence store.
     ///
-    /// A retained lock file distinguishes a new store from a missing store.
-    /// A partial, corrupt, or already-owned store is unavailable, not empty.
+    /// `receiver` must be read from the local receiver key, not from a request.
+    /// The guard is retained with that key, outside the evidence directory and
+    /// its lock. Missing or inconsistent initialization is unavailable.
     ///
     /// # Errors
     ///
     /// Returns [`ActionEvidenceError::Unavailable`] if storage cannot be
-    /// initialized, locked, verified, or durably synchronized.
-    pub fn open(directory: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
+    /// locked, verified, or durably synchronized.
+    pub fn open_bound(
+        directory: impl AsRef<Path>,
+        guard: impl AsRef<Path>,
+        receiver: &str,
+    ) -> Result<Self, ActionEvidenceError> {
+        fixed::<32>(receiver).map_err(|_| ActionEvidenceError::Unavailable)?;
+        let mut store = Self::open_inner(directory.as_ref(), false)?;
+        let snapshot = load(&store.directory)?;
+        if snapshot
+            .actions
+            .values()
+            .any(|record| record.identity.receiver_identity != receiver)
+        {
+            return Err(ActionEvidenceError::Unavailable);
+        }
+        let bytes = read_bounded(&store.directory.join("actions.json"), MAX_STORE_BYTES)?;
+        let record = verify_guard(guard.as_ref(), receiver, &bytes)?;
+        store.guard = Some(GuardBinding {
+            path: guard.as_ref().to_owned(),
+            receiver: receiver.to_owned(),
+            generation: record.generation,
+        });
+        Ok(store)
+    }
+
+    #[cfg(test)]
+    pub(super) fn open(directory: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
         Self::open_inner(directory.as_ref(), true)
     }
 
+    #[cfg(test)]
     pub(super) fn open_existing(directory: &Path) -> Result<Self, ActionEvidenceError> {
         Self::open_inner(directory, false)
     }
@@ -245,8 +293,10 @@ impl ActionEvidenceStore {
         }
         Ok(Self {
             directory: directory.to_owned(),
-            _lock: lock,
+            lock_path,
+            lock,
             failed: Mutex::new(false),
+            guard: None,
         })
     }
 
@@ -297,6 +347,7 @@ impl ActionEvidenceStore {
         independent: Option<&[String]>,
     ) -> Result<ActionReservation, ActionEvidenceError> {
         validate_identity(identity)?;
+        self.check_receiver(&identity.receiver_identity)?;
         self.access(|snapshot| {
             if let Some(existing) = snapshot.actions.get(&identity.operation_id) {
                 return if same_identity(&existing.identity, identity) {
@@ -365,6 +416,7 @@ impl ActionEvidenceStore {
         projects: &[String],
         agents: &[String],
     ) -> Result<(Vec<ActionEvidence>, Option<String>), ActionEvidenceError> {
+        self.check_receiver(receiver)?;
         self.access(|snapshot| {
             let mut records: Vec<_> = snapshot
                 .actions
@@ -410,6 +462,7 @@ impl ActionEvidenceStore {
         at_ms: u64,
     ) -> Result<(), ActionEvidenceError> {
         validate_identity(identity)?;
+        self.check_receiver(&identity.receiver_identity)?;
         validate_outcome(outcome)?;
         if at_ms > MAX_INTEGER {
             return Err(ActionEvidenceError::Malformed);
@@ -469,7 +522,27 @@ impl ActionEvidenceStore {
         if *failed {
             return Err(ActionEvidenceError::Unavailable);
         }
-        let mut snapshot = match load(&self.directory) {
+        let mut snapshot = match self
+            .verify_lock()
+            .and_then(|()| load(&self.directory))
+            .and_then(|snapshot| {
+                if let Some(guard) = &self.guard {
+                    let bytes =
+                        read_bounded(&self.directory.join("actions.json"), MAX_STORE_BYTES)?;
+                    let current = verify_guard(&guard.path, &guard.receiver, &bytes)?;
+                    if current.generation != guard.generation {
+                        return Err(ActionEvidenceError::Unavailable);
+                    }
+                    if snapshot
+                        .actions
+                        .values()
+                        .any(|record| record.identity.receiver_identity != guard.receiver)
+                    {
+                        return Err(ActionEvidenceError::Unavailable);
+                    }
+                }
+                Ok(snapshot)
+            }) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 *failed = true;
@@ -479,13 +552,96 @@ impl ActionEvidenceStore {
         let (result, changed) = operation(&mut snapshot)?;
         if changed {
             let bytes = snapshot_bytes(&snapshot)?;
-            if let Err(error) = persist_bytes(&self.directory, &bytes) {
+            let persisted = persist_bytes(&self.directory, &bytes).and_then(|()| {
+                if let Some(guard) = &self.guard {
+                    write_guard(guard, &bytes)?;
+                }
+                Ok(())
+            });
+            if let Err(error) = persisted {
                 *failed = true;
                 return Err(error);
             }
         }
         Ok(result)
     }
+
+    fn check_receiver(&self, receiver: &str) -> Result<(), ActionEvidenceError> {
+        if self
+            .guard
+            .as_ref()
+            .is_some_and(|guard| guard.receiver != receiver)
+        {
+            return Err(ActionEvidenceError::Unavailable);
+        }
+        Ok(())
+    }
+
+    fn verify_lock(&self) -> Result<(), ActionEvidenceError> {
+        let held = self.lock.0.metadata().map_err(unavailable)?;
+        let current = fs::metadata(&self.lock_path).map_err(unavailable)?;
+        #[cfg(unix)]
+        if held.dev() != current.dev() || held.ino() != current.ino() {
+            return Err(ActionEvidenceError::Unavailable);
+        }
+        Ok(())
+    }
+}
+
+fn verify_guard(
+    path: &Path,
+    receiver: &str,
+    bytes: &[u8],
+) -> Result<ReceiverGuard, ActionEvidenceError> {
+    let record: ReceiverGuard = serde_json::from_slice(&read_bounded(path, 1024)?)
+        .map_err(|_| ActionEvidenceError::Unavailable)?;
+    if record.v != 1
+        || record.receiver_identity != receiver
+        || fixed::<16>(&record.generation).is_err()
+        || record.bytes != bytes.len() as u64
+        || record.sha256 != lower_hex(&Sha256::digest(bytes))
+    {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    Ok(record)
+}
+
+fn write_guard(guard: &GuardBinding, bytes: &[u8]) -> Result<(), ActionEvidenceError> {
+    let record = ReceiverGuard {
+        v: 1,
+        receiver_identity: guard.receiver.clone(),
+        generation: guard.generation.clone(),
+        bytes: bytes.len() as u64,
+        sha256: lower_hex(&Sha256::digest(bytes)),
+    };
+    let parent = guard
+        .path
+        .parent()
+        .ok_or(ActionEvidenceError::Unavailable)?;
+    let name = guard
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(ActionEvidenceError::Unavailable)?;
+    let bytes = serde_json::to_vec(&record).map_err(|_| ActionEvidenceError::Unavailable)?;
+    replace(parent, name, &bytes)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test fixture")]
+pub(super) fn initialize_receiver_fixture(directory: &Path, guard: &Path, receiver: &str) {
+    fs::create_dir_all(guard.parent().unwrap()).unwrap();
+    drop(ActionEvidenceStore::open(directory).unwrap());
+    let bytes = fs::read(directory.join("actions.json")).unwrap();
+    write_guard(
+        &GuardBinding {
+            path: guard.to_owned(),
+            receiver: receiver.to_owned(),
+            generation: "09".repeat(16),
+        },
+        &bytes,
+    )
+    .unwrap();
 }
 
 pub(super) fn same_identity(left: &ActionIdentity, right: &ActionIdentity) -> bool {
@@ -676,15 +832,11 @@ mod tests {
     };
 
     #[test]
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "the lock owner must be cloned to test inherited descriptors"
-    )]
     fn lock_releases_even_when_its_descriptor_was_cloned() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("actions");
         let store = ActionEvidenceStore::open(&path).unwrap();
-        let inherited = store._lock.0.try_clone().unwrap();
+        let inherited = store.lock.0.try_clone().unwrap();
         drop(store);
         let reopened = ActionEvidenceStore::open(&path).unwrap();
         drop(reopened);

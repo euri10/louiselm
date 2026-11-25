@@ -141,16 +141,43 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
 }
 
 impl OwnerJournal {
+    #[cfg(test)]
     pub(super) fn open(path: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
         Ok(Self {
             store: ActionEvidenceStore::open(path)?,
         })
     }
 
+    #[cfg(not(test))]
+    pub(super) fn open(path: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
+        let path = path.as_ref();
+        let state = path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .ok_or(ActionEvidenceError::Unavailable)?;
+        let tls = state.join("louiselm/capture/tls");
+        let receiver = crate::TlsIdentity::existing_public_key_sha256(&tls)
+            .map_err(|_| ActionEvidenceError::Unavailable)?;
+        Ok(Self {
+            store: ActionEvidenceStore::open_bound(
+                path,
+                tls.join("phone-action-owner.json"),
+                &receiver,
+            )?,
+        })
+    }
+
+    #[cfg(test)]
     fn open_existing(path: &Path) -> Result<Self, ActionEvidenceError> {
         Ok(Self {
             store: ActionEvidenceStore::open_existing(path)?,
         })
+    }
+
+    #[cfg(not(test))]
+    fn open_existing(path: &Path) -> Result<Self, ActionEvidenceError> {
+        Self::open(path)
     }
 
     fn inspect(&self, identity: &ActionIdentity) -> Result<ActionEvidence, ActionEvidenceError> {

@@ -17,10 +17,34 @@ use std::{
 
 use louiselm_capture::ActionIdentity;
 
+#[path = "support/phone_evidence.rs"]
+#[allow(
+    dead_code,
+    reason = "other evidence fixtures share this support module"
+)]
+mod phone_evidence;
+
+fn initialize(root: &std::path::Path) -> String {
+    let tls = root.join("louiselm/capture/tls");
+    let identity = louiselm_capture::TlsIdentity::load_or_create(&tls).unwrap();
+    let receiver = identity.public_key_sha256().to_owned();
+    phone_evidence::initialize(
+        &root.join("louiselm/workflow/phone-action-owner"),
+        &tls.join("phone-action-owner.json"),
+        &receiver,
+    );
+    receiver
+}
+
 fn identity(project: &std::path::Path, id: u8) -> ActionIdentity {
     ActionIdentity {
         operation_id: format!("{id:02x}").repeat(16),
-        receiver_identity: "02".repeat(32),
+        receiver_identity: louiselm_capture::TlsIdentity::load_or_create(
+            project.join("louiselm/capture/tls"),
+        )
+        .unwrap()
+        .public_key_sha256()
+        .to_owned(),
         controller_id: "03".repeat(16),
         subject_id: "04".repeat(16),
         action: 3,
@@ -65,8 +89,50 @@ fn invoke(root: &std::path::Path, message: &serde_json::Value) -> serde_json::Va
 }
 
 #[test]
+fn losing_journal_and_lock_never_reopens_the_same_action() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let request = identity(temp.path(), 9);
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
+
+    let owner = temp.path().join("louiselm/workflow/phone-action-owner");
+    fs::remove_dir_all(&owner).unwrap();
+    fs::remove_file(owner.with_extension("lock")).unwrap();
+
+    let retry = invoke(temp.path(), &begin);
+    assert_eq!(retry["type"], "error");
+    assert_eq!(retry["code"], "unavailable");
+}
+
+#[test]
+fn owner_commands_refuse_a_missing_or_corrupt_receiver_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let request = identity(temp.path(), 10);
+    let guard = temp
+        .path()
+        .join("louiselm/capture/tls/phone-action-owner.json");
+    let messages = [
+        serde_json::json!({"v":1,"type":"begin","identity":request}),
+        serde_json::json!({"v":1,"type":"inspect","identity":request}),
+        serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000}),
+        serde_json::json!({"v":1,"type":"report","identity":request,"outcome":"unknown","at_ms":2000}),
+    ];
+    fs::remove_file(&guard).unwrap();
+    for message in &messages {
+        assert_eq!(invoke(temp.path(), message)["code"], "unavailable");
+    }
+    fs::write(&guard, b"{}").unwrap();
+    for message in &messages {
+        assert_eq!(invoke(temp.path(), message)["code"], "unavailable");
+    }
+}
+
+#[test]
 fn local_owner_command_persists_a_fence_across_processes() {
     let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
     let request = identity(temp.path(), 5);
     let fenced = invoke(
         temp.path(),
@@ -87,6 +153,7 @@ fn local_owner_command_persists_a_fence_across_processes() {
 #[test]
 fn inspection_preserves_missing_and_owner_proved_outcomes_across_processes() {
     let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
     let request = identity(temp.path(), 6);
     let inspect = |request: &ActionIdentity| {
         invoke(
@@ -113,6 +180,7 @@ fn inspection_preserves_missing_and_owner_proved_outcomes_across_processes() {
 #[test]
 fn separate_helpers_cannot_both_begin_and_fence() {
     let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
     let seed = identity(temp.path(), 7);
     assert_eq!(
         invoke(

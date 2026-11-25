@@ -1520,6 +1520,11 @@ mod tests {
         };
         let old = create_phone("old phone");
         let replacement = create_phone("replacement phone");
+        super::super::evidence::initialize_receiver_fixture(
+            &root.path().join("phone/action-evidence"),
+            &root.path().join("tls/phone-action-evidence.json"),
+            &receiver,
+        );
         let service = Service::open(
             &root.path().join("phone/grants"),
             &receiver,
