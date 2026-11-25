@@ -34,6 +34,7 @@ import java.security.GeneralSecurityException
 import java.security.ProviderException
 import java.text.DateFormat
 import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -503,8 +504,8 @@ class PhoneControlActivity : Activity() {
                 conversation.addView(Button(this).apply {
                     text = getString(R.string.phone_offline_row, copy.source.name, copy.source.agent, copy.source.project,
                         DateFormat.getDateTimeInstance().format(Date(copy.refreshedAtMs)),
-                        if (copy.pinned) getString(R.string.phone_offline_pinned) else "") +
-                        if (copy.incomplete || copy.refreshFailed) "\n${getString(R.string.phone_offline_incomplete)}" else ""
+                        if (copy.pinned) getString(R.string.phone_offline_pinned) else "",
+                        if (copy.incomplete || copy.refreshFailed) getString(R.string.phone_offline_incomplete) else "")
                     setOnClickListener {
                         selectedOffline = copy
                         offlinePageIndex = 0
@@ -596,7 +597,7 @@ class PhoneControlActivity : Activity() {
     private fun changeOfflineBudget() {
         val input = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
-            setText((offlineBudget() / MEBIBYTE).toString())
+            setText(String.format(Locale.ROOT, "%d", offlineBudget() / MEBIBYTE))
         }
         AlertDialog.Builder(this).setTitle(R.string.phone_offline_budget_title).setView(input)
             .setNegativeButton(android.R.string.cancel, null)
@@ -650,7 +651,7 @@ class PhoneControlActivity : Activity() {
                     local.isActive(SystemClock.elapsedRealtime()) },
                 { count -> runOnUiThread {
                     if (foreground && mayContinue() && local.isActive(SystemClock.elapsedRealtime())) {
-                        statusView.text = getString(R.string.phone_offline_progress, count)
+                        statusView.text = resources.getQuantityString(R.plurals.phone_offline_progress, count, count)
                     }
                 } },
             ) { cursor, revision, interaction ->

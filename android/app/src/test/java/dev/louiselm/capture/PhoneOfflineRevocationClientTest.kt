@@ -7,6 +7,7 @@ import java.security.MessageDigest
 import java.security.Signature
 import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -125,6 +126,9 @@ class PhoneOfflineRevocationClientTest {
             PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false))
         assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(page), true, 1, 1, 1_000_000, key) { true })
         val draft = File(context.filesDir, "detached-draft-fixture").apply { writeText("draft") }
+        val captures = CaptureStore(context)
+        val recording = captures.begin().also { it.file.writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val audio = captures.complete(recording, 1000, grant.receiverIdentity).audio
         var outcome = PhoneControlOutcome.UNAVAILABLE
         val client = PhoneControlClient(context, keys) { _, _, _, _ -> PhoneControlReply.Failure(outcome) }
         val started = SystemClock.elapsedRealtime()
@@ -136,5 +140,6 @@ class PhoneOfflineRevocationClientTest {
         assertTrue(store.listAll(key).copies.isEmpty())
         assertEquals(PhoneOfflineSave.REVOKED, store.save(source, sequenceOf(page), false, 2, 2, 1_000_000, key) { true })
         assertEquals("draft", draft.readText())
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), audio.readBytes())
     }
 }

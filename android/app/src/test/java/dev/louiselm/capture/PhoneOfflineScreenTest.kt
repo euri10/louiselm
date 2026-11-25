@@ -20,6 +20,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import org.junit.After
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -244,6 +245,28 @@ class PhoneOfflineScreenTest {
         OfflineScreenFixture.pairingUnavailable = true
         unlockAndOpen()
         assertTrue(contains("protected offline text"))
+    }
+
+    @Test
+    fun offlineViewKeepsReplayRedactionAndUnsupportedHistoryLabels() {
+        val source = PhoneOfflineSource(OfflineScreenFixture.receiver, OfflineScreenFixture.target, "saved session", "agent", "project")
+        val store = PhoneOfflineStore(File(activity.filesDir, "phone-offline-v1"))
+        val key = SecretKeySpec(OfflineScreenFixture.material, "AES")
+        val page = PhoneControlReply.SessionPage(source.target.controllerId, source.target.subjectId, "33".repeat(16), 1, "ready",
+            listOf(PhoneControlEntry.Message(1, "assistant", "shortened", true),
+                PhoneControlEntry.Tool(2, "id", "tool", "completed", "result", false),
+                PhoneControlEntry.Plan(3, "id", "plan text", false)), 0, false,
+            PhoneHistorySource("unverified", "unavailable", "present", true, true))
+        store.setPinned(source, false, key)
+        assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(page), true, System.currentTimeMillis(),
+            System.currentTimeMillis(), 1_000_000, key) { true })
+        unlockAndOpen()
+        for (label in listOf(R.string.phone_incomplete, R.string.phone_archive_unavailable, R.string.phone_replay_unverified,
+            R.string.phone_redacted, R.string.phone_missing, R.string.phone_truncated)) {
+            assertTrue(contains(activity.getString(label)))
+        }
+        assertTrue(contains("result"))
+        assertTrue(contains("plan text"))
     }
 
     @Test
