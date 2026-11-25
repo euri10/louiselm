@@ -1,9 +1,8 @@
 package dev.louiselm.capture
 
 import android.content.Context
-import android.content.ContextWrapper
-import android.content.SharedPreferences
-import android.util.Base64
+import java.io.File
+import java.io.IOException
 import java.util.concurrent.Executors
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
@@ -25,6 +24,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [30])
 class PendingPhoneActionStoreTest {
     private val context = RuntimeEnvironment.getApplication()
+    private val snapshot get() = File(context.noBackupFilesDir, "phone-action-pending-v1")
     private val secret = SecretKeySpec(ByteArray(32) { 7 }, "AES")
     private var created = false
     private val keys: (Boolean) -> SecretKey? = { create ->
@@ -34,7 +34,7 @@ class PendingPhoneActionStoreTest {
 
     @Before
     fun clear() {
-        context.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE).edit().clear().commit()
+        assertTrue(!snapshot.exists() || snapshot.delete())
         context.getSharedPreferences("phone-control-v1", Context.MODE_PRIVATE).edit().clear().commit()
         created = false
     }
@@ -57,7 +57,7 @@ class PendingPhoneActionStoreTest {
         PhoneControlStore(context).clear()
         val reopened = PendingPhoneActionStore(context, keys)
         assertEquals(listOf(action(1)), reopened.pending())
-        val saved = context.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE).all.toString()
+        val saved = snapshot.readBytes().toString(Charsets.ISO_8859_1)
         assertFalse(saved.contains(action(1).operationId))
         assertFalse(saved.contains(action(1).payloadHash))
     }
@@ -66,15 +66,14 @@ class PendingPhoneActionStoreTest {
     fun damagedOrMissingEvidenceNeverBecomesAnEmptyStore() {
         val store = PendingPhoneActionStore(context, keys)
         store.reserve(action(1))
-        val preferences = context.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE)
-        preferences.edit().putString("snapshot", "damaged").commit()
+        snapshot.writeText("damaged")
         assertThrows(PendingPhoneActionStoreException::class.java) { store.pending() }
             .also { assertEquals(PendingPhoneActionFailure.UNAVAILABLE, it.reason) }
         assertThrows(PendingPhoneActionStoreException::class.java) { store.reserve(action(2)) }
-        assertEquals("damaged", preferences.getString("snapshot", null))
-        preferences.edit().remove("snapshot").commit()
+        assertEquals("damaged", snapshot.readText())
+        assertTrue(snapshot.delete())
         assertThrows(PendingPhoneActionStoreException::class.java) { PendingPhoneActionStore(context, keys).reserve(action(2)) }
-        assertFalse(preferences.contains("snapshot"))
+        assertFalse(snapshot.exists())
     }
 
     @Test
@@ -91,28 +90,47 @@ class PendingPhoneActionStoreTest {
 
     @Test
     fun failedPublicationNeverReturnsAReservation() {
-        val delegate = context.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE)
-        val failing = object : SharedPreferences by delegate {
-            override fun edit(): SharedPreferences.Editor {
-                val editor = delegate.edit()
-                return object : SharedPreferences.Editor by editor {
-                    override fun putString(key: String?, value: String?): SharedPreferences.Editor {
-                        editor.putString(key, value)
-                        return this
-                    }
-                    override fun commit(): Boolean = false
-                }
-            }
-        }
-        val wrapped = object : ContextWrapper(context) {
-            override fun getApplicationContext(): Context = this
-            override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = failing
-        }
-        val store = PendingPhoneActionStore(wrapped, keys)
+        PendingPhoneActionStore(context, keys).reserve(action(1))
+        val prior = snapshot.readBytes().toList()
+        val store = PendingPhoneActionStore(context, keys, syncFile = { throw IOException("injected sync failure") })
+        assertThrows(PendingPhoneActionStoreException::class.java) { store.reserve(action(2)) }
+            .also { assertEquals(PendingPhoneActionFailure.UNAVAILABLE, it.reason) }
+        assertEquals(prior, snapshot.readBytes().toList())
+        assertEquals(listOf(action(1)), PendingPhoneActionStore(context, keys).pending())
+    }
+
+    @Test
+    fun failedFirstPublicationDoesNotBecomeAnEmptyInitializedStore() {
+        val store = PendingPhoneActionStore(context, keys, syncFile = { throw IOException("injected sync failure") })
         assertThrows(PendingPhoneActionStoreException::class.java) { store.reserve(action(1)) }
             .also { assertEquals(PendingPhoneActionFailure.UNAVAILABLE, it.reason) }
-        assertThrows(PendingPhoneActionStoreException::class.java) { store.reserve(action(2)) }
-        assertFalse(delegate.contains("snapshot"))
+        assertFalse(snapshot.exists())
+        assertThrows(PendingPhoneActionStoreException::class.java) { PendingPhoneActionStore(context, keys).reserve(action(2)) }
+            .also { assertEquals(PendingPhoneActionFailure.UNAVAILABLE, it.reason) }
+    }
+
+    @Test
+    fun failedPublicationIsUnavailableToOtherInstancesUntilConfirmed() {
+        PendingPhoneActionStore(context, keys).reserve(action(1))
+        var calls = 0
+        var failAfterRename = true
+        val syncDirectory: (File) -> Unit = { directory ->
+            calls += 1
+            if (failAfterRename && calls >= 2) throw IOException("injected directory sync failure")
+            syncPendingDirectory(directory)
+        }
+        assertThrows(PendingPhoneActionStoreException::class.java) {
+            PendingPhoneActionStore(context, keys, syncDirectory = syncDirectory).reserve(action(2))
+        }.also { assertEquals(PendingPhoneActionFailure.UNAVAILABLE, it.reason) }
+        val other = PendingPhoneActionStore(context, keys, syncDirectory = syncDirectory)
+        assertThrows(PendingPhoneActionStoreException::class.java) { other.pending() }
+            .also { assertEquals(PendingPhoneActionFailure.UNAVAILABLE, it.reason) }
+        assertThrows(PendingPhoneActionStoreException::class.java) { other.reserve(action(2)) }
+            .also { assertEquals(PendingPhoneActionFailure.UNAVAILABLE, it.reason) }
+
+        failAfterRename = false
+        assertEquals(listOf(action(1), action(2)), PendingPhoneActionStore(context, keys, syncDirectory = syncDirectory).pending())
+        assertEquals(PendingReservation.EXISTING, PendingPhoneActionStore(context, keys).reserve(action(2)))
     }
 
     @Test
@@ -129,14 +147,13 @@ class PendingPhoneActionStoreTest {
             updateAAD("louiselm-phone-action-pending-v1".toByteArray(Charsets.UTF_8))
         }
         val plain = JSONObject().put("v", 1).put("actions", records).toString().toByteArray(Charsets.UTF_8)
-        val snapshot = Base64.encodeToString(cipher.iv + cipher.doFinal(plain), Base64.NO_WRAP)
-        val preferences = context.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE)
-        preferences.edit().putString("snapshot", snapshot).commit()
+        val encrypted = cipher.iv + cipher.doFinal(plain)
+        snapshot.writeBytes(encrypted)
         created = true
         val store = PendingPhoneActionStore(context, keys)
         assertThrows(PendingPhoneActionStoreException::class.java) { store.reserve(action(254)) }
             .also { assertEquals(PendingPhoneActionFailure.LIMIT, it.reason) }
-        assertEquals(snapshot, preferences.getString("snapshot", null))
+        assertEquals(encrypted.toList(), snapshot.readBytes().toList())
         assertEquals(4096, store.pending().size)
     }
 }

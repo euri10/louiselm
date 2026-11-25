@@ -1,11 +1,17 @@
 package dev.louiselm.capture
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.util.Base64
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileDescriptor
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.channels.FileChannel
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.ProviderException
@@ -30,7 +36,8 @@ internal data class PendingPhoneAction(
 
 internal enum class PendingReservation { NEW, EXISTING }
 internal enum class PendingPhoneActionFailure { MALFORMED, CONFLICT, UNAVAILABLE, LIMIT }
-internal class PendingPhoneActionStoreException(val reason: PendingPhoneActionFailure) : IOException("pending phone action store $reason")
+internal class PendingPhoneActionStoreException(val reason: PendingPhoneActionFailure, cause: Throwable? = null) :
+    IOException("pending phone action store $reason", cause)
 
 /**
  * Private, encrypted evidence of phone actions awaiting reconciliation.
@@ -42,12 +49,16 @@ internal class PendingPhoneActionStoreException(val reason: PendingPhoneActionFa
 internal class PendingPhoneActionStore(
     context: Context,
     private val key: (Boolean) -> SecretKey? = ::pendingActionKey,
+    private val syncFile: (FileDescriptor) -> Unit = { it.sync() },
+    private val syncDirectory: (File) -> Unit = ::syncPendingDirectory,
 ) {
-    private val preferences = context.applicationContext.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE)
-    private var failed = false
+    private val directory = context.applicationContext.noBackupFilesDir
+    private val snapshot = File(directory, "phone-action-pending-v1")
+    // The application runs in one process; Android shares this monitor across store instances.
+    private val lock = context.applicationContext.getSharedPreferences("phone-action-pending-v1", Context.MODE_PRIVATE)
 
     /** Persist the exact identity before transmission; existing identities must never be resent. */
-    fun reserve(action: PendingPhoneAction): PendingReservation = synchronized(preferences) {
+    fun reserve(action: PendingPhoneAction): PendingReservation = synchronized(lock) {
         try {
             validate(action)
         } catch (_: IllegalArgumentException) {
@@ -65,20 +76,28 @@ internal class PendingPhoneActionStore(
     }
 
     /** Read retained identities; a missing or damaged initialized store is unavailable. */
-    fun pending(): List<PendingPhoneAction> = synchronized(preferences) {
+    fun pending(): List<PendingPhoneAction> = synchronized(lock) {
         load() ?: throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
     }
 
     private fun load(): List<PendingPhoneAction>? {
-        if (failed) throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
         try {
-            val encoded = preferences.getString("snapshot", null)
             val currentKey = key(false)
-            if (encoded == null && currentKey == null) return null
-            if (encoded == null || currentKey == null || encoded.length > MAX_SNAPSHOT_BYTES * 2) {
+            if (!snapshot.exists() && currentKey == null) return null
+            if (!snapshot.isFile || currentKey == null) {
                 throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
             }
-            val encrypted = Base64.decode(encoded, Base64.NO_WRAP)
+            val encrypted = snapshot.inputStream().use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    require(output.size() + count <= MAX_SNAPSHOT_BYTES + 28)
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
             require(encrypted.size in 28..MAX_SNAPSHOT_BYTES + 28)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, currentKey, GCMParameterSpec(128, encrypted.copyOfRange(0, 12)))
@@ -90,27 +109,28 @@ internal class PendingPhoneActionStore(
             require(values.length() <= MAX_PENDING_ACTIONS)
             val actions = (0 until values.length()).map { decode(values.getJSONObject(it)) }
             require(actions.map { it.operationId }.toSet().size == actions.size)
+            // A prior rename may have succeeded even if directory synchronization failed.
+            syncDirectory(directory)
             return actions
         } catch (error: PendingPhoneActionStoreException) {
             throw error
-        } catch (_: GeneralSecurityException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: JSONException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: IllegalArgumentException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: ClassCastException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: SecurityException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: ProviderException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: IOException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
+        } catch (error: GeneralSecurityException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: JSONException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: IllegalArgumentException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: ClassCastException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: SecurityException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: ProviderException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: IOException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
         }
     }
 
-    @SuppressLint("UseKtx") // The action must not be transmitted until commit confirms persistence.
     private fun save(actions: List<PendingPhoneAction>) {
         try {
             val values = JSONArray()
@@ -123,25 +143,39 @@ internal class PendingPhoneActionStore(
             cipher.updateAAD(ACTION_AAD)
             require(cipher.iv.size == 12)
             val encrypted = cipher.iv + cipher.doFinal(plain)
-            if (!preferences.edit().putString("snapshot", Base64.encodeToString(encrypted, Base64.NO_WRAP)).commit()) {
-                failed = true
-                throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
+            val temporary = File.createTempFile(".phone-action-pending-", ".tmp", directory)
+            try {
+                FileOutputStream(temporary).use { output ->
+                    output.write(encrypted)
+                    syncFile(output.fd)
+                }
+                Files.move(temporary.toPath(), snapshot.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                syncDirectory(directory)
+            } finally {
+                Files.deleteIfExists(temporary.toPath())
             }
         } catch (error: PendingPhoneActionStoreException) {
             throw error
-        } catch (_: GeneralSecurityException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: JSONException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: IllegalArgumentException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: SecurityException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: ProviderException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
-        } catch (_: IOException) {
-            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE)
+        } catch (error: GeneralSecurityException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: JSONException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: IllegalArgumentException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: SecurityException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: ProviderException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
+        } catch (error: IOException) {
+            throw PendingPhoneActionStoreException(PendingPhoneActionFailure.UNAVAILABLE, error)
         }
+    }
+}
+
+internal fun syncPendingDirectory(directory: File) {
+    val parent = directory.parentFile ?: throw IOException("pending action directory has no parent")
+    for (path in listOf(directory, parent)) {
+        FileChannel.open(path.toPath(), StandardOpenOption.READ).use { it.force(true) }
     }
 }
 
