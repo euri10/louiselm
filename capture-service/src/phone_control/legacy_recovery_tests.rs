@@ -92,8 +92,12 @@ async fn desktop_recovers_only_an_explicit_project_from_damaged_confirmations() 
     let offer = pairing
         .issue("https://localhost:7391", &identity, 1_000, 10_000)
         .unwrap();
+    let retired = pairing.consume(&offer.token, "retired", 1_001).unwrap();
+    let offer = pairing
+        .issue("https://localhost:7391", &identity, 1_000, 10_000)
+        .unwrap();
     let untouched = pairing.consume(&offer.token, "untouched", 1_001).unwrap();
-    for device in [&other.device_id, &untouched.device_id] {
+    for device in [&other.device_id, &retired.device_id, &untouched.device_id] {
         let offer = authority.start(device, now, 1_000).unwrap();
         authority
             .submit(device, &offer.enrollment_id, &offer.matching_code, key, now)
@@ -237,6 +241,16 @@ async fn desktop_recovers_only_an_explicit_project_from_damaged_confirmations() 
         service.authority.disable(&other.device_id),
         Err(Refusal::Unavailable)
     );
+    let forgotten = exchange(
+        &admin_path,
+        &json!({"v":1,"type":"forget","capability":token,"device_id":other.device_id}),
+    )
+    .await;
+    assert_eq!(forgotten["code"], "unavailable");
+    assert_eq!(
+        pairing.authenticate_device(&other.credential).unwrap(),
+        None
+    );
     assert_eq!(std::fs::read(&displaced).unwrap(), damaged);
     std::fs::rename(&displaced, &grants).unwrap();
     assert!(
@@ -251,7 +265,7 @@ async fn desktop_recovers_only_an_explicit_project_from_damaged_confirmations() 
             )
             .is_ok()
     );
-    service.authority.disable(&other.device_id).unwrap();
+    service.authority.disable(&retired.device_id).unwrap();
     let snapshot = std::fs::read_dir(grants.parent().unwrap())
         .unwrap()
         .filter_map(Result::ok)
@@ -297,6 +311,14 @@ async fn desktop_recovers_only_an_explicit_project_from_damaged_confirmations() 
     drop(service);
 
     let reopened = Service::open(&grants, &identity, pairing.clone()).unwrap();
+    assert_eq!(
+        pairing.authenticate_device(&other.credential).unwrap(),
+        None
+    );
+    assert!(matches!(
+        reopened.authority.inspect_grant(&pairing, &other.device_id),
+        Err(Refusal::Revoked)
+    ));
     let review_after = reopened
         .authority
         .inspect_grant(&pairing, &phone.device_id)
@@ -338,4 +360,74 @@ async fn desktop_recovers_only_an_explicit_project_from_damaged_confirmations() 
         ),
         Err(Refusal::Revoked)
     );
+}
+
+#[test]
+fn forget_revokes_pairing_when_grant_persistence_is_uncertain() {
+    let root = tempfile::tempdir().unwrap();
+    let identity = "01".repeat(32);
+    let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+    let offer = pairing
+        .issue("https://localhost:7391", &identity, 1_000, 10_000)
+        .unwrap();
+    let phone = pairing.consume(&offer.token, "phone", 1_001).unwrap();
+    let grants = root.path().join("phone/grants.json");
+    let service = Service::open(&grants, &identity, pairing.clone()).unwrap();
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../android/app/src/test/resources/phone-control-v1.json"
+    ))
+    .unwrap();
+    let key = fixture["keys"]["enrolled"]["sec1"].as_str().unwrap();
+    let now = Instant::now();
+    let offer = service
+        .authority
+        .start(&phone.device_id, now, 1_000)
+        .unwrap();
+    service
+        .authority
+        .submit(
+            &phone.device_id,
+            &offer.enrollment_id,
+            &offer.matching_code,
+            key,
+            now,
+        )
+        .unwrap();
+    let grant = service
+        .authority
+        .approve(
+            &phone.device_id,
+            &offer.enrollment_id,
+            key,
+            Scope {
+                projects: vec![root.path().to_str().unwrap().into()],
+                agents: vec!["codex".into()],
+                groups: vec!["read".into()],
+            },
+            &[],
+            now,
+        )
+        .unwrap();
+    let preserved = root.path().join("original-grants");
+    std::fs::rename(&grants, &preserved).unwrap();
+    std::fs::create_dir(&grants).unwrap();
+    assert_eq!(
+        service.authority.forget(&pairing, &phone.device_id),
+        Err(Refusal::Unavailable)
+    );
+    assert_eq!(
+        pairing.authenticate_device(&phone.credential).unwrap(),
+        None
+    );
+    assert_eq!(
+        service.authority.challenge(
+            &phone.device_id,
+            &grant.grant_id,
+            grant.grant_revision,
+            now,
+            1_000
+        ),
+        Err(Refusal::Unavailable)
+    );
+    assert!(preserved.is_file());
 }

@@ -1319,17 +1319,21 @@ impl Authority {
             // Pairing revocation fences this phone even when grants cannot be trusted or written.
             return pairing.revoke(device).map_err(|_| Refusal::Unavailable);
         }
+        let mut persistence = Ok(());
         if state.grants.contains_key(device) {
             let mut grants = state.grants.clone();
             grants.remove(device);
             let revisions = state.revisions.clone();
-            self.persist_or_seal(&mut state, &grants, &revisions)?;
-            state.grants = grants;
+            persistence = self.persist_or_seal(&mut state, &grants, &revisions);
+            if persistence.is_ok() {
+                state.grants = grants;
+            }
         }
         state.enrollments.remove(device);
         state.challenges.remove(device);
         state.periods.remove(device);
-        pairing.revoke(device).map_err(|_| Refusal::Unavailable)
+        pairing.revoke(device).map_err(|_| Refusal::Unavailable)?;
+        persistence
     }
 }
 

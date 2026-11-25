@@ -162,6 +162,8 @@ retains the original bytes in a private `grants-damaged-*.json` file alongside
 `grants.json`; if preservation fails, the write is refused. These snapshots
 can contain sensitive local paths and are never used as authority. Keep or
 remove them deliberately after review; never restore an unverified snapshot.
+If `forget` reports `unavailable` because the grant write failed, pairing
+revocation is still attempted; inspect device status before retrying.
 Project confirmation alone does not make Runs phone-readable; source/checkout
 binding remains required.
 For contained Run preparation, `freeze-run-source` explicitly freezes a selected
