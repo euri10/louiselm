@@ -30,6 +30,23 @@ function Owner:subject(session)
   return { controller_id = self.controller.controller_id, subject_id = subject.id }
 end
 
+---Register an exact operator-owned Run; this does not Start or authorize it.
+---@param executor louiselm.workflow.BeadExecutor
+---@return boolean tracked
+---@return string? error_message
+function Owner:track_run(executor)
+  if self.disposed then
+    return false, "phone controller is disposed"
+  end
+  return self.controller:track_run(executor)
+end
+
+---Remove only this exact Run owner.
+---@param executor louiselm.workflow.BeadExecutor
+function Owner:untrack_run(executor)
+  self.controller:untrack_run(executor)
+end
+
 ---Release the channel, observer, pending verifier, and Session subscriptions.
 ---@return boolean disposed
 ---@return string? error_message Cancellation failure.

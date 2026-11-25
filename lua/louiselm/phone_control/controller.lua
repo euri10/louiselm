@@ -7,6 +7,7 @@ local Discovery = require("louiselm.phone_control.discovery")
 local Scope = require("louiselm.phone_control.scope")
 local Action = require("louiselm.phone_control.action")
 local ActionJournal = require("louiselm.phone_control.action_journal")
+local RunOwner = require("louiselm.phone_control.run_owner")
 local M = {}
 local Controller = {}
 Controller.__index = Controller
@@ -92,6 +93,74 @@ local function current(self, subject_id)
     return nil
   end
   return subject, state
+end
+
+-- This private receiver-to-controller probe carries no phone authority. The
+-- receiver must separately fence the saved Run binding and current grant.
+local function run_probe(self, message, line, callback)
+  local allowed = { v = true, type = true, controller_id = true, run_id = true }
+  local seen, count = {}, 0
+  if line:find("\\", 1, true) then
+    nvim.schedule(function()
+      callback(error_result("malformed"))
+    end)
+    return
+  end
+  for name in line:gmatch('"([a-z_]+)"%s*:') do
+    if seen[name] then
+      nvim.schedule(function()
+        callback(error_result("malformed"))
+      end)
+      return
+    end
+    seen[name] = true
+  end
+  for name in pairs(message) do
+    if not allowed[name] then
+      nvim.schedule(function()
+        callback(error_result("malformed"))
+      end)
+      return
+    end
+    count = count + 1
+  end
+  if
+    count ~= 4
+    or message.v ~= 1
+    or not line:match('"v"%s*:%s*1%s*[,}]')
+    or not hex_id(message.controller_id)
+    or not RunOwner.valid_run_id(message.run_id)
+  then
+    nvim.schedule(function()
+      callback(error_result("malformed"))
+    end)
+    return
+  end
+  local generation = self.generation
+  nvim.schedule(function()
+    if self.disposed or self.generation ~= generation or self.controller_id ~= message.controller_id then
+      callback(error_result("stale_subject"))
+      return
+    end
+    local snapshot, err = self.runs:snapshot(message.run_id, self.controller_id, function(session)
+      local tracked = self.sessions[session]
+      if tracked and tracked.id and current(self, tracked.id) == tracked then
+        return { controller_id = self.controller_id, subject_id = tracked.id }
+      end
+    end)
+    if err then
+      callback(error_result(err))
+    else
+      callback({
+        v = 1,
+        type = "run_probe",
+        controller_id = self.controller_id,
+        run_id = message.run_id,
+        state = snapshot and "found" or "absent",
+        run = snapshot,
+      })
+    end
+  end)
 end
 
 local function action_scope(self, message, line, callback)
@@ -327,6 +396,23 @@ function Controller:untrack(session)
   self.sessions[session] = nil
 end
 
+---Associate an exact registered Run controller with this connection owner.
+---@param executor louiselm.workflow.BeadExecutor
+---@return boolean tracked
+---@return string? error_message
+function Controller:track_run(executor)
+  if self.disposed then
+    return false, "controller is disposed"
+  end
+  return self.runs:track(executor)
+end
+
+---Release this exact association, without affecting a replacement.
+---@param executor louiselm.workflow.BeadExecutor
+function Controller:untrack_run(executor)
+  self.runs:untrack(executor)
+end
+
 ---Verify and serve a single socket line asynchronously. No response carries raw errors.
 ---@param line string Original bounded JSON line, without its newline.
 ---@param callback fun(result: table) Called once on the main loop while connected.
@@ -357,6 +443,10 @@ function Controller:read(line, callback)
   end
   if type(message) == "table" and message.type == "action_commit" then
     action_commit(self, message, line, callback)
+    return
+  end
+  if type(message) == "table" and message.type == "run_probe" then
+    run_probe(self, message, line, callback)
     return
   end
   if type(message) ~= "table" or type(message.request) ~= "table" or type(message.grant) ~= "table" then
@@ -688,6 +778,7 @@ function Controller:dispose()
     end
   end
   self.sessions = {}
+  self.runs = RunOwner.new()
   return detached, detach_error
 end
 
@@ -698,6 +789,7 @@ function M.new(options)
   return setmetatable({
     service = nvim.deepcopy(options.service),
     sessions = {},
+    runs = RunOwner.new(),
     subjects = {},
     seen_subjects = {},
     seen_controllers = {},

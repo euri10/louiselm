@@ -34,4 +34,28 @@ T["the channel follows the capture state directory override"] = function()
   MiniTest.expect.equality(owner.transport.socket_path, directory .. "/louiselm/workflow/phone-control.sock")
 end
 
+T["Run registration belongs to the explicit phone owner"] = function()
+  local owner = assert(PhoneControl.start({ phone_control = { enabled = true } }))
+  MiniTest.finally(function()
+    owner:dispose()
+  end)
+  local id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+  local executor = {
+    run = { id = id, workers = {} },
+    options = {
+      envelope = { run_id = id },
+      agent_id = "codex",
+      bead_ids = { "b-1" },
+      prepared = { registration_id = string.rep("1", 32), revision = 1, selection_sha256 = string.rep("2", 64) },
+    },
+    status = "new",
+  }
+  assert(owner:track_run(executor))
+  MiniTest.expect.equality(owner:track_run(executor), false)
+  owner:untrack_run(executor)
+  assert(owner:track_run(executor))
+  assert(owner:dispose())
+  MiniTest.expect.equality(owner:track_run(executor), false)
+end
+
 return T

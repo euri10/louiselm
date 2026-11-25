@@ -454,6 +454,21 @@ resolve a registry-owned Session with `require("louiselm").phone_control_subject
 the returned controller and subject identities are valid only for the current
 connection and become unavailable on disconnect.
 
+The owner may explicitly associate a registered Bead Run controller with that
+connection. The private receiver-to-controller probe is
+`{v:1,type:"run_probe",controller_id:hex16,run_id:uuid}`. Its closed reply is
+`{v:1,type:"run_probe",controller_id:hex16,run_id:uuid,state:"absent"}` or
+`{v:1,type:"run_probe",controller_id:hex16,run_id:uuid,state:"found",run:LiveRun}`.
+`LiveRun` is `{run_id:uuid,registration_id:hex16,registration_revision:integer,admitted:boolean,status:string,phase:string,bead_index:integer,bead_total:integer,bead_id:string,sessions:[LiveRunSession],sessions_truncated:boolean}`;
+`LiveRunSession` is `{subject_id:hex16,agent:string,status:string}`. At most 50
+current registry-owned Sessions belonging to that exact Run object are returned;
+the connection's subject identities change on reconnect. No ACP Session ID,
+prompt or output is included. This probe is not a phone authorization: the
+receiver must independently validate its response and fence current pairing,
+grant, lease, source/checkout, full contributor scope and exact owner binding
+before using it. Ambiguous or changed owners fail closed. Registration and
+probing do not Start or authorize a Run.
+
 For a read, receiver sends the controller exactly
 `{v,type:"read_session",controller_id:hex16,grant:Grant,period:Period,proof:Proof,request:Request}`.
 `Grant` is `{grant_id:hex16,grant_revision:integer,enrolled_key:hex65,projects:[string],agents:[string],groups:[string]}`;

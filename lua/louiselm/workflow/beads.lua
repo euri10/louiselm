@@ -93,6 +93,8 @@ local advance, next_bead
 ---@field cancel_promotion? fun() Owned pending promotion UI cancellation.
 ---@field initial_preparation? louiselm.workflow.BeadPreparation First snapshot checked before draft dispatch.
 ---@field initial_staged? table First fixed verification input checked before draft dispatch.
+---@field phone_admitted? boolean Exact registered owner binding was durably admitted.
+---@field current_progress? louiselm.workflow.BeadProgress Latest payload-free controller phase.
 ---@field start fun(self: louiselm.workflow.BeadExecutor, callback: fun(ok: boolean, error_message?: string, summary: louiselm.workflow.BeadRunSummary)): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.BeadExecutor): boolean, string?
 
@@ -120,9 +122,6 @@ end
 
 local function progress(self, phase)
   local callback = self.options.on_progress
-  if not callback then
-    return
-  end
   local event = {
     run_id = self.options.envelope.run_id,
     bead_id = self.options.bead_ids[self.index],
@@ -130,6 +129,10 @@ local function progress(self, phase)
     total = #self.options.bead_ids,
     phase = phase,
   }
+  self.current_progress = nvim.deepcopy(event)
+  if not callback then
+    return
+  end
   nvim.schedule(function()
     if self.status == "active" then
       callback(event)
@@ -1363,6 +1366,7 @@ function Controller:start(callback)
         if not ledger then
           return finish(self, false, ledger_error)
         end
+        self.phone_admitted = self.options.prepared ~= nil
         self.executor.ledger = ledger
         next_bead(self)
       end)

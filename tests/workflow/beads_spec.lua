@@ -347,6 +347,8 @@ T["prepared owner admission follows broker authorization before Session attachme
   end
   assert(broker and admission and attachment and broker < admission and admission < attachment)
   MiniTest.expect.equality(f.calls[admission][6], f.options.prepared.registration_id)
+  MiniTest.expect.equality(f.runner.phone_admitted, true)
+  MiniTest.expect.equality(f.runner.current_progress.phase, "working")
 end
 
 T["mismatched prepared owner admission never starts a Session"] = function()
@@ -359,6 +361,7 @@ T["mismatched prepared owner admission never starts a Session"] = function()
   end)
   MiniTest.expect.equality(#f.workers, 0)
   MiniTest.expect.equality(f.ok, false)
+  MiniTest.expect.no_equality(f.runner.phone_admitted, true)
   assert(f.error)
 end
 
