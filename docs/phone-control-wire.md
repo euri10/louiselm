@@ -118,6 +118,18 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   root must contain the project. This explicit action can make the project's
   historical Runs available under already-approved root scope; it does not add
   an Agent, action permission or source/checkout proof.
+- `{v:1,type:"freeze_run_source",capability:string,project_id:hex16,run_id:uuid,snapshot:string,includes:[string]}`
+  runs the installed optional source integration against that currently verified
+  original project and returns `{v:1,type:"run_source",run_id:uuid,project_id:hex16,source_id:hex16,snapshot_digest:string,base_digest:string,base_commit:string}`.
+  The output must be new beneath an owner-controlled parent; selected file paths
+  are explicit local inputs and never appear in the reply. The retained record
+  attests the owner-observed freeze only, not a reviewed checkout, Run admission,
+  registration, or phone authority. A missing integration returns `unsupported`.
+  On an uncertain outcome inspect the original operation and output before retrying.
+- `{v:1,type:"inspect_run_source",capability:string,run_id:uuid}` returns the
+  same `run_source` record, including after the original project disappears. A
+  damaged or absent record is unavailable; a retained record is not proof that
+  the snapshot files remain present or unchanged.
 - `{v:1,type:"register_root",capability:string,path:string}` returns
   `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a
   fresh local root identity without granting any phone access.

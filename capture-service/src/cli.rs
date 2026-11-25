@@ -250,8 +250,13 @@ async fn phone_control_admin_stream(
     command: PhoneControl,
     stream: tokio::net::UnixStream,
 ) -> Result<serde_json::Value, CliError> {
+    let timeout = if matches!(&command, PhoneControl::FreezeRunSource { .. }) {
+        std::time::Duration::from_secs(135)
+    } else {
+        std::time::Duration::from_secs(5)
+    };
     tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        timeout,
         phone_control_admin_exchange(paths, command, stream),
     )
     .await
@@ -264,8 +269,29 @@ async fn phone_control_admin_exchange(
     stream: tokio::net::UnixStream,
 ) -> Result<serde_json::Value, CliError> {
     let capability = tokio::fs::read_to_string(paths.operator_capability()).await?;
-    let capability = capability.trim();
-    let (request, expected) = match command {
+    let (request, expected) = phone_control_admin_request(command, capability.trim())?;
+    phone_control_write_request(stream, &request, expected).await
+}
+
+fn phone_control_admin_request(
+    command: PhoneControl,
+    capability: &str,
+) -> Result<(serde_json::Value, &'static str), CliError> {
+    Ok(match command {
+        PhoneControl::FreezeRunSource {
+            project_id,
+            run_id,
+            snapshot,
+            includes,
+        } => (
+            serde_json::json!({"v":1,"type":"freeze_run_source","capability":capability,
+                "project_id":project_id,"run_id":run_id,"snapshot":snapshot,"includes":includes}),
+            "run_source",
+        ),
+        PhoneControl::InspectRunSource { run_id } => (
+            serde_json::json!({"v":1,"type":"inspect_run_source","capability":capability,"run_id":run_id}),
+            "run_source",
+        ),
         PhoneControl::Projects { after } => (
             serde_json::json!({"v":1,"type":"projects","capability":capability,"after":after}),
             "projects",
@@ -348,8 +374,7 @@ async fn phone_control_admin_exchange(
                 "expected an administration command".into(),
             ));
         }
-    };
-    phone_control_write_request(stream, &request, expected).await
+    })
 }
 
 async fn phone_control_write_request(

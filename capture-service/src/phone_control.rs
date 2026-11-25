@@ -6,6 +6,9 @@ mod evidence;
 mod http;
 pub(crate) mod owner_journal;
 mod socket;
+mod source;
+#[cfg(test)]
+mod source_tests;
 
 pub use evidence::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,

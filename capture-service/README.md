@@ -84,6 +84,8 @@ phone-control projects [--after HEX16]
 phone-control register-root --path /absolute/root
 phone-control register-project --path /absolute/project --root-id HEX16
 phone-control link-project-roots --project-id HEX16 --root-id HEX16
+phone-control freeze-run-source --project-id HEX16 --run-id UUID --snapshot /private/new-snapshot [--include relative-file]
+phone-control inspect-run-source --run-id UUID
 phone-control inspect-grant --device-id DEVICE_UUID
 phone-control confirm-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16
 phone-control disable --device-id DEVICE_UUID
@@ -110,6 +112,16 @@ For a legacy path-only grant, inspect and review its complete current scope on
 the computer, then confirm each exact project with that grant ID, revision and
 scope digest. These identity records alone do not make Runs phone-readable;
 source/checkout binding and protected Run reads remain separate work.
+For contained Run preparation, `freeze-run-source` explicitly freezes a selected
+original project using the optional root-owned installed `louiselm-skills` and
+records that event for the exact new Run UUID. The snapshot must be a new path
+under an owner-controlled parent; its contents can be sensitive. Repeat
+`--include` only for reviewed relative files. Missing skills integration is
+`unsupported` and does not disable ordinary Sessions. After an uncertain result,
+inspect the original Run source and output before retrying; never reuse an
+existing Run or infer a binding from the snapshot path. This source proof alone
+does not establish a reviewed checkout, publish a draft, admit a Run, or grant
+phone access.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver

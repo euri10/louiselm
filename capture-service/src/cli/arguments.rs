@@ -82,6 +82,22 @@ pub(super) enum PhoneControl {
     Verify,
     /// Persist an exact native-owner action reservation or outcome.
     OwnerJournal,
+    /// Freeze a selected original project for a future phone-bound Run.
+    FreezeRunSource {
+        #[arg(long)]
+        project_id: String,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        snapshot: String,
+        #[arg(long = "include")]
+        includes: Vec<String>,
+    },
+    /// Inspect an exact previously recorded source freeze.
+    InspectRunSource {
+        #[arg(long)]
+        run_id: String,
+    },
     /// List retained private root identities for desktop approval.
     ProjectRoots {
         #[arg(long, default_value = "")]

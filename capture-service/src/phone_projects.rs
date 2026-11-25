@@ -79,10 +79,10 @@ pub struct PhoneProjectPage {
     pub next_after: Option<String>,
 }
 
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Directory {
-    path: String,
+pub(crate) struct Directory {
+    pub(crate) path: String,
     device: u64,
     inode: u64,
     created_seconds: u64,
@@ -552,7 +552,7 @@ fn state_hash(state: &State) -> Result<String, serde_json::Error> {
     Ok(lower_hex(&Sha256::digest(bytes)))
 }
 
-fn directory(path: &Path) -> Result<Directory, PhoneProjectError> {
+pub(crate) fn directory(path: &Path) -> Result<Directory, PhoneProjectError> {
     if !path.is_absolute() {
         return Err(PhoneProjectError::Invalid(
             "directory path must be absolute",

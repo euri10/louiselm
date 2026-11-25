@@ -585,6 +585,19 @@ impl AdminSocket {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum AdminRequest {
+    FreezeRunSource {
+        v: u64,
+        capability: String,
+        project_id: String,
+        run_id: String,
+        snapshot: String,
+        includes: Vec<String>,
+    },
+    InspectRunSource {
+        v: u64,
+        capability: String,
+        run_id: String,
+    },
     Projects {
         v: u64,
         capability: String,
@@ -674,7 +687,9 @@ impl AdminRequest {
 
     fn common(&self) -> (u64, &str, Option<&str>) {
         match self {
-            Self::Projects { v, capability, .. }
+            Self::FreezeRunSource { v, capability, .. }
+            | Self::InspectRunSource { v, capability, .. }
+            | Self::Projects { v, capability, .. }
             | Self::ProjectRoots { v, capability, .. }
             | Self::RegisterProject { v, capability, .. }
             | Self::LinkProjectRoots { v, capability, .. }
@@ -811,7 +826,9 @@ fn process_admin(
         return Err(Refusal::Unauthenticated);
     }
     match request {
-        request @ (AdminRequest::Projects { .. }
+        request @ (AdminRequest::FreezeRunSource { .. }
+        | AdminRequest::InspectRunSource { .. }
+        | AdminRequest::Projects { .. }
         | AdminRequest::ProjectRoots { .. }
         | AdminRequest::RegisterProject { .. }
         | AdminRequest::LinkProjectRoots { .. }
@@ -889,6 +906,20 @@ fn process_project_admin(
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
     match request {
+        AdminRequest::FreezeRunSource {
+            project_id,
+            run_id,
+            snapshot,
+            includes,
+            ..
+        } => {
+            let proof = authority.freeze_run_source(&project_id, &run_id, &snapshot, &includes)?;
+            Ok(source_result(&proof))
+        }
+        AdminRequest::InspectRunSource { run_id, .. } => {
+            let proof = authority.inspect_run_source(&run_id)?;
+            Ok(source_result(&proof))
+        }
         AdminRequest::Projects { after, .. } => {
             let page = authority.projects(&after)?;
             Ok(json!({"v":1,"type":"projects","projects":page.projects,
@@ -946,6 +977,12 @@ fn process_project_admin(
         }
         _ => Err(Refusal::Malformed),
     }
+}
+
+fn source_result(proof: &super::source::SourceProof) -> Value {
+    json!({"v":1,"type":"run_source","run_id":proof.run_id,"project_id":proof.project_id,
+        "source_id":proof.source_id,"snapshot_digest":proof.snapshot_digest,
+        "base_digest":proof.base_digest,"base_commit":proof.base_commit})
 }
 
 #[cfg(test)]
@@ -1067,6 +1104,7 @@ mod tests {
         )
         .await;
         assert_eq!(linked["type"], "project_roots_linked");
+        assert_source_admin(path, project, token, &registered["project_id"]).await;
         let review = exchange(
             path,
             json!({"v":1,"type":"inspect_grant","capability":token,"device_id":device}),
@@ -1078,6 +1116,121 @@ mod tests {
             "device_id":device,"grant_id":review["grant_id"],"grant_revision":review["grant_revision"],
             "scope_digest":review["scope_digest"],"project_id":registered["project_id"]})).await;
         assert_eq!(confirm["code"], "unsupported");
+    }
+
+    async fn assert_source_admin(
+        path: &std::path::Path,
+        project: &std::path::Path,
+        token: &str,
+        project_id: &Value,
+    ) {
+        let denied = exchange(
+            path,
+            json!({"v":1,"type":"freeze_run_source","capability":"wrong",
+                "project_id":project_id,"run_id":"11111111-1111-4111-8111-111111111111",
+                "snapshot":project.join("snapshot").to_str().unwrap(),"includes":[]}),
+        )
+        .await;
+        assert_eq!(denied["code"], "unauthenticated");
+        let absent = exchange(
+            path,
+            json!({"v":1,"type":"inspect_run_source","capability":token,
+                "run_id":"11111111-1111-4111-8111-111111111111"}),
+        )
+        .await;
+        assert_eq!(absent["code"], "unavailable");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the optional root-owned installed skills integration"]
+    async fn operator_source_freeze_survives_project_removal_and_restart() {
+        use std::{os::unix::fs::PermissionsExt, process::Command};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("/usr/bin/git")
+                    .current_dir(&project)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "--quiet"]);
+        std::fs::write(project.join("source"), "original").unwrap();
+        git(&["add", "--", "source"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "initial",
+        ]);
+        let grants = root.path().join("grants/state");
+        let authority = Arc::new(Authority::open(&grants, &"01".repeat(32)).unwrap());
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let path = root.path().join("operator.sock");
+        let capability = root.path().join("operator-capability");
+        let server = super::AdminSocket::bind(&path, &capability, authority, pairing.clone())
+            .await
+            .unwrap();
+        let token = std::fs::read_to_string(&capability).unwrap();
+        let task = tokio::spawn(server.serve());
+        let selected = exchange(
+            &path,
+            json!({"v":1,"type":"register_root","capability":token,
+            "path":project.to_str().unwrap()}),
+        )
+        .await;
+        let registered = exchange(
+            &path,
+            json!({"v":1,"type":"register_project","capability":token,
+            "path":project.to_str().unwrap(),"root_ids":[selected["root_id"]]}),
+        )
+        .await;
+        let run_id = "11111111-1111-4111-8111-111111111111";
+        let frozen = exchange(
+            &path,
+            json!({"v":1,"type":"freeze_run_source","capability":token,
+            "project_id":registered["project_id"],"run_id":run_id,
+            "snapshot":root.path().join("snapshot").to_str().unwrap(),"includes":[]}),
+        )
+        .await;
+        assert_eq!(frozen["type"], "run_source");
+        let duplicate = exchange(
+            &path,
+            json!({"v":1,"type":"freeze_run_source","capability":token,
+            "project_id":registered["project_id"],"run_id":run_id,
+            "snapshot":root.path().join("other").to_str().unwrap(),"includes":[]}),
+        )
+        .await;
+        assert_eq!(duplicate["code"], "stale_subject");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        std::fs::rename(&project, root.path().join("moved-project")).unwrap();
+        let authority = Arc::new(Authority::open(&grants, &"01".repeat(32)).unwrap());
+        let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
+            .await
+            .unwrap();
+        let task = tokio::spawn(server.serve());
+        let restored = exchange(
+            &path,
+            json!({"v":1,"type":"inspect_run_source","capability":token,
+            "run_id":run_id}),
+        )
+        .await;
+        assert_eq!(restored, frozen);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 
     #[tokio::test]

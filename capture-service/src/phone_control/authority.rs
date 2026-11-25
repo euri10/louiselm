@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
+use super::source::{PhoneSourceError, PhoneSourceStore, SourceProof};
 use super::{
     ActionEvidence, ActionEvidenceStore, Frame, GrantRecord, HistoryQuery, MAX_FRAME, MAX_INTEGER,
     PeriodRecord, PhoneControlError, Proof, Request, fixed, key, validate_history_request_shape,
@@ -215,6 +216,28 @@ pub(super) struct Authority {
 }
 
 impl Authority {
+    fn source_store(&self) -> Result<PhoneSourceStore, Refusal> {
+        let parent = self.path.parent().ok_or(Refusal::Unavailable)?;
+        PhoneSourceStore::open(parent.join("run-sources")).map_err(source_refusal)
+    }
+
+    pub(super) fn freeze_run_source(
+        &self,
+        project_id: &str,
+        run_id: &str,
+        snapshot: &str,
+        includes: &[String],
+    ) -> Result<SourceProof, Refusal> {
+        let projects = self.projects.as_ref().map_err(|_| Refusal::Unavailable)?;
+        self.source_store()?
+            .freeze(projects, project_id, run_id, Path::new(snapshot), includes)
+            .map_err(source_refusal)
+    }
+
+    pub(super) fn inspect_run_source(&self, run_id: &str) -> Result<SourceProof, Refusal> {
+        self.source_store()?.read(run_id).map_err(source_refusal)
+    }
+
     pub(super) fn project_roots(&self, after: &str) -> Result<PhoneProjectRootPage, Refusal> {
         self.projects
             .as_ref()
@@ -1100,6 +1123,20 @@ fn project_refusal(error: &PhoneProjectError) -> Refusal {
             | "directory path must be absolute"
             | "directory path is invalid",
         ) => Refusal::Malformed,
+        _ => Refusal::Unavailable,
+    }
+}
+
+fn source_refusal(error: PhoneSourceError) -> Refusal {
+    match error {
+        PhoneSourceError::Unsupported => Refusal::Unsupported,
+        PhoneSourceError::Conflict => Refusal::StaleSubject,
+        PhoneSourceError::Invalid(
+            "Run UUID is not canonical"
+            | "invalid selected source inputs"
+            | "snapshot path must be absolute",
+        ) => Refusal::Malformed,
+        PhoneSourceError::Project(error) => project_refusal(&error),
         _ => Refusal::Unavailable,
     }
 }
