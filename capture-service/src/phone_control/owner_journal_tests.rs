@@ -97,6 +97,22 @@ fn only_native_owner_outcomes_for_the_exact_identity_are_retained() {
 }
 
 #[test]
+fn owner_can_fence_a_begun_action_after_proving_no_effect() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("owner");
+    let request = identity(temp.path(), 6);
+    let owner = OwnerJournal::open(&path).unwrap();
+    assert_eq!(owner.begin(&request), Ok(Begin::New));
+    let fence = ActionOutcome::FencedNoEffect {
+        evidence: "0b".repeat(32),
+    };
+    owner.report(&request, &fence, 2_000).unwrap();
+    drop(owner);
+    let owner = OwnerJournal::open(&path).unwrap();
+    assert_eq!(owner.begin(&request), Ok(Begin::Existing(fence)));
+}
+
+#[test]
 fn concurrent_begin_and_fence_have_only_one_safe_winner() {
     let temp = tempfile::tempdir().unwrap();
     let request = identity(temp.path(), 3);

@@ -128,7 +128,9 @@ impl OwnerJournal {
     ) -> Result<(), ActionEvidenceError> {
         if !matches!(
             outcome,
-            ActionOutcome::Accepted { .. } | ActionOutcome::Rejected { .. }
+            ActionOutcome::Accepted { .. }
+                | ActionOutcome::Rejected { .. }
+                | ActionOutcome::FencedNoEffect { .. }
         ) {
             return Err(ActionEvidenceError::Malformed);
         }

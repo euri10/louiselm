@@ -381,8 +381,11 @@ The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
 `grant_revision`, `period_id`, `expected_revision`, `project`, `agent` and
 `recorded_at_ms`, using the bounds and encodings above. The project and Agent
 come from the native owner, never phone claims. `OwnerOutcome` is exactly
-`{accepted:{evidence:hex32}}` or `{rejected:{evidence:hex32}}`; the native
-owner reports only a fact it has established. No payload or prompt is stored.
+`{accepted:{evidence:hex32}}`, `{rejected:{evidence:hex32}}`, or
+`{fenced_no_effect:{evidence:hex32}}`. The last form is permitted only after
+the native owner proves that a begun attempt had no effect; its durable begin
+already fences subsequent delivery. The owner reports only a fact it has
+established. No payload or prompt is stored.
 
 Begin returns `{v:1,type:"begun"}` only after durable reservation, or
 `{v:1,type:"existing",outcome:ExistingOutcome}` for an existing exact identity.
