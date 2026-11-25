@@ -38,6 +38,11 @@ pub(super) enum Command {
         #[command(subcommand)]
         command: Attention,
     },
+    /// Verify phone-control authentication for a local controller.
+    PhoneControl {
+        #[command(subcommand)]
+        command: PhoneControl,
+    },
     /// Retry a capture's transcription.
     Retry { id: String },
     /// Process currently ready transcriptions once.
@@ -69,6 +74,12 @@ pub(super) enum Command {
     /// Start the configured capture service.
     #[command(after_help = transcription_help())]
     Serve,
+}
+
+#[derive(Subcommand)]
+pub(super) enum PhoneControl {
+    /// Read and authenticate one controller frame from standard input.
+    Verify,
 }
 
 fn transcription_help() -> String {

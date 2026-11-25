@@ -200,6 +200,16 @@ freshness; these timestamps or a Boolean alone never prove phone authentication.
 Unavailable or ambiguous current state fails closed. Neither verification nor
 the local transport grants authority to answer an ACP permission request.
 
+The controller runs `louiselm-capture phone-control verify` asynchronously,
+passing exactly one `read_session` object on standard input. The command loads
+the local receiver key identity from the capture state directory and prints
+exactly `{v:1,type:"verified"}` or the closed error object followed by a newline;
+both are exit status zero. Internal I/O failures use a nonzero status. Missing
+receiver identity is `unavailable`; verification never creates an identity.
+This checks the signed bindings only. The controller still checks its own live
+controller, subject, project, Agent and state, and the receiver must still
+check current grant, lease and replay state before delivery or admission.
+
 Success is `{v,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,entries:[Entry],next_before:integer,complete:boolean}`.
 The receiver returns this same closed object over HTTPS after the final authority
 recheck. `revision` is nonzero and increases on any projected state/content

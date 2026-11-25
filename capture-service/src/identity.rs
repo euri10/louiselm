@@ -38,6 +38,14 @@ pub struct TlsIdentity {
 }
 
 impl TlsIdentity {
+    pub(crate) fn existing_public_key_sha256(directory: &Path) -> Result<String, IdentityError> {
+        let private_key_pem = fs::read_to_string(directory.join("receiver-key.pem"))?;
+        let key_pair = KeyPair::from_pem(&private_key_pem)?;
+        Ok(lower_hex(&Sha256::digest(
+            key_pair.subject_public_key_info(),
+        )))
+    }
+
     /// Load or generate the receiver's persistent self-signed identity.
     ///
     /// The phone trusts the persistent public key from the one-time QR payload;

@@ -3,7 +3,7 @@
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -17,7 +17,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 mod arguments;
-use arguments::{Attention, Cli, Command, Run};
+use arguments::{Attention, Cli, Command, PhoneControl, Run};
 
 #[path = "notification_worker.rs"]
 mod notification_worker;
@@ -158,6 +158,11 @@ pub async fn run() -> Result<(), CliError> {
             &paths,
         ),
         Command::Attention { command } => attention_command(&attention_store(&paths)?, command),
+        Command::PhoneControl {
+            command: PhoneControl::Verify,
+        } => tokio::task::spawn_blocking(move || verify_phone_control(&paths))
+            .await
+            .map_err(std::io::Error::other)?,
         Command::Retry { id } => retry(&Store::new(paths.captures())?, &id),
         Command::TranscribeOnce => tokio::task::spawn_blocking(move || {
             // Keep the blocking HTTP client's construction, work, and drop off
@@ -179,6 +184,29 @@ pub async fn run() -> Result<(), CliError> {
         Command::Serve => service::serve(paths).await,
         Command::Metadata => Ok(()),
     }
+}
+
+fn verify_phone_control(paths: &Paths) -> Result<(), CliError> {
+    let mut input = Vec::new();
+    std::io::stdin()
+        .take(u64::try_from(crate::phone_control::MAX_FRAME + 1).map_err(std::io::Error::other)?)
+        .read_to_end(&mut input)?;
+    let line = input.strip_suffix(b"\n").unwrap_or(&input);
+    let outcome = if input.len() > crate::phone_control::MAX_FRAME
+        || line.contains(&b'\n')
+        || line.contains(&b'\r')
+    {
+        Err(crate::PhoneControlError::Malformed)
+    } else {
+        TlsIdentity::existing_public_key_sha256(&paths.tls())
+            .map_err(|_| crate::PhoneControlError::Unavailable)
+            .and_then(|identity| crate::verify_phone_control_frame(line, &identity))
+    };
+    match outcome {
+        Ok(()) => println!("{{\"v\":1,\"type\":\"verified\"}}"),
+        Err(code) => println!("{{\"v\":1,\"type\":\"error\",\"code\":\"{code}\"}}"),
+    }
+    Ok(())
 }
 
 fn attention_store(paths: &Paths) -> Result<AttentionStore, CliError> {
