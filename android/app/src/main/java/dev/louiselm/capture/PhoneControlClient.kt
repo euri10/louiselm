@@ -356,6 +356,26 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
+    /** Read one exact saved-result page without granting a decision or Run authority. */
+    fun readSavedReview(period: PhoneControlPeriod, runId: String, resultId: String, revision: String?,
+        cursor: PhoneSavedCursor?, nowMs: Long, interaction: Boolean = true,
+        maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SavedReview> = guarded {
+        val subject = phoneControlHex(phoneControlRunIdBytes(runId))
+        val payload = phoneSavedReviewPayload(resultId, revision, cursor)
+        val result = ownerRead(period, nowMs, subject, payload, 0, 80, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.SavedReview) return@guarded refusal(reply)
+        val page = reply.review
+        val previous = cursor ?: PhoneSavedCursor(0, PhoneSavedSide.BEFORE, 0)
+        val next = page.next
+        if (reply.requestId != operationId || page.runId != runId || page.resultId != resultId ||
+            revision != null && page.revision != revision || next != null && !savedCursorAdvances(previous, next)) {
+            return@guarded malformed()
+        }
+        PhoneControlResult.Value(reply)
+    }
+
     private fun ownerRead(period: PhoneControlPeriod, nowMs: Long, subject: String, payload: ByteArray,
         revision: Long, action: Int, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<Pair<PhoneControlReply, String>> {
         if (!period.isActive(nowMs)) return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)

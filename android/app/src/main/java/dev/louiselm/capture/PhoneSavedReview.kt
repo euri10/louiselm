@@ -8,6 +8,11 @@ internal enum class PhoneSavedVerification { MATCHING, CHANGED, QUARANTINED, UNA
 internal enum class PhoneSavedProvenance { UNTAINTED, SESSION_OUTPUT_TAINTED, UNKNOWN }
 
 internal data class PhoneSavedCursor(val file: Int, val side: PhoneSavedSide, val offset: Int)
+
+internal fun savedCursorAdvances(previous: PhoneSavedCursor, next: PhoneSavedCursor): Boolean =
+    next.file > previous.file || next.file == previous.file &&
+        (next.side.ordinal > previous.side.ordinal || next.side == previous.side && next.offset > previous.offset)
+
 internal data class PhoneSavedFile(
     val path: String, val change: PhoneSavedChange, val side: PhoneSavedSide, val offset: Int,
     val text: String, val binary: Boolean, val executable: Boolean,
