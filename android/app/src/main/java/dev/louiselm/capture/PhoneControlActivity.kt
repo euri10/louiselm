@@ -15,7 +15,10 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.text.Editable
+import android.text.InputFilter
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -31,6 +34,7 @@ import androidx.core.view.WindowInsetsCompat
 import java.io.File
 import java.io.IOException
 import java.security.GeneralSecurityException
+import java.security.MessageDigest
 import java.security.ProviderException
 import java.text.DateFormat
 import java.util.Date
@@ -45,6 +49,12 @@ private data class PendingPeriod(val token: Long, val value: PhoneControlPeriod)
 private data class PendingOfflinePreparation(val token: Long, val value: PreparedPhoneOfflineUnlock)
 private data class PendingOfflinePeriod(val token: Long, val value: PhoneOfflinePeriod)
 private data class PhoneTargetRead(val refresh: PhoneSessionRefresh, val pages: List<PhoneControlReply.SessionPage>, val saveMessage: Int?)
+private data class PhoneReconciliation(
+    val pending: List<PendingPhoneAction>?,
+    val records: List<PhoneActionRecord>,
+    val nextAfter: String?,
+    val failure: PhoneControlOutcome?,
+)
 
 /** Owns the temporary working key and all callbacks that can expose the workspace. */
 class PhoneControlActivity : Activity() {
@@ -56,6 +66,7 @@ class PhoneControlActivity : Activity() {
     private val pendingOfflinePeriod = AtomicReference<PendingOfflinePeriod?>()
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var client: PhoneControlClient
+    private lateinit var pendingActionsStore: PendingPhoneActionStore
     private lateinit var offlineStore: PhoneOfflineStore
     private lateinit var offlineUnlockStore: PhoneOfflineUnlockStore
     private lateinit var statusView: TextView
@@ -78,6 +89,9 @@ class PhoneControlActivity : Activity() {
     private lateinit var offlineRemoveButton: Button
     private lateinit var offlineBudgetButton: Button
     private lateinit var conversation: LinearLayout
+    private lateinit var sendInput: EditText
+    private lateinit var sendButton: Button
+    private lateinit var sendStatus: TextView
     private var target: PhoneControlTarget? = null
     private var attentionNavigation = false
     private var currentStatus: PhoneControlStatus = PhoneControlStatus.Disabled
@@ -101,10 +115,18 @@ class PhoneControlActivity : Activity() {
     private var browsePage: PhoneBrowsePage? = null
     private var actionHistoryPage: PhoneControlReply.ActionHistoryPage? = null
     private var showingActionHistory = false
+    private var draftTarget: PhoneControlTarget? = null
+    private var pendingActions = emptyList<PendingPhoneAction>()
+    private val actionEvidence = mutableMapOf<String, PhoneActionRecord>()
+    private val reviewedFences = mutableSetOf<String>()
+    private var reconciliationLoaded = false
+    private var reconciliationCursor: String? = null
+    private var sendNotice: Int? = null
     private var pinRefreshIndex = 0
     private val expiryCheck = Runnable { scheduleExpiry() }
     private val offlineExpiryCheck = Runnable { scheduleOfflineExpiry() }
     private val pinRefresh = Runnable { refreshPinnedCopy() }
+    private val reconcilePoll = Runnable { reconcilePendingActions() }
     private val refreshPoll = Runnable {
         if (foreground && !busy && !showingActionHistory && period != null && target != null && hasReceiverNetworkAccess(this)) {
             readTarget(interaction = false)
@@ -131,6 +153,7 @@ class PhoneControlActivity : Activity() {
             null
         }
         client = PhoneControlClient(applicationContext)
+        pendingActionsStore = PendingPhoneActionStore(applicationContext)
         val downloadRoot = File(filesDir, "phone-offline-v1")
         offlineStore = PhoneOfflineStore(downloadRoot)
         offlineUnlockStore = PhoneOfflineUnlockStore(applicationContext, downloadRoot)
@@ -185,6 +208,7 @@ class PhoneControlActivity : Activity() {
                 showFailure(PhoneControlOutcome.REVOKED)
             } else {
                 render()
+                scheduleReconciliation(0)
                 if (showingActionHistory && hasReceiverNetworkAccess(this)) readActionHistory()
                 else if (target == null && hasReceiverNetworkAccess(this)) readSessions(interaction = false)
                 else if (target == null) render(R.string.phone_unavailable)
@@ -198,7 +222,11 @@ class PhoneControlActivity : Activity() {
         foreground = false
         handler.removeCallbacks(refreshPoll)
         handler.removeCallbacks(pinRefresh)
+        handler.removeCallbacks(reconcilePoll)
         conversation.visibility = View.GONE
+        sendInput.visibility = View.GONE
+        sendButton.visibility = View.GONE
+        sendStatus.visibility = View.GONE
         super.onPause()
     }
 
@@ -330,6 +358,28 @@ class PhoneControlActivity : Activity() {
         add(moreActionHistoryButton)
         conversation = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         add(conversation)
+        sendStatus = TextView(this)
+        add(sendStatus)
+        sendInput = EditText(this).apply {
+            hint = getString(R.string.phone_send_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            filters = arrayOf(InputFilter.LengthFilter(4095))
+            minLines = 3
+        }
+        add(sendInput)
+        sendButton = Button(this).apply {
+            text = getString(R.string.phone_send)
+            setOnClickListener { withNetwork { sendPrompt() } }
+        }
+        add(sendButton)
+        sendInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                if (s.isNullOrEmpty()) draftTarget = null else if (draftTarget == null) draftTarget = target
+                render()
+            }
+        })
         add(TextView(this).apply { text = getString(R.string.phone_admin) })
         return ScrollView(this).apply { addView(column) }
     }
@@ -346,6 +396,25 @@ class PhoneControlActivity : Activity() {
         }
         val unlocked = period?.isActive(SystemClock.elapsedRealtime()) == true
         val offlineUnlocked = offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true
+        val showComposer = foreground && unlocked && ((!showingOffline && !showingActionHistory && target != null) ||
+            sendInput.text.isNotEmpty())
+        sendInput.visibility = if (showComposer) View.VISIBLE else View.GONE
+        sendButton.visibility = if (showComposer) View.VISIBLE else View.GONE
+        sendStatus.visibility = if (showComposer) View.VISIBLE else View.GONE
+        val related = relatedPendingActions()
+        val unresolved = related.any { actionEvidence[it.operationId]?.state !in setOf(PhoneActionState.ACCEPTED, PhoneActionState.FENCED_NO_EFFECT) }
+        val reviewNeeded = related.any { actionEvidence[it.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT && it.operationId !in reviewedFences }
+        val acceptedDraft = related.any { actionEvidence[it.operationId]?.state == PhoneActionState.ACCEPTED && it.payloadHash == sendDigest() }
+        val wrongTarget = draftTarget != null && draftTarget != target
+        sendStatus.text = getString(when {
+            wrongTarget -> R.string.phone_send_other_session
+            reviewNeeded -> R.string.phone_send_review
+            unresolved -> sendNotice ?: R.string.phone_send_unknown
+            related.any { actionEvidence[it.operationId]?.state == PhoneActionState.ACCEPTED } -> R.string.phone_action_accepted
+            else -> sendNotice ?: R.string.phone_send_ready
+        })
+        sendButton.isEnabled = !busy && reconciliationLoaded && !wrongTarget && !unresolved && !reviewNeeded && !acceptedDraft &&
+            sendInput.text.isNotEmpty() && sessionPage?.status == "ready" && target != null && !showingOffline && !showingActionHistory
         enableButton.visibility = if (currentStatus is PhoneControlStatus.Granted) View.GONE else View.VISIBLE
         checkButton.visibility = if (currentStatus is PhoneControlStatus.Pending) View.VISIBLE else View.GONE
         unlockButton.visibility = if (currentStatus is PhoneControlStatus.Granted && !unlocked) View.VISIBLE else View.GONE
@@ -776,6 +845,7 @@ class PhoneControlActivity : Activity() {
                         period = takePeriod(token) ?: return@runOnUiThread
                         scheduleExpiry()
                         schedulePinRefresh()
+                        scheduleReconciliation(0)
                         render()
                         val continueOnline = {
                             if (target != null) withNetwork { readTarget() }
@@ -826,6 +896,132 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun active(token: Long): Boolean = generation.get() == token && !isDestroyed && !isFinishing && deviceUsable()
+
+    private fun sendDigest(): String? = try {
+            if (sendInput.text.isEmpty()) null else phoneControlHex(
+                MessageDigest.getInstance("SHA-256").digest(phoneControlSendPayload(sendInput.text.toString())),
+            )
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+
+    private fun relatedPendingActions(): List<PendingPhoneAction> {
+        val selected = target
+        val digest = sendDigest()
+        return pendingActions.filter {
+            (selected != null && it.controllerId == selected.controllerId && it.subjectId == selected.subjectId) ||
+                (digest != null && it.payloadHash == digest)
+        }
+    }
+
+    private fun sendPrompt() {
+        if (!sendButton.isEnabled) return
+        val current = period ?: return
+        val requested = target ?: return
+        val revision = sessionPage?.revision ?: return
+        val text = sendInput.text.toString()
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        reconciliationLoaded = false
+        task({ maySend ->
+            client.sendPrompt(current, requested, revision, text, pendingActionsStore, SystemClock.elapsedRealtime()) {
+                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }, { outcome ->
+            if (!foreground) return@task
+            sendNotice = if (outcome == PhoneControlOutcome.MALFORMED) R.string.phone_send_invalid else R.string.phone_send_unavailable
+            render()
+            scheduleReconciliation(0)
+        }) { attempt, _ ->
+            busy = false
+            if (!foreground || period !== current || pairing.binding() != binding || !current.isActive(SystemClock.elapsedRealtime())) return@task
+            pendingActions = (pendingActions.filterNot { it.operationId == attempt.pending.operationId } + attempt.pending)
+            sendNotice = when (attempt.outcome) {
+                PhoneControlOutcome.UNSUPPORTED -> R.string.phone_send_unsupported
+                null -> R.string.phone_send_pending
+                else -> R.string.phone_send_unknown
+            }
+            if (attempt.outcome == PhoneControlOutcome.REVOKED || attempt.outcome == PhoneControlOutcome.UNAUTHENTICATED ||
+                attempt.outcome == PhoneControlOutcome.EXPIRED) {
+                lockWorkspace()
+                return@task
+            }
+            render()
+            scheduleReconciliation(0)
+        }
+    }
+
+    private fun scheduleReconciliation(delay: Long = RECONCILE_INTERVAL_MS) {
+        handler.removeCallbacks(reconcilePoll)
+        if (foreground && period?.isActive(SystemClock.elapsedRealtime()) == true) {
+            handler.postDelayed(reconcilePoll, delay)
+        }
+    }
+
+    /** Check a bounded rotating batch; it observes history and never transmits a Send. */
+    private fun reconcilePendingActions() {
+        val current = period ?: return
+        if (!foreground || !current.isActive(SystemClock.elapsedRealtime())) return
+        if (busy || !hasReceiverNetworkAccess(this)) {
+            scheduleReconciliation()
+            return
+        }
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        val token = generation.get()
+        val prior = actionEvidence.toMap()
+        val cursor = reconciliationCursor
+        networkExecutor.execute {
+            val mayContinue = {
+                foreground && active(token) && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+            val pending = try {
+                if (mayContinue()) pendingActionsStore.pending().filter { it.receiverIdentity == current.grant.receiverIdentity }
+                    .sortedBy { it.operationId } else null
+            } catch (_: PendingPhoneActionStoreException) {
+                null
+            }
+            val candidates = pending.orEmpty().filter {
+                prior[it.operationId]?.state !in setOf(PhoneActionState.ACCEPTED, PhoneActionState.FENCED_NO_EFFECT, PhoneActionState.REJECTED)
+            }
+            val selected = (candidates.filter { cursor == null || it.operationId > cursor } +
+                candidates.filter { cursor != null && it.operationId <= cursor }).take(RECONCILE_BATCH)
+            val records = mutableListOf<PhoneActionRecord>()
+            var failure: PhoneControlOutcome? = null
+            for (item in selected) {
+                if (!mayContinue()) break
+                when (val result = client.readActionHistory(current, item, SystemClock.elapsedRealtime(), mayContinue)) {
+                    is PhoneControlResult.Value -> records.add(result.value)
+                    is PhoneControlResult.Failure -> if (result.outcome in setOf(
+                            PhoneControlOutcome.EXPIRED, PhoneControlOutcome.REVOKED, PhoneControlOutcome.UNAUTHENTICATED,
+                        )) {
+                        failure = result.outcome
+                        break
+                    }
+                }
+            }
+            val result = PhoneReconciliation(pending, records, selected.lastOrNull()?.operationId, failure)
+            runOnUiThread {
+                if (!foreground || !active(token) || period !== current || pairing.binding() != binding ||
+                    !current.isActive(SystemClock.elapsedRealtime())) {
+                    scheduleReconciliation()
+                    return@runOnUiThread
+                }
+                if (result.failure != null) {
+                    lockWorkspace()
+                    return@runOnUiThread
+                }
+                reconciliationLoaded = true
+                if (result.pending != null) {
+                    pendingActions = result.pending
+                    reconciliationCursor = result.nextAfter
+                    for (record in result.records) actionEvidence[record.operationId] = record
+                }
+                render()
+                scheduleReconciliation()
+            }
+        }
+    }
 
     private fun showSessions() {
         handler.removeCallbacks(refreshPoll)
@@ -917,6 +1113,7 @@ class PhoneControlActivity : Activity() {
             }
             browsePage = page
             scheduleExpiry()
+            if (!reconciliationLoaded || pendingActions.isNotEmpty()) scheduleReconciliation(0)
             render()
             conversation.removeAllViews()
             conversation.visibility = View.VISIBLE
@@ -1063,7 +1260,13 @@ class PhoneControlActivity : Activity() {
                 newerOmitted = false
             }
             if (interaction) openedPages = result.pages
+            if (interaction) {
+                for (action in relatedPendingActions()) {
+                    if (actionEvidence[action.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT) reviewedFences.add(action.operationId)
+                }
+            }
             scheduleExpiry()
+            if (!reconciliationLoaded || pendingActions.isNotEmpty()) scheduleReconciliation(0)
             render(result.saveMessage)
             conversation.visibility = View.VISIBLE
             if (!unchanged) displayPage(requireNotNull(sessionPage))
@@ -1168,6 +1371,11 @@ class PhoneControlActivity : Activity() {
         openedPages = emptyList()
         showingActionHistory = false
         actionHistoryPage = null
+        pendingActions = emptyList()
+        actionEvidence.clear()
+        reviewedFences.clear()
+        reconciliationLoaded = false
+        reconciliationCursor = null
         sessionPage = null
         newerOmitted = false
         historyChanged = false
@@ -1196,6 +1404,7 @@ class PhoneControlActivity : Activity() {
             period?.lock()
             period = null
             handler.removeCallbacks(refreshPoll)
+            handler.removeCallbacks(reconcilePoll)
             if (!showingOffline) {
                 sessionPage = null
                 openedPages = emptyList()
@@ -1321,6 +1530,8 @@ class PhoneControlActivity : Activity() {
         private const val HISTORY_WINDOW = 500
         private const val REFRESH_INTERVAL_MS = 5_000L
         private const val PIN_REFRESH_INTERVAL_MS = 10_000L
+        private const val RECONCILE_INTERVAL_MS = 10_000L
+        private const val RECONCILE_BATCH = 4
         private const val MEBIBYTE = 1024L * 1024
     }
 }

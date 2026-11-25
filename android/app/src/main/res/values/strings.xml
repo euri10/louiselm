@@ -41,6 +41,16 @@
     <string name="phone_action_accepted">Accepted; completion is not proven</string>
     <string name="phone_action_rejected">Rejected</string>
     <string name="phone_action_fenced">No effect; original fenced</string>
+    <string name="phone_send">Send</string>
+    <string name="phone_send_hint">Instruction for this Session</string>
+    <string name="phone_send_ready">Review your instruction before sending.</string>
+    <string name="phone_send_pending">Send requested; checking owner evidence.</string>
+    <string name="phone_send_unknown">Delivery is unknown. Your instruction is still here; inspect action history before another attempt.</string>
+    <string name="phone_send_unsupported">This receiver does not support Send. Your instruction and the pending identity remain; delivery is not confirmed.</string>
+    <string name="phone_send_unavailable">Send could not be confirmed. Your instruction remains available.</string>
+    <string name="phone_send_invalid">Enter valid text of at most 4095 UTF-8 bytes.</string>
+    <string name="phone_send_other_session">This instruction belongs to another Session. Return to that Session to send it.</string>
+    <string name="phone_send_review">The original was fenced without effect. Refresh this Session and review the instruction before sending again.</string>
     <string name="phone_no_sessions">No authorized live Sessions on this page.</string>
     <string name="phone_session_row">%1$s\n%2$s · %3$s · %4$s\nController: %5$s\nSession: %6$s\n%7$s</string>
     <string name="phone_load_older">Load older messages</string>

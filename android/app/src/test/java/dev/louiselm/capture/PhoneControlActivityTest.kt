@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import java.io.File
 import java.security.Signature
@@ -67,10 +68,14 @@ private object PhoneScreenFixture {
     val readRequests = mutableListOf<Triple<Long, Long, Boolean>>()
     var pairingBinding: String? = "fixture"
     var preUnlockOffline = true
+    var sendCalls = 0
+    var sendOutcome = PhoneControlOutcome.UNSUPPORTED
+    var evidenceState: PhoneActionState? = null
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
         preUnlockOffline = true
+        sendCalls = 0; sendOutcome = PhoneControlOutcome.UNSUPPORTED; evidenceState = null
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; olderNextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
@@ -180,6 +185,28 @@ class PhoneScreenClientFixture {
         val next = if (after == null && PhoneScreenFixture.moreActionHistory) record.operationId else ""
         return PhoneControlResult.Value(PhoneControlReply.ActionHistoryPage("88".repeat(16), listOf(record), next))
     }
+
+    @Implementation(methodName = "sendPrompt")
+    internal fun sendPrompt(period: PhoneControlPeriod, target: PhoneControlTarget, revision: Long, text: String,
+        store: PendingPhoneActionStore, now: Long, maySend: () -> Boolean): PhoneControlResult<PhoneSendAttempt> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
+            period.grant.receiverIdentity, target.controllerId, target.subjectId, phoneControlSendPayload(text),
+            "99".repeat(16), revision, true, 3)
+        assertEquals(PendingReservation.NEW, store.reserve(request))
+        PhoneScreenFixture.sendCalls++
+        return PhoneControlResult.Value(PhoneSendAttempt(store.pending().single(), PhoneScreenFixture.sendOutcome))
+    }
+
+    @Implementation(methodName = "readActionHistory")
+    internal fun readActionHistory(period: PhoneControlPeriod, pending: PendingPhoneAction, now: Long,
+        maySend: () -> Boolean): PhoneControlResult<PhoneActionRecord> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        val state = PhoneScreenFixture.evidenceState ?: return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        return PhoneControlResult.Value(PhoneActionRecord(pending.operationId, pending.receiverIdentity, pending.controllerId,
+            pending.subjectId, pending.action, pending.payloadHash, pending.grantId, pending.grantRevision,
+            pending.expectedRevision, 1, 2, state, if (state == PhoneActionState.UNKNOWN) "" else "66".repeat(32)))
+    }
 }
 
 @Implements(PhoneControlAuthenticator::class, isInAndroidSdk = false)
@@ -277,6 +304,52 @@ class PhoneControlActivityTest {
         .single { it.text.toString() == text }
     private fun hasText(id: Int) = views(activity.window.decorView).filterIsInstance<TextView>()
         .any { it.text.toString() == activity.getString(id) }
+
+    @Test
+    fun explicitSendKeepsInputAndRequiresOwnerFenceBeforeRetry() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        val snapshot = File(activity.noBackupFilesDir, "phone-action-pending-v1")
+        assertTrue(!snapshot.exists() || snapshot.delete())
+        val secret = SecretKeySpec(ByteArray(32) { 7 }, "AES")
+        var initialized = false
+        val store = PendingPhoneActionStore(activity, { create ->
+            if (create) initialized = true
+            if (initialized) secret else null
+        })
+        ReflectionHelpers.setField(activity, "pendingActionsStore", store)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drain() }
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("retain this instruction")
+        button(R.string.phone_send).performClick()
+        drain()
+        assertEquals(1, PhoneScreenFixture.sendCalls)
+        assertEquals("retain this instruction", input.text.toString())
+        assertTrue(input.visibility == View.VISIBLE)
+        assertFalse(button(R.string.phone_send).isEnabled)
+        assertTrue(hasText(R.string.phone_send_unsupported))
+        button(R.string.phone_send).performClick()
+        drain()
+        assertEquals(1, PhoneScreenFixture.sendCalls)
+        PhoneScreenFixture.evidenceState = PhoneActionState.FENCED_NO_EFFECT
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        repeat(2) { drain() }
+        assertFalse(button(R.string.phone_send).isEnabled)
+        assertEquals("retain this instruction", input.text.toString())
+        button(R.string.phone_refresh).performClick()
+        repeat(2) { drain() }
+        assertTrue(button(R.string.phone_send).isEnabled)
+        screenOff()
+        assertEquals(View.GONE, input.visibility)
+        assertEquals("retain this instruction", input.text.toString())
+    }
 
     @Test
     fun actionHistoryIsAvailableWithoutALiveSessionAndIsHiddenOnLock() {
