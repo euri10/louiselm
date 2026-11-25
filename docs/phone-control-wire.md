@@ -153,6 +153,16 @@ reusable ACP or local Session ID. A lost/restarted controller, disposed subject,
 reused local ID, wrong controller, or mismatched nonzero revision cannot select
 a replacement. Other actions need a defined versioned schema before use.
 
+Action `3`, `send_prompt` version 1, requires `operate_sessions`. Its payload
+is exactly `01 | text:utf8`: one version byte followed by 1–4095 bytes of valid
+UTF-8 without NUL. The phone explicitly sends the reviewed text; no desktop
+draft, staged context or skill selection is implied. `interaction` must be `1`,
+`expected_revision` must be nonzero, and the controller and subject must be
+nonzero exact incarnations. The owner rechecks that revision, current authority
+and Session readiness before admission. The signed request and payload digest
+bind the entire action; accepting this schema alone grants no authority or
+indicates that a Send was admitted, dispatched or completed.
+
 Action `48`, `list_controllers`, requires `read`. Its signed controller and
 subject IDs are all-zero 16-byte values: this receiver-wide discovery request
 has no Session target. The payload is `after_controller_id[16] | limit:u8`;

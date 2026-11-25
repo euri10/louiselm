@@ -2,6 +2,9 @@ package dev.louiselm.capture
 
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
 import org.json.JSONObject
 
@@ -34,6 +37,18 @@ internal fun phoneControlHistoryPagePayload(after: String?, limit: Int): ByteArr
 
 internal fun phoneControlHistoryRecordPayload(operationId: String): ByteArray =
     byteArrayOf(0) + phoneControlHex(operationId, 16)
+
+internal fun phoneControlSendPayload(text: String): ByteArray {
+    require(text.isNotEmpty() && '\u0000' !in text) { "invalid Send text" }
+    val encoded = try {
+        Charsets.UTF_8.newEncoder().onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT).encode(CharBuffer.wrap(text))
+    } catch (_: CharacterCodingException) {
+        throw IllegalArgumentException("invalid Send text")
+    }
+    require(encoded.remaining() <= 4095) { "Send text is too large" }
+    return byteArrayOf(1) + ByteArray(encoded.remaining()).also { encoded.get(it) }
+}
 
 private fun ByteArrayOutputStream.field(value: String, size: Int) = write(phoneControlHex(value, size))
 private fun ByteArrayOutputStream.number(value: Long) {
@@ -108,6 +123,19 @@ internal class PhoneControlRequest(
                     }
                     else -> throw IllegalArgumentException("invalid history payload")
                 }
+            }
+            3 -> {
+                require(interaction && expectedRevision > 0 && controllerId != "00".repeat(16) &&
+                    subjectId != "00".repeat(16) && this.payload.size in 2..4096 && this.payload[0].toInt() == 1) {
+                    "invalid Send request"
+                }
+                val text = try {
+                    Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(this.payload, 1, this.payload.size - 1)).toString()
+                } catch (_: CharacterCodingException) {
+                    throw IllegalArgumentException("invalid Send text")
+                }
+                require(phoneControlSendPayload(text).contentEquals(this.payload)) { "invalid Send text" }
             }
             48, 49 -> require(this.payload.size == 17 && this.payload.last().toInt() in 1..50 &&
                 expectedRevision == 0L && subjectId == "00".repeat(16) &&

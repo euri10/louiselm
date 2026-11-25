@@ -212,7 +212,7 @@ pub fn verify_phone_control_frame(
     }
     match header.get("type").and_then(serde_json::Value::as_str) {
         Some(kind) if !valid_string(kind) => return Err(Malformed),
-        Some("read_session" | "list_controllers" | "list_sessions") => {}
+        Some("read_session" | "send_prompt" | "list_controllers" | "list_sessions") => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
     }
@@ -223,7 +223,10 @@ pub fn verify_phone_control_frame(
     if frame.v != 1
         || !matches!(
             (frame.kind.as_str(), frame.request.action),
-            ("read_session", 1) | ("list_controllers", 48) | ("list_sessions", 49)
+            ("read_session", 1)
+                | ("send_prompt", 3)
+                | ("list_controllers", 48)
+                | ("list_sessions", 49)
         )
     {
         return Err(Unsupported);
@@ -243,6 +246,7 @@ impl Frame {
             2 => {
                 validate_history_request_shape(request)?;
             }
+            3 => validate_send_request_shape(request)?,
             48 | 49 => validate_discovery_request_shape(request)?,
             _ => return Err(Unsupported),
         }
@@ -345,6 +349,31 @@ fn validate_request_shape(request: &Request) -> Result<(), PhoneControlError> {
             .map_err(|_| PhoneControlError::Malformed)?,
     );
     if before > MAX_INTEGER || !(1..=50).contains(&limit) {
+        return Err(PhoneControlError::Malformed);
+    }
+    Ok(())
+}
+
+fn validate_send_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.action != 3 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    if request.interaction != 1
+        || request.expected_revision == 0
+        || fixed::<16>(&request.controller_id)? == [0; 16]
+        || fixed::<16>(&request.subject_id)? == [0; 16]
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    let payload = decode_hex(&request.payload)?;
+    match payload.first() {
+        Some(1) => {}
+        Some(_) => return Err(PhoneControlError::Unsupported),
+        None => return Err(PhoneControlError::Malformed),
+    }
+    let text = std::str::from_utf8(&payload[1..]).map_err(|_| PhoneControlError::Malformed)?;
+    if text.is_empty() || text.contains('\0') {
         return Err(PhoneControlError::Malformed);
     }
     Ok(())
