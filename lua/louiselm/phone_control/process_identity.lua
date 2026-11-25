@@ -66,6 +66,13 @@ function Identity:dispose()
   return closed ~= nil, err
 end
 
+---Check only an identity created by this module; do not invoke caller callbacks.
+---@param identity table
+---@return boolean alive
+function M.alive(identity)
+  return type(identity) == "table" and getmetatable(identity) == Identity and Identity.alive(identity)
+end
+
 ---Create an unopened process identity. This performs no I/O.
 ---@param pid integer PID in this process's proc namespace.
 ---@return table? identity

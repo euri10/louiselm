@@ -85,6 +85,16 @@ function Clock:sample()
   return { namespace = before, centiseconds = now }
 end
 
+---Sample only a clock created by this module; do not invoke caller callbacks.
+---@param clock table
+---@return {namespace: string, centiseconds: integer}? sample
+function M.sample(clock)
+  if type(clock) ~= "table" or getmetatable(clock) ~= Clock then
+    return nil
+  end
+  return Clock.sample(clock)
+end
+
 ---Check the owner's final interval against a receiver-supplied remaining bound.
 ---Charge the missing proc centisecond; a boundary or inconsistent clock fails closed.
 ---@param start {namespace: string, centiseconds: integer}
