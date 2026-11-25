@@ -314,7 +314,11 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         );
     }
     let promotion_snapshot = operator.join("snapshot-4");
-    let promotion_preview = crate::workspace::prepare(&checkout, &[], &promotion_snapshot).unwrap();
+    let promotion_preview = if saved_review {
+        prepare_review_snapshot(&paths, &checkout, &promotion_snapshot, config.operator_uid)
+    } else {
+        crate::workspace::prepare(&checkout, &[], &promotion_snapshot).unwrap()
+    };
     assert_eq!(
         promotion_preview.base_digest, manifest.source_base_digest,
         "operator checkout must contain the selected fixture source, not an empty repository"
@@ -914,6 +918,61 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     }
     eprintln!("installed Lua launcher exit and guard cleanup proven");
     terminate(&mut daemon);
+}
+
+fn prepare_review_snapshot(
+    paths: &LauncherPaths,
+    checkout: &Path,
+    output: &Path,
+    operator_uid: u32,
+) -> crate::workspace::SnapshotPreview {
+    // Characterize the actual fixture checkout without relaxing Git ownership.
+    let diagnostic = Command::new("/usr/bin/git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(checkout)
+        .env_clear()
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    if !diagnostic.status.success() {
+        eprintln!(
+            "SAVED_REVIEW_ROOT_GIT_REFUSAL: {}",
+            String::from_utf8_lossy(&diagnostic.stderr).trim()
+        );
+    }
+    let result = Command::new("/usr/bin/setpriv")
+        .args([
+            "--reuid",
+            &operator_uid.to_string(),
+            "--regid",
+            &operator_uid.to_string(),
+            "--clear-groups",
+        ])
+        .arg(paths.release_prefix.join("current/bin/louiselm-skills"))
+        .args(["workspace", "prepare", "--repository"])
+        .arg(checkout)
+        .arg("--output")
+        .arg(output)
+        .arg("--robot-json")
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "operator snapshot failed: {result:?}"
+    );
+    let preview: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(preview["schema"], "louiselm.workspace.preview/1");
+    crate::workspace::SnapshotPreview {
+        schema: "louiselm.workspace.preview/1",
+        snapshot_digest: preview["snapshot_digest"].as_str().unwrap().into(),
+        base_digest: preview["base_digest"].as_str().unwrap().into(),
+        base_commit: preview["base_commit"].as_str().unwrap().into(),
+        file_count: usize::try_from(preview["file_count"].as_u64().unwrap()).unwrap(),
+        total_bytes: preview["total_bytes"].as_u64().unwrap(),
+        changes: serde_json::from_value(preview["changes"].clone()).unwrap(),
+    }
 }
 
 fn expire_saved_result_sessions(
