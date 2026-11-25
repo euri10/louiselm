@@ -24,6 +24,15 @@ internal data class PhoneControlTarget(val controllerId: String, val subjectId: 
     }
 }
 
+internal data class PhoneRunSessionTarget(
+    val runId: String, val runRevision: Long, val ownerId: String, val session: PhoneControlTarget,
+) {
+    init {
+        require(session.controllerId != "00".repeat(16) && session.subjectId != "00".repeat(16))
+        phoneControlRunSessionPayload(runId, ownerId, runRevision, 0, 1)
+    }
+}
+
 internal data class PhoneSendAttempt(val pending: PendingPhoneAction, val outcome: PhoneControlOutcome?)
 
 internal sealed class PhoneControlResult<out T> {
@@ -187,37 +196,67 @@ internal class PhoneControlClient(
         interaction: Boolean = true,
         maySend: () -> Boolean,
     ): PhoneControlResult<PhoneControlReply.SessionPage> = guarded {
-        if (!period.isActive(nowMs)) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
-        if (!maySend()) return@guarded unavailable()
-        val config = pairingStore.load() ?: return@guarded unavailable()
-        if (currentGrant(config) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        readSessionRequest(period, target, nowMs, before, limit, expectedRevision, interaction, null, maySend)
+    }
+
+    /** Read only the exact live Session and the Run owner that exposed it. */
+    fun readRunSession(
+        period: PhoneControlPeriod,
+        target: PhoneRunSessionTarget,
+        nowMs: Long,
+        before: Long = 0,
+        limit: Int = 50,
+        expectedRevision: Long = 0,
+        interaction: Boolean = true,
+        maySend: () -> Boolean,
+    ): PhoneControlResult<PhoneControlReply.SessionPage> = guarded {
+        readSessionRequest(period, target.session, nowMs, before, limit, expectedRevision, interaction, target, maySend)
+    }
+
+    private fun readSessionRequest(
+        period: PhoneControlPeriod,
+        target: PhoneControlTarget,
+        nowMs: Long,
+        before: Long,
+        limit: Int,
+        expectedRevision: Long,
+        interaction: Boolean,
+        linked: PhoneRunSessionTarget?,
+        maySend: () -> Boolean,
+    ): PhoneControlResult<PhoneControlReply.SessionPage> {
+        if (!period.isActive(nowMs)) return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend()) return unavailable()
+        val config = pairingStore.load() ?: return unavailable()
+        if (currentGrant(config) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        val payload = if (linked == null) phoneControlReadPayload(before, limit)
+            else phoneControlRunSessionPayload(linked.runId, linked.ownerId, linked.runRevision, before, limit)
         val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
-            period.grant.receiverIdentity, target.controllerId, target.subjectId, phoneControlReadPayload(before, limit),
-            operationId, expectedRevision, interaction)
-        val signature = period.sign(request, nowMs) ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+            period.grant.receiverIdentity, target.controllerId, target.subjectId, payload,
+            operationId, expectedRevision, interaction, action = if (linked == null) 1 else 57)
+        val signature = period.sign(request, nowMs) ?: return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
         val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
-        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
-        val currentConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
-        if (currentGrant(currentConfig) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return unavailable()
+        val currentConfig = pairingStore.load() ?: return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (currentGrant(currentConfig) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         val source = PhoneOfflineSource(period.grant.receiverIdentity, target, "", "", "")
         if (reply !is PhoneControlReply.SessionPage) {
-            if (reply is PhoneControlReply.Failure && reply.outcome == PhoneControlOutcome.OUT_OF_SCOPE) {
+            if (linked == null && reply is PhoneControlReply.Failure && reply.outcome == PhoneControlOutcome.OUT_OF_SCOPE) {
                 denyPhoneOffline(app, source)
             }
-            return@guarded refusal(reply)
+            return refusal(reply)
         }
         if (reply.controllerId != target.controllerId || reply.subjectId != target.subjectId || reply.operationId != operationId) {
-            return@guarded malformed()
+            return malformed()
         }
         val first = reply.entries.firstOrNull()?.seq
         if ((expectedRevision != 0L && reply.revision != expectedRevision) || reply.entries.size > limit ||
             (before != 0L && reply.entries.any { it.seq >= before }) ||
             (reply.nextBefore != 0L && ((before != 0L && reply.nextBefore >= before) ||
                 (first != null && reply.nextBefore > first) || (!reply.source.missing && reply.nextBefore != first)))) {
-            return@guarded malformed()
+            return malformed()
         }
-        PhoneControlResult.Value(reply)
+        return PhoneControlResult.Value(reply)
     }
 
     /** List attached controller identities; no Session details are returned by this request. */
@@ -301,6 +340,19 @@ internal class PhoneControlClient(
         if (reply !is PhoneControlReply.RunDetail) return@guarded refusal(reply)
         if (reply.requestId != operationId || reply.run.summary.runId != runId ||
             expectedRevision != 0L && reply.run.summary.revision != expectedRevision) return@guarded malformed()
+        PhoneControlResult.Value(reply)
+    }
+
+    /** Observe a live Run owner while fencing it to one durable revision. */
+    fun readRunLive(period: PhoneControlPeriod, runId: String, expectedRevision: Long, nowMs: Long,
+        interaction: Boolean = false, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.RunLive> = guarded {
+        val subject = phoneControlHex(phoneControlRunIdBytes(runId))
+        val result = ownerRead(period, nowMs, subject, ByteArray(0), expectedRevision, 56, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.RunLive) return@guarded refusal(reply)
+        if (reply.requestId != operationId || reply.runId != runId ||
+            expectedRevision != 0L && reply.durableRevision != expectedRevision) return@guarded malformed()
         PhoneControlResult.Value(reply)
     }
 
