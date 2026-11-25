@@ -365,6 +365,16 @@ physical Android flow exists. Those are the downstream slices and .22.
 
 ## Native action journal, version 1
 
+Before reserving a verified write, capture may ask its attached controller for
+the target's locally owned scope with the closed message
+`{v:1,type:"action_scope",controller_id:hex16,subject_id:hex16,operation_id:hex16}`.
+The response is `{v:1,type:"action_scope",controller_id:hex16,subject_id:hex16,
+operation_id:hex16,project:string,agent:string}`. The controller resolves the
+project from the exact live Session and rechecks the incarnation after path
+resolution. This owner-only lookup carries no prompt and grants no action or
+content authority; the receiver still checks the current grant and durably
+reserves the write before forwarding it.
+
 `louiselm-capture phone-control owner-journal` is a local storage helper for
 the trusted native owner, not an HTTPS action or a source of phone authority.
 It reads one bounded JSON object on stdin and returns one JSON object. Its

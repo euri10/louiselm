@@ -68,6 +68,93 @@ local function current(self, subject_id)
   return subject, state
 end
 
+local function action_scope(self, message, line, callback)
+  local allowed = { v = true, type = true, controller_id = true, subject_id = true, operation_id = true }
+  local seen, count = {}, 0
+  if line:find("\\", 1, true) then
+    nvim.schedule(function()
+      callback(error_result("malformed"))
+    end)
+    return
+  end
+  for name in line:gmatch('"([a-z_]+)"%s*:') do
+    if seen[name] then
+      nvim.schedule(function()
+        callback(error_result("malformed"))
+      end)
+      return
+    end
+    seen[name] = true
+  end
+  for name in pairs(message) do
+    if not allowed[name] then
+      nvim.schedule(function()
+        callback(error_result("malformed"))
+      end)
+      return
+    end
+    count = count + 1
+  end
+  if
+    count ~= 5
+    or message.v ~= 1
+    or not hex_id(message.controller_id)
+    or not hex_id(message.subject_id)
+    or not hex_id(message.operation_id)
+  then
+    nvim.schedule(function()
+      callback(error_result("malformed"))
+    end)
+    return
+  end
+  local subject, state = current(self, message.subject_id)
+  if message.controller_id ~= self.controller_id or subject == nil or state == nil then
+    nvim.schedule(function()
+      callback(error_result("stale_subject"))
+    end)
+    return
+  end
+  if type(state.working_dir) ~= "string" or state.working_dir == "" or type(state.agent) ~= "string" then
+    nvim.schedule(function()
+      callback(error_result("unavailable"))
+    end)
+    return
+  end
+  self.pending = true
+  local generation, controller_id = self.generation, self.controller_id
+  local working_dir, agent = state.working_dir, state.agent
+  nvim.uv.fs_realpath(working_dir, function(err, project)
+    nvim.schedule(function()
+      if self.disposed or self.generation ~= generation then
+        return
+      end
+      self.pending = false
+      local latest, now = current(self, message.subject_id)
+      if
+        self.controller_id ~= controller_id
+        or latest ~= subject
+        or now == nil
+        or now.working_dir ~= working_dir
+        or now.agent ~= agent
+      then
+        callback(error_result("stale_subject"))
+      elseif err ~= nil or type(project) ~= "string" then
+        callback(error_result("unavailable"))
+      else
+        callback({
+          v = 1,
+          type = "action_scope",
+          controller_id = controller_id,
+          subject_id = message.subject_id,
+          operation_id = message.operation_id,
+          project = project,
+          agent = agent,
+        })
+      end
+    end)
+  end)
+end
+
 local function allocate(self, subject)
   local id, err = random_id()
   if id == nil or id == string.rep("0", 32) or self.seen_subjects[id] then
@@ -171,6 +258,10 @@ function Controller:read(line, callback)
     nvim.schedule(function()
       callback(error_result("malformed"))
     end)
+    return
+  end
+  if type(message) == "table" and message.type == "action_scope" then
+    action_scope(self, message, line, callback)
     return
   end
   if type(message) ~= "table" or type(message.request) ~= "table" or type(message.grant) ~= "table" then
