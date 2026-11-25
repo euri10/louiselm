@@ -6,7 +6,13 @@ import java.net.URISyntaxException
 import java.net.UnknownHostException
 import java.util.UUID
 
-internal data class PhonePreparedSummary(val registrationId: String, val runId: String, val revision: Long)
+internal data class PhonePreparedSummary(val registrationId: String, val runId: String, val revision: Long) {
+    init {
+        phoneControlHex(registrationId, 16)
+        require(registrationId != "00".repeat(16) && revision in 1L..9_007_199_254_740_991L)
+        canonicalRun(runId)
+    }
+}
 internal data class PhonePreparedBead(val id: String, val prompt: String)
 internal data class PhonePreparedExecution(val kind: String, val value: Long)
 internal data class PhonePreparedBeadScope(val projectDigest: String, val issueIds: List<String>, val maxMutations: Long)

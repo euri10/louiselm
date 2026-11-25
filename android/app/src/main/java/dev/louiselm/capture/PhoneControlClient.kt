@@ -246,6 +246,54 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
+    /** Read one bounded page of explicitly published drafts under current phone authority. */
+    fun listPrepared(period: PhoneControlPeriod, nowMs: Long, after: String? = null,
+        interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.PreparedPage> = guarded {
+        val result = preparedRequest(period, nowMs, null, after, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.PreparedPage) return@guarded refusal(reply)
+        val item = reply.items.singleOrNull()
+        if (reply.requestId != operationId || reply.items.size > 1 ||
+            (item == null && reply.nextAfter.isNotEmpty()) ||
+            (item != null && (reply.nextAfter != item.registrationId || after != null && item.registrationId <= after))) {
+            return@guarded malformed()
+        }
+        PhoneControlResult.Value(reply)
+    }
+
+    /** Read the exact registered revision and Run identity selected from a protected page. */
+    fun readPrepared(period: PhoneControlPeriod, target: PhonePreparedSummary, nowMs: Long,
+        interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.PreparedDetail> = guarded {
+        val result = preparedRequest(period, nowMs, target, null, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.PreparedDetail) return@guarded refusal(reply)
+        if (reply.requestId != operationId || reply.registrationId != target.registrationId ||
+            reply.runId != target.runId || reply.revision != target.revision) return@guarded malformed()
+        PhoneControlResult.Value(reply)
+    }
+
+    private fun preparedRequest(period: PhoneControlPeriod, nowMs: Long, target: PhonePreparedSummary?, after: String?,
+        interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<Pair<PhoneControlReply, String>> {
+        if (!period.isActive(nowMs)) return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend()) return unavailable()
+        val config = pairingStore.load() ?: return unavailable()
+        if (currentGrant(config) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        val subject = target?.registrationId ?: "00".repeat(16)
+        val payload = if (target == null) after?.let { phoneControlHex(it, 16) } ?: ByteArray(16) else ByteArray(0)
+        val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
+            period.grant.receiverIdentity, "00".repeat(16), subject, payload, operationId,
+            target?.revision ?: 0, interaction, action = if (target == null) 52 else 53)
+        val signature = period.sign(request, nowMs) ?: return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return unavailable()
+        val currentConfig = pairingStore.load() ?: return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (currentGrant(currentConfig) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        return PhoneControlResult.Value(reply to operationId)
+    }
+
     private fun discover(period: PhoneControlPeriod, nowMs: Long, controllerId: String, after: String?, limit: Int,
         action: Int, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<Pair<PhoneControlReply, String>> {
         if (!period.isActive(nowMs)) return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
