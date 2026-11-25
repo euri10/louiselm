@@ -7,7 +7,6 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
-import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
@@ -386,12 +385,10 @@ internal class PhoneOfflineStore(private val root: File) {
         }
     }
 
-    private fun <T> locked(block: () -> T): T {
+    private fun <T> locked(block: () -> T): T = synchronized(PhoneOfflineStore::class.java) {
         ensureDirectory(root)
-        return FileOutputStream(File(root, ".lock"), true).channel.use { channel ->
-            val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
-                ?: throw IOException("download storage is busy")
-            lock.use { block() }
+        FileOutputStream(File(root, ".lock"), true).channel.use { channel ->
+            channel.lock().use { block() }
         }
     }
 

@@ -3,11 +3,16 @@ package dev.louiselm.capture
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.security.GeneralSecurityException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -145,6 +150,51 @@ class PhoneOfflineStoreTest {
         assertEquals("detached", drafts.readText())
         store.allowReceiver(receiver)
         assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(page("new grant")), false, 3, 3, 1_000_000, key) { true })
+    }
+
+    @Test
+    fun revocationWaitsForAnInFlightSaveAndFencesItsResult() {
+        val root = temporary.newFolder()
+        val source = PhoneOfflineSource(receiver, target, "name", "agent", "project")
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val errors = AtomicReference<Throwable?>()
+        val calls = AtomicInteger()
+        val writer = Thread {
+            try {
+                PhoneOfflineStore(root).save(source, sequenceOf(page("content")), true, 1, 1, 1_000_000, key) {
+                    if (calls.incrementAndGet() == 2) {
+                        entered.countDown()
+                        check(release.await(5, TimeUnit.SECONDS))
+                    }
+                    true
+                }
+            } catch (error: Throwable) { errors.set(error) }
+        }
+        val revoker = Thread {
+            started.countDown()
+            try { PhoneOfflineStore(root).markRevoked(receiver) }
+            catch (error: Throwable) { errors.set(error) }
+            finally { finished.countDown() }
+        }
+        writer.start()
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            revoker.start()
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            assertFalse("revocation must wait for the active store transaction", finished.await(200, TimeUnit.MILLISECONDS))
+        } finally {
+            release.countDown()
+            writer.join(5000)
+            if (revoker.isAlive) revoker.join(5000)
+        }
+        assertNull(errors.get())
+        assertTrue(finished.await(5, TimeUnit.SECONDS))
+        assertTrue(PhoneOfflineStore(root).listAll(key).copies.isEmpty())
+        assertEquals(PhoneOfflineSave.REVOKED,
+            PhoneOfflineStore(root).save(source, sequenceOf(page("late")), true, 2, 2, 1_000_000, key) { true })
     }
 
     @Test
