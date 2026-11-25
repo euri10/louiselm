@@ -63,7 +63,6 @@ class PhoneControlActivity : Activity() {
     private var busy = false
     @Volatile private var foreground = false
     private var sessionPage: PhoneControlReply.SessionPage? = null
-    private var loadedOlder = false
     private var newerOmitted = false
     private var historyChanged = false
     private var browsePage: PhoneBrowsePage? = null
@@ -395,7 +394,6 @@ class PhoneControlActivity : Activity() {
         actionHistoryPage = null
         target = null
         sessionPage = null
-        loadedOlder = false
         newerOmitted = false
         historyChanged = false
         conversation.removeAllViews()
@@ -489,7 +487,6 @@ class PhoneControlActivity : Activity() {
                     setOnClickListener {
                         target = row.target
                         sessionPage = null
-                        loadedOlder = false
                         newerOmitted = false
                         historyChanged = false
                         conversation.removeAllViews()
@@ -505,6 +502,8 @@ class PhoneControlActivity : Activity() {
         val requested = target ?: return
         val previous = sessionPage
         val before = if (older) previous?.nextBefore ?: 0 else 0
+        val rebuild = !older && !interaction && !historyChanged
+        val hadGap = historyChanged
         if (older && before == 0L) return
         val pairing = PairingStore(applicationContext)
         val binding = pairing.binding()
@@ -514,9 +513,18 @@ class PhoneControlActivity : Activity() {
             return
         }
         task({ maySend ->
-            client.readSession(current, requested, SystemClock.elapsedRealtime(), before = before,
-                expectedRevision = if (older) previous?.revision ?: 0 else 0, interaction = interaction) {
-                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            fun read(cursor: Long, revision: Long, limit: Int, userInteraction: Boolean) =
+                client.readSession(current, requested, SystemClock.elapsedRealtime(), before = cursor, limit = limit,
+                    expectedRevision = revision, interaction = userInteraction) {
+                    foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+                }
+            when (val first = read(before, if (older) previous?.revision ?: 0 else 0, 50, interaction)) {
+                is PhoneControlResult.Failure -> first
+                is PhoneControlResult.Value -> if (rebuild) {
+                    reconcilePhoneSessionPages(first.value, previous, HISTORY_WINDOW,
+                        { cursor, revision, limit -> read(cursor, revision, limit, false) },
+                        { read(0, 0, 50, false) })
+                } else PhoneControlResult.Value(PhoneSessionRefresh(first.value, !interaction && hadGap))
             }
         }, { outcome ->
             if (!foreground) return@task
@@ -527,7 +535,7 @@ class PhoneControlActivity : Activity() {
                 showFailure(outcome)
                 if (outcome == PhoneControlOutcome.UNAVAILABLE) scheduleRefresh()
             }
-        }) { page, _ ->
+        }) { refresh, _ ->
             busy = false
             if (!foreground) return@task
             if (pairing.binding() != binding) {
@@ -540,7 +548,8 @@ class PhoneControlActivity : Activity() {
                 lockWorkspace()
                 return@task
             }
-            val unchanged = !older && !interaction && previous != null && page.revision == previous.revision
+            val page = refresh.page
+            val unchanged = !older && !interaction && !refresh.missingOlder && previous != null && page.revision == previous.revision
             if (older) {
                 if (previous == null || page.revision != previous.revision || page.entries.isEmpty() ||
                     previous.entries.isEmpty() || page.entries.last().seq >= previous.entries.first().seq) {
@@ -550,13 +559,10 @@ class PhoneControlActivity : Activity() {
                 val combined = page.entries + previous.entries
                 newerOmitted = newerOmitted || combined.size > HISTORY_WINDOW
                 sessionPage = page.copy(entries = combined.take(HISTORY_WINDOW), complete = page.complete && previous.complete)
-                loadedOlder = true
                 historyChanged = false
-            } else if (interaction || previous == null || page.revision != previous.revision) {
-                historyChanged = if (interaction) false
-                    else historyChanged || (previous != null && loadedOlder && page.revision != previous.revision)
+            } else if (interaction || previous == null || refresh.missingOlder || page.revision != previous.revision) {
+                historyChanged = if (interaction) false else refresh.missingOlder
                 sessionPage = page
-                loadedOlder = false
                 newerOmitted = false
             }
             scheduleExpiry()
@@ -613,7 +619,6 @@ class PhoneControlActivity : Activity() {
         browsePage = null
         actionHistoryPage = null
         sessionPage = null
-        loadedOlder = false
         newerOmitted = false
         handler.removeCallbacks(refreshPoll)
         conversation.removeAllViews()
@@ -651,7 +656,6 @@ class PhoneControlActivity : Activity() {
         showingActionHistory = false
         actionHistoryPage = null
         sessionPage = null
-        loadedOlder = false
         newerOmitted = false
         historyChanged = false
         browsePage = null

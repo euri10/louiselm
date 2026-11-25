@@ -134,8 +134,9 @@ or enable Attention and tap its Session card. **Sessions** returns to the list.
 Disconnected or replaced controllers and disposed Sessions are unavailable;
 they never redirect to another Session. The conversation follows current
 state and offers **Load older messages** for available history. Updates refresh
-the snapshot; load older pages again if it changes. The screen keeps at most
-500 entries at once and offers Refresh to return to the newest messages.
+the snapshot and recover the visible range when possible; the screen reports
+when older messages must be loaded again. It keeps at most 500 entries at once
+and offers Refresh to return to the newest messages.
 Background refresh does not extend the working period. It has no Session action controls.
 Opening a card does not clear or answer Attention. Old cards may no longer
 point to a live Session; refresh the inbox instead of assuming the condition

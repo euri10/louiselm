@@ -55,6 +55,7 @@ private object PhoneScreenFixture {
     var older = emptyList<PhoneControlEntry>()
     var nextBefore = 0L
     var staleOlder = false
+    var olderOutcome: PhoneControlOutcome? = null
     val readRequests = mutableListOf<Triple<Long, Long, Boolean>>()
     var pairingBinding: String? = "fixture"
     fun reset() {
@@ -62,7 +63,7 @@ private object PhoneScreenFixture {
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); pairingBinding = "fixture"
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
-        older = emptyList(); nextBefore = 0; staleOlder = false; readRequests.clear()
+        older = emptyList(); nextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
     }
 }
 
@@ -128,6 +129,7 @@ class PhoneScreenClientFixture {
         PhoneScreenFixture.lastTarget = target
         PhoneScreenFixture.readRequests += Triple(before, expectedRevision, interaction)
         if (before != 0L && PhoneScreenFixture.staleOlder) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
+        if (before != 0L && PhoneScreenFixture.olderOutcome != null) return PhoneControlResult.Failure(requireNotNull(PhoneScreenFixture.olderOutcome))
         return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),
             PhoneScreenFixture.revision, "ready", if (before == 0L) PhoneScreenFixture.latest else PhoneScreenFixture.older,
             if (before == 0L) PhoneScreenFixture.nextBefore else 0, true))
@@ -413,6 +415,65 @@ class PhoneControlActivityTest {
         assertTrue(displayed.any { it.contains("fresh snapshot") })
         assertFalse(displayed.any { it.contains("old snapshot") })
         assertTrue(displayed.any { it.contains("updated") && it.contains("older") })
+    }
+
+    @Test
+    fun passiveRefreshReconcilesMessagesBetweenTheOldAndNewPages() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(1, "user", "history first", false),
+            PhoneControlEntry.Message(2, "assistant", "history second", false))
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        drain()
+
+        PhoneScreenFixture.revision = 2
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(5, "user", "history fifth", false),
+            PhoneControlEntry.Message(6, "assistant", "history sixth", false))
+        PhoneScreenFixture.older = listOf(PhoneControlEntry.Message(1, "user", "history first", false),
+            PhoneControlEntry.Message(2, "assistant", "history second", false),
+            PhoneControlEntry.Message(3, "user", "history third", false),
+            PhoneControlEntry.Message(4, "assistant", "history fourth", false))
+        PhoneScreenFixture.nextBefore = 5
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        drain()
+        val displayed = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        val positions = listOf("first", "second", "third", "fourth", "fifth", "sixth").map { word ->
+            displayed.indexOfFirst { it.contains("history $word") }
+        }
+        assertTrue(positions.toString(), positions.all { it >= 0 } && positions.zipWithNext().all { (a, b) -> a < b })
+        assertEquals(listOf(Triple(0L, 0L, false), Triple(5L, 2L, false)), PhoneScreenFixture.readRequests.takeLast(2))
+    }
+
+    @Test
+    fun revocationDuringRefreshRemovesAllProtectedContent() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(1, "user", "old private text", false))
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        drain()
+        PhoneScreenFixture.revision = 2
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(5, "assistant", "new private text", false))
+        PhoneScreenFixture.nextBefore = 5
+        PhoneScreenFixture.olderOutcome = PhoneControlOutcome.REVOKED
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        drain()
+        assertTrue(hasText(R.string.phone_revoked))
+        assertFalse(requireNotNull(PhoneScreenFixture.lastPeriod).isActive(android.os.SystemClock.elapsedRealtime()))
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private text") })
     }
 
     @Test
