@@ -12,10 +12,12 @@ import android.widget.TextView
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import androidx.work.impl.WorkManagerImpl
+import java.io.File
 import java.security.KeyFactory
 import java.security.Signature
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.concurrent.ExecutorService
+import javax.crypto.spec.SecretKeySpec
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -72,7 +74,8 @@ class EndToEndAuthenticatorFixture {
 }
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30], shadows = [EndToEndPairingFixture::class, EndToEndKeysFixture::class, EndToEndAuthenticatorFixture::class],
+@Config(sdk = [30], shadows = [EndToEndPairingFixture::class, EndToEndKeysFixture::class, EndToEndAuthenticatorFixture::class,
+    PhoneScreenOfflineUnlockFixture::class, PhoneScreenOfflineAuthenticatorFixture::class],
     instrumentedPackages = ["dev.louiselm.capture"])
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneControlEndToEndTest {
@@ -118,9 +121,25 @@ class PhoneControlEndToEndTest {
             val unlock = views(phoneActivity.window.decorView).filterIsInstance<Button>()
                 .single { it.text.toString() == phoneActivity.getString(R.string.phone_unlock) }
             unlock.performClick()
-            repeat(4) { drain(phoneExecutor) }
+            repeat(8) { drain(phoneExecutor) }
             assertTrue(views(phoneActivity.window.decorView).filterIsInstance<TextView>()
                 .any { it.text.toString().contains("fixture request") })
+            val store = PhoneOfflineStore(File(app.filesDir, "phone-offline-v1"))
+            val offlineKey = SecretKeySpec(ByteArray(32) { 7 }, "AES")
+            val copy = store.listAll(offlineKey).copies.single()
+            assertTrue(store.readPage(copy.source, 0, offlineKey).entries
+                .any { it is PhoneControlEntry.Message && it.text == "fixture request" })
+            assertEquals("unavailable", store.readPage(copy.source, 0, offlineKey).source.archive)
+            views(phoneActivity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == phoneActivity.getString(R.string.phone_offline_copies) }.performClick()
+            repeat(2) { drain(phoneExecutor) }
+            views(phoneActivity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString().contains("Saved:") }.performClick()
+            repeat(2) { drain(phoneExecutor) }
+            assertTrue(views(phoneActivity.window.decorView).filterIsInstance<TextView>()
+                .any { it.text.toString().contains("fixture request") })
+            assertTrue(views(phoneActivity.window.decorView).filterIsInstance<TextView>()
+                .any { it.text.toString() == phoneActivity.getString(R.string.phone_archive_unavailable) })
             val rejected = phoneExecutor.submit<PhoneControlReply> {
                 PinnedHttps.phoneControl(config.copy(receiverIdentitySha256 = "ff".repeat(32)), "challenge",
                     JSONObject().put("v", 1).put("type", "challenge"), { true })
