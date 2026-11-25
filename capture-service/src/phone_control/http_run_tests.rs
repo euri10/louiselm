@@ -13,15 +13,20 @@ use aws_lc_rs::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
-use std::{os::unix::fs::PermissionsExt, sync::Arc};
+use std::{
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
 };
 
 use super::super::{Service, authority::StoredGrant, fixed, prefix};
-use super::tests::{history_grant, post, unhex};
-use crate::{PairingRegistry, RunAdmission, RunProjectBinding, RunSession, hex::lower_hex};
+use super::tests::{history_grant, history_period, post, scoped_grant, unhex};
+use crate::{
+    PairingRegistry, RunAdmission, RunDraft, RunProjectBinding, RunSession, hex::lower_hex,
+};
 
 async fn exchange_probe(
     app: axum::Router,
@@ -247,6 +252,26 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .as_mut()
         .unwrap()
         .set_test_integration(|| Ok(()));
+    let destination = std::fs::metadata(&checkout.checkout.path).unwrap();
+    let digest = format!("sha256:{}", "ab".repeat(32));
+    let native_page = Arc::new(json!({"kind":"saved_review_page","page":{
+        "schema":"louiselm.saved-review-page/1","result_id":"result","run_id":run,
+        "agent_id":"codex","checkout":checkout.checkout.path,
+        "destination":{"device":destination.dev(),"inode":destination.ino(),"uid":destination.uid().max(1)},
+        "base_commit":"a".repeat(40),"revision":digest,"verification_digest":digest,
+        "plan_digest":digest,"verifier_inputs_digest":digest,"result_digest":digest,
+        "commands_passed":1,"current_verification":"matching","current_provenance":"unknown",
+        "file":{"path":"src/file","change":"modified","side":"before","offset":0,
+            "text":"private saved content","binary":false,"executable":false},"next":null
+    }}).to_string().into_bytes());
+    let native_for_reader = native_page.clone();
+    service
+        .prepared
+        .as_mut()
+        .unwrap()
+        .set_test_saved_review(move |query| {
+            super::super::saved_review::decode(query, &native_for_reader)
+        });
     let app = service.router();
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../android/app/src/test/resources/phone-control-v1.json"
@@ -265,15 +290,112 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .authority
         .link_project_roots(&project_id, grant.project_roots().unwrap().unwrap())
         .unwrap();
+    let attention =
+        crate::AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
+    let draft = serde_json::from_value(json!({"subject_kind":"run","subject_id":run,
+        "kind":"promotion_pending","source_operation_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "created_at_ms":1,"linked_run_id":null,"stage":null,"result_id":"result"}))
+    .unwrap();
+    attention
+        .project(&crate::BrokerProjection {
+            sequence: 1,
+            change: crate::ProjectionChange::Upsert { attention: draft },
+        })
+        .unwrap();
+    let original_attention = attention.snapshot().unwrap();
     let unsupported = signed_run(&fixture, &grant, &period, 56, &subject, &[], 0, 921);
     let (_, unsupported) = post(
-        unsupported_app,
+        unsupported_app.clone(),
         "/v1/phone-control/request",
         &phone.credential,
         &unsupported.to_string(),
     )
     .await;
     assert_eq!(unsupported["code"], "unsupported");
+    let mut review_payload = vec![1, 6];
+    review_payload.extend(b"result");
+    review_payload.extend([0; 41]);
+    let missing = signed_run(
+        &fixture,
+        &grant,
+        &period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        974,
+    );
+    let (_, missing) = post(
+        unsupported_app,
+        "/v1/phone-control/request",
+        &phone.credential,
+        &missing.to_string(),
+    )
+    .await;
+    assert_eq!(missing["code"], "unsupported");
+    let review = signed_run(
+        &fixture,
+        &grant,
+        &period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        970,
+    );
+    let (_, result) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &review.to_string(),
+    )
+    .await;
+    assert_eq!(result["type"], "saved_review");
+    assert_eq!(result["run_id"], run);
+    assert_eq!(result["result_id"], "result");
+    assert_eq!(result["file"]["text"], "private saved content");
+    assert_eq!(result["current_provenance"], "unknown");
+    assert_eq!(attention.snapshot().unwrap(), original_attention);
+    let mut changed = review_payload.clone();
+    changed[8..40].fill(0xcd);
+    let changed = signed_run(&fixture, &grant, &period, 80, &subject, &changed, 0, 975);
+    let (_, changed) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &changed.to_string(),
+    )
+    .await;
+    assert_eq!(changed["code"], "unavailable");
+    let mut wrong_result = vec![1, 5];
+    wrong_result.extend(b"other");
+    wrong_result.extend([0; 41]);
+    let wrong_result = signed_run(
+        &fixture,
+        &grant,
+        &period,
+        80,
+        &subject,
+        &wrong_result,
+        0,
+        976,
+    );
+    let (_, wrong_result) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &wrong_result.to_string(),
+    )
+    .await;
+    assert_eq!(wrong_result["code"], "unavailable");
+    let (_, replay) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &review.to_string(),
+    )
+    .await;
+    assert_eq!(replay["code"], "unauthenticated");
     let old_id = "00000000-0000-4000-8000-000000000001";
     runs.admit(
         RunAdmission {
@@ -657,7 +779,7 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         agent: "codex".into(),
         acp_session_id: "acp".into(),
         working_dir: "/private/worker".into(),
-        load_session: false,
+        load_session: true,
     })
     .unwrap();
     write_probe(&mut stream, &observed).await;
@@ -759,6 +881,24 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     )
     .await;
     assert_eq!(no_read_link["code"], "out_of_scope");
+    let no_read_review = signed_run(
+        &fixture,
+        &no_read,
+        &no_read_period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        971,
+    );
+    let (_, no_read_review) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &no_read_phone.credential,
+        &no_read_review.to_string(),
+    )
+    .await;
+    assert_eq!(no_read_review["code"], "out_of_scope");
     let stale = signed_run(&fixture, &grant, &period, 55, &subject, &[], 1, 902);
     let (_, stale) = post(
         app.clone(),
@@ -777,8 +917,53 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     )
     .await;
     assert_eq!(active["run"]["state"], "active");
-    assert_eq!(active["run"]["load_session"], "unsupported");
+    assert_eq!(active["run"]["load_session"], "supported");
     assert!(!active.to_string().contains("/private/worker"));
+    let review = signed_run(
+        &fixture,
+        &grant,
+        &period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        972,
+    );
+    let review: super::SignedRequest = serde_json::from_value(review).unwrap();
+    let review_query = super::super::saved_review_query(&review.request).unwrap();
+    let saved_page = super::super::saved_review::decode(&review_query, &native_page).unwrap();
+    let pending_review = service
+        .authority
+        .begin_read(&phone.device_id, &review.request, Instant::now())
+        .unwrap();
+    service
+        .authority
+        .preflight_saved_review(&pending_review, &pairing, &phone.credential, Some(&reader))
+        .unwrap();
+    let review = signed_run(
+        &fixture,
+        &grant,
+        &period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        973,
+    );
+    let review: super::SignedRequest = serde_json::from_value(review).unwrap();
+    let pending_review_revoke = service
+        .authority
+        .begin_read(&phone.device_id, &review.request, Instant::now())
+        .unwrap();
+    service
+        .authority
+        .preflight_saved_review(
+            &pending_review_revoke,
+            &pairing,
+            &phone.credential,
+            Some(&reader),
+        )
+        .unwrap();
     let pending = signed_run(&fixture, &grant, &period, 55, &subject, &[], 0, 909);
     let pending: super::SignedRequest = serde_json::from_value(pending).unwrap();
     let pending = service
@@ -817,6 +1002,16 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     });
     assert_eq!(read_probe(&mut stream).await["run_id"], run);
     runs.add_phone_contributor(run, "claude").unwrap();
+    assert_eq!(
+        service.authority.finish_saved_review(
+            &pending_review,
+            &pairing,
+            &phone.credential,
+            Some(&reader),
+            Some(&saved_page)
+        ),
+        Err(super::Refusal::OutOfScope)
+    );
     assert_eq!(
         service.authority.finish_run_session_delivery(
             &pending_link,
@@ -957,6 +1152,16 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     assert_eq!(read_probe(&mut stream).await["run_id"], run);
     service.authority.disable(&phone.device_id).unwrap();
     assert_eq!(
+        service.authority.finish_saved_review(
+            &pending_review_revoke,
+            &pairing,
+            &phone.credential,
+            Some(&reader),
+            Some(&saved_page)
+        ),
+        Err(super::Refusal::Revoked)
+    );
+    assert_eq!(
         service.authority.finish_run_session_delivery(
             &pending_link,
             &pairing,
@@ -982,7 +1187,7 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     );
     let revoked = signed_run(&fixture, &grant, &period, 55, &subject, &[], 0, 907);
     let (_, revoked) = post(
-        app,
+        app.clone(),
         "/v1/phone-control/request",
         &phone.credential,
         &revoked.to_string(),
@@ -990,4 +1195,117 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     .await;
     assert_eq!(revoked["code"], "revoked");
     server_task.abort();
+
+    // The exact saved result stays readable from the retained Run after its
+    // producer/controller disappears, expiry, original-project removal and service restart.
+    let offer = pairing
+        .issue("https://192.168.1.2:7391", &receiver, 2_000, 10_000)
+        .unwrap();
+    let replacement = pairing.consume(&offer.token, "replacement", 2_001).unwrap();
+    let scope = super::super::authority::Scope {
+        projects: vec![root.path().to_str().unwrap().into()],
+        agents: vec!["codex".into(), "claude".into()],
+        groups: vec!["read".into()],
+    };
+    let (replacement_grant, _) = scoped_grant(&service, &app, &replacement, &fixture, scope).await;
+    service
+        .authority
+        .link_project_roots(
+            &project_id,
+            replacement_grant.project_roots().unwrap().unwrap(),
+        )
+        .unwrap();
+    runs.park_cold(
+        RunDraft {
+            id: run.into(),
+            session_id: "codex/acp".into(),
+            agent: "codex".into(),
+            acp_session_id: "acp".into(),
+            working_dir: "/private/worker".into(),
+            load_session: true,
+            claimed_issue_ids: vec![],
+        },
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        runs.reap_expired(3_600_002, |_| Ok(())).unwrap().disposed,
+        1
+    );
+    assert_eq!(runs.run(run).unwrap().state, "disposed");
+    std::fs::rename(root.path().join("project"), root.path().join("old-project")).unwrap();
+    drop(app);
+    drop(service);
+    let reopened_pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+    let mut reopened = Service::open(
+        &root.path().join("phone/grants"),
+        &receiver,
+        reopened_pairing,
+    )
+    .unwrap()
+    .with_runs(Some(
+        crate::RunStore::new(root.path().join("runs")).unwrap(),
+    ));
+    reopened
+        .prepared
+        .as_mut()
+        .unwrap()
+        .set_test_integration(|| Ok(()));
+    let reopened_page = native_page.clone();
+    reopened
+        .prepared
+        .as_mut()
+        .unwrap()
+        .set_test_saved_review(move |query| {
+            super::super::saved_review::decode(query, &reopened_page)
+        });
+    let reopened_app = reopened.router();
+    let reopened_period =
+        history_period(&reopened_app, &replacement, &fixture, &replacement_grant).await;
+    let review = signed_run(
+        &fixture,
+        &replacement_grant,
+        &reopened_period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        980,
+    );
+    let (_, reviewed) = post(
+        reopened_app.clone(),
+        "/v1/phone-control/request",
+        &replacement.credential,
+        &review.to_string(),
+    )
+    .await;
+    assert_eq!(reviewed["file"]["text"], "private saved content");
+    assert_eq!(reviewed["agents"], json!(["codex", "claude"]));
+    assert_eq!(attention.snapshot().unwrap().items.len(), 1);
+
+    std::fs::rename(
+        root.path().join("checkout"),
+        root.path().join("old-checkout"),
+    )
+    .unwrap();
+    std::fs::create_dir(root.path().join("checkout")).unwrap();
+    let review = signed_run(
+        &fixture,
+        &replacement_grant,
+        &reopened_period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        981,
+    );
+    let (_, replaced) = post(
+        reopened_app,
+        "/v1/phone-control/request",
+        &replacement.credential,
+        &review.to_string(),
+    )
+    .await;
+    assert_eq!(replaced["code"], "unavailable");
+    assert_eq!(attention.snapshot().unwrap().items.len(), 1);
 }

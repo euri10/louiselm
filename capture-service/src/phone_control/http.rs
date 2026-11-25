@@ -199,7 +199,7 @@ async fn process_http(
             let signed: SignedRequest = decode(&body, "request")?;
             if matches!(
                 signed.request.action,
-                1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57
+                1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57 | 80
             ) {
                 let permit =
                     initial_state
@@ -225,14 +225,12 @@ async fn process_http(
     match started {
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
-            if request.action == 57 {
-                return finish_run_session(state, credential, *permit, &request).await;
-            }
-            if request.action == 56 {
-                return finish_live_run(state, credential, *permit, &request).await;
-            }
-            if matches!(request.action, 52..=55) {
-                return finish_owner(state, credential, *permit).await;
+            match request.action {
+                80 => return finish_saved_review(state, credential, *permit, &request).await,
+                57 => return finish_run_session(state, credential, *permit, &request).await,
+                56 => return finish_live_run(state, credential, *permit, &request).await,
+                52..=55 => return finish_owner(state, credential, *permit).await,
+                _ => {}
             }
             let mut listed_controllers = Vec::new();
             let response = if request.action == 48 {
@@ -283,6 +281,53 @@ async fn process_http(
             }
         }
         Err(error) => Err(error),
+    }
+}
+
+async fn finish_saved_review(
+    state: HttpState,
+    credential: String,
+    permit: ReadPermit,
+    request: &Request,
+) -> Result<Value, Refusal> {
+    let query = super::saved_review_query(request).map_err(|_| Refusal::Malformed)?;
+    let before = state.clone();
+    let before_credential = credential.clone();
+    let (permit, checked) = tokio::task::spawn_blocking(move || {
+        let checked = before.authority.preflight_saved_review(
+            &permit,
+            &before.pairing,
+            &before_credential,
+            before.prepared.as_ref(),
+        );
+        (permit, checked)
+    })
+    .await
+    .map_err(|_| Refusal::Unavailable)?;
+    checked?;
+    let reader = state.prepared.clone();
+    let page = tokio::task::spawn_blocking(move || {
+        reader
+            .ok_or(Refusal::Unsupported)?
+            .read_saved_review(&query)
+    })
+    .await
+    .unwrap_or(Err(Refusal::Unavailable));
+    let checked = tokio::task::spawn_blocking(move || {
+        let checked = state.authority.finish_saved_review(
+            &permit,
+            &state.pairing,
+            &credential,
+            state.prepared.as_ref(),
+            page.as_ref().ok(),
+        );
+        (checked, page)
+    })
+    .await
+    .unwrap_or((Err(Refusal::Unavailable), Err(Refusal::Unavailable)));
+    match checked {
+        (Ok(value), Ok(_)) => Ok(value),
+        (Err(Refusal::Unavailable) | Ok(_), Err(error)) | (Err(error), _) => Err(error),
     }
 }
 
@@ -1157,7 +1202,7 @@ mod tests {
         (grant, period)
     }
 
-    async fn history_period(
+    pub(super) async fn history_period(
         app: &axum::Router,
         phone: &crate::DeviceCredential,
         fixture: &Value,

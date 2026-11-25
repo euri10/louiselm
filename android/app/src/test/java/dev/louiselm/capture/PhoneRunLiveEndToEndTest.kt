@@ -1,6 +1,7 @@
 package dev.louiselm.capture
 
 import android.app.KeyguardManager
+import android.content.Intent
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
@@ -77,6 +78,52 @@ class PhoneRunLiveEndToEndTest {
             assertEquals(View.GONE, button(activity.getString(R.string.phone_offline_keep)).visibility)
             val offline = PhoneOfflineStore(File(app.filesDir, "phone-offline-v1"))
             assertTrue(offline.listAll(SecretKeySpec(ByteArray(32) { 7 }, "AES")).copies.isEmpty())
+        } finally {
+            screen.close()
+            executor.runAll()
+            shadowOf(Looper.getMainLooper()).idle()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun opensAndPagesSavedAttentionOverPinnedHttps() {
+        assumeTrue(System.getenv("LOUISELM_E2E_URL") != null)
+        val app = RuntimeEnvironment.getApplication()
+        shadowOf(app).grantPermissions("${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
+        shadowOf(app.getSystemService(PowerManager::class.java)).turnScreenOn(true)
+        shadowOf(app.getSystemService(KeyguardManager::class.java)).setIsDeviceLocked(false)
+        val config = requireNotNull(PairingStore(app).load())
+        val key = JSONObject(requireNotNull(javaClass.getResourceAsStream("/phone-control-v1.json"))
+            .bufferedReader().use { it.readText() }).getJSONObject("proof").getString("enrolled_key_hash")
+        PhoneControlStore(app).saveGrant(PhoneControlGrant(requireNotNull(System.getenv("LOUISELM_E2E_GRANT")), 1,
+            config.receiverIdentitySha256, phoneControlPairingBinding(config), key))
+        val intent = Intent(app, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.ATTENTION, true)
+            .putExtra(PhoneControlActivity.RUN_ID, requireNotNull(System.getenv("LOUISELM_E2E_RUN_ID")))
+            .putExtra(PhoneControlActivity.RESULT_ID, "fixture-result")
+        val screen = Robolectric.buildActivity(PhoneControlActivity::class.java, intent)
+        val activity = screen.get()
+        ReflectionHelpers.getField<ExecutorService>(activity, "networkExecutor").shutdown()
+        val executor = PausedExecutorService()
+        ReflectionHelpers.setField(activity, "networkExecutor", executor)
+        fun drain() { executor.runAll(); shadowOf(Looper.getMainLooper()).idle() }
+        fun button(label: String) = views(activity.window.decorView).filterIsInstance<Button>()
+            .single { it.text.toString() == label }
+        try {
+            screen.setup()
+            drain()
+            ReflectionHelpers.setField(activity, "offlinePeriod", PhoneOfflinePeriod(ByteArray(32) { 7 }, SystemClock.elapsedRealtime()))
+            button(activity.getString(R.string.phone_unlock)).performClick()
+            repeat(8) { drain() }
+            var text = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+            assertTrue(text, text.contains("saved before"))
+            assertTrue(text, text.contains("evidence changed"))
+            button(activity.getString(R.string.phone_saved_next)).performClick()
+            repeat(3) { drain() }
+            text = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+            assertTrue(text, text.contains("saved after"))
+            assertEquals(View.GONE, button(activity.getString(R.string.phone_send)).visibility)
         } finally {
             screen.close()
             executor.runAll()

@@ -442,7 +442,7 @@ fn run_workspace(executable: &Path, args: &[OsString]) -> Result<SourcePreview, 
     })
 }
 
-fn trusted_executable(path: &Path) -> Result<PathBuf, PhoneSourceError> {
+pub(super) fn trusted_executable(path: &Path) -> Result<PathBuf, PhoneSourceError> {
     let resolved = match fs::canonicalize(path) {
         Ok(path) => path,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {

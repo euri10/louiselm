@@ -9,6 +9,8 @@ use super::super::{
     prepared_owner::{OwnerPreparedError, OwnerRunReader},
     prepared_selection::project_detail,
     run_probe::Probe,
+    saved_review::{self, NativePage},
+    saved_review_query,
     socket::ControllerRegistry,
     source::PhoneSourceError,
     verify_phone_control_frame,
@@ -20,6 +22,13 @@ use crate::{PairingRegistry, RunProjectBinding};
 enum OwnerDelivery<'a> {
     Live(&'a Probe, &'a ControllerRegistry),
     Session(&'a ControllerRegistry, Option<bool>),
+    Saved(SavedStage<'a>),
+}
+
+#[derive(Clone, Copy)]
+enum SavedStage<'a> {
+    Preflight,
+    Finish(Option<&'a NativePage>),
 }
 
 impl Authority {
@@ -88,6 +97,40 @@ impl Authority {
         .map(|_| ())
     }
 
+    pub(in crate::phone_control) fn preflight_saved_review(
+        &self,
+        permit: &ReadPermit,
+        pairing: &PairingRegistry,
+        credential: &str,
+        reader: Option<&OwnerRunReader>,
+    ) -> Result<(), Refusal> {
+        self.finish_owner_delivery_inner(
+            permit,
+            pairing,
+            credential,
+            reader,
+            Some(OwnerDelivery::Saved(SavedStage::Preflight)),
+        )
+        .map(|_| ())
+    }
+
+    pub(in crate::phone_control) fn finish_saved_review(
+        &self,
+        permit: &ReadPermit,
+        pairing: &PairingRegistry,
+        credential: &str,
+        reader: Option<&OwnerRunReader>,
+        page: Option<&NativePage>,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.finish_owner_delivery_inner(
+            permit,
+            pairing,
+            credential,
+            reader,
+            Some(OwnerDelivery::Saved(SavedStage::Finish(page))),
+        )
+    }
+
     fn finish_owner_delivery_inner(
         &self,
         permit: &ReadPermit,
@@ -111,7 +154,7 @@ impl Authority {
             let frame: Frame =
                 serde_json::from_slice(&permit.frame).map_err(|_| Refusal::Malformed)?;
             let request = &frame.request;
-            if !matches!(request.action, 52..=57)
+            if !matches!(request.action, 52..=57 | 80)
                 || request.operation_id != permit.operation_id
                 || request.grant_id != permit.grant_id
                 || request.period_id != permit.period_id
@@ -173,6 +216,12 @@ impl Authority {
                         (controllers, success),
                     )
                 }
+                80 => {
+                    let Some(OwnerDelivery::Saved(mode)) = delivery else {
+                        return Err(Refusal::Unavailable);
+                    };
+                    self.saved_review(&mut state, permit, request, reader, &grant, timing, mode)
+                }
                 _ => Err(Refusal::Unsupported),
             }
         });
@@ -206,6 +255,65 @@ impl Authority {
                     .matches_current_parent(&binding.project_id, &grant.scope.projects)
                     .map_err(|_| Refusal::Unavailable)?)
         }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "both fences use the same current authority and Run binding"
+    )]
+    fn saved_review(
+        &self,
+        state: &mut State,
+        permit: &ReadPermit,
+        request: &Request,
+        reader: &OwnerRunReader,
+        grant: &StoredGrant,
+        timing: OwnerReadTiming,
+        mode: SavedStage<'_>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let query = saved_review_query(request).map_err(refusal)?;
+        reader
+            .with_bound_run_checkout(&query.run_id, 0, |binding, _, checkout| {
+                if !self.binding_in_scope(grant, binding)? {
+                    return Err(Refusal::OutOfScope);
+                }
+                match mode {
+                    SavedStage::Preflight => {
+                        self.check_pending_read_locked(state, permit, timing.now, timing.started)?;
+                        Ok(serde_json::json!({}))
+                    }
+                    SavedStage::Finish(page) => {
+                        let Some(page) = page else {
+                            self.finish_read_locked(
+                                state,
+                                permit,
+                                false,
+                                timing.now,
+                                timing.wall_ms,
+                                timing.started,
+                            )?;
+                            return Err(Refusal::Unavailable);
+                        };
+                        let projection = saved_review::project(
+                            page,
+                            &query,
+                            binding,
+                            checkout,
+                            &request.operation_id,
+                        )?;
+                        self.finish_read_locked(
+                            state,
+                            permit,
+                            true,
+                            timing.now,
+                            timing.wall_ms,
+                            timing.started,
+                        )?;
+                        Ok(projection)
+                    }
+                }
+            })
+            .map_err(|error| prepared_read_refusal(&error))?
     }
 
     fn prepared_detail(

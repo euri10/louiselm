@@ -89,6 +89,12 @@ pub(crate) struct Directory {
     created_nanos: u32,
 }
 
+impl Directory {
+    pub(crate) fn matches_destination(&self, path: &str, device: u64, inode: u64) -> bool {
+        self.path == path && self.device == device && self.inode == inode
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Root {

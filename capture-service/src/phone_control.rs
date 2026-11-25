@@ -10,6 +10,7 @@ mod prepared_owner;
 mod prepared_owner_tests;
 mod prepared_selection;
 mod run_probe;
+mod saved_review;
 mod socket;
 mod source;
 mod source_checkout;
@@ -305,7 +306,9 @@ impl Frame {
             57 => {
                 run_session_query(request)?;
             }
-            80 => validate_saved_review_request_shape(request)?,
+            80 => {
+                saved_review_query(request)?;
+            }
             _ => return Err(Unsupported),
         }
         for number in [
@@ -513,7 +516,16 @@ fn validate_run_request_shape(request: &Request) -> Result<(), PhoneControlError
     Ok(())
 }
 
-fn validate_saved_review_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+struct SavedReviewQuery {
+    run_id: String,
+    result_id: String,
+    revision: Option<String>,
+    file: u32,
+    side: u8,
+    offset: u32,
+}
+
+fn saved_review_query(request: &Request) -> Result<SavedReviewQuery, PhoneControlError> {
     validate_common_request_shape(request)?;
     if request.action != 80 || request.interaction > 1 {
         return Err(PhoneControlError::Unsupported);
@@ -554,7 +566,18 @@ fn validate_saved_review_request_shape(request: &Request) -> Result<(), PhoneCon
     {
         return Err(PhoneControlError::Malformed);
     }
-    Ok(())
+    let result_id = std::str::from_utf8(&payload[2..2 + name_len])
+        .map_err(|_| PhoneControlError::Malformed)?
+        .to_owned();
+    Ok(SavedReviewQuery {
+        run_id: uuid::Uuid::from_bytes(fixed::<16>(&request.subject_id)?).to_string(),
+        result_id,
+        revision: (cursor[..32] != [0; 32])
+            .then(|| format!("sha256:{}", crate::hex::lower_hex(&cursor[..32]))),
+        file,
+        side: cursor[36],
+        offset,
+    })
 }
 
 struct RunSessionQuery {

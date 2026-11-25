@@ -17,6 +17,7 @@ use super::{
 use crate::{
     PreparedRunError, PreparedRunRegistration, PreparedRunRevision, PreparedRunStore,
     PreparedRunSummary, RunAdmission, RunProjectBinding, RunStore, RunStoreError, RunView,
+    phone_projects::Directory,
 };
 
 #[derive(Debug, Error)]
@@ -52,12 +53,23 @@ pub(super) struct PreparedAdmission<'a> {
     pub(super) token: &'a str,
 }
 
+#[cfg(test)]
+type SavedReviewDouble = std::sync::Arc<
+    dyn Fn(
+            &super::SavedReviewQuery,
+        ) -> Result<super::saved_review::NativePage, super::authority::Refusal>
+        + Send
+        + Sync,
+>;
+
 /// Local owner operations share the service's actual Run ledger and state root.
 #[derive(Clone)]
 pub(super) struct PreparedOwner {
     root: PathBuf,
     runs: RunStore,
     integration: fn() -> Result<(), PhoneSourceError>,
+    #[cfg(test)]
+    saved_review: Option<SavedReviewDouble>,
 }
 
 /// Read-only view; the receiver never receives owner administration methods.
@@ -70,6 +82,8 @@ impl PreparedOwner {
             root,
             runs,
             integration: require_installed_skills,
+            #[cfg(test)]
+            saved_review: None,
         }
     }
 
@@ -83,6 +97,19 @@ impl PreparedOwner {
         integration: fn() -> Result<(), PhoneSourceError>,
     ) {
         self.integration = integration;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_saved_review(
+        &mut self,
+        read: impl Fn(
+            &super::SavedReviewQuery,
+        ) -> Result<super::saved_review::NativePage, super::authority::Refusal>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.saved_review = Some(std::sync::Arc::new(read));
     }
 
     fn store(&self) -> Result<PreparedRunStore, OwnerPreparedError> {
@@ -175,6 +202,28 @@ impl PreparedOwner {
 }
 
 impl OwnerRunReader {
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "tests replace the native owner read at this boundary"
+        )
+    )]
+    pub(super) fn read_saved_review(
+        &self,
+        query: &super::SavedReviewQuery,
+    ) -> Result<super::saved_review::NativePage, super::authority::Refusal> {
+        #[cfg(test)]
+        if let Some(read) = &self.0.saved_review {
+            let page = read(query)?;
+            super::saved_review::check_destination(&page)?;
+            return Ok(page);
+        }
+        let page = super::saved_review::read(query)?;
+        super::saved_review::check_destination(&page)?;
+        Ok(page)
+    }
+
     /// Candidate identities are private until the caller checks current scope.
     pub(super) fn candidates(
         &self,
@@ -247,6 +296,15 @@ impl OwnerRunReader {
         revision: u64,
         inspect: impl FnOnce(&RunProjectBinding, &RunView) -> T,
     ) -> Result<T, OwnerPreparedError> {
+        self.with_bound_run_checkout(id, revision, |binding, view, _| inspect(binding, view))
+    }
+
+    pub(super) fn with_bound_run_checkout<T>(
+        &self,
+        id: &str,
+        revision: u64,
+        inspect: impl FnOnce(&RunProjectBinding, &RunView, &Directory) -> T,
+    ) -> Result<T, OwnerPreparedError> {
         (self.0.integration)()?;
         let sources = PhoneSourceStore::open(self.0.root.join("run-sources"))?;
         let source = sources.read(id)?;
@@ -265,7 +323,7 @@ impl OwnerRunReader {
                         "retained source binding differs",
                     ));
                 }
-                Ok(inspect(binding, view))
+                Ok(inspect(binding, view, &checkout.checkout))
             })?
     }
 }

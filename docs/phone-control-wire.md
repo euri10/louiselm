@@ -16,9 +16,9 @@ HTTPS. A bearer is necessary but insufficient for protected access. All messages
 below are UTF-8 JSON objects, including nested objects. `v` is integer `1`
 except for the version-2 Session page, action history responses and local
 grant inspection and enrollment approval below; `type` is the exact string shown.
-Objects have exactly the listed fields; no
-duplicates, unknown fields, implicit defaults, coercions, nulls, or trailing
-values are accepted. Unknown versions, message types, action values or enum
+Objects have exactly the listed fields; no duplicates, unknown fields, implicit
+defaults, coercions, or trailing values are accepted. Null is accepted only for
+fields explicitly specified as nullable. Unknown versions, message types, action values or enum
 values yield `unsupported`; unknown fields and invalid encodings yield
 `malformed`. Do not ignore unknown signed fields. Adding fields or changing
 semantics requires a new version; no JSON reserialization is signed.

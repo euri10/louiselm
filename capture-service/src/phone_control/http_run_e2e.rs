@@ -8,12 +8,13 @@
 
 use std::{
     io::{BufRead, BufReader, Write},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::PathBuf,
     process::{Command, Stdio},
     sync::Arc,
 };
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::super::{
@@ -47,7 +48,12 @@ impl Drop for ChildGuard {
 async fn real_run_owner_and_session_reach_phone() {
     let nvim = std::env::var_os("LOUISELM_TEST_NVIM").unwrap();
     let binary = std::env::var_os("LOUISELM_TEST_CAPTURE").unwrap();
-    let project = std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).unwrap();
+    // An explicit candidate avoids using a shared target's older compiled checkout path.
+    let project = std::env::var_os("LOUISELM_TEST_REPO").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."),
+        PathBuf::from,
+    );
+    let project = std::fs::canonicalize(project).unwrap();
     let (root, sources, source_id) = setup();
     let run = "11111111-1111-4111-8111-111111111111";
     let subject = run.replace('-', "");
@@ -113,6 +119,24 @@ async fn real_run_owner_and_session_reach_phone() {
         .as_mut()
         .unwrap()
         .set_test_integration(|| Ok(()));
+    let destination = std::fs::metadata(&checkout.checkout.path).unwrap();
+    let path = checkout.checkout.path.clone();
+    service.prepared.as_mut().unwrap().set_test_saved_review(move |query| {
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        let after = query.side == 1;
+        let page = json!({"kind":"saved_review_page","page":{
+            "schema":"louiselm.saved-review-page/1","result_id":"fixture-result","run_id":run,
+            "agent_id":"codex","checkout":path,
+            "destination":{"device":destination.dev(),"inode":destination.ino(),"uid":destination.uid()},
+            "base_commit":"a".repeat(40),"revision":digest,"verification_digest":digest,
+            "plan_digest":digest,"verifier_inputs_digest":digest,"result_digest":digest,
+            "commands_passed":1,"current_verification":"changed","current_provenance":"unknown",
+            "file":{"path":"src/file","change":"modified","side":if after {"after"} else {"before"},
+                "offset":0,"text":if after {"saved after"} else {"saved before"},"binary":false,"executable":false},
+            "next":if after { json!(null) } else { json!({"file":0,"side":"after","offset":0}) }
+        }});
+        super::super::saved_review::decode(query, &serde_json::to_vec(&page).unwrap())
+    });
     let workflow = root.path().join("louiselm/workflow");
     let sockets = service
         .bind(
@@ -223,6 +247,17 @@ async fn real_run_owner_and_session_reach_phone() {
     })
     .unwrap();
     let revision = runs.run(run).unwrap().revision;
+    // Preserve the unsupported session/load HTTP projection while the Run-read
+    // fixture exercises an expiring, reloadable producer.
+    let detail = signed_run(&fixture, &grant, &period, 55, &subject, &[], revision, 1110);
+    let (_, detail) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &detail.to_string(),
+    )
+    .await;
+    assert_eq!(detail["run"]["load_session"], "unsupported");
     let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], revision, 1102);
     let (_, live) = post(
         app.clone(),
@@ -303,7 +338,7 @@ async fn real_run_owner_and_session_reach_phone() {
                 .env("LOUISELM_E2E_GRANT", grant_id).env("LOUISELM_E2E_RUN_ID", run)
                 .status().unwrap();
             let report = std::fs::read_to_string(android.join("app/build/test-results/testDebugUnitTest/TEST-dev.louiselm.capture.PhoneRunLiveEndToEndTest.xml")).unwrap();
-            assert!(report.contains("tests=\"1\"") && report.contains("skipped=\"0\"")
+            assert!(report.contains("tests=\"2\"") && report.contains("skipped=\"0\"")
                 && report.contains("failures=\"0\"") && report.contains("errors=\"0\""));
             status
         }).await.unwrap();

@@ -884,6 +884,9 @@ impl Authority {
             57 => {
                 super::run_session_query(request).map_err(refusal)?;
             }
+            80 => {
+                super::saved_review_query(request).map_err(refusal)?;
+            }
             _ => super::validate_discovery_request_shape(request).map_err(refusal)?,
         }
         let mut state = self.lock()?;
@@ -919,6 +922,7 @@ impl Authority {
                 55 => "read_run",
                 56 => "read_run_live",
                 57 => "read_run_session",
+                80 => "read_saved_review",
                 _ => return Err(Refusal::Unsupported),
             }
             .into(),
