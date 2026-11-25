@@ -116,6 +116,7 @@ class PhoneControlActivity : Activity() {
     private var actionHistoryPage: PhoneControlReply.ActionHistoryPage? = null
     private var showingActionHistory = false
     private var draftTarget: PhoneControlTarget? = null
+    private var draftReceiver: String? = null
     private var pendingActions = emptyList<PendingPhoneAction>()
     private val actionEvidence = mutableMapOf<String, PhoneActionRecord>()
     private val reviewedFences = mutableSetOf<String>()
@@ -186,6 +187,7 @@ class PhoneControlActivity : Activity() {
             if (offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true) {
                 conversation.visibility = View.VISIBLE
                 scheduleOfflineExpiry()
+                scheduleReconciliation(0)
                 render()
                 return
             }
@@ -220,6 +222,7 @@ class PhoneControlActivity : Activity() {
 
     override fun onPause() {
         foreground = false
+        reconciliationLoaded = false
         handler.removeCallbacks(refreshPoll)
         handler.removeCallbacks(pinRefresh)
         handler.removeCallbacks(reconcilePoll)
@@ -376,7 +379,14 @@ class PhoneControlActivity : Activity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
-                if (s.isNullOrEmpty()) draftTarget = null else if (draftTarget == null) draftTarget = target
+                if (s.isNullOrEmpty()) {
+                    draftTarget = null
+                    draftReceiver = null
+                } else if (draftTarget == null) {
+                    draftTarget = target
+                    draftReceiver = period?.grant?.receiverIdentity
+                }
+                if (sendNotice == R.string.phone_send_invalid && sendDigest() != null) sendNotice = null
                 render()
             }
         })
@@ -405,12 +415,16 @@ class PhoneControlActivity : Activity() {
         val unresolved = related.any { actionEvidence[it.operationId]?.state !in setOf(PhoneActionState.ACCEPTED, PhoneActionState.FENCED_NO_EFFECT) }
         val reviewNeeded = related.any { actionEvidence[it.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT && it.operationId !in reviewedFences }
         val acceptedDraft = related.any { actionEvidence[it.operationId]?.state == PhoneActionState.ACCEPTED && it.payloadHash == sendDigest() }
-        val wrongTarget = draftTarget != null && draftTarget != target
+        val wrongTarget = draftTarget != null &&
+            (draftTarget != target || draftReceiver != period?.grant?.receiverIdentity)
         sendStatus.text = getString(when {
             wrongTarget -> R.string.phone_send_other_session
             reviewNeeded -> R.string.phone_send_review
+            unresolved && related.any { actionEvidence[it.operationId]?.state == PhoneActionState.REJECTED } -> R.string.phone_send_rejected
             unresolved -> sendNotice ?: R.string.phone_send_unknown
             related.any { actionEvidence[it.operationId]?.state == PhoneActionState.ACCEPTED } -> R.string.phone_action_accepted
+            related.any { actionEvidence[it.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT } -> R.string.phone_send_fenced
+            sendNotice in setOf(R.string.phone_send_pending, R.string.phone_send_unknown, R.string.phone_send_unsupported) -> R.string.phone_send_ready
             else -> sendNotice ?: R.string.phone_send_ready
         })
         sendButton.isEnabled = !busy && reconciliationLoaded && !wrongTarget && !unresolved && !reviewNeeded && !acceptedDraft &&
@@ -843,6 +857,7 @@ class PhoneControlActivity : Activity() {
                 when (result) {
                     is PhoneControlResult.Value -> {
                         period = takePeriod(token) ?: return@runOnUiThread
+                        resetReconciliation()
                         scheduleExpiry()
                         schedulePinRefresh()
                         scheduleReconciliation(0)
@@ -916,6 +931,11 @@ class PhoneControlActivity : Activity() {
 
     private fun sendPrompt() {
         if (!sendButton.isEnabled) return
+        if (sendDigest() == null) {
+            sendNotice = R.string.phone_send_invalid
+            render()
+            return
+        }
         val current = period ?: return
         val requested = target ?: return
         val revision = sessionPage?.revision ?: return
@@ -929,7 +949,13 @@ class PhoneControlActivity : Activity() {
             }
         }, { outcome ->
             if (!foreground) return@task
-            sendNotice = if (outcome == PhoneControlOutcome.MALFORMED) R.string.phone_send_invalid else R.string.phone_send_unavailable
+            if (outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED ||
+                outcome == PhoneControlOutcome.EXPIRED) {
+                lockWorkspace()
+                showFailure(outcome)
+                return@task
+            }
+            sendNotice = R.string.phone_send_unavailable
             render()
             scheduleReconciliation(0)
         }) { attempt, _ ->
@@ -944,6 +970,7 @@ class PhoneControlActivity : Activity() {
             if (attempt.outcome == PhoneControlOutcome.REVOKED || attempt.outcome == PhoneControlOutcome.UNAUTHENTICATED ||
                 attempt.outcome == PhoneControlOutcome.EXPIRED) {
                 lockWorkspace()
+                showFailure(attempt.outcome)
                 return@task
             }
             render()
@@ -956,6 +983,14 @@ class PhoneControlActivity : Activity() {
         if (foreground && period?.isActive(SystemClock.elapsedRealtime()) == true) {
             handler.postDelayed(reconcilePoll, delay)
         }
+    }
+
+    private fun resetReconciliation() {
+        pendingActions = emptyList()
+        actionEvidence.clear()
+        reviewedFences.clear()
+        reconciliationLoaded = false
+        reconciliationCursor = null
     }
 
     /** Check a bounded rotating batch; it observes history and never transmits a Send. */
@@ -982,7 +1017,7 @@ class PhoneControlActivity : Activity() {
                 null
             }
             val candidates = pending.orEmpty().filter {
-                prior[it.operationId]?.state !in setOf(PhoneActionState.ACCEPTED, PhoneActionState.FENCED_NO_EFFECT, PhoneActionState.REJECTED)
+                prior[it.operationId]?.state != PhoneActionState.FENCED_NO_EFFECT
             }
             val selected = (candidates.filter { cursor == null || it.operationId > cursor } +
                 candidates.filter { cursor != null && it.operationId <= cursor }).take(RECONCILE_BATCH)
@@ -1331,10 +1366,12 @@ class PhoneControlActivity : Activity() {
         if (outcome == PhoneControlOutcome.EXPIRED) {
             period?.lock()
             period = null
+            resetReconciliation()
         }
         if (outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED) {
             period?.lock()
             period = null
+            resetReconciliation()
             currentStatus = PhoneControlStatus.Disabled
         }
         render(when (outcome) {
@@ -1371,11 +1408,7 @@ class PhoneControlActivity : Activity() {
         openedPages = emptyList()
         showingActionHistory = false
         actionHistoryPage = null
-        pendingActions = emptyList()
-        actionEvidence.clear()
-        reviewedFences.clear()
-        reconciliationLoaded = false
-        reconciliationCursor = null
+        resetReconciliation()
         sessionPage = null
         newerOmitted = false
         historyChanged = false
@@ -1403,6 +1436,7 @@ class PhoneControlActivity : Activity() {
         if (remaining == 0L) {
             period?.lock()
             period = null
+            resetReconciliation()
             handler.removeCallbacks(refreshPoll)
             handler.removeCallbacks(reconcilePoll)
             if (!showingOffline) {

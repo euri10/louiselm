@@ -137,11 +137,22 @@ state and offers **Load older messages** for available history. Updates refresh
 the snapshot and recover the visible range when possible; the screen reports
 when older messages must be loaded again. It keeps at most 500 entries at once
 and offers Refresh to return to the newest messages.
-Background refresh does not extend the working period. It has no Session action controls.
+Background refresh does not extend the working period.
 Opening a card does not clear or answer Attention. Old cards may no longer
 point to a live Session; refresh the inbox instead of assuming the condition
 still applies. Physical Keystore and authentication acceptance is tracked in
 `louiselm-qbr.12.22`.
+
+The Session screen offers an explicit **Send** for a reviewed text instruction
+when the displayed Session is ready. The current receiver still refuses Send
+until the crash-safe admission work in `louiselm-qbr.12.4.5` is proven; a refusal
+is displayed and the text remains on screen. The phone stores a private,
+payload-free operation identity before sending and checks retained owner evidence
+while the workspace is open and unlocked. A lost response is not confirmation,
+and reopening never resends. Another attempt requires owner evidence that the
+original had no effect and was fenced, followed by a Session refresh and review.
+Text in this composer is not yet a durable draft: retain a copy before closing
+the app. Durable drafts are tracked separately in `louiselm-qbr.12.12`.
 
 ### Saved offline copies
 

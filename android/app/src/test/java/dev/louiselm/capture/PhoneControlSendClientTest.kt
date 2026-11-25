@@ -61,7 +61,7 @@ class PhoneControlSendClientTest {
             assertTrue(Signature.getInstance("SHA256withECDSA").run {
                 initVerify(working.public); update(request.transcript()); verify(phoneControlHex(wire.getString("signature")))
             })
-            PhoneControlReply.Failure(PhoneControlOutcome.UNSUPPORTED)
+            parsePhoneControlReply("""{"v":1,"type":"error","code":"unsupported"}""".toByteArray(Charsets.UTF_8))
         }
         val attempt = client.sendPrompt(period, target, 7, "reviewed text", store, 100) { true }
         assertTrue(attempt is PhoneControlResult.Value)
@@ -99,6 +99,40 @@ class PhoneControlSendClientTest {
         val client = PhoneControlClient(context, keys) { _, _, _, _ -> calls++; PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE) }
         assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE),
             client.sendPrompt(period, PhoneControlTarget("33".repeat(16), "44".repeat(16)), 7, "text", store, 100) { true })
+        assertEquals(0, calls)
+    }
+
+    @Test
+    fun lockDuringReservationKeepsIdentityAndPreventsTransmission() {
+        val context = RuntimeEnvironment.getApplication()
+        val snapshot = File(context.noBackupFilesDir, "phone-action-pending-v1")
+        assertTrue(!snapshot.exists() || snapshot.delete())
+        context.getSharedPreferences("phone-control-v1", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("control-pairing-fixture", Context.MODE_PRIVATE).edit().clear().commit()
+        val key = phoneControlWorkingKey()
+        val keys = object : PhoneControlKeyAccess {
+            override fun enrollmentPublicKey() = phoneControlPublicKey(key.public)
+            override fun publicKey() = phoneControlPublicKey(key.public)
+            override fun signingOperation() = Signature.getInstance("SHA256withECDSA").apply { initSign(key.private) }
+        }
+        val config = requireNotNull(PairingStore(context).load())
+        val grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), phoneControlPairingBinding(config),
+            phoneControlHex(MessageDigest.getInstance("SHA-256").digest(keys.publicKey())))
+        PhoneControlStore(context).saveGrant(grant)
+        val period = PhoneControlPeriod(grant, "22".repeat(16), key.private, 0)
+        val secret = SecretKeySpec(ByteArray(32), "AES")
+        var initialized = false
+        val store = PendingPhoneActionStore(context, { create ->
+            if (create) initialized = true
+            if (initialized) secret else null
+        }, syncFile = { descriptor -> descriptor.sync(); period.lock() })
+        var calls = 0
+        val client = PhoneControlClient(context, keys) { _, _, _, _ -> calls++; PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE) }
+        val result = client.sendPrompt(period, PhoneControlTarget("33".repeat(16), "44".repeat(16)),
+            7, "text", store, 100) { true }
+        assertTrue(result is PhoneControlResult.Value)
+        assertEquals(PhoneControlOutcome.UNAVAILABLE, (result as PhoneControlResult.Value).value.outcome)
+        assertEquals(1, store.pending().size)
         assertEquals(0, calls)
     }
 }
