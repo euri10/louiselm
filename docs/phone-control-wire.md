@@ -138,11 +138,11 @@ before any protected delivery or effect. `interaction` is `0` for background
 and `1` for an actual explicit phone interaction, not a poll or callback. It is
 signed but does not independently establish current authority. `operation_id`
 is fresh per logical request and is reserved before admission: a second use is
-replay, including a differently signed request. Durable write-outcome recovery
-and its permanent replay markers remain louiselm-qbr.12.24/.33, not this task.
-The operation ID is also the request/response correlation ID.
+replay, including a differently signed request. Write-operation identities and
+their replay protection persist before forwarding. The operation ID is also the
+request/response correlation ID.
 
-Version 1 defines only action `1`, `read_session`, requiring the `read` group.
+Version 1 defines action `1`, `read_session`, requiring the `read` group.
 Its payload is exactly `before:u64 | limit:u16`, both unsigned big-endian:
 `before=0` requests the newest page; otherwise it is an exclusive sequence
 cursor returned by the same live subject. Limit is 1–50. The owner returns entries
@@ -152,6 +152,31 @@ subject IDs identify one exact live controller and Session incarnation, not a
 reusable ACP or local Session ID. A lost/restarted controller, disposed subject,
 reused local ID, wrong controller, or mismatched nonzero revision cannot select
 a replacement. Other actions need a defined versioned schema before use.
+
+Action `2`, `read_action_history`, also requires `read`. Its payload is the
+16 decoded bytes of the original write operation ID. The signed controller and
+subject IDs identify that operation's original incarnations, even after their
+owner disconnects; `expected_revision` and `interaction` must both be zero.
+The request has its own fresh operation ID. It never forwards to Neovim or
+renews the working period. Capture-service checks the current pairing, grant,
+lease, signature, replay guard and the retained operation's locally established
+project and Agent scope before delivery. A replacement phone with a matching
+current read grant may inspect history; a revoked or out-of-scope phone cannot.
+
+Success is the closed object `{v,type:"action_history",operation_id:hex16,
+receiver_identity:hex32,controller_id:hex16,subject_id:hex16,action:integer,
+payload_hash:hex32,grant_id:hex16,grant_revision:integer,
+expected_revision:integer,recorded_at_ms:integer,updated_at_ms:integer,
+state:string,evidence:hex32-or-empty-string}`. The operation ID is the original
+write, not the lookup's ID. State is `unknown`, `accepted`, `rejected`, or
+`fenced_no_effect`. Empty evidence is used only for `unknown`; other states
+carry the native owner's opaque evidence digest. Acceptance does not mean the
+action completed. `fenced_no_effect` may be archived only after the native
+owner has proved no effect and durably fenced late execution. Capture-service
+neither supplies that proof nor authorizes a new attempt. Missing or damaged
+evidence returns `unavailable`, never a claim that the operation was not sent.
+The journal holds no payload or result copy. Its size is bounded; exhaustion
+refuses new evidence instead of evicting existing records.
 
 ## Local controller channel
 
