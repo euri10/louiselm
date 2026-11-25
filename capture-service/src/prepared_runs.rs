@@ -23,14 +23,14 @@ const MAX_STORE: usize = 8 * 1024 * 1024;
 const MAX_REGISTRATIONS: usize = 50;
 const MAX_REVISIONS: usize = 64;
 
-/// Owner-established identities for one exact prepared Run revision.
+/// Owner-established identities for one exact Run or prepared revision.
 ///
 /// These fields are references to verified owner evidence, not evidence or
 /// authority by themselves. The caller must verify the complete original
 /// project, source and checkout chain and contributing Agent set.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PreparedRunBinding {
+pub struct RunProjectBinding {
     /// Exact canonical Run UUID.
     pub run_id: String,
     /// Private original-project identity, encoded as 16 lowercase hex bytes.
@@ -39,7 +39,7 @@ pub struct PreparedRunBinding {
     pub source_id: String,
     /// Private identity of the owner-bound reviewed checkout.
     pub checkout_id: String,
-    /// Complete configured-Agent set for this prepared revision.
+    /// Complete configured-Agent set known for this Run or prepared revision.
     pub agents: Vec<String>,
 }
 
@@ -50,7 +50,7 @@ pub struct PreparedRunRevision {
     /// Monotonic revision within the registration.
     pub revision: u64,
     /// Owner-established references for this exact revision.
-    pub binding: PreparedRunBinding,
+    pub binding: RunProjectBinding,
     /// Exact private selection bytes, represented as UTF-8.
     pub selection: String,
 }
@@ -153,7 +153,7 @@ impl PreparedRunStore {
     pub fn publish(
         &self,
         previous: Option<(&str, u64)>,
-        binding: &PreparedRunBinding,
+        binding: &RunProjectBinding,
         selection: &str,
     ) -> Result<PreparedRunSummary, PreparedRunError> {
         validate_binding(binding)?;
@@ -385,7 +385,7 @@ fn valid_id(value: &str) -> bool {
         && value.bytes().any(|byte| byte != b'0')
 }
 
-fn validate_binding(binding: &PreparedRunBinding) -> Result<(), PreparedRunError> {
+pub(crate) fn validate_binding(binding: &RunProjectBinding) -> Result<(), PreparedRunError> {
     if Uuid::parse_str(&binding.run_id).map(|id| id.to_string()) != Ok(binding.run_id.clone())
         || !valid_id(&binding.project_id)
         || !valid_id(&binding.source_id)

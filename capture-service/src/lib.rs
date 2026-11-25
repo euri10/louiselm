@@ -51,8 +51,8 @@ pub use phone_control::{
     ActionReservation, PhoneControlError, verify_phone_control_frame,
 };
 pub use prepared_runs::{
-    PreparedRunBinding, PreparedRunError, PreparedRunRegistration, PreparedRunRevision,
-    PreparedRunStore, PreparedRunSummary,
+    PreparedRunError, PreparedRunRegistration, PreparedRunRevision, PreparedRunStore,
+    PreparedRunSummary, RunProjectBinding,
 };
 pub use receiver::Receiver;
 pub use run_socket::{RunSocket, RunSocketError, RunSocketMessage};

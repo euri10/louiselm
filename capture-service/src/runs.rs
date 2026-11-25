@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
+use crate::prepared_runs::{RunProjectBinding, validate_binding};
 
 /// Input needed to durably admit a Run before it generates work.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,6 +153,9 @@ pub struct Run {
     pub acp_session_id: Option<String>,
     /// Working directory used when reloading the ACP Session.
     pub working_dir: Option<String>,
+    /// Owner-established original-project binding; absent for local-only Runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_binding: Option<RunProjectBinding>,
     /// Whether admission confirmed ACP `session/load` support.
     pub load_session: Option<bool>,
     /// One of `admitted`, `active`, `parked`, `cold_parked`, `resuming`, or `disposed`.
@@ -375,6 +379,40 @@ impl RunStore {
     /// Rejects invalid admission data, capability tokens, or conflicting Run UUIDs;
     /// propagates lock, stored-record, and persistence errors.
     pub fn admit(&self, admission: RunAdmission, token: &str) -> Result<(), RunStoreError> {
+        self.admit_inner(admission, token, None)
+    }
+
+    /// Admit a Run with its owner-verified original-project and source binding.
+    ///
+    /// The trusted caller must establish the referenced project, source and
+    /// checkout evidence before admission. This storage operation itself does
+    /// not authenticate that evidence or grant any phone access.
+    ///
+    /// # Errors
+    /// Refuses invalid or mismatched bindings, conflicting UUIDs and storage errors.
+    /// An existing unbound Run can never be retroactively bound by this method.
+    pub fn admit_phone_bound(
+        &self,
+        admission: RunAdmission,
+        token: &str,
+        binding: RunProjectBinding,
+    ) -> Result<(), RunStoreError> {
+        validate_binding(&binding)
+            .map_err(|_| RunStoreError::Invalid("invalid Run project binding".to_owned()))?;
+        if binding.run_id != admission.id {
+            return Err(RunStoreError::Invalid(
+                "Run project binding mismatch".to_owned(),
+            ));
+        }
+        self.admit_inner(admission, token, Some(binding))
+    }
+
+    fn admit_inner(
+        &self,
+        admission: RunAdmission,
+        token: &str,
+        phone_binding: Option<RunProjectBinding>,
+    ) -> Result<(), RunStoreError> {
         validate_admission(&admission)?;
         validate_token(token)?;
         self.locked(|| {
@@ -387,6 +425,7 @@ impl RunStore {
                 agent: None,
                 acp_session_id: None,
                 working_dir: None,
+                phone_binding,
                 load_session: None,
                 state: "admitted".to_owned(),
                 park_ttl_ms: admission.park_ttl_ms,
@@ -439,6 +478,9 @@ impl RunStore {
                     "only an admitted Run can attach a Session".to_owned(),
                 ));
             }
+            if let Some(binding) = &mut run.phone_binding {
+                add_contributor(binding, &session.agent)?;
+            }
             run.session_id = Some(session.session_id);
             run.agent = Some(session.agent);
             run.acp_session_id = Some(session.acp_session_id);
@@ -447,6 +489,27 @@ impl RunStore {
             "active".clone_into(&mut run.state);
             advance_revision(&mut run)?;
             write_atomic(&self.path(&run.id), &run)
+        })
+    }
+
+    /// Record an additional configured Agent before its Run data becomes readable.
+    ///
+    /// Only the trusted Run owner may call this operation. The complete set is
+    /// retained after Sessions finish and changes advance the durable Run revision.
+    ///
+    /// # Errors
+    /// Refuses unbound Runs, invalid Agents, excessive contributors and storage errors.
+    pub fn add_phone_contributor(&self, id: &str, agent: &str) -> Result<(), RunStoreError> {
+        self.locked(|| {
+            let mut run = self.run(id)?;
+            let binding = run.phone_binding.as_mut().ok_or_else(|| {
+                RunStoreError::Invalid("Run has no owner project binding".to_owned())
+            })?;
+            if add_contributor(binding, agent)? {
+                advance_revision(&mut run)?;
+                write_atomic(&self.path(id), &run)?;
+            }
+            Ok(())
         })
     }
 
@@ -712,6 +775,14 @@ impl RunStore {
             || run.id != id
             || run.generated_work.ceiling == 0
             || run.park_ttl_ms == 0
+            || run.phone_binding.as_ref().is_some_and(|binding| {
+                binding.run_id != run.id
+                    || validate_binding(binding).is_err()
+                    || run
+                        .agent
+                        .as_ref()
+                        .is_some_and(|agent| !binding.agents.contains(agent))
+            })
         {
             return Err(RunStoreError::Invalid("stored Run is invalid".to_owned()));
         }
@@ -1082,6 +1153,16 @@ fn advance_revision(run: &mut Run) -> Result<(), RunStoreError> {
         .checked_add(1)
         .ok_or_else(|| RunStoreError::Invalid("Run revision overflowed".to_owned()))?;
     Ok(())
+}
+
+fn add_contributor(binding: &mut RunProjectBinding, agent: &str) -> Result<bool, RunStoreError> {
+    if binding.agents.iter().any(|current| current == agent) {
+        return Ok(false);
+    }
+    binding.agents.push(agent.to_owned());
+    validate_binding(binding)
+        .map_err(|_| RunStoreError::Invalid("invalid Run contributor".to_owned()))?;
+    Ok(true)
 }
 
 fn require_revision(run: &Run, expected: u64) -> Result<(), RunStoreError> {

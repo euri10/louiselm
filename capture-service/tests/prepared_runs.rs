@@ -6,12 +6,12 @@
     reason = "test fixtures abort on setup or assertion failure"
 )]
 
-use louiselm_capture::{PreparedRunBinding, PreparedRunStore};
+use louiselm_capture::{PreparedRunStore, RunProjectBinding};
 
 const RUN: &str = "11111111-1111-4111-8111-111111111111";
 
-fn binding() -> PreparedRunBinding {
-    PreparedRunBinding {
+fn binding() -> RunProjectBinding {
+    RunProjectBinding {
         run_id: RUN.into(),
         project_id: "01".repeat(16),
         source_id: "02".repeat(16),
