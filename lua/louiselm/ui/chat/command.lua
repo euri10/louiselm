@@ -20,6 +20,18 @@ local configured ---@type table?
 local dispose_registered ---@type fun()?
 local staleness_generation = 0
 local control_request ---@type (fun(request: unknown): louiselm.SessionControlSnapshot|louiselm.SessionControlDiscovery|nil, string?)?
+local phone_subject ---@type (fun(session: louiselm.session.Session): table?, string?)?
+
+---Identify one exact Session on the current phone-control connection.
+---@param session louiselm.session.Session
+---@return table? identity
+---@return string? error_code
+function M.phone_control_subject(session)
+  if phone_subject == nil then
+    return nil, "unavailable"
+  end
+  return phone_subject(session)
+end
 
 ---Operate on the configured editor's explicitly identified child Sessions.
 ---@param request unknown Data-only request, validated before constructing an owner.
@@ -389,6 +401,25 @@ function M.register()
   local view_cancel ---@type fun()?
   local markdown_cancel ---@type fun()?
   local disposed = false
+  local phone, phone_error = require("louiselm.phone_control").start(configured)
+  if phone_error ~= nil then
+    nvim.notify("louiselm: phone-control setup unavailable", nvim.log.levels.WARN)
+  end
+  phone_subject = function(session)
+    if phone == nil then
+      return nil, "unavailable"
+    end
+    return phone:subject(session)
+  end
+  local function dispose_phone()
+    if phone == nil then
+      return
+    end
+    local stopped = phone:dispose()
+    if not stopped then
+      nvim.notify("louiselm: phone-control verifier could not be stopped", nvim.log.levels.WARN)
+    end
+  end
   local restore_mousemove ---@type boolean?
   local mousemove_observer ---@type integer?
 
@@ -614,6 +645,7 @@ function M.register()
   nvim.api.nvim_create_autocmd("VimLeavePre", {
     group = exit_group,
     callback = function()
+      dispose_phone()
       local sessions = exit_snapshot(chat)
       if #sessions > 0 then
         Abandonment.write(abandonment_path(), sessions)
@@ -1173,6 +1205,8 @@ function M.register()
   dispose_registered = function()
     disposed = true
     control_request = nil
+    phone_subject = nil
+    dispose_phone()
     if control ~= nil then
       control:dispose()
     end

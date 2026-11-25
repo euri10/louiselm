@@ -271,6 +271,18 @@ M.schema = assert(Schema.define({
       },
     },
   },
+  phone_control = {
+    type = "table",
+    default = {},
+    description = "Optional local phone-control Session read integration.",
+    fields = {
+      enabled = {
+        type = "boolean",
+        default = false,
+        description = "Attach this Neovim to the local phone-control service; a separately approved phone grant is still required.",
+      },
+    },
+  },
   workflows = {
     type = "table",
     default = {},
@@ -287,7 +299,7 @@ M.schema = assert(Schema.define({
 
 ---Read one explicit optional integration choice from validated configuration.
 ---@param config? table Validated user configuration; never mutated.
----@param name "attention"|"beads"|"capture"|"workflows"
+---@param name "attention"|"beads"|"capture"|"phone_control"|"workflows"
 ---@return boolean enabled Omission is disabled; paths and installed tools do not opt in.
 function M.enabled(config, name)
   return config ~= nil and type(config[name]) == "table" and config[name].enabled == true

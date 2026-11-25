@@ -861,7 +861,7 @@ local function dispatch_prompt(self, view, text, content, contexts, metadata, so
     source_session_id = source_session_id,
   }
   view.pending_admission = pending
-  local request_id, prompt_error = view.session:prompt(content, nil, metadata)
+  local request_id, prompt_error = view.session:prompt(content, nil, metadata, text)
   if request_id == nil then
     view.pending_admission = nil
     local message = prompt_error or "prompt failed"

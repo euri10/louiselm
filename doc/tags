@@ -98,6 +98,8 @@ louiselm-config-mcp-servers-name-env	louiselm.txt	/*louiselm-config-mcp-servers-
 louiselm-config-mcp-servers-name-headers	louiselm.txt	/*louiselm-config-mcp-servers-name-headers*
 louiselm-config-mcp-servers-name-type	louiselm.txt	/*louiselm-config-mcp-servers-name-type*
 louiselm-config-mcp-servers-name-url	louiselm.txt	/*louiselm-config-mcp-servers-name-url*
+louiselm-config-phone-control	louiselm.txt	/*louiselm-config-phone-control*
+louiselm-config-phone-control-enabled	louiselm.txt	/*louiselm-config-phone-control-enabled*
 louiselm-config-skills	louiselm.txt	/*louiselm-config-skills*
 louiselm-config-skills-management	louiselm.txt	/*louiselm-config-skills-management*
 louiselm-config-skills-management-enabled	louiselm.txt	/*louiselm-config-skills-management-enabled*

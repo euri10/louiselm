@@ -53,6 +53,7 @@ local Mcp = require("louiselm.mcp")
 ---@class louiselm.Module
 ---@field setup fun(config?: louiselm.Config): boolean, louiselm.schema.Report? Validate configuration and register the plugin's owners and commands.
 ---@field session_control fun(request: louiselm.SessionControlRequest|louiselm.SessionControlDiscoveryRequest): louiselm.SessionControlSnapshot|louiselm.SessionControlDiscovery|nil, string? Operate on children or discover existing advertisements through the configured owner.
+---@field phone_control_subject fun(session: louiselm.session.Session): {controller_id: string, subject_id: string}?, string? Resolve an exact live Session on the current phone-control connection.
 local M = {}
 
 ---Discover existing choices or create, inspect or cancel a child through the configured owner.
@@ -64,6 +65,15 @@ local M = {}
 ---@return string? error_message Invalid request, missing owner or unknown/conflicting operation.
 function M.session_control(request)
   return Command.session_control(request)
+end
+
+---Resolve an exact live Session to the current phone-control connection's identities.
+---A disconnected, disposed, or replaced Session cannot be resolved.
+---@param session louiselm.session.Session Registry-owned live Session.
+---@return {controller_id: string, subject_id: string}? identity Current connection-scoped identities.
+---@return string? error_code `unavailable` or `stale_subject`.
+function M.phone_control_subject(session)
+  return Command.phone_control_subject(session)
 end
 
 ---@param message string

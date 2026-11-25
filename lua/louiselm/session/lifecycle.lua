@@ -136,7 +136,7 @@ local nvim = vim
 ---@field usage_history fun(self: louiselm.session.Session, callback: louiselm.session.UsageHistoryCallback)
 ---@field option_usage fun(self: louiselm.session.Session, option_id: string, callback: louiselm.session.OptionUsageCallback)
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
----@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata): string?, string?
+---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string): string?, string?
 ---@field set_auto fun(self: louiselm.session.Session, enabled: boolean, callback?: fun(error?: string)): boolean, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
@@ -172,6 +172,7 @@ Session.__index = Session
 ---@field guard? { definition: louiselm.agent.Definition, revision?: integer, expected_options?: table<string, string|boolean> } Owned Auto selection snapshot; never persisted.
 ---@field decision louiselm.session.AdmissionDecisionData Owned pending or final decision.
 ---@field decision_recorded boolean Whether its immutable decision has been published.
+---@field display_text? string Caller-owned visible prompt, distinct from attached context.
 
 ---@param options louiselm.session.ConfigOption[]
 ---@param category string
@@ -1914,8 +1915,13 @@ local function prepare_prompt(self, prompt, turn_id, provider)
       turn.dispatched = true
       self.transcript_turn = self.transcript_turn + 1
       record_observation(self, "dispatch", { request_id = request_id, transcript_turn = self.transcript_turn })
+      local display_text = self.admission and self.admission.display_text or nil
       settle_admission(self, "dispatched")
-      emit(self, "prompt_dispatched", { turn_id = turn_id, prompt = nvim.deepcopy(prompt) })
+      emit(
+        self,
+        "prompt_dispatched",
+        { turn_id = turn_id, prompt = nvim.deepcopy(prompt), display_text = display_text }
+      )
     end)
   end)
 end
@@ -2136,16 +2142,23 @@ end
 ---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
 ---@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal.
 ---@param correlation? louiselm.routing.SubmissionMetadata Optional helper ancestry and explicit routing metadata; the parent need not have dispatched.
+---@param display_text? string Caller-owned visible prompt text, excluding attached context; defaults to a string prompt.
 ---@return string? turn_id Stable local admission and eventual turn ID, never proof of peer receipt.
 ---@return string? error_message Immediate validation, state, Provider, or random identity error.
-function Session:prompt(prompt, callback, correlation)
+function Session:prompt(prompt, callback, correlation, display_text)
   if #self.interactions > 0 then
     return nil, "session is waiting for an interaction"
   end
   if self.state.status ~= "ready" then
     return nil, "session is not ready"
   end
+  if display_text ~= nil and type(display_text) ~= "string" then
+    return nil, "display_text must be a string"
+  end
   if type(prompt) == "string" then
+    if display_text == nil then
+      display_text = prompt
+    end
     prompt = { { type = "text", text = prompt } }
   elseif type(prompt) ~= "table" then
     return nil, "prompt must be a string or table"
@@ -2220,6 +2233,7 @@ function Session:prompt(prompt, callback, correlation)
     settled = false,
     decision = decision,
     decision_recorded = false,
+    display_text = display_text,
   }
   self.admission = admission
   if origin == "manual" then

@@ -83,6 +83,33 @@ function Registry:read_selected_content(job, callback)
   return require("louiselm.routing.reader").start(self, job, callback)
 end
 local registries = {} ---@type louiselm.session.Registry[]
+local session_observers = {} ---@type table<fun(session: louiselm.session.Session, present: boolean), boolean>
+
+---Observe Session creation and removal across explicitly owned registries.
+---The returned function releases the observer; callbacks run on the creating
+---or disposing Session's existing event boundary.
+---@param callback fun(session: louiselm.session.Session, present: boolean)
+---@return fun() unsubscribe
+function M.observe_sessions(callback)
+  session_observers[callback] = true
+  for _, registry in ipairs(registries) do
+    for _, id in ipairs(registry.order) do
+      local session = registry.sessions[id]
+      if session ~= nil then
+        callback(session, true)
+      end
+    end
+  end
+  return function()
+    session_observers[callback] = nil
+  end
+end
+
+local function publish_session(session, present)
+  for callback in pairs(session_observers) do
+    callback(session, present)
+  end
+end
 
 ---@class louiselm.session.ExitVerdict
 ---@field session louiselm.session.Session Live Session represented by this verdict.
@@ -709,10 +736,12 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
   local session = Lifecycle.new(self, id, agent_name, definition, session_options, ready_callback, load_id)
   self.sessions[id] = session
   self.order[#self.order + 1] = id
+  publish_session(session, true)
   local started, start_error = session:start()
   if not started then
     self.sessions[id] = nil
     table.remove(self.order)
+    publish_session(session, false)
     return nil, start_error
   end
   return session
@@ -1276,7 +1305,11 @@ end
 ---@param self louiselm.session.Registry
 ---@param id string Local session identifier.
 function Registry:remove_session(id)
+  local session = self.sessions[id]
   self.sessions[id] = nil
+  if session ~= nil then
+    publish_session(session, false)
+  end
   for index, current_id in ipairs(self.order) do
     if current_id == id then
       table.remove(self.order, index)

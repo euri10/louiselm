@@ -177,6 +177,14 @@ and checks its actual registry and configured Agent/project on every read.
 Matching a phone navigation hint to that incarnation belongs to integration
 (.1); an old Attention item or bare ACP ID alone is not proof of identity.
 
+The Neovim client connects to `louiselm/workflow/phone-control.sock` beneath
+`LOUISELM_CAPTURE_STATE_DIR`, or beneath `XDG_STATE_HOME` (default
+`~/.local/state`) when that override is unset. The adjacent
+`operator-capability` is the existing shared capability. The integration can
+resolve a registry-owned Session with `require("louiselm").phone_control_subject(session)`;
+the returned controller and subject identities are valid only for the current
+connection and become unavailable on disconnect.
+
 For a read, receiver sends the controller exactly
 `{v,type:"read_session",controller_id:hex16,grant:Grant,period:Period,proof:Proof,request:Request}`.
 `Grant` is `{grant_id:hex16,grant_revision:integer,enrolled_key:hex65,projects:[string],agents:[string],groups:[string]}`;

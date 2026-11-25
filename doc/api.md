@@ -76,6 +76,7 @@ louiselm.SessionControlPhase:
 
 ### louiselm.Module
 
+- `phone_control_subject: fun(session: louiselm.session.Session):{ controller_id: string, subject_id: string }?, string?` -- Resolve an exact live Session on the current phone-control connection.
 - `session_control: fun(request: louiselm.SessionControlDiscoveryRequest|louiselm.SessionControlRequest):louiselm.SessionControlDiscovery|louiselm.SessionControlSnapshot|nil, string?` -- Operate on children or discover existing advertisements through the configured owner.
 - `setup: fun(config?: louiselm.Config):boolean, (louiselm.schema.Report)?` -- Validate configuration and register the plugin's owners and commands.
 
@@ -276,7 +277,7 @@ string|table
 - `permission_policy: louiselm.permission.Policy` -- Policy for agent-requested operations.
 - `permission_queue: louiselm.session.PermissionEntry[]` -- Permission requests waiting for the active one.
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
-- `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata):string?, string?`
+- `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string):string?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
@@ -300,6 +301,7 @@ string|table
 - `cancelled: boolean`
 - `decision: louiselm.session.AdmissionDecisionData` -- Owned pending or final decision.
 - `decision_recorded: boolean` -- Whether its immutable decision has been published.
+- `display_text: string?` -- Caller-owned visible prompt, distinct from attached context.
 - `guard: { definition: louiselm.agent.Definition, revision: integer?, expected_options: table<string, boolean|string>? }?` -- Owned Auto selection snapshot; never persisted.
 - `id: string`
 - `in_flight: boolean`
@@ -937,7 +939,7 @@ louiselm.session.EventType:
 
 ### louiselm.session.PromptDispatchedEvent
 
-- `data: { turn_id: string, prompt: table[] }` -- Local in-memory content accepted by the transport, not proof of peer receipt. Never persisted in admission or usage records.
+- `data: { turn_id: string, prompt: table[], display_text: string? }` -- Local in-memory content accepted by the transport, not proof of peer receipt. The optional caller-owned visible text excludes attached context. Never persisted in admission or usage records.
 - `session_id: string` -- Local session identifier.
 - `type: "prompt_dispatched"`
 

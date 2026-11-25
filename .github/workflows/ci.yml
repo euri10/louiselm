@@ -691,6 +691,16 @@ jobs:
           neovim: true
           version: stable
 
+      - name: Test Neovim against the real phone-control verifier
+        working-directory: .
+        run: |
+          set -eu
+          cargo build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
+          ./scripts/install-test-deps
+          LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            nvim --headless --noplugin -u ./tests/minimal_init.lua \
+              -c 'lua MiniTest.run_file("tests/phone_control/real_verifier_spec.lua")' -c 'qa!'
+
       - name: Test cross-service durable skill requests and Neovim observation
         run: |
           # This gate also builds skills-core and its embedded Sender guard.

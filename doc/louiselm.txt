@@ -873,6 +873,19 @@ mcp.servers.<name>.url                  *louiselm-config-mcp-servers-name-url*
     Description: Required for http: absolute HTTP(S) Streamable HTTP endpoint.
 
 ------------------------------------------------------------------------------
+phone_control                                  *louiselm-config-phone-control*
+    Type: table
+    Default: {}
+    Description: Optional local phone-control Session read integration.
+
+------------------------------------------------------------------------------
+phone_control.enabled                  *louiselm-config-phone-control-enabled*
+    Type: boolean
+    Default: false
+    Description: Attach this Neovim to the local phone-control service; a
+    separately approved phone grant is still required.
+
+------------------------------------------------------------------------------
 skills                                                *louiselm-config-skills*
     Type: table
     Default: {}

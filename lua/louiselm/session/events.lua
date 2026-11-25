@@ -71,7 +71,7 @@
 
 ---@class louiselm.session.PromptDispatchedEvent: louiselm.session.EventBase
 ---@field type "prompt_dispatched"
----@field data { turn_id: string, prompt: table[] } Local in-memory content accepted by the transport, not proof of peer receipt. Never persisted in admission or usage records.
+---@field data { turn_id: string, prompt: table[], display_text?: string } Local in-memory content accepted by the transport, not proof of peer receipt. The optional caller-owned visible text excludes attached context. Never persisted in admission or usage records.
 
 ---@class louiselm.session.AdmissionDecisionEvent: louiselm.session.EventBase
 ---@field type "admission_decided"
