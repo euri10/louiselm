@@ -10,7 +10,9 @@
 use std::{
     fs,
     io::Write,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Barrier},
+    thread,
 };
 
 use louiselm_capture::ActionIdentity;
@@ -33,8 +35,8 @@ fn identity(project: &std::path::Path, id: u8) -> ActionIdentity {
     }
 }
 
-fn invoke(root: &std::path::Path, message: serde_json::Value) -> serde_json::Value {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
+fn spawn(root: &std::path::Path) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
         .args(["phone-control", "owner-journal"])
         .env_clear()
         .env("LOUISELM_CAPTURE_CONFIG_DIR", root)
@@ -43,7 +45,10 @@ fn invoke(root: &std::path::Path, message: serde_json::Value) -> serde_json::Val
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .unwrap();
+        .unwrap()
+}
+
+fn send(mut child: Child, message: &serde_json::Value) -> serde_json::Value {
     child
         .stdin
         .take()
@@ -55,18 +60,22 @@ fn invoke(root: &std::path::Path, message: serde_json::Value) -> serde_json::Val
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn invoke(root: &std::path::Path, message: &serde_json::Value) -> serde_json::Value {
+    send(spawn(root), message)
+}
+
 #[test]
 fn local_owner_command_persists_a_fence_across_processes() {
     let temp = tempfile::tempdir().unwrap();
     let request = identity(temp.path(), 5);
     let fenced = invoke(
         temp.path(),
-        serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000}),
+        &serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000}),
     );
     assert_eq!(fenced["type"], "fenced");
     let late = invoke(
         temp.path(),
-        serde_json::json!({"v":1,"type":"begin","identity":request}),
+        &serde_json::json!({"v":1,"type":"begin","identity":request}),
     );
     assert_eq!(late["type"], "existing");
     assert_eq!(
@@ -82,12 +91,12 @@ fn inspection_preserves_missing_and_owner_proved_outcomes_across_processes() {
     let inspect = |request: &ActionIdentity| {
         invoke(
             temp.path(),
-            serde_json::json!({"v":1,"type":"inspect","identity":request}),
+            &serde_json::json!({"v":1,"type":"inspect","identity":request}),
         )
     };
     assert_eq!(inspect(&request)["code"], "unavailable");
     let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
-    assert_eq!(invoke(temp.path(), begin.clone())["type"], "begun");
+    assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
     assert_eq!(inspect(&request)["outcome"], "unknown");
 
     let mut altered = request.clone();
@@ -96,7 +105,63 @@ fn inspection_preserves_missing_and_owner_proved_outcomes_across_processes() {
     let fence = serde_json::json!({"fenced_no_effect":{"evidence":"0b".repeat(32)}});
     let report =
         serde_json::json!({"v":1,"type":"report","identity":request,"outcome":fence,"at_ms":2000});
-    assert_eq!(invoke(temp.path(), report)["type"], "recorded");
+    assert_eq!(invoke(temp.path(), &report)["type"], "recorded");
     assert_eq!(inspect(&request)["outcome"], fence);
-    assert_eq!(invoke(temp.path(), begin)["outcome"], fence);
+    assert_eq!(invoke(temp.path(), &begin)["outcome"], fence);
+}
+
+#[test]
+fn separate_helpers_cannot_both_begin_and_fence() {
+    let temp = tempfile::tempdir().unwrap();
+    let seed = identity(temp.path(), 7);
+    assert_eq!(
+        invoke(
+            temp.path(),
+            &serde_json::json!({"v":1,"type":"begin","identity":seed})
+        )["type"],
+        "begun"
+    );
+    let request = identity(temp.path(), 8);
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    let fence = serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000});
+    let barrier = Arc::new(Barrier::new(2));
+    let children = [spawn(temp.path()), spawn(temp.path())];
+    let handles: Vec<_> = children
+        .into_iter()
+        .zip([begin.clone(), fence])
+        .map(|(child, message)| {
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                send(child, &message)
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    let won_begin = results[0]["type"] == "begun";
+    let fenced = results[1]["type"] == "fenced";
+    assert_ne!(
+        won_begin, fenced,
+        "exactly one helper must win: {results:?}"
+    );
+    let retained = invoke(temp.path(), &begin);
+    assert_eq!(retained["type"], "existing");
+    if fenced {
+        assert_eq!(
+            retained["outcome"]["fenced_no_effect"]["evidence"],
+            results[1]["evidence"]
+        );
+    } else {
+        assert_eq!(retained["outcome"], "unknown");
+        assert_eq!(
+            invoke(
+                temp.path(),
+                &serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":3000})
+            )["type"],
+            "uncertain"
+        );
+    }
 }

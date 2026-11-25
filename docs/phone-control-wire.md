@@ -450,6 +450,12 @@ physical Android flow exists. Those are the downstream slices and .22.
 
 ## Native action journal, version 1
 
+The existing local preparation and commit frames below are not a proven
+crash-safe admission protocol. HTTP action 3 remains unsupported until the
+guard, native transition and real-socket proof in louiselm-qbr.12.4.5 pass.
+A journal begin, receiver response or timeout is neither Session admission
+nor proof of no effect; the conditional design is louiselm-qbr.12.4.8.
+
 Before reserving a verified write, capture may ask its attached controller for
 the target's locally owned scope with the closed message
 `{v:1,type:"action_scope",controller_id:hex16,subject_id:hex16,operation_id:hex16}`.
@@ -489,6 +495,7 @@ caller must authenticate the request and establish the exact live owner,
 canonical project and configured Agent independently.
 
 The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
+`{v:1,type:"inspect",identity:ActionIdentity}`,
 `{v:1,type:"fence",identity:ActionIdentity,at_ms:integer}`, or
 `{v:1,type:"report",identity:ActionIdentity,outcome:OwnerOutcome,at_ms:integer}`.
 `ActionIdentity` contains exactly `operation_id`, `receiver_identity`,
@@ -498,17 +505,25 @@ The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
 come from the native owner, never phone claims. `OwnerOutcome` is exactly
 `{accepted:{evidence:hex32}}`, `{rejected:{evidence:hex32}}`, or
 `{fenced_no_effect:{evidence:hex32}}`. The last form is permitted only after
-the native owner proves that a begun attempt had no effect; its durable begin
-already fences subsequent delivery. The owner reports only a fact it has
+the living native owner proves that a begun attempt had no effect and cannot
+execute later; its durable begin prevents another begin but does not invalidate
+an already outstanding native gate. The owner reports only a fact it has
 established. No payload or prompt is stored.
 
 Begin returns `{v:1,type:"begun"}` only after durable reservation, or
 `{v:1,type:"existing",outcome:ExistingOutcome}` for an existing exact identity.
-`ExistingOutcome` is `"unknown"`, either `OwnerOutcome`, or
-`{fenced_no_effect:{evidence:hex32}}`. Existing operations never execute again. Fence returns
-`{v:1,type:"fenced",evidence:hex32}` only after it wins reservation and the
-fence is durable; an already begun operation returns `{v:1,type:"uncertain"}`.
-An existing fence returns its original evidence. Report returns
+`ExistingOutcome` is `"unknown"` or an `OwnerOutcome`. A repeated begin never
+permits another effect.
+Inspect returns the same `existing` outcome for an exact identity without
+creating a journal or reserving an absent operation. Missing or damaged records
+return `unavailable`; different bindings return `conflict`. The reservation's
+`recorded_at_ms` is retained metadata, not a request binding.
+
+Fence returns `{v:1,type:"fenced",evidence:hex32}` only after it wins
+reservation and the fence is durable; an already begun operation returns
+`{v:1,type:"uncertain"}`. An existing fence returns its original evidence.
+An `at_ms` before `recorded_at_ms` or beyond the integer bound is malformed and
+does not reserve an operation. Report returns
 `{v:1,type:"recorded"}` only after the owner outcome is durable. Errors are
 `{v:1,type:"error",code:string}`, with `malformed`, `conflict` or `unavailable`.
 The owner must route every effect through begin for a winning fence to prove

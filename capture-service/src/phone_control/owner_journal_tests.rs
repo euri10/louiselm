@@ -74,6 +74,25 @@ fn begun_attempt_remains_unknown_and_cannot_be_fenced_by_absence() {
 }
 
 #[test]
+fn damaged_storage_cannot_confirm_a_new_fence() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("owner");
+    let owner = OwnerJournal::open(&path).unwrap();
+    let request = identity(temp.path(), 11);
+    fs::write(path.join("seal.json"), b"{}").unwrap();
+    assert_eq!(
+        owner.fence(&request, 2_000),
+        Err(ActionEvidenceError::Unavailable)
+    );
+    assert_eq!(owner.begin(&request), Err(ActionEvidenceError::Unavailable));
+    drop(owner);
+    assert!(matches!(
+        OwnerJournal::open(&path),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+}
+
+#[test]
 fn malformed_fence_times_do_not_reserve_an_operation() {
     let temp = tempfile::tempdir().unwrap();
     let owner = OwnerJournal::open(temp.path().join("owner")).unwrap();
@@ -188,6 +207,7 @@ fn malformed_owner_commands_do_not_initialize_storage() {
         serde_json::json!({"v":2,"type":"begin","identity":request}),
         serde_json::json!({"v":1,"type":"begin","identity":request,"role":"operator"}),
         serde_json::json!({"v":1,"type":"fence","identity":request}),
+        serde_json::json!({"v":1,"type":"inspect","identity":request,"payload":"secret prompt"}),
     ] {
         assert_eq!(
             handle(&path, message.to_string().as_bytes())["code"],
