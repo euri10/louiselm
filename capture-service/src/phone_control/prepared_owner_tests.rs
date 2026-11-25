@@ -295,6 +295,10 @@ fn prepared_detail_is_exact_bounded_and_omits_local_input_paths() {
         serde_json::json!({"kind":"duration","duration_ms":1_800_000})
     );
     assert_eq!(detail["max_sessions"], 6);
+    assert_eq!(
+        detail["verification_plan_digest"],
+        format!("sha256:{}", "01".repeat(32))
+    );
     assert_eq!(detail["bead_scope"]["max_mutations"], 3);
     assert_eq!(detail["provider_requests"]["max_run_requests"], 3);
     assert_eq!(

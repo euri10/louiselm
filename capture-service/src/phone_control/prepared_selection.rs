@@ -192,6 +192,7 @@ pub(super) fn project_detail(
         "beads": selection.beads,
         "execution": selection.execution,
         "max_sessions": selection.envelope.max_sessions,
+        "verification_plan_digest": selection.envelope.verification_plan_digest,
         "bead_scope": selection.envelope.bead_scope,
         "provider_requests": selection.envelope.provider_requests,
         "skill_requests": skill_requests,

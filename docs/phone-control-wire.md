@@ -316,7 +316,7 @@ the subject ID is the exact `hex16` registration ID, the payload is empty, and
 `expected_revision` is its nonzero published revision. This owner-backed read
 does not require a live controller. Success is
 `{v:1,type:"prepared_detail",request_id:hex16,registration_id:hex16,run_id:uuid,revision:integer,detail:PreparedDetail}`.
-The closed detail is `{state:"prepared",agent:string,beads:[{id:string,prompt:string}],execution:Execution,max_sessions:integer,bead_scope:BeadScope,provider_requests:ProviderScope,skill_requests:SkillScope,skills:Skills,network:string}`.
+The closed detail is `{state:"prepared",agent:string,beads:[{id:string,prompt:string}],execution:Execution,max_sessions:integer,verification_plan_digest:string,bead_scope:BeadScope,provider_requests:ProviderScope,skill_requests:SkillScope,skills:Skills,network:string}`.
 `Execution` is `{kind:"duration",duration_ms:integer}` or
 `{kind:"stop_by",expires_at_ms:integer}`. `BeadScope` is exactly
 `{project_digest:string,role:"coordinator",issue_ids:[string],effects:[{kind:"comment_add"}],max_mutations:integer,expires_at_ms:0}`.
