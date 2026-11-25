@@ -27,6 +27,9 @@ internal sealed class PhoneControlReply {
     data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
     data class SessionList(val controllerId: String, val operationId: String,
         val sessions: List<PhoneControlSessionSummary>, val nextAfter: String) : PhoneControlReply()
+    data class PreparedPage(val requestId: String, val items: List<PhonePreparedSummary>, val nextAfter: String) : PhoneControlReply()
+    data class PreparedDetail(val requestId: String, val registrationId: String, val runId: String,
+        val revision: Long, val detail: PhonePreparedDraft) : PhoneControlReply()
     data class ActionHistory(val requestId: String, val record: PhoneActionRecord) : PhoneControlReply()
     data class ActionHistoryPage(val requestId: String, val records: List<PhoneActionRecord>, val nextAfter: String) : PhoneControlReply()
 }
@@ -59,7 +62,7 @@ internal sealed class PhoneControlEntry(open val seq: Long, open val truncated: 
     data class Plan(override val seq: Long, val requestId: String, val text: String, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
 }
 
-private class UnsupportedReply : Exception()
+internal class UnsupportedReply : Exception()
 
 private fun readWireValue(reader: JsonReader, depth: Int): Any {
     require(depth <= 5) { "nested wire value" }
@@ -85,7 +88,7 @@ private fun readWireValue(reader: JsonReader, depth: Int): Any {
             reader.endArray()
             values
         }
-        JsonToken.STRING -> reader.nextString().also { require(validWireString(it)) }
+        JsonToken.STRING -> reader.nextString().also { require(validWireString(it, 65_536)) }
         JsonToken.NUMBER -> reader.nextString().also {
             require(it.matches(Regex("0|[1-9][0-9]*"))) { "invalid integer" }
         }.toLong().also { require(it <= 9_007_199_254_740_991L) }
@@ -94,18 +97,19 @@ private fun readWireValue(reader: JsonReader, depth: Int): Any {
     }
 }
 
-private fun Any.wireObject(): Map<String, Any> {
+internal fun Any.wireObject(): Map<String, Any> {
     require(this is Map<*, *> && keys.all { it is String } && values.all { it != null })
     @Suppress("UNCHECKED_CAST") // readWireValue constructs only string-keyed maps with non-null values.
     return this as Map<String, Any>
 }
 
-private fun Map<String, Any>.wireString(name: String): String = this[name] as? String ?: throw IllegalArgumentException("invalid $name")
-private fun Map<String, Any>.wireNumber(name: String): Long = this[name] as? Long ?: throw IllegalArgumentException("invalid $name")
-private fun Map<String, Any>.wireBoolean(name: String): Boolean = this[name] as? Boolean ?: throw IllegalArgumentException("invalid $name")
-private fun Map<String, Any>.wireArray(name: String): List<*> = this[name] as? List<*> ?: throw IllegalArgumentException("invalid $name")
-private fun Map<String, Any>.wireKeys(vararg names: String) = require(keys == names.toSet()) { "invalid fields" }
-private fun Map<String, Any>.wireHex(name: String, size: Int): String = wireString(name).also { phoneControlHex(it, size) }
+internal fun Map<String, Any>.wireString(name: String, maxBytes: Int = 8192): String =
+    (this[name] as? String ?: throw IllegalArgumentException("invalid $name")).also { require(validWireString(it, maxBytes)) }
+internal fun Map<String, Any>.wireNumber(name: String): Long = this[name] as? Long ?: throw IllegalArgumentException("invalid $name")
+internal fun Map<String, Any>.wireBoolean(name: String): Boolean = this[name] as? Boolean ?: throw IllegalArgumentException("invalid $name")
+internal fun Map<String, Any>.wireArray(name: String): List<*> = this[name] as? List<*> ?: throw IllegalArgumentException("invalid $name")
+internal fun Map<String, Any>.wireKeys(vararg names: String) = require(keys == names.toSet()) { "invalid fields" }
+internal fun Map<String, Any>.wireHex(name: String, size: Int): String = wireString(name).also { phoneControlHex(it, size) }
 
 private fun parseActionRecord(value: Any): PhoneActionRecord {
     val record = value.wireObject()
@@ -186,7 +190,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
             require(reader.peek() == JsonToken.END_DOCUMENT) { "trailing value" }
             value
         }
-        fun string(name: String): String = fields[name] as? String ?: throw IllegalArgumentException("invalid $name")
+        fun string(name: String): String = fields.wireString(name)
         fun number(name: String): Long = fields[name] as? Long ?: throw IllegalArgumentException("invalid $name")
         fun hex(name: String, size: Int): String = string(name).also { phoneControlHex(it, size) }
         fun keys(vararg names: String) = require(fields.keys == names.toSet() + setOf("v", "type")) { "invalid fields" }
@@ -298,6 +302,8 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 }
                 PhoneControlReply.SessionList(controller, hex("operation_id", 16), sessions, next)
             }
+            "prepared_page" -> parsePreparedPage(fields)
+            "prepared_detail" -> parsePreparedDetail(fields)
             "action_history" -> {
                 keys("request_id", "record")
                 PhoneControlReply.ActionHistory(hex("request_id", 16), parseActionRecord(requireNotNull(fields["record"])))
@@ -328,8 +334,8 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
     }
 }
 
-private fun validWireString(value: String): Boolean {
-    if (value.toByteArray(Charsets.UTF_8).size > 8192 || '\u0000' in value) return false
+private fun validWireString(value: String, maxBytes: Int): Boolean {
+    if (value.toByteArray(Charsets.UTF_8).size > maxBytes || '\u0000' in value) return false
     var index = 0
     while (index < value.length) {
         val character = value[index++]
