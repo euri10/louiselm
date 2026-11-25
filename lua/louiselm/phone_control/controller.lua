@@ -70,7 +70,7 @@ end
 
 local function allocate(self, subject)
   local id, err = random_id()
-  if id == nil or self.seen_subjects[id] then
+  if id == nil or id == string.rep("0", 32) or self.seen_subjects[id] then
     return nil, err or "subject identity collision"
   end
   self.seen_subjects[id] = true

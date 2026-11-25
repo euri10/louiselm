@@ -3,7 +3,6 @@
 local nvim = vim
 local Scope = require("louiselm.phone_control.scope")
 local M = {}
-local ZERO = string.rep("0", 32)
 local LABEL_LIMIT = 512
 local statuses = {
   starting = true,
@@ -119,8 +118,7 @@ function M.list(controller, grant, request, callback)
     end
     local subject = controller.subjects[id]
     if subject == nil then
-      next_session()
-      return
+      return next_session()
     end
     local session = subject.session
     local state = session:inspect()
@@ -129,8 +127,7 @@ function M.list(controller, grant, request, callback)
       or session.owner:get_session(state.id) ~= session
       or not Scope.contains(grant.agents, state.agent)
     then
-      next_session()
-      return
+      return next_session()
     end
     if type(state.working_dir) ~= "string" or state.working_dir == "" then
       fail("unavailable")

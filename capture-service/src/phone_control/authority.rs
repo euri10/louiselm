@@ -481,7 +481,11 @@ impl Authority {
         now: Instant,
     ) -> Result<ReadPermit, Refusal> {
         let started = Instant::now();
-        validate_request_shape(request).map_err(refusal)?;
+        if request.action == 1 {
+            validate_request_shape(request).map_err(refusal)?;
+        } else {
+            super::validate_discovery_request_shape(request).map_err(refusal)?;
+        }
         let mut state = self.lock()?;
         let grant = state.grants.get(device).ok_or(Refusal::Revoked)?;
         if grant.grant_id != request.grant_id
@@ -500,7 +504,13 @@ impl Authority {
         }
         let frame = Frame {
             v: 1,
-            kind: "read_session".into(),
+            kind: match request.action {
+                1 => "read_session",
+                48 => "list_controllers",
+                49 => "list_sessions",
+                _ => return Err(Refusal::Unsupported),
+            }
+            .into(),
             controller_id: request.controller_id.clone(),
             grant: GrantRecord {
                 grant_id: grant.grant_id.clone(),

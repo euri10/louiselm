@@ -183,7 +183,7 @@ async fn process_http(
             .ok_or(Refusal::Unauthenticated)?;
         if path == "/v1/phone-control/request" {
             let signed: SignedRequest = decode(&body, "request")?;
-            if signed.request.action == 1 {
+            if matches!(signed.request.action, 1 | 48 | 49) {
                 let permit =
                     initial_state
                         .authority
@@ -208,22 +208,45 @@ async fn process_http(
     match started {
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
-            let response = match state
-                .controllers
-                .dispatch(&request.controller_id, permit.frame.clone())
-                .await
-            {
-                Ok(bytes) => validate_read_response(&bytes, &request),
-                Err(error) => Err(error),
+            let mut listed_controllers = Vec::new();
+            let response = if request.action == 48 {
+                match controller_page(&state.controllers, &request) {
+                    Ok((page, ids)) => {
+                        listed_controllers = ids;
+                        Ok(page)
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                match state
+                    .controllers
+                    .dispatch(&request.controller_id, permit.frame.clone())
+                    .await
+                {
+                    Ok(bytes) if request.action == 49 => {
+                        super::discovery::validate_session_list(&bytes, &request)
+                    }
+                    Ok(bytes) => validate_read_response(&bytes, &request),
+                    Err(error) => Err(error),
+                }
             };
             let success = response.is_ok();
             let authority = state.authority.clone();
             let pairing = state.pairing.clone();
             let controllers = state.controllers.clone();
             let controller_id = request.controller_id.clone();
+            let discovery = request.action == 48;
             let checked = tokio::task::spawn_blocking(move || {
                 authority.finish_read_delivery(&permit, success, &pairing, &credential, || {
-                    controllers.contains(&controller_id)
+                    if discovery {
+                        !success
+                            || (listed_controllers.iter().all(|id| controllers.contains(id))
+                                && controllers
+                                    .list_after("", 1)
+                                    .is_ok_and(|ids| !ids.is_empty()))
+                    } else {
+                        controllers.contains(&controller_id)
+                    }
                 })
             })
             .await
@@ -235,6 +258,28 @@ async fn process_http(
         }
         Err(error) => Err(error),
     }
+}
+
+fn controller_page(
+    controllers: &ControllerRegistry,
+    request: &Request,
+) -> Result<(Value, Vec<String>), Refusal> {
+    let payload = fixed::<17>(&request.payload).map_err(|_| Refusal::Malformed)?;
+    let after = lower_hex(&payload[..16]);
+    let limit = usize::from(payload[16]);
+    let mut ids = controllers.list_after(&after, limit + 1)?;
+    if ids.is_empty() && after == "00".repeat(16) {
+        return Err(Refusal::Unavailable);
+    }
+    let next = if ids.len() > limit {
+        ids.pop();
+        ids.last().cloned().ok_or(Refusal::Unavailable)?
+    } else {
+        String::new()
+    };
+    let page = json!({"v":1,"type":"controller_list","operation_id":request.operation_id,
+        "controllers":ids,"next_after":next});
+    Ok((page, ids))
 }
 
 fn process(
@@ -987,6 +1032,194 @@ mod tests {
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn signed_discovery(
+        fixture: &Value,
+        grant: &StoredGrant,
+        period: &str,
+        controller: &str,
+        action: u8,
+        operation: u128,
+    ) -> Value {
+        let mut payload = [0_u8; 17];
+        payload[16] = 50;
+        let digest = lower_hex(&Sha256::digest(payload));
+        let operation = format!("{operation:032x}");
+        let subject = "00".repeat(16);
+        let mut bytes = prefix(2);
+        bytes.extend(fixed::<16>(&grant.grant_id).unwrap());
+        bytes.extend(grant.grant_revision.to_be_bytes());
+        bytes.extend(fixed::<16>(period).unwrap());
+        bytes.extend(fixed::<32>(&grant.receiver_identity).unwrap());
+        bytes.extend(fixed::<16>(controller).unwrap());
+        bytes.extend(fixed::<16>(&subject).unwrap());
+        bytes.push(action);
+        bytes.extend(fixed::<32>(&digest).unwrap());
+        bytes.extend(fixed::<16>(&operation).unwrap());
+        bytes.extend(0_u64.to_be_bytes());
+        bytes.push(1);
+        let key = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &unhex(fixture["keys"]["working"]["pkcs8"].as_str().unwrap()),
+        )
+        .unwrap();
+        let signature = key.sign(&SystemRandom::new(), &bytes).unwrap();
+        json!({"v":1,"type":"request","request":{
+            "grant_id":grant.grant_id,"grant_revision":grant.grant_revision,"period_id":period,
+            "receiver_identity":grant.receiver_identity,"controller_id":controller,"subject_id":subject,
+            "action":action,"payload":lower_hex(&payload),"payload_hash":digest,"operation_id":operation,
+            "expected_revision":0,"interaction":1,"signature":lower_hex(signature.as_ref())
+        }})
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The complete signed route proves authority and delivery together."
+    )]
+    async fn discovery_requires_read_and_dispatches_to_the_exact_live_controller() {
+        use tokio::{
+            io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+            net::UnixStream,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let receiver = "01".repeat(32);
+        let offer = pairing
+            .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
+            .unwrap();
+        let phone = pairing.consume(&offer.token, "phone", 1_001).unwrap();
+        let service = Service::open(
+            &root.path().join("phone/grants"),
+            &receiver,
+            pairing.clone(),
+        )
+        .unwrap();
+        let socket = root.path().join("controller.sock");
+        let cap = root.path().join("capability");
+        let server = super::super::socket::ControllerSocket::bind(
+            &socket,
+            &cap,
+            service.controllers.clone(),
+        )
+        .await
+        .unwrap();
+        let token = std::fs::read_to_string(&cap).unwrap();
+        let server_task = tokio::spawn(server.serve());
+        let app = service.router();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../android/app/src/test/resources/phone-control-v1.json"
+        ))
+        .unwrap();
+        let (grant, period) = history_grant(
+            &service,
+            &app,
+            &phone,
+            &fixture,
+            root.path(),
+            vec!["read".into()],
+        )
+        .await;
+        let zero = "00".repeat(16);
+        let missing = signed_discovery(&fixture, &grant, &period, &zero, 48, 1);
+        let (_, result) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &missing.to_string(),
+        )
+        .await;
+        assert_eq!(result["code"], "unavailable");
+
+        let mut stream = UnixStream::connect(&socket).await.unwrap();
+        stream
+            .write_all(
+                format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(&mut stream)
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        let controller = serde_json::from_str::<Value>(&line).unwrap()["controller_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let list = signed_discovery(&fixture, &grant, &period, &zero, 48, 2);
+        let (_, result) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &list.to_string(),
+        )
+        .await;
+        assert_eq!(result["controllers"], json!([controller]));
+        let (_, replay) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &list.to_string(),
+        )
+        .await;
+        assert_eq!(replay["code"], "unauthenticated");
+
+        let request = signed_discovery(&fixture, &grant, &period, &controller, 49, 3);
+        let pending = tokio::spawn({
+            let app = app.clone();
+            let credential = phone.credential.clone();
+            async move {
+                post(
+                    app,
+                    "/v1/phone-control/request",
+                    &credential,
+                    &request.to_string(),
+                )
+                .await
+            }
+        });
+        let mut line = String::new();
+        BufReader::new(&mut stream)
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        assert!(
+            super::super::verify_phone_control_frame(line.trim_end().as_bytes(), &receiver).is_ok()
+        );
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(frame["type"], "list_sessions");
+        let response = json!({"v":1,"type":"session_list","controller_id":controller,
+            "operation_id":frame["request"]["operation_id"],"sessions":[{"subject_id":"02".repeat(16),
+            "name":"same","agent":"codex","project":"/work","status":"ready","truncated":false}],"next_after":""});
+        stream
+            .write_all(format!("{response}\n").as_bytes())
+            .await
+            .unwrap();
+        let (_, result) = pending.await.unwrap();
+        assert_eq!(result["sessions"][0]["name"], "same");
+
+        let (no_read, period) = history_grant(
+            &service,
+            &app,
+            &phone,
+            &fixture,
+            root.path(),
+            vec!["operate_sessions".into()],
+        )
+        .await;
+        let denied = signed_discovery(&fixture, &no_read, &period, &zero, 48, 4);
+        let (_, result) = post(
+            app,
+            "/v1/phone-control/request",
+            &phone.credential,
+            &denied.to_string(),
+        )
+        .await;
+        assert_eq!(result["code"], "out_of_scope");
+        server_task.abort();
     }
 
     #[tokio::test]

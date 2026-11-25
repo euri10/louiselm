@@ -313,6 +313,16 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
 }
 
 impl ControllerRegistry {
+    pub(super) fn list_after(&self, after: &str, limit: usize) -> Result<Vec<String>, Refusal> {
+        let entries = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+        Ok(entries
+            .iter()
+            .filter(|(id, sender)| id.as_str() > after && sender.is_some())
+            .take(limit)
+            .map(|(id, _)| id.clone())
+            .collect())
+    }
+
     pub(super) fn contains(&self, id: &str) -> bool {
         self.attached
             .lock()
@@ -431,7 +441,7 @@ async fn serve_controller(
                 let Ok(id) = candidate else {
                     break;
                 };
-                if !attached.contains_key(&id) {
+                if id != "00".repeat(16) && !attached.contains_key(&id) {
                     attached.insert(id.clone(), Some(sender));
                     created = Ok(id);
                     break;
