@@ -14,7 +14,7 @@ import org.xmlpull.v1.XmlPullParser
 @RunWith(RobolectricTestRunner::class)
 class BackupPolicyTest {
     @Test
-    @Config(sdk = [28, 34])
+    @Config(sdk = [30, 34])
     fun backupRemainsDisabled() {
         val application = RuntimeEnvironment.getApplication()
         assertEquals(0, application.applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP)

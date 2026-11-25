@@ -14,7 +14,7 @@ must be able to find that SDK through `ANDROID_HOME` or an ignored
 sdk.dir=/absolute/path/to/Android/Sdk
 ```
 
-Connect an API 28+ device, then run:
+Connect an Android 11 / API 30 or newer device, then run:
 
 ```sh
 ./gradlew test lint assembleDebug
@@ -214,7 +214,7 @@ in `louiselm-qbr.9.9`.
 - Notifications: record the configured APK/package/build and paired test device.
   Deny notification permission first: capture and manual inbox access must remain
   usable. Grant it and enable notifications; confirm receiver installation registration
-  without logging the FID. On API 28 verify the notification channel can also
+  without logging the FID. On API 30 verify the notification channel can also
   be disabled without breaking capture.
 - Trigger a new eligible Attention generation with the app backgrounded. Verify
   only the fixed generic copy; tap to fetch the matching private inbox. Repeat

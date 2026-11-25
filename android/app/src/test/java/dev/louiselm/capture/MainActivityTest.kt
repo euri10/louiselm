@@ -192,7 +192,7 @@ class MainActivityTest {
 
     @Test
     @Config(
-        sdk = [28, 34, 37],
+        sdk = [30, 34, 37],
         shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
         instrumentedPackages = ["dev.louiselm.capture"],
     )
@@ -210,19 +210,14 @@ class MainActivityTest {
         button(R.string.attention_retry).performClick()
         drainStatus()
         val page = views(activity.window.decorView).filterIsInstance<ScrollView>().single()
-        // Before API 30, dispatch derives navigation insets from the real root's
-        // stable insets, not this synthetic builder. Check injected bars/cutouts
-        // on newer APIs; all three versions exercise the long-list layout below.
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            val insets = WindowInsetsCompat.Builder()
-                .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.of(0, 24, 0, 48))
-                .setInsets(WindowInsetsCompat.Type.displayCutout(), Insets.of(12, 32, 0, 0))
-                .build()
-            repeat(2) { ViewCompat.dispatchApplyWindowInsets(page, insets) }
-            assertEquals(12, page.paddingLeft)
-            assertEquals(32, page.paddingTop)
-            assertEquals(48, page.paddingBottom)
-        }
+        val insets = WindowInsetsCompat.Builder()
+            .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.of(0, 24, 0, 48))
+            .setInsets(WindowInsetsCompat.Type.displayCutout(), Insets.of(12, 32, 0, 0))
+            .build()
+        repeat(2) { ViewCompat.dispatchApplyWindowInsets(page, insets) }
+        assertEquals(12, page.paddingLeft)
+        assertEquals(32, page.paddingTop)
+        assertEquals(48, page.paddingBottom)
         page.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY))
         page.layout(0, 0, 400, 600)
@@ -312,7 +307,7 @@ class MainActivityTest {
 
     @Test
     @Config(
-        sdk = [28, 34, 37],
+        sdk = [30, 34, 37],
         shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
         instrumentedPackages = ["dev.louiselm.capture"],
     )
@@ -435,7 +430,7 @@ class MainActivityTest {
     }
 
     @Test
-    @Config(sdk = [28, 34, 37])
+    @Config(sdk = [30, 34, 37])
     fun notificationConfigurationAndPermissionNeverPreventRecording() {
         button(R.string.attention_enable).performClick()
         if (!BuildConfig.FIREBASE_ENABLED) {
@@ -484,7 +479,7 @@ class MainActivityTest {
     }
 
     @Test
-    @Config(sdk = [28, 34])
+    @Config(sdk = [30, 34])
     fun olderAndroidSyncDoesNotRequestReceiverPermission() {
         val status = statusView()
         button(R.string.sync_now).performClick()

@@ -25,7 +25,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28, 37], shadows = [MessagingRegistrationShadow::class, InstallationShadow::class])
+@Config(sdk = [30, 37], shadows = [MessagingRegistrationShadow::class, InstallationShadow::class])
 class AttentionInstallationTest {
     @Before
     fun resetSdkFixtures() {

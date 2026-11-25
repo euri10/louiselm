@@ -11,7 +11,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28, 34])
+@Config(sdk = [30, 34])
 class AttentionStateTest {
     @Test
     fun invalidatedEvidenceSurvivesCacheRestart() {

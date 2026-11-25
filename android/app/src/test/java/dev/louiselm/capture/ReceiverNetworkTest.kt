@@ -24,7 +24,7 @@ import java.util.concurrent.Executor
 import kotlin.coroutines.EmptyCoroutineContext
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28, 34, 37])
+@Config(sdk = [30, 34, 37])
 class ReceiverNetworkTest {
     @Test
     @Config(sdk = [37])

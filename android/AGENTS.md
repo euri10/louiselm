@@ -18,7 +18,7 @@ then clarity, simplicity, and performance.
 ## Kotlin and Android baseline
 
 - Use Kotlin with the Android Gradle Plugin's built-in Kotlin support.
-- Target the latest configured Android SDK and keep `minSdk` at 28 unless a
+- Target the latest configured Android SDK and keep `minSdk` at 30 unless a
   concrete product requirement changes it.
 - Prefer Android platform APIs, Java/Kotlin standard-library facilities, and
   the dependencies already in `app/build.gradle.kts`.

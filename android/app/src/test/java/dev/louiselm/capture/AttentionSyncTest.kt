@@ -10,7 +10,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28, 37])
+@Config(sdk = [30, 37])
 class AttentionSyncTest {
     @Test
     fun lateRegistrationAndFetchCannotPublishIntoReplacementPairing() {

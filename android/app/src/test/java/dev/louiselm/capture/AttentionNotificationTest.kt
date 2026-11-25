@@ -27,7 +27,7 @@ import org.robolectric.util.ReflectionHelpers
 import java.util.concurrent.Executors
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28, 34, 37], qualifiers = "en")
+@Config(sdk = [30, 34, 37], qualifiers = "en")
 class AttentionNotificationTest {
     private lateinit var workExecutor: PausedExecutorService
     private lateinit var taskExecutor: PausedExecutorService

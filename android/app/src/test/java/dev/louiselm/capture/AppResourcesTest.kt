@@ -9,7 +9,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28, 34], qualifiers = "en")
+@Config(sdk = [30, 34], qualifiers = "en")
 class AppResourcesTest {
     @Test
     fun launcherUsesAnAdaptiveMask() {
