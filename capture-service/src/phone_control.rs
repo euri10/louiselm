@@ -1,8 +1,14 @@
 //! Authentication of the frozen phone-control controller frame.
 
 mod authority;
+mod evidence;
 mod http;
 mod socket;
+
+pub use evidence::{
+    ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
+    ActionReservation,
+};
 
 use std::{collections::HashSet, io, path::Path, sync::Arc};
 

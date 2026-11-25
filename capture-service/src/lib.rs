@@ -44,7 +44,10 @@ pub use pairing::{
     DeviceCredential, DeviceStatus, NotificationFailure, NotificationHealth, NotificationStatus,
     NotificationTargetStatus, PairingError, PairingOffer, PairingRegistry, PairingStatus,
 };
-pub use phone_control::{PhoneControlError, verify_phone_control_frame};
+pub use phone_control::{
+    ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
+    ActionReservation, PhoneControlError, verify_phone_control_frame,
+};
 pub use receiver::Receiver;
 pub use run_socket::{RunSocket, RunSocketError, RunSocketMessage};
 pub use runs::{
