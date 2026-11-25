@@ -265,6 +265,8 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     assert_eq!(detail["run"]["state"], "admitted");
     assert_eq!(detail["run"]["controller"], "not_checked");
     assert_eq!(detail["run"]["work"]["remaining"], 3);
+    assert_eq!(detail["run"]["load_session"], "unknown");
+    assert_eq!(detail["run"]["resume_deadline_ms"], 0);
     let next_offer = pairing
         .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
         .unwrap();
@@ -325,7 +327,7 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     )
     .await;
     assert_eq!(active["run"]["state"], "active");
-    assert_eq!(active["run"]["load_session"], false);
+    assert_eq!(active["run"]["load_session"], "unsupported");
     assert!(!active.to_string().contains("/private/worker"));
     let pending = signed_run(&fixture, &grant, &period, 55, &subject, &[], 0, 909);
     let pending: super::SignedRequest = serde_json::from_value(pending).unwrap();

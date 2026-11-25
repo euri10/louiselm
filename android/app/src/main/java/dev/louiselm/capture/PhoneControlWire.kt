@@ -6,6 +6,7 @@ import java.nio.CharBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
+import java.util.UUID
 import org.json.JSONObject
 
 private const val MAX_WIRE_INTEGER = 9_007_199_254_740_991L
@@ -28,6 +29,15 @@ internal fun phoneControlDiscoveryPayload(after: String?, limit: Int): ByteArray
     require(limit in 1..50) { "invalid discovery limit" }
     return (after?.let { phoneControlHex(it, 16) } ?: ByteArray(16)) + byteArrayOf(limit.toByte())
 }
+
+internal fun phoneControlRunIdBytes(value: String): ByteArray {
+    val id = UUID.fromString(value)
+    require(id.toString() == value) { "invalid Run UUID" }
+    return ByteBuffer.allocate(16).putLong(id.mostSignificantBits).putLong(id.leastSignificantBits).array()
+}
+
+internal fun phoneControlRunCursor(after: String?): ByteArray =
+    if (after == null) ByteArray(17) else byteArrayOf(1) + phoneControlRunIdBytes(after)
 
 internal fun phoneControlHistoryPagePayload(after: String?, limit: Int): ByteArray {
     require(limit in 1..50) { "invalid history limit" }
@@ -145,6 +155,12 @@ internal class PhoneControlRequest(
                 controllerId == "00".repeat(16) && subjectId == "00".repeat(16)) { "invalid prepared discovery" }
             53 -> require(this.payload.isEmpty() && expectedRevision > 0 &&
                 controllerId == "00".repeat(16) && subjectId != "00".repeat(16)) { "invalid prepared detail" }
+            54 -> require(this.payload.size == 17 && this.payload[0].toInt() in 0..1 &&
+                (this.payload[0].toInt() == 1 || this.payload.drop(1).all { it == 0.toByte() }) &&
+                expectedRevision == 0L && controllerId == "00".repeat(16) && subjectId == "00".repeat(16)) {
+                "invalid Run discovery"
+            }
+            55 -> require(this.payload.isEmpty() && controllerId == "00".repeat(16)) { "invalid Run detail" }
             else -> throw IllegalArgumentException("unsupported action")
         }
     }

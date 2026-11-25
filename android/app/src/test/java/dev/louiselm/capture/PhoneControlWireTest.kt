@@ -79,6 +79,34 @@ class PhoneControlWireTest {
     }
 
     @Test
+    fun durableRunReadsBindTheirUuidCursorAndRevision() {
+        val existing = fixture.getJSONObject("request")
+        val zero = "00".repeat(16)
+        val run = "11111111111141118111111111111111"
+        val uuid = "11111111-1111-4111-8111-111111111111"
+        fun request(action: Int, subject: String, payload: ByteArray, revision: Long) = PhoneControlRequest(
+            existing.getString("grant_id"), existing.getLong("grant_revision"), existing.getString("period_id"),
+            existing.getString("receiver_identity"), zero, subject, payload,
+            existing.getString("operation_id"), revision, true, action = action,
+        )
+        val first = request(54, zero, ByteArray(17), 0)
+        val next = request(54, zero, byteArrayOf(1) + phoneControlHex(run, 16), 0)
+        val detail = request(55, run, ByteArray(0), 3)
+        assertEquals(54, first.json(ByteArray(8)).getInt("action"))
+        assertEquals("01$run", next.json(ByteArray(8)).getString("payload"))
+        assertArrayEquals(ByteArray(17), phoneControlRunCursor(null))
+        assertArrayEquals(byteArrayOf(1) + phoneControlHex(run, 16), phoneControlRunCursor(uuid))
+        assertThrows(IllegalArgumentException::class.java) { phoneControlRunIdBytes("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE") }
+        assertEquals(run, detail.json(ByteArray(8)).getString("subject_id"))
+        assertEquals(3L, detail.json(ByteArray(8)).getLong("expected_revision"))
+        assertFalse(first.transcript().contentEquals(next.transcript()))
+        assertThrows(IllegalArgumentException::class.java) { request(54, zero, byteArrayOf(2) + ByteArray(16), 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(54, zero, byteArrayOf(0) + phoneControlHex(run, 16), 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(54, run, ByteArray(17), 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(55, run, ByteArray(1), 0) }
+    }
+
+    @Test
     fun invalidReadRangesAndNoncanonicalIdentifiersAreRejected() {
         for ((before, limit) in listOf(-1L to 1, 0L to 0, 0L to 51, 9_007_199_254_740_992L to 1)) {
             try {

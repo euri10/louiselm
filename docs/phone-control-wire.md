@@ -365,11 +365,13 @@ Action `55`, `read_run`, requires `read`. The controller ID is zero, the subject
 is the Run UUID's exact 16 bytes, payload is empty, and `expected_revision` is
 zero for current state or an exact nonzero revision. Success is
 `{v:1,type:"run_detail",request_id:hex16,run:RunDetail}` where `RunDetail` is
-`{run_id:uuid,revision:integer,state:string,freshness:"durable_current",controller:"not_checked",has_session:boolean,load_session:boolean-or-null,work:{ceiling:integer,consumed:integer,reserved:integer,remaining:integer},pending_mutations:integer,park_expires_at_ms:integer,park_expired:boolean,resume_pending:boolean,resume_deadline_ms:integer-or-null}`.
+`{run_id:uuid,revision:integer,state:string,freshness:"durable_current",controller:"not_checked",has_session:boolean,load_session:string,work:{ceiling:integer,consumed:integer,reserved:integer,remaining:integer},pending_mutations:integer,park_expires_at_ms:integer,park_expired:boolean,resume_pending:boolean,resume_deadline_ms:integer}`.
 State is `admitted`, `active`, `parked`, `cold_parked`, `resuming`, or
 `disposed`. Park expiry is evaluated against the receiver's clock; it does not
 claim cleanup occurred. `load_session` is the Agent-advertised capability, not
-a promise of lossless recovery. The owner checks the retained source/checkout
+a promise of lossless recovery; its values are `unknown`, `supported` and
+`unsupported`. The resume deadline is zero unless resumption is pending. The
+owner checks the retained source/checkout
 chain, current pairing, Read grant, original-project scope, every contributing
 Agent and the exact locked Run revision through delivery. Missing integration
 is `unsupported`; an unbound, damaged or stale Run is refused. These reads

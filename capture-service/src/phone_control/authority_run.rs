@@ -113,7 +113,8 @@ fn project(view: &RunView, wall_ms: u64) -> Result<Value, Refusal> {
             .is_some_and(|value| value > MAX_INTEGER)
         || view.session_id.is_some() != view.load_session.is_some()
         || (view.state == "resuming"
-            && (view.resume_operation_id.is_none() || view.resume_deadline_ms.is_none()))
+            && (view.resume_operation_id.is_none()
+                || view.resume_deadline_ms.is_none_or(|value| value == 0)))
     {
         return Err(Refusal::Unavailable);
     }
@@ -133,13 +134,14 @@ fn project(view: &RunView, wall_ms: u64) -> Result<Value, Refusal> {
     Ok(
         json!({"run_id":view.id,"revision":view.revision,"state":view.state,
         "freshness":"durable_current","controller":"not_checked","has_session":view.session_id.is_some(),
-        "load_session":view.load_session,"work":{"ceiling":view.generated_work_ceiling,
+        "load_session":match view.load_session { Some(true) => "supported", Some(false) => "unsupported", None => "unknown" },
+        "work":{"ceiling":view.generated_work_ceiling,
             "consumed":view.generated_work_consumed,"reserved":view.generated_work_reserved,"remaining":remaining},
         "pending_mutations":pending,"park_expires_at_ms":view.park_expires_at_ms,
         "park_expired":matches!(view.state.as_str(), "parked" | "cold_parked")
             && view.park_expires_at_ms != 0 && wall_ms >= view.park_expires_at_ms,
         "resume_pending":view.state == "resuming",
-        "resume_deadline_ms":if view.state == "resuming" { view.resume_deadline_ms } else { None }}),
+        "resume_deadline_ms":if view.state == "resuming" { view.resume_deadline_ms.unwrap_or(0) } else { 0 }}),
     )
 }
 
@@ -186,7 +188,7 @@ mod tests {
             assert_eq!(projection["state"], state);
             assert_eq!(projection["controller"], "not_checked");
             assert_eq!(projection["freshness"], "durable_current");
-            assert_eq!(projection["load_session"], false);
+            assert_eq!(projection["load_session"], "unsupported");
             assert_eq!(projection["work"]["remaining"], 2);
             assert_eq!(
                 projection["park_expired"],
@@ -202,10 +204,7 @@ mod tests {
         assert_eq!(project(&resuming, 1000).unwrap()["resume_pending"], true);
         resuming.state = "cold_parked".into();
         assert_eq!(project(&resuming, 1000).unwrap()["resume_pending"], false);
-        assert_eq!(
-            project(&resuming, 1000).unwrap()["resume_deadline_ms"],
-            serde_json::Value::Null
-        );
+        assert_eq!(project(&resuming, 1000).unwrap()["resume_deadline_ms"], 0);
         resuming.generated_work_reserved = 9;
         assert!(project(&resuming, 1000).is_err());
     }
