@@ -224,12 +224,17 @@ internal class PhoneOfflineStore(private val root: File) {
         if (hasMarker(marker)) deleteFile(marker)
     }
 
-    /** Explicitly remove one unreadable download, leaving other copies and keys intact. */
-    fun removeDamaged(receiver: String, id: String) = locked {
+    /** Recheck before explicitly removing an unreadable download, leaving other copies and keys intact. */
+    fun removeDamaged(id: String, key: SecretKey) = locked {
         require(id.matches(Regex("[0-9a-f]{64}")))
-        val directory = directory(receiver)
-        deleteFile(metadataFile(directory, id))
-        directory.listFiles()?.filter { it.name.startsWith("$id.") && it.name.endsWith(".data") }?.forEach(::deleteFile)
+        val directories = root.listFiles() ?: throw IOException("downloads unavailable")
+        for (directory in directories.filter { it.name.matches(DIRECTORY_NAME) }) {
+            if (Files.isSymbolicLink(directory.toPath()) || !directory.isDirectory) throw IOException("invalid download path")
+            if (id in readListing(directory, null, key).damaged) {
+                writeMarker(denialFile(directory, id))
+                purgeDeniedSource(directory, id)
+            }
+        }
     }
 
     /** Fence this computer before removing its downloads; the fence survives process restarts. */
@@ -248,13 +253,6 @@ internal class PhoneOfflineStore(private val root: File) {
             purgeRevokedContents(directory)
             deleteFile(revocationFile(directory))
         }
-    }
-
-    /** Remove only this receiver's encrypted downloads, including pins. */
-    fun removeReceiver(receiver: String) = locked {
-        val directory = directory(receiver)
-        directory.listFiles()?.filter { it.isFile }?.forEach(::deleteFile)
-        if (directory.exists() && !directory.delete()) throw IOException("download directory could not be removed")
     }
 
     private fun updateMetadata(source: PhoneOfflineSource, key: SecretKey, update: (PhoneOfflineCopy) -> PhoneOfflineCopy) = locked {

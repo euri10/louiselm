@@ -2,6 +2,7 @@ package dev.louiselm.capture
 
 import android.app.KeyguardManager
 import android.content.Intent
+import android.content.DialogInterface
 import android.os.CancellationSignal
 import android.os.Looper
 import android.os.PowerManager
@@ -34,6 +35,7 @@ import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
+import org.robolectric.shadows.ShadowAlertDialog
 
 private object OfflineScreenFixture {
     val receiver = "aa".repeat(32)
@@ -215,9 +217,54 @@ class PhoneOfflineScreenTest {
     }
 
     @Test
+    fun actualInteractionCannotExtendOfflineUnlockPastOneHour() {
+        unlockAndOpen()
+        repeat(14) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(4))
+            activity.onUserInteraction()
+        }
+        assertTrue(contains("protected offline text"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(4))
+        drain()
+        assertFalse(contains("protected offline text"))
+        assertTrue(button(R.string.phone_offline_unlock).isShown)
+    }
+
+    @Test
+    fun observedRevocationClearsTheOpenOfflineView() {
+        unlockAndOpen()
+        activity.sendBroadcast(Intent(PHONE_OFFLINE_REVOKED).setPackage(activity.packageName))
+        drain()
+        assertFalse(contains("protected offline text"))
+        assertTrue(button(R.string.phone_offline_unlock).isShown)
+    }
+
+    @Test
     fun offlineReadingDoesNotRequireTheCapturePairingKey() {
         OfflineScreenFixture.pairingUnavailable = true
         unlockAndOpen()
         assertTrue(contains("protected offline text"))
+    }
+
+    @Test
+    fun unreadableMetadataCanBeRemovedOnlyAfterConfirmation() {
+        val root = File(activity.filesDir, "phone-offline-v1")
+        val metadata = root.walkTopDown().single { it.name.endsWith(".meta") }
+        val bytes = metadata.readBytes()
+        bytes[0] = (bytes[0].toInt() xor 1).toByte()
+        metadata.writeBytes(bytes)
+        button(R.string.phone_offline_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        val remove = views(activity.window.decorView).filterIsInstance<Button>()
+            .single { it.text.toString().startsWith("Remove unreadable copy") }
+        remove.performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_NEGATIVE).performClick()
+        assertTrue(metadata.exists())
+        remove.performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        drain()
+        assertFalse(metadata.exists())
     }
 }

@@ -512,8 +512,33 @@ class PhoneControlActivity : Activity() {
                     }
                 })
             }
+            for (id in listing.damaged.distinct()) {
+                conversation.addView(Button(this).apply {
+                    text = getString(R.string.phone_offline_remove_damaged, id.take(12))
+                    setOnClickListener { confirmRemoveDamaged(id) }
+                })
+            }
             conversation.addView(TextView(this).apply { text = getString(R.string.phone_offline_unsupported) })
         }
+    }
+
+    private fun confirmRemoveDamaged(id: String) {
+        AlertDialog.Builder(this).setTitle(R.string.phone_offline_remove_damaged_title)
+            .setMessage(R.string.phone_offline_remove_damaged_warning)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.phone_offline_remove) { _, _ ->
+                val current = offlinePeriod ?: return@setPositiveButton
+                task({ mayContinue -> offlineResult {
+                    val key = current.key(SystemClock.elapsedRealtime())
+                        ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                    if (!foreground || !mayContinue()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                    offlineStore.removeDamaged(id, key)
+                    PhoneControlResult.Value(Unit)
+                } }, { if (foreground) render(R.string.phone_offline_failed) }) { _, _ ->
+                    busy = false
+                    if (foreground && offlinePeriod === current) showOfflineCopies()
+                }
+            }.show()
     }
 
     private fun openOfflinePage(index: Int, markOpened: Boolean) {

@@ -72,10 +72,30 @@ class PhoneOfflineStoreTest {
         val source = PhoneOfflineSource(receiver, target, "name", "agent", "project")
         assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(page("content")), false, 1, 1, 1_000_000, key) { true })
         val wrongKey = SecretKeySpec(ByteArray(32) { 9 }, "AES")
-        assertEquals(1, store.list(receiver, wrongKey).damaged.size)
+        val unreadableId = store.list(receiver, wrongKey).damaged.single()
+        store.removeDamaged(unreadableId, key)
         assertEquals(page("content"), store.readPage(source, 0, key))
-        store.removeReceiver("bb".repeat(32))
         assertFalse(store.list(receiver, key).copies.isEmpty())
+    }
+
+    @Test
+    fun explicitlyRemovingDamagedMetadataPreservesAnotherSource() {
+        val root = temporary.newFolder()
+        val store = PhoneOfflineStore(root)
+        val source = PhoneOfflineSource(receiver, target, "one", "agent", "project")
+        val otherTarget = PhoneControlTarget("11".repeat(16), "44".repeat(16))
+        val other = PhoneOfflineSource(receiver, otherTarget, "two", "agent", "project")
+        store.save(source, sequenceOf(page("one")), true, 1, 1, 1_000_000, key) { true }
+        val metadata = root.walkTopDown().single { it.name.endsWith(".meta") }
+        store.save(other, sequenceOf(page("two", otherTarget)), true, 1, 1, 1_000_000, key) { true }
+        val bytes = metadata.readBytes()
+        bytes[0] = (bytes[0].toInt() xor 1).toByte()
+        metadata.writeBytes(bytes)
+        val damaged = store.listAll(key).damaged.single()
+        store.removeDamaged(damaged, key)
+        assertTrue(store.listAll(key).damaged.isEmpty())
+        assertEquals(page("two", otherTarget), store.readPage(other, 0, key))
+        assertEquals(PhoneOfflineSave.REVOKED, store.save(source, sequenceOf(page("late")), true, 2, 2, 1_000_000, key) { true })
     }
 
     @Test
