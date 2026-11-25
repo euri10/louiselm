@@ -24,7 +24,18 @@ internal sealed class PhoneControlReply {
         val revision: Long, val status: String, val entries: List<PhoneControlEntry>,
         val nextBefore: Long, val complete: Boolean,
     ) : PhoneControlReply()
+    data class ActionHistory(val requestId: String, val record: PhoneActionRecord) : PhoneControlReply()
+    data class ActionHistoryPage(val requestId: String, val records: List<PhoneActionRecord>, val nextAfter: String) : PhoneControlReply()
 }
+
+internal enum class PhoneActionState { UNKNOWN, ACCEPTED, REJECTED, FENCED_NO_EFFECT }
+
+internal data class PhoneActionRecord(
+    val operationId: String, val receiverIdentity: String, val controllerId: String, val subjectId: String,
+    val action: Int, val payloadHash: String, val grantId: String, val grantRevision: Long,
+    val expectedRevision: Long, val recordedAtMs: Long, val updatedAtMs: Long,
+    val state: PhoneActionState, val evidence: String,
+)
 
 internal data class PhoneControlOption(val label: String, val description: String, val preview: String)
 
@@ -81,6 +92,26 @@ private fun Map<String, Any>.wireNumber(name: String): Long = this[name] as? Lon
 private fun Map<String, Any>.wireBoolean(name: String): Boolean = this[name] as? Boolean ?: throw IllegalArgumentException("invalid $name")
 private fun Map<String, Any>.wireArray(name: String): List<*> = this[name] as? List<*> ?: throw IllegalArgumentException("invalid $name")
 private fun Map<String, Any>.wireKeys(vararg names: String) = require(keys == names.toSet()) { "invalid fields" }
+private fun Map<String, Any>.wireHex(name: String, size: Int): String = wireString(name).also { phoneControlHex(it, size) }
+
+private fun parseActionRecord(value: Any): PhoneActionRecord {
+    val record = value.wireObject()
+    record.wireKeys("operation_id", "receiver_identity", "controller_id", "subject_id", "action", "payload_hash",
+        "grant_id", "grant_revision", "expected_revision", "recorded_at_ms", "updated_at_ms", "state", "evidence")
+    val state = PhoneActionState.entries.firstOrNull { it.name.lowercase() == record.wireString("state") }
+        ?: throw UnsupportedReply()
+    val evidence = record.wireString("evidence")
+    if (state == PhoneActionState.UNKNOWN) require(evidence.isEmpty()) else phoneControlHex(evidence, 32)
+    val action = record.wireNumber("action")
+    val grantRevision = record.wireNumber("grant_revision")
+    val recorded = record.wireNumber("recorded_at_ms")
+    val updated = record.wireNumber("updated_at_ms")
+    require(action in 3..255 && grantRevision > 0 && updated >= recorded)
+    return PhoneActionRecord(record.wireHex("operation_id", 16), record.wireHex("receiver_identity", 32),
+        record.wireHex("controller_id", 16), record.wireHex("subject_id", 16), action.toInt(),
+        record.wireHex("payload_hash", 32), record.wireHex("grant_id", 16), grantRevision,
+        record.wireNumber("expected_revision"), recorded, updated, state, evidence)
+}
 
 private fun parseEntry(value: Any): PhoneControlEntry {
     val entry = value.wireObject()
@@ -186,6 +217,21 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 require(nextBefore == 0L || entries.isNotEmpty() && nextBefore <= entries.first().seq)
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
                     status, entries, nextBefore, fields.wireBoolean("complete"))
+            }
+            "action_history" -> {
+                keys("request_id", "record")
+                PhoneControlReply.ActionHistory(hex("request_id", 16), parseActionRecord(requireNotNull(fields["record"])))
+            }
+            "action_history_page" -> {
+                keys("request_id", "records", "next_after")
+                val records = fields.wireArray("records").map { parseActionRecord(requireNotNull(it)) }
+                require(records.zipWithNext().all { (left, right) -> left.operationId < right.operationId })
+                val next = string("next_after")
+                if (next.isNotEmpty()) {
+                    phoneControlHex(next, 16)
+                    require(records.isNotEmpty() && next == records.last().operationId)
+                }
+                PhoneControlReply.ActionHistoryPage(hex("request_id", 16), records, next)
             }
             else -> throw UnsupportedReply()
         }
