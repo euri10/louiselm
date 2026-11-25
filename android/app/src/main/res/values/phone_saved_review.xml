@@ -6,7 +6,7 @@
     <string name="phone_saved_run">Run: %1$s</string>
     <string name="phone_saved_destination">Destination: %1$s\nBase commit: %2$s</string>
     <string name="phone_saved_agents">Producer: %1$s\nRun Agents: %2$s</string>
-    <string name="phone_saved_commands">Historical verification passed %1$d commands.</string>
+    <string name="phone_saved_commands">Historical verification commands passed: %1$d.</string>
     <string name="phone_saved_verification_matching">Broker verification: matches retained evidence.</string>
     <string name="phone_saved_verification_changed">Broker verification: evidence changed.</string>
     <string name="phone_saved_verification_quarantined">Broker verification: quarantined.</string>
