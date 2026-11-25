@@ -74,6 +74,20 @@ fn begun_attempt_remains_unknown_and_cannot_be_fenced_by_absence() {
 }
 
 #[test]
+fn malformed_fence_times_do_not_reserve_an_operation() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = OwnerJournal::open(temp.path().join("owner")).unwrap();
+    for (id, at_ms) in [(7, 999), (8, crate::phone_control::MAX_INTEGER + 1)] {
+        let request = identity(temp.path(), id);
+        assert_eq!(
+            owner.fence(&request, at_ms),
+            Err(ActionEvidenceError::Malformed)
+        );
+        assert_eq!(owner.begin(&request), Ok(Begin::New));
+    }
+}
+
+#[test]
 fn only_native_owner_outcomes_for_the_exact_identity_are_retained() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("owner");

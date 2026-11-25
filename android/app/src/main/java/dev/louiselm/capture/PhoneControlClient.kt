@@ -262,6 +262,38 @@ internal class PhoneControlClient(
         return PhoneControlResult.Value(reply to operationId)
     }
 
+    /** Inspect the original operation under current read authority without renewing the period. */
+    fun readActionHistory(
+        period: PhoneControlPeriod,
+        pending: PendingPhoneAction,
+        nowMs: Long,
+        maySend: () -> Boolean,
+    ): PhoneControlResult<PhoneActionRecord> = guarded {
+        if (!period.isActive(nowMs)) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend()) return@guarded unavailable()
+        val config = pairingStore.load() ?: return@guarded unavailable()
+        if (currentGrant(config) != period.grant || pending.receiverIdentity != period.grant.receiverIdentity) {
+            return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        }
+        val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
+            period.grant.receiverIdentity, pending.controllerId, pending.subjectId,
+            phoneControlHistoryRecordPayload(pending.operationId), operationId, 0, false, action = 2)
+        val signature = period.sign(request, nowMs) ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
+        val currentConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (currentGrant(currentConfig) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (reply !is PhoneControlReply.ActionHistory) return@guarded refusal(reply)
+        val record = reply.record
+        if (reply.requestId != operationId || record.operationId != pending.operationId ||
+            record.receiverIdentity != pending.receiverIdentity || record.controllerId != pending.controllerId ||
+            record.subjectId != pending.subjectId || record.action != pending.action || record.payloadHash != pending.payloadHash ||
+            record.grantId != pending.grantId || record.grantRevision != pending.grantRevision ||
+            record.expectedRevision != pending.expectedRevision) return@guarded malformed()
+        PhoneControlResult.Value(record)
+    }
+
     /** Inspect scoped retained evidence without a live Session or idle-period renewal. */
     fun readActionHistoryPage(
         period: PhoneControlPeriod,

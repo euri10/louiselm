@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::hex::lower_hex;
 use crate::phone_control::{
     ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome, ActionReservation,
-    MAX_FRAME,
+    MAX_FRAME, MAX_INTEGER,
 };
 
 #[cfg(test)]
@@ -142,6 +142,9 @@ impl OwnerJournal {
         identity: &ActionIdentity,
         at_ms: u64,
     ) -> Result<Fence, ActionEvidenceError> {
+        if at_ms < identity.recorded_at_ms || at_ms > MAX_INTEGER {
+            return Err(ActionEvidenceError::Malformed);
+        }
         match self.store.reserve(identity)? {
             ActionReservation::Existing => {
                 match self.store.lookup(&identity.operation_id)?.outcome {
