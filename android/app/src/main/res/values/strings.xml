@@ -58,7 +58,11 @@
     <string name="phone_state_waiting_permission">Waiting for permission</string>
     <string name="phone_state_cancelling">Stopping</string>
     <string name="phone_state_error">Error</string>
-    <string name="phone_incomplete">Some current conversation content is unavailable.</string>
+    <string name="phone_incomplete">This conversation history is incomplete.</string>
+    <string name="phone_archive_unavailable">Desktop archive history is unavailable.</string>
+    <string name="phone_replay_unverified">Replayed history may be incomplete.</string>
+    <string name="phone_redacted">Some conversation content was withheld.</string>
+    <string name="phone_missing">Some conversation content is missing or unsupported.</string>
     <string name="phone_user_message">You: %1$s</string>
     <string name="phone_agent_message">Agent: %1$s</string>
     <string name="phone_tool">Tool: %1$s (%2$s)\n%3$s</string>

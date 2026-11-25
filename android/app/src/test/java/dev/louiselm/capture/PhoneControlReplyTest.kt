@@ -37,16 +37,20 @@ class PhoneControlReplyTest {
 
     @Test
     fun sessionPagesAcceptClosedEntriesAndRejectAmbiguousContent() {
-        val page = """{"v":1,"type":"session_page","controller_id":"${"01".repeat(16)}","subject_id":"${"02".repeat(16)}","operation_id":"${"03".repeat(16)}","revision":1,"status":"ready","entries":[{"kind":"message","seq":1,"role":"assistant","text":"hello","truncated":false},{"kind":"question","seq":2,"request_id":"q","question":"choose","options":[{"label":"yes","description":"","preview":""}],"multi_select":false,"truncated":false}],"next_before":0,"complete":true}"""
+        val page = """{"v":2,"type":"session_page","controller_id":"${"01".repeat(16)}","subject_id":"${"02".repeat(16)}","operation_id":"${"03".repeat(16)}","revision":1,"status":"ready","entries":[{"kind":"message","seq":1,"role":"assistant","text":"hello","truncated":false},{"kind":"question","seq":2,"request_id":"q","question":"choose","options":[{"label":"yes","description":"","preview":""}],"multi_select":false,"truncated":false}],"next_before":0,"complete":false,"source":{"replay":"unverified","archive":"unavailable","redaction":"present","missing":true,"truncated":false}}"""
         val parsed = parse(page)
         assertTrue(parsed is PhoneControlReply.SessionPage)
         assertEquals(2, (parsed as PhoneControlReply.SessionPage).entries.size)
+        assertEquals(PhoneHistorySource("unverified", "unavailable", "present", true, false), parsed.source)
         for (bad in listOf(
             page.replace("\"seq\":2", "\"seq\":1"),
             page.replace("\"role\":\"assistant\"", "\"role\":\"system\""),
             page.replace("\"text\":\"hello\"", "\"text\":\"hello\",\"text\":\"other\""),
             page.replace("\"multi_select\":false", "\"multi_select\":false,\"extra\":true"),
             page.replace("\"status\":\"ready\"", "\"status\":\"disposed\""),
+            page.replace("\"redaction\":\"present\"", "\"redaction\":\"hidden\""),
+            page.replace("\"missing\":true", "\"missing\":true,\"private\":true"),
+            page.replace("\"complete\":false", "\"complete\":true"),
         )) {
             assertTrue(parse(bad) is PhoneControlReply.Failure)
         }

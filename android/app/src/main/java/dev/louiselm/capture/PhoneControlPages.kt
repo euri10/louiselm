@@ -2,6 +2,12 @@ package dev.louiselm.capture
 
 internal data class PhoneSessionRefresh(val page: PhoneControlReply.SessionPage, val missingOlder: Boolean)
 
+internal fun PhoneHistorySource.merge(other: PhoneHistorySource): PhoneHistorySource? {
+    if (replay != other.replay || archive != other.archive) return null
+    return copy(redaction = if (redaction == "present" || other.redaction == "present") "present" else "unknown",
+        missing = missing || other.missing, truncated = truncated || other.truncated)
+}
+
 /** Rebuild the visible range from one revision; the caller owns the bounded network reads. */
 internal fun reconcilePhoneSessionPages(
     newest: PhoneControlReply.SessionPage,
@@ -16,6 +22,7 @@ internal fun reconcilePhoneSessionPages(
     var entries = newest.entries
     var cursor = newest.nextBefore
     var complete = newest.complete
+    var source = newest.source
     while (entries.first().seq > oldest && cursor != 0L && entries.size < window) {
         when (val result = readOlder(cursor, newest.revision, minOf(50, window - entries.size))) {
             is PhoneControlResult.Failure -> {
@@ -35,9 +42,10 @@ internal fun reconcilePhoneSessionPages(
                 entries = older.entries + entries
                 cursor = older.nextBefore
                 complete = complete && older.complete
+                source = source.merge(older.source) ?: return PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)
             }
         }
     }
     val missing = entries.first().seq > oldest
-    return PhoneControlResult.Value(PhoneSessionRefresh(newest.copy(entries = entries, nextBefore = cursor, complete = complete), missing))
+    return PhoneControlResult.Value(PhoneSessionRefresh(newest.copy(entries = entries, nextBefore = cursor, complete = complete, source = source), missing))
 }

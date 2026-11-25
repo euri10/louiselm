@@ -54,6 +54,8 @@ private object PhoneScreenFixture {
     var revision = 1L
     var latest = listOf<PhoneControlEntry>(PhoneControlEntry.Message(1, "assistant", "private session text", false))
     var older = emptyList<PhoneControlEntry>()
+    var latestSource = PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false)
+    var olderSource = latestSource
     var nextBefore = 0L
     var staleOlder = false
     var olderOutcome: PhoneControlOutcome? = null
@@ -65,6 +67,7 @@ private object PhoneScreenFixture {
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
+        latestSource = PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false); olderSource = latestSource
     }
 }
 
@@ -132,9 +135,11 @@ class PhoneScreenClientFixture {
         PhoneScreenFixture.readRequests += Triple(before, expectedRevision, interaction)
         if (before != 0L && PhoneScreenFixture.staleOlder) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
         if (before != 0L && PhoneScreenFixture.olderOutcome != null) return PhoneControlResult.Failure(requireNotNull(PhoneScreenFixture.olderOutcome))
+        val source = if (before == 0L) PhoneScreenFixture.latestSource else PhoneScreenFixture.olderSource
+        val complete = source.replay == "not_applicable" && source.redaction == "unknown" && !source.missing && !source.truncated
         return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),
             PhoneScreenFixture.revision, "ready", if (before == 0L) PhoneScreenFixture.latest else PhoneScreenFixture.older,
-            if (before == 0L) PhoneScreenFixture.nextBefore else 0, true))
+            if (before == 0L) PhoneScreenFixture.nextBefore else 0, complete, source))
     }
 
     @Implementation(methodName = "listControllers")
@@ -409,6 +414,33 @@ class PhoneControlActivityTest {
         assertTrue(refreshed.any { it.contains("updated fourth") })
         assertFalse(refreshed.any { it.contains("first") })
         assertTrue(refreshed.any { it.contains("updated") && it.contains("older") })
+    }
+
+    @Test
+    fun historyShowsSourceGapsFromOlderPages() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(2, "assistant", "recent", false))
+        PhoneScreenFixture.older = listOf(PhoneControlEntry.Message(1, "user", "shortened", true))
+        PhoneScreenFixture.nextBefore = 2
+        PhoneScreenFixture.latestSource = PhoneHistorySource("unverified", "unavailable", "unknown", false, false)
+        PhoneScreenFixture.olderSource = PhoneHistorySource("unverified", "unavailable", "present", true, true)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        drain()
+        buttonText("Load older messages").performClick()
+        drain()
+        val displayed = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        for (id in listOf(R.string.phone_incomplete, R.string.phone_archive_unavailable, R.string.phone_replay_unverified,
+            R.string.phone_redacted, R.string.phone_missing, R.string.phone_truncated)) {
+            assertTrue(displayed.contains(activity.getString(id)))
+        }
     }
 
     @Test

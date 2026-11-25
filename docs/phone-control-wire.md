@@ -13,8 +13,9 @@ same-user software or a compromised phone.
 
 All network traffic uses the existing paired-device bearer and receiver-key-pinned
 HTTPS. A bearer is necessary but insufficient for protected access. All messages
-below are UTF-8 JSON objects, including nested objects. `v` is integer `1` and
-`type` is the exact string shown. Objects have exactly the listed fields; no
+below are UTF-8 JSON objects, including nested objects. `v` is integer `1`
+except for the version-2 Session page below; `type` is the exact string shown.
+Objects have exactly the listed fields; no
 duplicates, unknown fields, implicit defaults, coercions, nulls, or trailing
 values are accepted. Unknown versions, message types, action values or enum
 values yield `unsupported`; unknown fields and invalid encodings yield
@@ -298,7 +299,7 @@ This checks the signed bindings only. The controller still checks its own live
 controller, subject, project, Agent and state, and the receiver must still
 check current grant, lease and replay state before delivery or admission.
 
-Success is `{v,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,entries:[Entry],next_before:integer,complete:boolean}`.
+Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
 The receiver returns this same closed object over HTTPS after the final authority
 recheck. `revision` is nonzero and increases on any projected state/content
 change within the subject. Status is one of `starting`, `ready`, `admitting`,
@@ -311,6 +312,15 @@ An unknown cursor returns `stale_subject`. To keep a multi-page read on one
 snapshot, use the first page's nonzero revision in subsequent requests.
 `complete=false` means projected content for this page or its current state is
 unavailable or omitted; additional older pages alone do not make it false.
+`HistorySource` is exactly `{replay:string,archive:string,redaction:string,missing:boolean,truncated:boolean}`.
+`replay` is `not_applicable` or `unverified`; ACP replay does not establish
+completeness. `archive` is `unavailable` until an archive is bound by its
+owner. `redaction` is `present` when exclusions are known, otherwise `unknown`;
+unknown does not assert that no redaction occurred. `missing` identifies
+unsupported or missing source material, and `truncated` identifies entries
+shortened on this page. A complete page cannot have unverified replay, known
+redaction, missing content or truncation. Clients combine page-local omissions
+when assembling a snapshot and show the limitations with the content.
 Return fewer than `limit` entries if necessary to keep the whole response
 within the byte bound; a nonzero cursor must advance. Never include unsubmitted
 desktop drafts/Staged context, ambient files, raw ACP objects, arbitrary RPC,

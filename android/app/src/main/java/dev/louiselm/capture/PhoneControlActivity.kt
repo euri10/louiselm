@@ -557,8 +557,13 @@ class PhoneControlActivity : Activity() {
                     return@task
                 }
                 val combined = page.entries + previous.entries
+                val source = page.source.merge(previous.source)
+                if (source == null) {
+                    showFailure(PhoneControlOutcome.MALFORMED)
+                    return@task
+                }
                 newerOmitted = newerOmitted || combined.size > HISTORY_WINDOW
-                sessionPage = page.copy(entries = combined.take(HISTORY_WINDOW), complete = page.complete && previous.complete)
+                sessionPage = page.copy(entries = combined.take(HISTORY_WINDOW), complete = page.complete && previous.complete, source = source)
                 historyChanged = false
             } else if (interaction || previous == null || refresh.missingOlder || page.revision != previous.revision) {
                 historyChanged = if (interaction) false else refresh.missingOlder
@@ -582,6 +587,11 @@ class PhoneControlActivity : Activity() {
         if (historyChanged) line(getString(R.string.phone_history_changed))
         if (newerOmitted) line(getString(R.string.phone_newer_omitted))
         if (!page.complete) line(getString(R.string.phone_incomplete))
+        if (page.source.archive == "unavailable") line(getString(R.string.phone_archive_unavailable))
+        if (page.source.replay == "unverified") line(getString(R.string.phone_replay_unverified))
+        if (page.source.redaction == "present") line(getString(R.string.phone_redacted))
+        if (page.source.missing) line(getString(R.string.phone_missing))
+        if (page.source.truncated && page.entries.none { it.truncated }) line(getString(R.string.phone_truncated))
         for (entry in page.entries) {
             when (entry) {
                 is PhoneControlEntry.Message -> line(getString(if (entry.role == "user") R.string.phone_user_message else R.string.phone_agent_message, entry.text))

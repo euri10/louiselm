@@ -135,9 +135,40 @@ enum ReadResponse {
         status: String,
         entries: Vec<ReadEntry>,
         next_before: u64,
-        #[serde(rename = "complete")]
-        _complete: bool,
+        complete: bool,
+        source: HistorySource,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistorySource {
+    replay: ReplaySource,
+    #[serde(rename = "archive")]
+    _archive: ArchiveSource,
+    redaction: RedactionSource,
+    missing: bool,
+    truncated: bool,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ReplaySource {
+    Unverified,
+    NotApplicable,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ArchiveSource {
+    Unavailable,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RedactionSource {
+    Present,
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -257,7 +288,7 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             _ => Refusal::Unavailable,
         }),
         ReadResponse::SessionPage {
-            v: 1,
+            v: 2,
             controller_id,
             subject_id,
             operation_id,
@@ -265,7 +296,8 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             status,
             entries,
             next_before,
-            ..
+            complete,
+            source,
         } => {
             let payload = fixed::<10>(&request.payload).map_err(|_| Refusal::Unavailable)?;
             let limit = usize::from(u16::from_be_bytes([payload[8], payload[9]]));
@@ -284,6 +316,11 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
                 || revision > MAX_INTEGER
                 || (request.expected_revision != 0 && revision != request.expected_revision)
                 || entries.len() > limit
+                || (complete
+                    && (source.replay != ReplaySource::NotApplicable
+                        || source.redaction != RedactionSource::Unknown
+                        || source.missing
+                        || source.truncated))
                 || next_before > MAX_INTEGER
                 || (next_before != 0
                     && entries
@@ -1001,10 +1038,11 @@ mod tests {
             "action":1, "payload":"00000000000000000032", "payload_hash":"07".repeat(32),
             "operation_id":operation, "expected_revision":0, "interaction":1, "signature":"3006020101020101"
         })).unwrap();
-        let page = json!({"v":1,"type":"session_page","controller_id":request.controller_id,
+        let page = json!({"v":2,"type":"session_page","controller_id":request.controller_id,
             "subject_id":request.subject_id,"operation_id":request.operation_id,"revision":1,"status":"ready",
             "entries":[{"kind":"message","seq":1,"role":"assistant","text":"hello","truncated":false}],
-            "next_before":0,"complete":true});
+            "next_before":0,"complete":false,"source":{"replay":"unverified","archive":"unavailable",
+                "redaction":"present","missing":true,"truncated":false}});
         assert_eq!(
             super::validate_read_response(&serde_json::to_vec(&page).unwrap(), &request).unwrap(),
             page
@@ -1017,6 +1055,24 @@ mod tests {
         );
         wrong = page.clone();
         wrong["entries"][0]["secret"] = json!("not a field");
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&wrong).unwrap(), &request),
+            Err(super::Refusal::Unavailable)
+        );
+        wrong = page.clone();
+        wrong["source"]["redaction"] = json!("unknown-mode");
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&wrong).unwrap(), &request),
+            Err(super::Refusal::Unavailable)
+        );
+        wrong = page.clone();
+        wrong["source"]["private"] = json!(true);
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&wrong).unwrap(), &request),
+            Err(super::Refusal::Unavailable)
+        );
+        wrong = page.clone();
+        wrong["complete"] = json!(true);
         assert_eq!(
             super::validate_read_response(&serde_json::to_vec(&wrong).unwrap(), &request),
             Err(super::Refusal::Unavailable)

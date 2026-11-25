@@ -22,7 +22,7 @@ internal sealed class PhoneControlReply {
     data class SessionPage(
         val controllerId: String, val subjectId: String, val operationId: String,
         val revision: Long, val status: String, val entries: List<PhoneControlEntry>,
-        val nextBefore: Long, val complete: Boolean,
+        val nextBefore: Long, val complete: Boolean, val source: PhoneHistorySource,
     ) : PhoneControlReply()
     data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
     data class SessionList(val controllerId: String, val operationId: String,
@@ -46,6 +46,10 @@ internal data class PhoneActionRecord(
 )
 
 internal data class PhoneControlOption(val label: String, val description: String, val preview: String)
+
+internal data class PhoneHistorySource(
+    val replay: String, val archive: String, val redaction: String, val missing: Boolean, val truncated: Boolean,
+)
 
 internal sealed class PhoneControlEntry(open val seq: Long, open val truncated: Boolean) {
     data class Message(override val seq: Long, val role: String, val text: String, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
@@ -172,8 +176,9 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
         fun number(name: String): Long = fields[name] as? Long ?: throw IllegalArgumentException("invalid $name")
         fun hex(name: String, size: Int): String = string(name).also { phoneControlHex(it, size) }
         fun keys(vararg names: String) = require(fields.keys == names.toSet() + setOf("v", "type")) { "invalid fields" }
-        if (number("v") != 1L) throw UnsupportedReply()
-        when (string("type")) {
+        val type = string("type")
+        if (number("v") != if (type == "session_page") 2L else 1L) throw UnsupportedReply()
+        when (type) {
             "error" -> {
                 keys("code")
                 val code = PhoneControlOutcome.entries.firstOrNull { it.name.lowercase() == string("code") }
@@ -214,7 +219,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 PhoneControlReply.Unlocked(hex("grant_id", 16), revision, hex("period_id", 16), idle, absolute)
             }
             "session_page" -> {
-                keys("controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete")
+                keys("controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete", "source")
                 val revision = number("revision")
                 require(revision > 0)
                 val status = string("status")
@@ -223,8 +228,18 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 require(entries.zipWithNext().all { (left, right) -> left.seq < right.seq })
                 val nextBefore = number("next_before")
                 require(nextBefore == 0L || entries.isNotEmpty() && nextBefore <= entries.first().seq)
+                val source = requireNotNull(fields["source"]).wireObject()
+                source.wireKeys("replay", "archive", "redaction", "missing", "truncated")
+                val replay = source.wireString("replay")
+                val archive = source.wireString("archive")
+                val redaction = source.wireString("redaction")
+                if (replay !in setOf("unverified", "not_applicable") || archive != "unavailable" ||
+                    redaction !in setOf("present", "unknown")) throw UnsupportedReply()
+                val details = PhoneHistorySource(replay, archive, redaction, source.wireBoolean("missing"), source.wireBoolean("truncated"))
+                val complete = fields.wireBoolean("complete")
+                require(!complete || replay == "not_applicable" && redaction == "unknown" && !details.missing && !details.truncated)
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
-                    status, entries, nextBefore, fields.wireBoolean("complete"))
+                    status, entries, nextBefore, complete, details)
             }
             "controller_list" -> {
                 keys("operation_id", "controllers", "next_after")

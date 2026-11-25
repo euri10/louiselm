@@ -602,8 +602,8 @@ function Controller:read(line, callback)
                 finish(error_result("stale_subject"))
               else
                 subject.history_subject = page.subject
-                page.subject, page.source = nil, nil
-                page.v, page.type = 1, "session_page"
+                page.subject = nil
+                page.v, page.type = 2, "session_page"
                 page.controller_id, page.subject_id, page.operation_id =
                   attached, request.subject_id, request.operation_id
                 if #nvim.json.encode(page) + 1 > MAX_LINE then

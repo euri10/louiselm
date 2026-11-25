@@ -8,6 +8,7 @@ class PhoneControlPagesTest {
     private fun page(revision: Long, sequences: List<Long>, next: Long = 0) = PhoneControlReply.SessionPage(
         "controller", "subject", "operation", revision, "ready",
         sequences.map { PhoneControlEntry.Message(it, "assistant", "message $it", false) }, next, true,
+        PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false),
     )
 
     @Test

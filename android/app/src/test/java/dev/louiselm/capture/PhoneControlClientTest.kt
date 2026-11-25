@@ -101,7 +101,7 @@ class PhoneControlClientTest {
             PhoneControlReply.SessionPage(request.controllerId, if (mismatched) "44".repeat(16) else request.subjectId,
                 request.operationId, if (badRevision) expectedRevision + 1 else if (expectedRevision == 0L) 1 else expectedRevision,
                 "ready", if (badCursor) listOf(PhoneControlEntry.Message(expectedBefore, "user", "wrong page", false)) else emptyList(),
-                0, true)
+                0, true, PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false))
         }
         val client = PhoneControlClient(context, keys, transport)
         val target = PhoneControlTarget("33".repeat(16), "44".repeat(16))

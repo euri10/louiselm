@@ -75,6 +75,14 @@ T["reads replay that predates phone observation and rejects stale pages"] = func
 
   local page = read(0, 0)
   MiniTest.expect.equality(page.type, "session_page")
+  MiniTest.expect.equality(page.v, 2)
+  MiniTest.expect.equality(page.source, {
+    replay = "unverified",
+    archive = "unavailable",
+    redaction = "unknown",
+    missing = true,
+    truncated = false,
+  })
   MiniTest.expect.equality(page.complete, false) -- ACP replay is not a completeness guarantee.
   local revision, total = page.revision, 0
   repeat
@@ -99,6 +107,15 @@ T["reads replay that predates phone observation and rejects stale pages"] = func
   local fresh = read(0, 0)
   MiniTest.expect.no_equality(fresh.revision, revision)
   MiniTest.expect.equality(fresh.entries[#fresh.entries].text:find("later output", 1, true) ~= nil, true)
+
+  session.emitter:emit({
+    type = "thought_chunk",
+    session_id = session:inspect().id,
+    data = { content = { type = "text", text = "private reasoning" } },
+  })
+  local withheld = read(0, 0)
+  MiniTest.expect.equality(withheld.source.redaction, "present")
+  MiniTest.expect.equality(nvim.json.encode(withheld):find("private reasoning", 1, true), nil)
 end
 
 return T

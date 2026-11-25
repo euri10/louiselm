@@ -592,10 +592,10 @@ mod tests {
                 reader.read_line(&mut line).await.unwrap();
                 let frame: Value = serde_json::from_str(&line).unwrap();
                 let request = &frame["request"];
-                let page = json!({"v":1,"type":"session_page","controller_id":request["controller_id"],
+                let page = json!({"v":2,"type":"session_page","controller_id":request["controller_id"],
                 "subject_id":request["subject_id"],"operation_id":request["operation_id"],"revision":1,
                 "status":"ready","entries":[{"kind":"message","seq":1,"role":"assistant","text":"dummy","truncated":false}],
-                "next_before":0,"complete":true});
+                "next_before":0,"complete":true,"source":{"replay":"not_applicable","archive":"unavailable","redaction":"unknown","missing":false,"truncated":false}});
                 drop(reader);
                 stream
                     .write_all(format!("{page}\n").as_bytes())
@@ -646,8 +646,8 @@ mod tests {
             }
             let frame: Value = serde_json::from_str(&line).unwrap();
             let request = &frame["request"];
-            let page = json!({"v":1,"type":"session_page","controller_id":request["controller_id"],"subject_id":request["subject_id"],
-            "operation_id":request["operation_id"],"revision":1,"status":"ready","entries":[],"next_before":0,"complete":true});
+            let page = json!({"v":2,"type":"session_page","controller_id":request["controller_id"],"subject_id":request["subject_id"],
+            "operation_id":request["operation_id"],"revision":1,"status":"ready","entries":[],"next_before":0,"complete":true,"source":{"replay":"not_applicable","archive":"unavailable","redaction":"unknown","missing":false,"truncated":false}});
             stream
                 .write_all(format!("{page}\n").as_bytes())
                 .await
