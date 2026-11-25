@@ -2163,7 +2163,16 @@ local function select_auto(self, metadata, callback)
   end)
 end
 
-local function prompt_session(self, prompt, callback, correlation, display_text, phone_gate)
+---Admit a prompt under the current pair or exact approved Auto workload rule.
+---Every submission settles under the returned ID even if no turn dispatches.
+---@param self louiselm.session.Session
+---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
+---@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal.
+---@param correlation? louiselm.routing.SubmissionMetadata Optional helper ancestry and explicit routing metadata; the parent need not have dispatched.
+---@param display_text? string Caller-owned visible prompt text, excluding attached context; defaults to a string prompt.
+---@return string? turn_id Stable local admission and eventual turn ID, never proof of peer receipt.
+---@return string? error_message Immediate validation, state, Provider, or random identity error.
+function Session:prompt(prompt, callback, correlation, display_text)
   if #self.interactions > 0 then
     return nil, "session is waiting for an interaction"
   end
@@ -2205,11 +2214,6 @@ local function prompt_session(self, prompt, callback, correlation, display_text,
     return nil, identity_error
   end
   prompt = nvim.deepcopy(prompt)
-  if
-    phone_gate ~= nil and not require("louiselm.phone_control.admission_gate").check(phone_gate, self, display_text)
-  then
-    return nil, "phone authority unavailable"
-  end
   clear_session_failure(self)
   self.codex_turn_failed = nil
   self.state.current_turn = self.state.current_turn + 1
@@ -2302,40 +2306,6 @@ local function prompt_session(self, prompt, callback, correlation, display_text,
     end
   end
   return turn_id
-end
-
----Admit a prompt under the current pair or exact approved Auto workload rule.
----Every submission settles under the returned ID even if no turn dispatches.
----@param self louiselm.session.Session
----@param prompt louiselm.session.Prompt Text or ACP prompt content table.
----@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal.
----@param correlation? louiselm.routing.SubmissionMetadata Optional helper ancestry and explicit routing metadata; the parent need not have dispatched.
----@param display_text? string Caller-owned visible prompt text, excluding attached context; defaults to a string prompt.
----@return string? turn_id Stable local admission and eventual turn ID, never proof of peer receipt.
----@return string? error_message Immediate validation, state, Provider, or random identity error.
-function Session:prompt(prompt, callback, correlation, display_text)
-  return prompt_session(self, prompt, callback, correlation, display_text, nil)
-end
-
----Check an exact phone gate and enter the genuine Session admission without yielding.
----The caller owns prior signature verification, registration, journal and gate cleanup.
----@param session louiselm.session.Session Exact registry-owned Session.
----@param gate table Registered one-use phone gate.
----@param text string Exact phone-authored prompt, with no desktop context.
----@param callback? fun(result: unknown, error?: string) Called once on completion or failure.
----@return string? turn_id Stable native admission identity, never proof of dispatch.
----@return string? error_message Immediate refusal.
-function M.prompt_phone(session, gate, text, callback)
-  if
-    type(session) ~= "table"
-    or getmetatable(session) ~= Session
-    or type(gate) ~= "table"
-    or type(text) ~= "string"
-    or session.owner.sessions[session.state.id] ~= session
-  then
-    return nil, "stale_subject"
-  end
-  return prompt_session(session, text, callback, nil, text, gate)
 end
 
 ---Request cancellation of the active prompt or autonomous agent processing.

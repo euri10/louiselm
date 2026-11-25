@@ -4,9 +4,6 @@ local nvim = vim
 local Gate = require("louiselm.phone_control.admission_gate")
 local Clock = require("louiselm.phone_control.boot_clock")
 local Process = require("louiselm.phone_control.process_identity")
-local Lifecycle = require("louiselm.session.lifecycle")
-local Sessions = require("louiselm.session")
-local Projection = require("louiselm.phone_control.projection")
 
 local T = MiniTest.new_set()
 
@@ -199,100 +196,6 @@ T["the check never invokes caller-provided identity or gate callbacks"] = functi
     false
   )
   MiniTest.expect.equality(called, false)
-end
-
-T["the real Session checks its gate and reserves admission before observers reenter"] = function()
-  local root, directory = nvim.fn.getcwd(), nvim.fn.tempname()
-  local api = assert(Sessions.new({
-    mock = {
-      provider = "test-service",
-      command = nvim.v.progpath,
-      env = { LOUISELM_MOCK_MODE = "static" },
-      args = {
-        "--headless",
-        "--noplugin",
-        "-u",
-        root .. "/tests/mock/init.lua",
-        "-c",
-        "lua require('louiselm.dev.mock_agent').run()",
-      },
-    },
-  }, nil, { usage_directory = directory }))
-  MiniTest.finally(function()
-    assert(api:dispose())
-    local finished = false
-    api:flush_recording(function()
-      finished = true
-    end)
-    assert(nvim.wait(6000, function()
-      return finished
-    end))
-    nvim.fn.delete(directory, "rf")
-  end)
-  local session = assert(api:create_session("mock", { cwd = root }))
-  assert(nvim.wait(6000, function()
-    return session:inspect().status == "ready"
-  end))
-  local projection = Projection.new(function()
-    return session:inspect().status
-  end)
-  local nested, attempted = nil, false
-  local unsubscribe = session:on(function(event)
-    projection:record(event)
-    if event.type == "state_changed" and event.data.status == "preparing" then
-      attempted = true
-      nested = session:prompt("desktop")
-    end
-  end)
-  MiniTest.finally(unsubscribe)
-  local invalid = fixture()
-  invalid.session, invalid.projection, invalid.expected_revision = session, projection, projection.revision
-  local invalid_gate = assert(Gate.new(invalid))
-  local denied, denial = Lifecycle.prompt_phone(session, invalid_gate, "altered")
-  MiniTest.expect.equality(denied, nil)
-  MiniTest.expect.equality(denial, "phone authority unavailable")
-  MiniTest.expect.equality(session:inspect().current_turn, 0)
-  MiniTest.expect.equality(session:inspect().status, "ready")
-
-  local cut, cut_peer = fixture()
-  cut.session, cut.projection, cut.expected_revision = session, projection, projection.revision
-  local cut_gate = assert(Gate.new(cut))
-  local closed = false
-  cut_peer:close(function()
-    closed = true
-  end)
-  assert(nvim.wait(5000, function()
-    return closed
-  end))
-  denied, denial = Lifecycle.prompt_phone(session, cut_gate, "phone")
-  MiniTest.expect.equality(denied, nil)
-  MiniTest.expect.equality(denial, "phone authority unavailable")
-  MiniTest.expect.equality(session:inspect().current_turn, 0)
-  MiniTest.expect.equality(session:inspect().status, "ready")
-
-  local options = fixture()
-  options.session, options.projection, options.expected_revision = session, projection, projection.revision
-  local gate = assert(Gate.new(options))
-  local turn = Lifecycle.prompt_phone(session, gate, "phone")
-  MiniTest.expect.equality(type(turn), "string")
-  MiniTest.expect.equality(attempted, true)
-  MiniTest.expect.equality(nested, nil)
-  MiniTest.expect.equality(session:inspect().current_turn, 1)
-  MiniTest.expect.equality(Gate.check(gate, session, "phone"), false)
-
-  assert(nvim.wait(6000, function()
-    return session:inspect().status == "ready"
-  end))
-  local pending = fixture()
-  pending.session, pending.projection, pending.expected_revision = session, projection, projection.revision
-  local pending_gate = assert(Gate.new(pending))
-  local desktop = session:prompt("desktop first")
-  MiniTest.expect.equality(type(desktop), "string")
-  denied, denial = Lifecycle.prompt_phone(session, pending_gate, "phone")
-  MiniTest.expect.equality(denied, nil)
-  MiniTest.expect.equality(denial, "session is not ready")
-  MiniTest.expect.equality(session:inspect().current_turn, 2)
-  MiniTest.expect.equality(Gate.check(pending_gate, session, "phone"), false)
 end
 
 T["a stale Session revision cannot pass the phone gate"] = function()

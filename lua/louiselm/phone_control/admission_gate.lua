@@ -26,8 +26,9 @@ local function write(self, stream, bytes)
 end
 
 ---Consume this gate and check both original peers and the owner's boot deadline.
----This is not Session admission: the caller must immediately perform the native
----transition without yielding or invoking callbacks, and discard a failed check.
+---This is not Session admission. A peer may die after its liveness sample and
+---before the native transition; louiselm-qbr.12.4.10 must resolve that boundary
+---before this check is connected to any effect.
 ---@return boolean valid
 local function check(self, session, text)
   if self.used then
