@@ -67,7 +67,7 @@ async fn write_probe(stream: &mut UnixStream, response: &Value) {
     clippy::too_many_arguments,
     reason = "the signed fixture spells out each wire field"
 )]
-fn signed_run(
+pub(super) fn signed_run(
     fixture: &Value,
     grant: &StoredGrant,
     period: &str,
@@ -110,7 +110,7 @@ fn signed_run(
     clippy::too_many_arguments,
     reason = "the signed fixture names both exact owner incarnations"
 )]
-fn signed_run_session(
+pub(super) fn signed_run_session(
     fixture: &Value,
     grant: &StoredGrant,
     period: &str,

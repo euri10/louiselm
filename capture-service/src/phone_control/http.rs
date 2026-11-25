@@ -28,6 +28,9 @@ use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
 #[path = "http_prepared_tests.rs"]
 mod prepared_tests;
 #[cfg(test)]
+#[path = "http_run_e2e.rs"]
+mod run_e2e;
+#[cfg(test)]
 #[path = "http_run_tests.rs"]
 mod run_tests;
 
