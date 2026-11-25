@@ -153,8 +153,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .expect("explicit installed case")
         .parse()
         .unwrap();
-    assert!((1..=14).contains(&index));
+    assert!((1..=15).contains(&index));
     let saved_refresh = index == 14;
+    let saved_review = index == 15;
     let rehearsal_fault = match index {
         12 => "replica",
         13 => "pre_acp",
@@ -170,7 +171,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         5
     } else if startup_failure {
         1
-    } else if delayed_promotion || saved_refresh {
+    } else if delayed_promotion || saved_refresh || saved_review {
         4
     } else {
         index
@@ -228,9 +229,18 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         Some(config.operator_uid),
     )
     .unwrap();
-    let checkout = operator.join("run");
-    fs::create_dir(&checkout).unwrap();
-    let source_files = workspace::copy_snapshot_files(&workspace::snapshot_bytes(), &checkout);
+    if saved_review {
+        fs::set_permissions(&operator, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let checkout = operator.join(if saved_review { "checkout" } else { "run" });
+    let source_repository = if saved_review {
+        operator.join("project")
+    } else {
+        checkout.clone()
+    };
+    fs::create_dir(&source_repository).unwrap();
+    let source_files =
+        workspace::copy_snapshot_files(&workspace::snapshot_bytes(), &source_repository);
     for arguments in [
         vec![
             "init",
@@ -256,7 +266,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
                 Command::new("/usr/bin/git")
                     .args(["add", "--force", "--"])
                     .args(&source_files)
-                    .current_dir(&checkout)
+                    .current_dir(&source_repository)
                     .status()
                     .unwrap()
                     .success()
@@ -265,10 +275,42 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         assert!(
             Command::new("/usr/bin/git")
                 .args(arguments)
-                .current_dir(&checkout)
+                .current_dir(&source_repository)
                 .status()
                 .unwrap()
                 .success()
+        );
+    }
+    if saved_review {
+        own(&source_repository, config.operator_uid);
+        let capture_test = std::env::var_os("LOUISELM_TEST_CAPTURE_TEST")
+            .expect("explicit candidate capture library test");
+        let output = Command::new("/usr/bin/setpriv")
+            .args([
+                "--reuid",
+                &config.operator_uid.to_string(),
+                "--regid",
+                &config.operator_uid.to_string(),
+                "--clear-groups",
+            ])
+            .arg(capture_test)
+            .args([
+                "phone_control::http::installed_saved_review::installed_saved_review",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("LOUISELM_TEST_REVIEW_ROOT", &operator)
+            .env("LOUISELM_TEST_REVIEW_PHASE", "prepare")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("1 passed")
+                && String::from_utf8_lossy(&output.stdout)
+                    .contains("SAVED_REVIEW_SOURCE_AND_RUN_BOUND"),
+            "capture source preparation failed: {output:?}"
         );
     }
     let promotion_snapshot = operator.join("snapshot-4");
@@ -354,7 +396,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .digest()
         .to_string();
         let expiry = now
-            + if index == 4 && (delayed_promotion || saved_refresh) {
+            + if index == 4 && (delayed_promotion || saved_refresh || saved_review) {
                 60_000
             } else {
                 120_000
@@ -603,7 +645,17 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         .env(
             "LOUISELM_TEST_SAVED_REFRESH",
             if saved_refresh { "1" } else { "0" },
+        )
+        .env(
+            "LOUISELM_TEST_SAVED_REVIEW",
+            if saved_review { "1" } else { "0" },
         );
+    if saved_review {
+        command.env(
+            "LOUISELM_TEST_CAPTURE_TEST",
+            std::env::var_os("LOUISELM_TEST_CAPTURE_TEST").unwrap(),
+        );
+    }
     let status = if let Some(observation) = failure {
         let mut neovim = BrokerChild(command.spawn().unwrap());
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -660,7 +712,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         status.success(),
         "installed Lua Bead executor case {index} failed"
     );
-    if index == 4 {
+    if index == 4 && !saved_review {
         let staged = config
             .broker_socket_path
             .parent()
@@ -715,6 +767,10 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             "double Accept must create only one application journal"
         );
         saved_attention::assert_saved_decision("44444444-4444-4444-8444-444444444444");
+    }
+    if saved_review {
+        saved_attention::assert_saved_pending("44444444-4444-4444-8444-444444444444");
+        assert_eq!(fs::read_dir(&journal).unwrap().count(), 0);
     }
     if (2..=3).contains(&index) && std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let read = |arguments: &[&str]| {

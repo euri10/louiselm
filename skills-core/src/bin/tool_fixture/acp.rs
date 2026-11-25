@@ -91,6 +91,7 @@ pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()>
             Some("session/prompt") => {
                 promoted_file = match message["params"]["prompt"][0]["text"].as_str() {
                     Some("promote-fixture") => Some("accepted.txt"),
+                    Some("promote-review-pages") => Some("review-pages.txt"),
                     Some("promote-fixture-1") => Some("accepted-1.txt"),
                     Some("promote-fixture-2") => Some("accepted-2.txt"),
                     Some("promote-fixture-3") => Some("accepted-3.txt"),
@@ -126,7 +127,11 @@ pub(super) fn run(input: impl BufRead, mut output: impl Write) -> io::Result<()>
                     return Err(io::Error::other("fixture permission was not approved"));
                 }
                 if let Some(file) = promoted_file.take() {
-                    fs::write(file, b"accepted Bead output\n")?;
+                    if file == "review-pages.txt" {
+                        fs::write(file, "review page ".repeat(800))?;
+                    } else {
+                        fs::write(file, b"accepted Bead output\n")?;
+                    }
                 }
                 let id = pending
                     .take()

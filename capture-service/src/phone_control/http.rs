@@ -25,6 +25,9 @@ use super::{
 use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
 
 #[cfg(test)]
+#[path = "http_installed_saved_review.rs"]
+mod installed_saved_review;
+#[cfg(test)]
 #[path = "http_prepared_tests.rs"]
 mod prepared_tests;
 #[cfg(test)]

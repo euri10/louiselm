@@ -11,6 +11,7 @@ local case = assert(input.cases[index], "selected installed case")
 local delayed_promotion = nvim.env.LOUISELM_TEST_PROMOTION_DELAY == "1"
 local startup_failure = nvim.env.LOUISELM_TEST_STARTUP_FAILURE == "1"
 local saved_refresh = nvim.env.LOUISELM_TEST_SAVED_REFRESH == "1"
+local saved_review = nvim.env.LOUISELM_TEST_SAVED_REVIEW == "1"
 if startup_failure then
   case.envelope.bead_scope.issue_ids = { case.bead_id, "startup-successor" }
   table.sort(case.envelope.bead_scope.issue_ids)
@@ -42,7 +43,7 @@ local controller = assert(Workflow.new_bead_executor({
       and function(preview, decide)
         assert(preview.schema == "louiselm.run-promotion-preview/1")
         assert(preview.selection.expected_head == case.base_commit)
-        assert(nvim.deep_equal(preview.changes.added, { "accepted.txt" }))
+        assert(nvim.deep_equal(preview.changes.added, { saved_review and "review-pages.txt" or "accepted.txt" }))
         assert(#require("louiselm.session").exit_verdict() == 0, "saved workers must already be released")
         nvim.fn.writefile({}, case.saved_ready)
         assert(
@@ -62,6 +63,33 @@ local controller = assert(Workflow.new_bead_executor({
         assert(saved.request.request_id == preview.selection.request_id and saved.discarded == false)
         assert(saved.verification.execution.cleanup_proven == true)
         assert(preview.selection.expires_at_ms == nil, "saved review must have no deadline")
+        if saved_review then
+          nvim.defer_fn(function()
+            assert(now_ms() >= case.envelope.expires_at_ms, "original Run must have expired")
+            local gate = nvim
+              .system({
+                assert(nvim.env.LOUISELM_TEST_CAPTURE_TEST),
+                "phone_control::http::installed_saved_review::installed_saved_review",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+              }, {
+                env = {
+                  LOUISELM_TEST_REVIEW_ROOT = nvim.env.XDG_STATE_HOME,
+                  LOUISELM_TEST_REVIEW_PHASE = "review",
+                  LOUISELM_TEST_REVIEW_RESULT = preview.selection.request_id,
+                },
+                clear_env = true,
+                text = true,
+              })
+              :wait()
+            assert(gate.code == 0 and gate.stdout:find("1 passed", 1, true), gate.stderr .. gate.stdout)
+            assert(gate.stdout:find("SAVED_REVIEW_INSTALLED_HTTP_PASSED", 1, true), gate.stdout)
+            print("SAVED_REVIEW_INSTALLED_HTTP_PASSED")
+            decide(nil, "leave saved review pending")
+          end, math.max(1, case.envelope.expires_at_ms - now_ms() + 50))
+          return
+        end
         if saved_refresh then
           local refresh = dofile("tests/workflow/installed_refresh.lua")
           refresh(case, preview, saved, function(err)
@@ -148,7 +176,7 @@ local controller = assert(Workflow.new_bead_executor({
         grant = case.grant,
         base_commit = index == 4 and case.base_commit or nil,
         prompt = index == 3 and "unapprovable"
-          or index == 4 and "promote-fixture"
+          or index == 4 and (saved_review and "promote-review-pages" or "promote-fixture")
           or "Complete this offline fixture turn.",
         verification = {
           snapshot = case.snapshot,
@@ -250,7 +278,7 @@ assert(controller:start(function(ok, err, summary)
     completed = true
     return
   end
-  if saved_refresh then
+  if saved_refresh or saved_review then
     assert(not ok and #summary.accepted == 0, "refresh must not continue the original Run")
     completed = true
     return
@@ -286,7 +314,7 @@ assert(controller:start(function(ok, err, summary)
   end
   completed = true
 end))
-local finished = nvim.wait(saved_refresh and 240000 or 90000, function()
+local finished = nvim.wait((saved_refresh or saved_review) and 240000 or 90000, function()
   return completed
 end, 10)
 local disposed, dispose_error = controller:dispose()
@@ -314,7 +342,7 @@ if reviewed then
   assert(saved.accepted.commit == controller.summary.commits[case.bead_id] and saved.application.state == "Completed")
 end
 assert(
-  startup_failure or saved_refresh or index >= 6 or observed,
+  startup_failure or saved_refresh or saved_review or index >= 6 or observed,
   "installed Lua controller did not report worker result for case " .. index
 )
 print("installed Lua Bead executor case " .. index .. " complete")

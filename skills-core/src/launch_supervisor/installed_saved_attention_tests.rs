@@ -2,6 +2,39 @@
 use super::*;
 use crate::broker::attention::{AttentionReason, AttentionSubject, Projection, ProjectionChange};
 
+pub(super) fn assert_saved_pending(run_id: &str) {
+    let state = Path::new(STATE).join("authorizations");
+    let projections: Vec<Projection> = fs::read_dir(state.join("attention-outbox/entries"))
+        .unwrap()
+        .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())
+        .collect();
+    let pending: Vec<_> = projections
+        .iter()
+        .filter_map(|projection| match &projection.change {
+            ProjectionChange::Upsert(condition)
+                if condition.subject == AttentionSubject::Run(run_id.into())
+                    && matches!(condition.reason, AttentionReason::PromotionPending(_)) =>
+            {
+                Some(condition)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pending.len(), 1);
+    let condition = pending[0];
+    assert!(!projections.iter().any(
+        |projection| matches!(&projection.change, ProjectionChange::Clear(key) if key == condition)
+    ));
+    let AttentionReason::PromotionPending(result_id) = &condition.reason else {
+        unreachable!()
+    };
+    let saved = state.join("saved-results").join(result_id);
+    assert!(saved.join("published.json").is_file());
+    assert!(!saved.join("accepted.json").exists());
+    assert!(!saved.join("discarded.json").exists());
+    eprintln!("SAVED_REVIEW_PROMOTION_PENDING_UNCHANGED");
+}
+
 pub(super) fn assert_saved_decision(run_id: &str) {
     let state = Path::new(STATE).join("authorizations");
     let projections: Vec<Projection> = fs::read_dir(state.join("attention-outbox/entries"))

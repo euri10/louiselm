@@ -496,13 +496,14 @@ policy, ledger admission, cancellation and fast-event callbacks. The installed
 gate is required in the `sender-guard-vm` CI job:
 
 ```sh
-for bead_case in 1 2 3 4 5 6 7 8 9 14; do
-  bead_timeout=$((bead_case == 14 ? 300 : 120))
+for bead_case in 1 2 3 4 5 6 7 8 9 14 15; do
+  bead_timeout=$((bead_case >= 14 ? 300 : 120))
   ./scripts/launcher-vm exec sudo -n env \
     LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
     LOUISELM_TEST_LUA_ROOT=/home/vm \
     LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
     LOUISELM_TEST_CAPTURE=/path/to/current/louiselm-capture \
+    LOUISELM_TEST_CAPTURE_TEST=/path/to/current/capture-library-test \
     LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim \
     timeout "$bead_timeout" unshare --mount --propagation private -- \
     /bin/bash -c 'umask 022; exec "$1" \
@@ -538,7 +539,8 @@ for stock_case in 11 12 13 10; do
 done
 ```
 
-The guest must contain the current Rust build, `lua/`, `scripts/bead-run.lua`,
+The guest must contain the current Rust build, including the capture library
+test compiled from this same checkout, `lua/`, `scripts/bead-run.lua`,
 `scripts/bead-rehearse.lua`,
 `tests/workflow/installed_beads.lua`, `tests/workflow/installed_operator.lua`,
 the real capture CLI, stable Neovim and SQLite. The VM provisioner
@@ -555,6 +557,15 @@ against the exact sorted permission set, three separately promoted commits,
 next-HEAD snapshots and six durable terminal cleanup receipts. Its ACP peer and verification
 plan remain offline fixtures, not live acceptance. Live Codex/Provider acceptance remains the
 persistent-VM Run's responsibility.
+Case 15 creates a retained result with the installed launcher and real broker,
+then sends signed phone reads over local HTTPS through capture and the installed
+`louiselm-control` after producer Disposal and Run expiry. It checks bounded
+continuation, exact identities, destination replacement and revocation while
+the broker's `promotion_pending` stays unresolved. It is not physical Android
+acceptance. Build the capture library test in a private `CARGO_TARGET_DIR`, and
+select its executable from Cargo's JSON artifact output to avoid shared-target
+cross-checkout contamination. The case requires both
+`SAVED_REVIEW_INSTALLED_HTTP_PASSED` and `SAVED_REVIEW_PROMOTION_PENDING_UNCHANGED`.
 The separate failure-cleanup case interrupts case 1 during its tracker import,
 then checks that the original failure survives, the broker is reaped, the
 tracker exits and the fixture account is removed. It also forces a secondary

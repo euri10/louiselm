@@ -341,6 +341,11 @@ jobs:
           rustup toolchain install
           cargo build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
           ./scripts/launcher-vm put capture-service/target/debug/louiselm-capture /var/tmp/louiselm-test-capture
+          capture_test=$(CARGO_TARGET_DIR="$RUNNER_TEMP/louiselm-capture-review-target" \
+            cargo test --manifest-path capture-service/Cargo.toml --lib --all-features --locked --no-run --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_capture" and .profile.test) | .executable // empty')
+          test -x "$capture_test"
+          ./scripts/launcher-vm put "$capture_test" /var/tmp/louiselm-test-capture-review
           nvim_root=$(nvim --headless --noplugin -u NONE -c 'lua io.write(vim.fs.dirname(vim.fs.dirname(vim.v.progpath)))' -c 'qa!')
           test -x "$nvim_root/bin/nvim" && test -d "$nvim_root/share/nvim/runtime"
           ./scripts/launcher-vm exec mkdir -p /var/tmp/louiselm-test-nvim
@@ -357,12 +362,13 @@ jobs:
               jq -r '\''select(.reason == "compiler-artifact" and .target.name == "instruction_view" and .profile.test) | .executable // empty'\'')
             test -x "$preparation_test"
             sudo -n env TMPDIR=/var/lib timeout 60 /bin/bash -c '\''umask 022; exec "$1" preparation::privileged_preparation_cli_measures_trusted_owners_without_launch --exact --ignored --nocapture'\'' bash "$preparation_test"
-            for bead_case in 1 2 3 4 5 6 7 8 9 14; do
-              bead_timeout=$((bead_case == 14 ? 300 : 120))
+            for bead_case in 1 2 3 4 5 6 7 8 9 14 15; do
+              bead_timeout=$((bead_case >= 14 ? 300 : 120))
               sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
                 LOUISELM_TEST_LUA_ROOT=/home/vm \
                 LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
                 LOUISELM_TEST_CAPTURE=/var/tmp/louiselm-test-capture \
+                LOUISELM_TEST_CAPTURE_TEST=/var/tmp/louiselm-test-capture-review \
                 LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout "$bead_timeout" \
                 unshare --mount --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture'\'' bash "$library_test"
             done
