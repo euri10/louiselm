@@ -5,6 +5,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.URL
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -52,6 +53,50 @@ internal sealed class UploadAttempt {
 }
 
 internal object PinnedHttps {
+    /** POST a closed phone-control message over the existing paired, pinned channel. */
+    fun phoneControl(
+        config: PairingConfig,
+        endpoint: String,
+        body: JSONObject,
+        maySend: () -> Boolean,
+    ): PhoneControlReply {
+        return try {
+            require(endpoint in PHONE_CONTROL_ENDPOINTS) { "invalid phone-control endpoint" }
+            val bytes = body.toString().toByteArray(Charsets.UTF_8)
+            require(bytes.size <= PHONE_CONTROL_MAX_RESPONSE) { "phone-control request too large" }
+            if (!maySend()) return PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
+            val connection = connection("${config.receiverUrl}/v1/phone-control/$endpoint", config.receiverIdentitySha256).apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer ${config.credential}")
+                setRequestProperty("Content-Type", "application/json")
+                setFixedLengthStreamingMode(bytes.size)
+            }
+            try {
+                if (!maySend()) return PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
+                connection.outputStream.use { output ->
+                    if (!maySend()) return PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
+                    output.write(bytes)
+                }
+                val status = connection.responseCode
+                val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                if (stream == null) return PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
+                val reply = parsePhoneControlReply(readBoundedBytes(stream, PHONE_CONTROL_MAX_RESPONSE))
+                if (status !in 200..299 && reply !is PhoneControlReply.Failure) {
+                    PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED)
+                } else reply
+            } finally {
+                connection.disconnect()
+            }
+        } catch (_: IOException) {
+            PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
+        } catch (_: SecurityException) {
+            PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
+        } catch (_: IllegalArgumentException) {
+            PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED)
+        }
+    }
+
     fun verifyEndpoint(receiverUrl: String, receiverIdentitySha256: String) {
         val connection = connection("${receiverUrl.trimEnd('/')}/v1/health", receiverIdentitySha256).apply {
             requestMethod = "GET"
@@ -228,19 +273,21 @@ internal object PinnedHttps {
         }
     }
 
-    private fun readBounded(connection: HttpsURLConnection): String {
-        val input = connection.inputStream
+    private fun readBounded(connection: HttpsURLConnection): String =
+        String(readBoundedBytes(connection.inputStream, MAX_RESPONSE_BYTES), Charsets.UTF_8)
+
+    private fun readBoundedBytes(input: InputStream, limit: Int): ByteArray {
         val output = ByteArrayOutputStream()
         input.use {
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             while (true) {
                 val read = it.read(buffer)
                 if (read < 0) break
-                require(output.size() + read <= MAX_RESPONSE_BYTES) { "receiver response is too large" }
+                require(output.size() + read <= limit) { "receiver response is too large" }
                 output.write(buffer, 0, read)
             }
         }
-        return output.toString(Charsets.UTF_8.name())
+        return output.toByteArray()
     }
 
     private fun hasCertificateCause(error: Throwable): Boolean {
@@ -274,6 +321,8 @@ internal object PinnedHttps {
     private const val CONNECT_TIMEOUT_MS = 10_000
     private const val READ_TIMEOUT_MS = 180_000
     private const val MAX_RESPONSE_BYTES = 64 * 1024
+    private const val PHONE_CONTROL_MAX_RESPONSE = 256 * 1024
+    private val PHONE_CONTROL_ENDPOINTS = setOf("enrollment/offer", "enrollment/submit", "enrollment/status", "challenge", "unlock")
 }
 
 internal fun matchesReceiverIdentity(expectedSha256: ByteArray, publicKeyEncoded: ByteArray): Boolean =

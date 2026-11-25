@@ -1,8 +1,9 @@
 # LouiseLM Android capture
 
-The Android app is a small offline-first recorder, not a workflow UI. One tap
-starts speech capture; stopping atomically publishes immutable audio and
-metadata in app-private storage. Pairing and upload can happen later.
+The Android app is a small offline-first recorder with a separate phone-control
+enrollment and unlock screen. One tap starts speech capture; stopping atomically
+publishes immutable audio and metadata in app-private storage. Pairing and upload
+can happen later.
 
 ## Build
 
@@ -106,6 +107,26 @@ state but never changes or removes the original audio or capture UUID.
 The phone status shows the current endpoint, pending count and oldest age, last
 successful sync, and the latest actionable upload failure. **Sync now** remains
 the manual WorkManager retry path.
+
+## Phone-control workspace
+
+Phone control requires an already-paired receiver that supports the phone-control
+protocol. See the [computer administration commands](../capture-service/README.md)
+for the opt-in and enrollment steps. Start enrollment on the computer, open
+**Phone control**, and choose **Enable phone control**. Compare the eight-digit
+code on both devices and approve the phone and its scope on the computer.
+**Check approval** completes enrollment;
+capture pairing alone does not grant workspace access.
+
+**Unlock workspace** asks Android for a strong biometric or device credential to
+authenticate a fresh signing operation. Its
+temporary working key remains only in the app process and is discarded on screen
+lock, expiry, or screen destruction; switching briefly to another app retains it.
+The computer also enforces five minutes of interaction inactivity and a one-hour
+absolute limit. Disabling workspace access on the computer leaves capture pairing
+and recordings intact. Forgetting the phone also revokes pairing. Session views
+are a separate integration; the enrollment screen does not display conversations.
+Physical Keystore and authentication acceptance is tracked in `louiselm-qbr.12.22`.
 
 When paired, **Attention inbox** reads the authenticated `/v1/attention`
 snapshot through the same pinned receiver identity. It displays only the

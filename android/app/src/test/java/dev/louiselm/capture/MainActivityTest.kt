@@ -50,6 +50,13 @@ class MainActivityTest {
     private lateinit var executor: PausedExecutorService
     private lateinit var workExecutor: PausedExecutorService
 
+    @Test
+    fun phoneControlOpensFromTheCaptureScreen() {
+        button(R.string.phone_open).performClick()
+        val launched = shadowOf(activity).nextStartedActivity
+        assertEquals(PhoneControlActivity::class.java.name, launched.component?.className)
+    }
+
     @Before
     fun setUp() {
         val application = RuntimeEnvironment.getApplication()

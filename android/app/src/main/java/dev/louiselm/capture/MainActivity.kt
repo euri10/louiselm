@@ -189,6 +189,10 @@ class MainActivity : Activity() {
                 }
             }
         }, matchWidth(topMargin = padding / 2))
+        content.addView(Button(this).apply {
+            text = getString(R.string.phone_open)
+            setOnClickListener { startActivity(Intent(this@MainActivity, PhoneControlActivity::class.java)) }
+        }, matchWidth(topMargin = padding / 2))
         content.addView(TextView(this).apply {
             text = getString(R.string.attention_title)
             textSize = 22f
