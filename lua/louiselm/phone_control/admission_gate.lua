@@ -29,11 +29,22 @@ end
 ---This is not Session admission: the caller must immediately perform the native
 ---transition without yielding or invoking callbacks, and discard a failed check.
 ---@return boolean valid
-local function check(self)
+local function check(self, session, text)
   if self.used then
     return false
   end
   self.used = true
+  if
+    self.session ~= session
+    or rawget(self.projection, "revision") ~= self.expected_revision
+    or type(text) ~= "string"
+    or #text < 1
+    or #text > 4095
+    or text:find("\0", 1, true) ~= nil
+    or nvim.fn.sha256(string.char(1) .. text) ~= self.payload_hash
+  then
+    return false
+  end
   if not write(self, self.gate, self.gate_witness) or not ProcessIdentity.alive(self.guard_process) then
     return false
   end
@@ -46,9 +57,11 @@ end
 
 ---Consume only a gate created by this module, without invoking caller callbacks.
 ---@param gate table
+---@param session table Exact native Session bound during registration.
+---@param text string Exact phone text bound to the signed payload.
 ---@return boolean valid
-function M.check(gate)
-  return type(gate) == "table" and getmetatable(gate) == Gate and check(gate)
+function M.check(gate, session, text)
+  return type(gate) == "table" and getmetatable(gate) == Gate and check(gate, session, text)
 end
 
 ---Create a one-use check for the exact registered gate and original connection.
@@ -68,6 +81,12 @@ function M.new(options)
     or type(options.receiver_process) ~= "table"
     or type(options.clock) ~= "table"
     or type(options.started) ~= "table"
+    or type(options.session) ~= "table"
+    or type(options.projection) ~= "table"
+    or type(options.expected_revision) ~= "number"
+    or options.expected_revision <= 0
+    or options.expected_revision > 9007199254740991
+    or options.expected_revision % 1 ~= 0
     or type(options.remaining_ms) ~= "number"
     or options.remaining_ms <= 0
     or options.remaining_ms > 5000
@@ -75,6 +94,9 @@ function M.new(options)
     or not hex_id(options.controller_id)
     or not hex_id(options.operation_id)
     or not hex_id(options.gate_id)
+    or type(options.payload_hash) ~= "string"
+    or #options.payload_hash ~= 64
+    or options.payload_hash:match("^[0-9a-f]+$") == nil
   then
     return nil, "unavailable"
   end
@@ -92,6 +114,10 @@ function M.new(options)
     controller = options.controller,
     guard_process = options.guard_process,
     receiver_process = options.receiver_process,
+    session = options.session,
+    projection = options.projection,
+    expected_revision = options.expected_revision,
+    payload_hash = options.payload_hash,
     clock = options.clock,
     started = { namespace = options.started.namespace, centiseconds = options.started.centiseconds },
     remaining_ms = options.remaining_ms,
