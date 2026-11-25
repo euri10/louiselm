@@ -11,10 +11,12 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
 import java.security.Signature
+import java.time.Duration
 import java.util.concurrent.ExecutorService
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -42,8 +44,19 @@ private object PhoneScreenFixture {
     var loseEnrollmentReply = false
     var lastPeriod: PhoneControlPeriod? = null
     var reads = 0
+    var revision = 1L
+    var latest = listOf<PhoneControlEntry>(PhoneControlEntry.Message(1, "assistant", "private session text", false))
+    var older = emptyList<PhoneControlEntry>()
+    var nextBefore = 0L
+    var staleOlder = false
+    val readRequests = mutableListOf<Triple<Long, Long, Boolean>>()
     var pairingBinding: String? = "fixture"
-    fun reset() { status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0; loseEnrollmentReply = false; lastPeriod = null; reads = 0; pairingBinding = "fixture" }
+    fun reset() {
+        status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
+        loseEnrollmentReply = false; lastPeriod = null; reads = 0; pairingBinding = "fixture"
+        revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
+        older = emptyList(); nextBefore = 0; staleOlder = false; readRequests.clear()
+    }
 }
 
 @Implements(PairingStore::class, isInAndroidSdk = false)
@@ -105,8 +118,11 @@ class PhoneScreenClientFixture {
         limit: Int, expectedRevision: Long, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionPage> {
         if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
         PhoneScreenFixture.reads++
+        PhoneScreenFixture.readRequests += Triple(before, expectedRevision, interaction)
+        if (before != 0L && PhoneScreenFixture.staleOlder) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
         return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),
-            1, "ready", listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false)), 0, true))
+            PhoneScreenFixture.revision, "ready", if (before == 0L) PhoneScreenFixture.latest else PhoneScreenFixture.older,
+            if (before == 0L) PhoneScreenFixture.nextBefore else 0, true))
     }
 }
 
@@ -171,6 +187,8 @@ class PhoneControlActivityTest {
     }
     private fun button(id: Int) = views(activity.window.decorView).filterIsInstance<Button>()
         .single { it.text.toString() == activity.getString(id) }
+    private fun buttonText(text: String) = views(activity.window.decorView).filterIsInstance<Button>()
+        .single { it.text.toString() == text }
     private fun hasText(id: Int) = views(activity.window.decorView).filterIsInstance<TextView>()
         .any { it.text.toString() == activity.getString(id) }
 
@@ -191,6 +209,80 @@ class PhoneControlActivityTest {
         assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
         screenOff()
         assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun historyPagingAndPassiveRefreshKeepOneOrderedSnapshot() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(3, "user", "third", false),
+            PhoneControlEntry.Message(4, "assistant", "fourth", false))
+        PhoneScreenFixture.older = listOf(PhoneControlEntry.Message(1, "user", "first", false),
+            PhoneControlEntry.Message(2, "assistant", "second", false))
+        PhoneScreenFixture.nextBefore = 3
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        drain()
+        buttonText("Load older messages").performClick()
+        drain()
+        val displayed = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(displayed.indexOfFirst { it.contains("first") } < displayed.indexOfFirst { it.contains("second") })
+        assertTrue(displayed.indexOfFirst { it.contains("second") } < displayed.indexOfFirst { it.contains("third") })
+        assertEquals(Triple(3L, 1L, true), PhoneScreenFixture.readRequests.last())
+
+        val period = requireNotNull(PhoneScreenFixture.lastPeriod)
+        val remaining = period.remainingMs(android.os.SystemClock.elapsedRealtime())
+        val olderView = views(activity.window.decorView).filterIsInstance<TextView>().single { it.text.toString().contains("second") }
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        drain()
+        assertSame(olderView, views(activity.window.decorView).filterIsInstance<TextView>()
+            .single { it.text.toString().contains("second") })
+        PhoneScreenFixture.revision = 2
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(4, "assistant", "updated fourth", false))
+        PhoneScreenFixture.nextBefore = 0
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        drain()
+        assertEquals(Triple(0L, 0L, false), PhoneScreenFixture.readRequests.last())
+        assertTrue(period.remainingMs(android.os.SystemClock.elapsedRealtime()) <= remaining - 5000)
+        val refreshed = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(refreshed.any { it.contains("updated fourth") })
+        assertFalse(refreshed.any { it.contains("first") })
+        assertTrue(refreshed.any { it.contains("updated") && it.contains("older") })
+    }
+
+    @Test
+    fun anOverlappingUpdateRestartsTheSnapshotInsteadOfJoiningDifferentRevisions() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(3, "assistant", "old snapshot", false))
+        PhoneScreenFixture.nextBefore = 3
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        drain()
+        PhoneScreenFixture.staleOlder = true
+        PhoneScreenFixture.revision = 2
+        PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(4, "assistant", "fresh snapshot", false))
+        PhoneScreenFixture.nextBefore = 0
+        buttonText("Load older messages").performClick()
+        drain()
+        drain()
+        assertEquals(listOf(Triple(3L, 1L, true), Triple(0L, 0L, false)), PhoneScreenFixture.readRequests.takeLast(2))
+        val displayed = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(displayed.any { it.contains("fresh snapshot") })
+        assertFalse(displayed.any { it.contains("old snapshot") })
+        assertTrue(displayed.any { it.contains("updated") && it.contains("older") })
     }
 
     @Test

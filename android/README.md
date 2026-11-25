@@ -126,8 +126,11 @@ The computer also enforces five minutes of interaction inactivity and a one-hour
 absolute limit. Disabling workspace access on the computer leaves capture pairing
 and recordings intact. Forgetting the phone also revokes pairing. To read a
 Session, enable `phone_control.enabled` and Attention in the owning Neovim,
-then tap its Session card and unlock the workspace. The page shows current
-state and a bounded recent conversation; it has no Session action controls.
+then tap its Session card and unlock the workspace. The page follows current
+state and offers **Load older messages** for available history. Updates refresh
+the snapshot; load older pages again if it changes. The screen keeps at most
+500 entries at once and offers Refresh to return to the newest messages.
+Background refresh does not extend the working period. It has no Session action controls.
 Opening a card does not clear or answer Attention. Old cards may no longer
 point to a live Session; refresh the inbox instead of assuming the condition
 still applies. Physical Keystore and authentication acceptance is tracked in

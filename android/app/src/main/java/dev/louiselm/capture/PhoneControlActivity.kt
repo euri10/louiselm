@@ -47,6 +47,7 @@ class PhoneControlActivity : Activity() {
     private lateinit var unlockButton: Button
     private lateinit var lockButton: Button
     private lateinit var refreshButton: Button
+    private lateinit var olderButton: Button
     private lateinit var conversation: LinearLayout
     private var target: PhoneControlTarget? = null
     private var attentionNavigation = false
@@ -56,7 +57,17 @@ class PhoneControlActivity : Activity() {
     private var cancellation: CancellationSignal? = null
     private var pendingNetworkAction: (() -> Unit)? = null
     private var busy = false
+    @Volatile private var foreground = false
+    private var sessionPage: PhoneControlReply.SessionPage? = null
+    private var loadedOlder = false
+    private var newerOmitted = false
+    private var historyChanged = false
     private val expiryCheck = Runnable { scheduleExpiry() }
+    private val refreshPoll = Runnable {
+        if (foreground && !busy && period != null && target != null && hasReceiverNetworkAccess(this)) {
+            readTarget(interaction = false)
+        }
+    }
     private val screenOff = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_SCREEN_OFF) lockWorkspace()
@@ -93,11 +104,15 @@ class PhoneControlActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        foreground = true
         if (!deviceUsable()) {
             lockWorkspace()
             return
         }
-        val current = period ?: return
+        val current = period ?: run {
+            conversation.visibility = View.VISIBLE
+            return
+        }
         conversation.visibility = View.GONE
         task({ client.status() }, { outcome ->
             lockWorkspace()
@@ -110,10 +125,19 @@ class PhoneControlActivity : Activity() {
                 lockWorkspace()
                 showFailure(PhoneControlOutcome.REVOKED)
             } else {
-                conversation.visibility = View.VISIBLE
                 render()
+                if (target == null) conversation.visibility = View.VISIBLE
+                else if (hasReceiverNetworkAccess(this)) readTarget(interaction = false)
+                else render(R.string.phone_unavailable)
             }
         }
+    }
+
+    override fun onPause() {
+        foreground = false
+        handler.removeCallbacks(refreshPoll)
+        conversation.visibility = View.GONE
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -166,6 +190,8 @@ class PhoneControlActivity : Activity() {
         add(lockButton)
         refreshButton = Button(this).apply { text = getString(R.string.phone_refresh); setOnClickListener { withNetwork { readTarget() } } }
         add(refreshButton)
+        olderButton = Button(this).apply { text = getString(R.string.phone_load_older); setOnClickListener { withNetwork { readTarget(older = true) } } }
+        add(olderButton)
         conversation = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         add(conversation)
         add(TextView(this).apply { text = getString(R.string.phone_admin) })
@@ -188,6 +214,8 @@ class PhoneControlActivity : Activity() {
         lockButton.visibility = if (unlocked) View.VISIBLE else View.GONE
         refreshButton.visibility = if (unlocked && target != null) View.VISIBLE else View.GONE
         refreshButton.isEnabled = !busy
+        olderButton.visibility = if (unlocked && (sessionPage?.nextBefore ?: 0) != 0L) View.VISIBLE else View.GONE
+        olderButton.isEnabled = !busy
         enableButton.isEnabled = !busy
         checkButton.isEnabled = !busy
         unlockButton.isEnabled = !busy
@@ -323,9 +351,12 @@ class PhoneControlActivity : Activity() {
 
     private fun active(token: Long): Boolean = generation.get() == token && !isDestroyed && !isFinishing && deviceUsable()
 
-    private fun readTarget() {
+    private fun readTarget(older: Boolean = false, interaction: Boolean = true) {
         val current = period ?: return
         val requested = target ?: return
+        val previous = sessionPage
+        val before = if (older) previous?.nextBefore ?: 0 else 0
+        if (older && before == 0L) return
         val pairing = PairingStore(applicationContext)
         val binding = pairing.binding()
         if (binding == null) {
@@ -333,29 +364,62 @@ class PhoneControlActivity : Activity() {
             render(R.string.phone_unavailable)
             return
         }
-        conversation.removeAllViews()
         task({ maySend ->
-            client.readSession(current, requested, SystemClock.elapsedRealtime()) {
-                maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            client.readSession(current, requested, SystemClock.elapsedRealtime(), before = before,
+                expectedRevision = if (older) previous?.revision ?: 0 else 0, interaction = interaction) {
+                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }, { outcome ->
+            if (!foreground) return@task
+            if (older && outcome == PhoneControlOutcome.STALE_SUBJECT) {
+                historyChanged = true
+                readTarget(interaction = false)
+            } else {
+                showFailure(outcome)
+                if (outcome == PhoneControlOutcome.UNAVAILABLE) scheduleRefresh()
             }
         }) { page, _ ->
             busy = false
+            if (!foreground) return@task
             if (pairing.binding() != binding) {
                 lockWorkspace()
                 render(R.string.phone_unavailable)
                 return@task
             }
-            if (period !== current || !current.confirmInteraction(SystemClock.elapsedRealtime())) {
+            val now = SystemClock.elapsedRealtime()
+            if (period !== current || !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
                 lockWorkspace()
                 return@task
             }
+            val unchanged = !older && !interaction && previous != null && page.revision == previous.revision
+            if (older) {
+                if (previous == null || page.revision != previous.revision || page.entries.isEmpty() ||
+                    previous.entries.isEmpty() || page.entries.last().seq >= previous.entries.first().seq) {
+                    showFailure(PhoneControlOutcome.MALFORMED)
+                    return@task
+                }
+                val combined = page.entries + previous.entries
+                newerOmitted = newerOmitted || combined.size > HISTORY_WINDOW
+                sessionPage = page.copy(entries = combined.take(HISTORY_WINDOW), complete = page.complete && previous.complete)
+                loadedOlder = true
+                historyChanged = false
+            } else if (interaction || previous == null || page.revision != previous.revision) {
+                historyChanged = if (interaction) false
+                    else historyChanged || (previous != null && loadedOlder && page.revision != previous.revision)
+                sessionPage = page
+                loadedOlder = false
+                newerOmitted = false
+            }
             scheduleExpiry()
             render()
-            displayPage(page)
+            conversation.visibility = View.VISIBLE
+            if (!unchanged) displayPage(requireNotNull(sessionPage))
+            scheduleRefresh()
         }
     }
 
     private fun displayPage(page: PhoneControlReply.SessionPage) {
+        conversation.removeAllViews()
         fun line(value: String) {
             conversation.addView(TextView(this).apply { text = value; textSize = 16f })
         }
@@ -372,6 +436,8 @@ class PhoneControlActivity : Activity() {
             else -> R.string.phone_state_error
         }
         line(getString(R.string.phone_session_state, getString(state)))
+        if (historyChanged) line(getString(R.string.phone_history_changed))
+        if (newerOmitted) line(getString(R.string.phone_newer_omitted))
         if (!page.complete) line(getString(R.string.phone_incomplete))
         for (entry in page.entries) {
             when (entry) {
@@ -391,6 +457,10 @@ class PhoneControlActivity : Activity() {
         !getSystemService(KeyguardManager::class.java).isDeviceLocked
 
     private fun showFailure(outcome: PhoneControlOutcome) {
+        sessionPage = null
+        loadedOlder = false
+        newerOmitted = false
+        handler.removeCallbacks(refreshPoll)
         conversation.removeAllViews()
         if (outcome == PhoneControlOutcome.EXPIRED) {
             period?.lock()
@@ -423,8 +493,12 @@ class PhoneControlActivity : Activity() {
         cancellation = null
         period?.lock()
         period = null
+        sessionPage = null
+        loadedOlder = false
+        newerOmitted = false
+        historyChanged = false
         conversation.removeAllViews()
-        conversation.visibility = View.VISIBLE
+        conversation.visibility = if (foreground) View.VISIBLE else View.GONE
         handler.removeCallbacksAndMessages(null)
         busy = false
         render(R.string.phone_locked)
@@ -448,6 +522,13 @@ class PhoneControlActivity : Activity() {
             return
         }
         handler.postDelayed(expiryCheck, remaining)
+    }
+
+    private fun scheduleRefresh() {
+        handler.removeCallbacks(refreshPoll)
+        if (foreground && period?.isActive(SystemClock.elapsedRealtime()) == true && target != null) {
+            handler.postDelayed(refreshPoll, REFRESH_INTERVAL_MS)
+        }
     }
 
     private fun withNetwork(action: () -> Unit) {
@@ -475,5 +556,7 @@ class PhoneControlActivity : Activity() {
         internal const val CONTROLLER_ID = "dev.louiselm.capture.CONTROLLER_ID"
         internal const val SUBJECT_ID = "dev.louiselm.capture.SUBJECT_ID"
         private const val LOCAL_NETWORK_REQUEST = 1
+        private const val HISTORY_WINDOW = 500
+        private const val REFRESH_INTERVAL_MS = 5_000L
     }
 }
