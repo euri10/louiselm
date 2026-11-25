@@ -110,4 +110,33 @@ T["q stops a held Run and preserves its multiline handoff"] = function()
   assert(f:text():find("Provider budget held", 1, true), f:text())
 end
 
+T["waiting view owns a controller without starting it"] = function()
+  local started, disposed = 0, 0
+  local controller = {
+    status = "new",
+    options = { envelope = { run_id = "run-waiting" } },
+    start = function()
+      started = started + 1
+      return true
+    end,
+    dispose = function(self)
+      disposed = disposed + 1
+      self.status = "disposed"
+      return true
+    end,
+  }
+  ---@cast controller louiselm.workflow.BeadExecutor
+  local ui = require("louiselm.ui.bead_run")
+  assert(not ui.waiting(controller, { run_id = "other", registration_id = "selection", revision = 1 }))
+  local buffer = assert(ui.waiting(controller, { run_id = "run-waiting", registration_id = "selection", revision = 2 }))
+  local text = table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+  assert(text:find("Waiting", 1, true), text)
+  assert(text:find("run-waiting", 1, true), text)
+  assert(text:find("selection, revision 2", 1, true), text)
+  MiniTest.expect.equality(started, 0)
+  nvim.api.nvim_buf_delete(buffer, { force = true })
+  MiniTest.expect.equality(disposed, 1)
+  MiniTest.expect.equality(started, 0)
+end
+
 return T

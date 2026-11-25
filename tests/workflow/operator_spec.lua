@@ -109,6 +109,166 @@ T["draft construction and reopen retain intent without activating authority"] = 
   end
 end
 
+T["opening a published revision constructs only a waiting controller"] = function()
+  local f = fixture()
+  local registration = string.rep("2", 32)
+  local binding = {
+    run_id = f.selection.envelope.run_id,
+    project_id = string.rep("3", 32),
+    source_id = string.rep("4", 32),
+    checkout_id = string.rep("5", 32),
+    agents = { "codex" },
+  }
+  local controller, identity, refusal
+  local pending = assert(require("louiselm.workflow.prepared").open_registered(registration, 3, function(value, id, err)
+    MiniTest.expect.equality(nvim.in_fast_event(), false)
+    controller, identity, refusal, f.done = value, id, err, true
+  end, f.options))
+  MiniTest.expect.equality(#f.calls, 1)
+  MiniTest.expect.equality(f.calls[1].argv, {
+    "louiselm-capture",
+    "--require-interface=1",
+    "phone-control",
+    "open-prepared",
+    "--registration-id",
+    registration,
+    "--revision",
+    "3",
+  })
+  f.calls[1].options.stdout(
+    nil,
+    nvim.json.encode({
+      v = 1,
+      type = "prepared_waiting",
+      registration_id = registration,
+      revision = 3,
+      binding = binding,
+      selection = nvim.json.encode(f.selection),
+    })
+  )
+  f:reply(0)
+  assert(controller, refusal)
+  MiniTest.expect.equality(controller.status, "new")
+  MiniTest.expect.equality(identity, { registration_id = registration, revision = 3, run_id = binding.run_id })
+  MiniTest.expect.equality(#f.calls, 1)
+  assert(pending:cancel())
+  assert(controller:dispose())
+end
+
+T["waiting open refuses stale bindings and discards late cancellation"] = function()
+  local f = fixture()
+  local registration = string.rep("2", 32)
+  local response = {
+    v = 1,
+    type = "prepared_waiting",
+    registration_id = registration,
+    revision = 1,
+    binding = {
+      run_id = f.selection.envelope.run_id,
+      project_id = string.rep("3", 32),
+      source_id = string.rep("4", 32),
+      checkout_id = string.rep("5", 32),
+      agents = { "other" },
+    },
+    selection = nvim.json.encode(f.selection),
+  }
+  local controller, refusal
+  assert(require("louiselm.workflow.prepared").open_registered(registration, 1, function(value, _, err)
+    controller, refusal, f.done = value, err, true
+  end, f.options))
+  f.calls[1].options.stdout(nil, nvim.json.encode(response))
+  f:reply(0)
+  MiniTest.expect.equality(controller, nil)
+  assert(refusal)
+  f.done = false
+  local pending = assert(require("louiselm.workflow.prepared").open_registered(registration, 1, function()
+    f.done = true
+  end, f.options))
+  assert(pending:cancel())
+  MiniTest.expect.equality(f.killed, 1)
+  local callback = table.remove(f.callbacks, 1)
+  callback({ code = 0, stdout = nvim.json.encode(response), stderr = "" })
+  nvim.wait(50)
+  MiniTest.expect.equality(f.done, false)
+end
+
+T["waiting open reports unsupported integration and validates before spawning"] = function()
+  local f = fixture()
+  local open = require("louiselm.workflow.prepared").open_registered
+  for _, pair in ipairs({ { "bad", 1 }, { string.rep("0", 32), 1 }, { string.rep("2", 32), 0 } }) do
+    local pending, err = open(pair[1], pair[2], function() end, f.options)
+    MiniTest.expect.equality(pending, nil)
+    assert(err)
+  end
+  MiniTest.expect.equality(#f.calls, 0)
+  local refusal
+  assert(open(string.rep("2", 32), 1, function(_, _, err)
+    refusal, f.done = err, true
+  end, f.options))
+  f.calls[1].options.stderr(nil, "phone-control request refused: unsupported")
+  table.remove(f.callbacks, 1)({ code = 1 })
+  assert(nvim.wait(1000, function()
+    return f.done
+  end))
+  MiniTest.expect.equality(refusal, "unsupported")
+end
+
+T["waiting open stops oversized subprocess output while reading"] = function()
+  for _, spec in ipairs({ { "stdout", 262145 }, { "stderr", 8192 } }) do
+    local f = fixture()
+    local refusal
+    assert(require("louiselm.workflow.prepared").open_registered(string.rep("2", 32), 1, function(_, _, err)
+      refusal, f.done = err, true
+    end, f.options))
+    local streams = f.calls[1].options
+    assert(
+      type(streams.stdout) == "function" and type(streams.stderr) == "function",
+      "output must be bounded while reading"
+    )
+    streams[spec[1]](nil, string.rep("x", spec[2]))
+    streams[spec[1]](nil, "x")
+    streams[spec[1]](nil, "ignored")
+    MiniTest.expect.equality(f.killed, 1)
+    table.remove(f.callbacks, 1)({ code = 1 })
+    assert(nvim.wait(1000, function()
+      return f.done
+    end))
+    assert(refusal and not refusal:find("xxx", 1, true))
+  end
+end
+
+T["waiting open consumes a real asynchronous streamed response"] = function()
+  local f = fixture()
+  local registration = string.rep("2", 32)
+  local response = {
+    v = 1,
+    type = "prepared_waiting",
+    registration_id = registration,
+    revision = 1,
+    binding = {
+      run_id = f.selection.envelope.run_id,
+      project_id = string.rep("3", 32),
+      source_id = string.rep("4", 32),
+      checkout_id = string.rep("5", 32),
+      agents = { "codex" },
+    },
+    selection = nvim.json.encode(f.selection),
+  }
+  f.options.system = function(_, options, done)
+    return nvim.system({ "/usr/bin/printf", "%s", nvim.json.encode(response) }, options, done)
+  end
+  local controller, refusal
+  assert(require("louiselm.workflow.prepared").open_registered(registration, 1, function(value, _, err)
+    controller, refusal, f.done = value, err, true
+  end, f.options))
+  assert(nvim.wait(3000, function()
+    return f.done
+  end, 5))
+  assert(controller, refusal)
+  MiniTest.expect.equality(controller.status, "new")
+  assert(controller:dispose())
+end
+
 T["draft defaults to relative execution and rejects ambiguous or active terms before effects"] = function()
   local f = fixture()
   local controller = assert(require("louiselm.workflow.operator").new(f.selection, f.options))

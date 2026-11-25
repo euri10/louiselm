@@ -24,6 +24,64 @@ local function counts(summary)
     failed
 end
 
+---Own a prepared controller in a waiting view without starting it.
+---@param controller louiselm.workflow.BeadExecutor New controller.
+---@param identity? { registration_id: string, revision: integer, run_id: string } Exact local registration opened by the owner.
+---@return integer? buffer Waiting view, or nil when the controller is not new.
+---@return string? error_message
+function M.waiting(controller, identity)
+  if
+    controller.status ~= "new"
+    or (
+      identity ~= nil
+      and (
+        type(identity) ~= "table"
+        or identity.run_id ~= controller.options.envelope.run_id
+        or type(identity.registration_id) ~= "string"
+        or type(identity.revision) ~= "number"
+        or identity.revision < 1
+        or identity.revision % 1 ~= 0
+      )
+    )
+  then
+    return nil, "Waiting view requires a new controller"
+  end
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_set_current_buf(buffer)
+  nvim.bo[buffer].filetype = "text"
+  local lines = {
+    "Run " .. controller.options.envelope.run_id,
+    "Waiting; this Run has not started.",
+    "Phone controller availability is not established. Press q to close.",
+  }
+  if identity ~= nil then
+    lines[#lines + 1] = string.format("Registration %s, revision %d", identity.registration_id, identity.revision)
+  end
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
+  nvim.bo[buffer].modifiable = false
+  local disposed, leave = false, nil
+  local function release()
+    if disposed then
+      return
+    end
+    disposed = true
+    if leave then
+      nvim.api.nvim_del_autocmd(leave)
+      leave = nil
+    end
+    local ok, err = controller:dispose()
+    if not ok then
+      nvim.notify(err or "Run disposal failed", nvim.log.levels.ERROR)
+    end
+  end
+  leave = nvim.api.nvim_create_autocmd("VimLeavePre", { once = true, callback = release })
+  nvim.api.nvim_create_autocmd("BufWipeout", { buffer = buffer, once = true, callback = release })
+  nvim.keymap.set("n", "q", function()
+    nvim.api.nvim_buf_delete(buffer, { force = true })
+  end, { buffer = buffer, desc = "Close waiting Run" })
+  return buffer
+end
+
 ---Take ownership of a new controller, install its progress presentation and start.
 ---Closing the view/editor disposes the controller; a budget hold retains Sessions until q.
 ---@param controller louiselm.workflow.BeadExecutor New controller; its on_progress callback becomes view-owned.

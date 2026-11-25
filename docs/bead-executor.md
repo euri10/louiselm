@@ -327,6 +327,24 @@ release that lacks the command also refuses. Item 7 of `louiselm-a4r1d` remains
 open until the maintainer runs this command in the actual guest; disposable
 gates do not certify that guest or authorize a paid request.
 
+To reopen one explicitly phone-published selection in a local waiting view,
+choose its registration ID and current revision from the computer's
+`louiselm-capture phone-control list-prepared` output:
+
+```sh
+nvim --noplugin -u NONE --cmd 'set runtimepath^=/approved/louiselm' \
+  --cmd 'let g:louiselm_bead_run_registration="REGISTRATION_HEX"' \
+  --cmd 'let g:louiselm_bead_run_revision=1' \
+  -c 'luafile /approved/louiselm/scripts/bead-run-waiting.lua'
+```
+
+The authenticated local owner must be available and skills integration must
+be installed. This opens the exact published revision without starting,
+authorizing, allocating Sessions, or consuming a limit; closing the view
+disposes the controller. The waiting view is currently local only: it does not
+register a phone controller or offer Start. A later Start must independently
+perform the normal readiness, rehearsal and broker checks.
+
 `scripts/bead-run.lua` is the concrete caller for a reviewed first Run of three
 to five Beads. In an interactive VM Neovim using the approved LouiseLM checkout,
 invoke it with a private selection file:

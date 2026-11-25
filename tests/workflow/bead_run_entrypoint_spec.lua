@@ -66,4 +66,30 @@ T["reports malformed private JSON without a Lua crash"] = function()
   refusal(selection_file("not JSON"), "Run selection is invalid JSON")
 end
 
+T["waiting entrypoint rejects an invalid registration before starting a process"] = function()
+  local result = nvim
+    .system({
+      nvim.v.progpath,
+      "--headless",
+      "--noplugin",
+      "-u",
+      "NONE",
+      "-i",
+      "NONE",
+      "--cmd",
+      "set runtimepath^=" .. nvim.fn.fnameescape(nvim.fn.getcwd()),
+      "--cmd",
+      "let g:louiselm_bead_run_registration='invalid'",
+      "--cmd",
+      "let g:louiselm_bead_run_revision=1",
+      "-c",
+      "luafile scripts/bead-run-waiting.lua",
+      "-c",
+      "qa!",
+    }, { text = true, timeout = 5000 })
+    :wait()
+  assert(result.code == 0, result.stderr)
+  assert(result.stderr:find("invalid registered Run request", 1, true), result.stderr)
+end
+
 return T
