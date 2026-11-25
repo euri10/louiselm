@@ -307,6 +307,9 @@ The systemd unit grants write access to that workspace's `.beads` directory;
 rerun `scripts/install-capture-service` after changing the unit or environment,
 then restart the user service. `run list` reports only unexpired cold Parks;
 expired records remain retained for cleanup retry and forensics.
+Local Run observer snapshots include `load_session`: null until known, then the
+attached Agent's advertised capability. A true value does not guarantee that
+history is available or that cold recovery is lossless.
 
 The Attention store keeps only current unresolved typed conditions. `attention list`
 prints its bounded snapshot; `attention status` prints generation, unresolved count,

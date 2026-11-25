@@ -93,7 +93,7 @@ T["normalizes null optional fields from a Run socket snapshot"] = function()
   pipe.connect_callback()
   pipe.read_callback(
     nil,
-    '{"type":"snapshot","service":{"component":"capture","version":"0.9.2","interfaces":{"run":1}},"runs":[{"id":"8981f800-c2ea-457f-8238-13e561246679","revision":3,"state":"cold_parked","session_id":"codex/01a05d64-ece8-77a0-998c-5e44f3be40f1","generated_work_ceiling":1,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"triggering_mutation_id":null,"park_expires_at_ms":1788359713137,"resume_operation_id":null,"resume_deadline_ms":null}]}\n'
+    '{"type":"snapshot","service":{"component":"capture","version":"0.9.2","interfaces":{"run":1}},"runs":[{"id":"8981f800-c2ea-457f-8238-13e561246679","revision":3,"state":"cold_parked","session_id":"codex/01a05d64-ece8-77a0-998c-5e44f3be40f1","load_session":null,"generated_work_ceiling":1,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"triggering_mutation_id":null,"park_expires_at_ms":1788359713137,"resume_operation_id":null,"resume_deadline_ms":null}]}\n'
   )
   MiniTest.expect.equality(
     nvim.wait(1000, function()
@@ -102,9 +102,56 @@ T["normalizes null optional fields from a Run socket snapshot"] = function()
     true
   )
   MiniTest.expect.equality(snapshot.triggering_mutation_id, nil)
+  MiniTest.expect.equality(snapshot.load_session, nil)
   MiniTest.expect.equality(snapshot.resume_operation_id, nil)
   MiniTest.expect.equality(snapshot.resume_deadline_ms, nil)
   assert(client:dispose())
+end
+
+T["preserves advertised loadSession and refuses invalid values"] = function()
+  local function inspect(value)
+    local pipe = fake_pipe()
+    local snapshot, error_message
+    local client = assert(RunClient.connect("/tmp/run.sock", function(runs)
+      snapshot = runs[1]
+    end, {
+      pipe_factory = function()
+        return pipe
+      end,
+      on_error = function(message)
+        error_message = message
+      end,
+    }))
+    pipe.connect_callback()
+    pipe.read_callback(nil, nvim.json.encode({
+      type = "snapshot",
+      service = { component = "capture", version = "0.9.2", interfaces = { run = 1 } },
+      runs = {
+        {
+          id = "run",
+          revision = 1,
+          state = "active",
+          load_session = value,
+          generated_work_ceiling = 3,
+          generated_work_consumed = 0,
+          generated_work_reserved = 0,
+          pending_mutation_ids = {},
+          park_expires_at_ms = 0,
+        },
+      },
+    }) .. "\n")
+    assert(nvim.wait(1000, function()
+      return snapshot ~= nil or error_message ~= nil
+    end))
+    assert(client:dispose())
+    return snapshot, error_message
+  end
+  local yes = assert(inspect(true))
+  local no = assert(inspect(false))
+  MiniTest.expect.equality({ yes.load_session, no.load_session }, { true, false })
+  local invalid, err = inspect("yes")
+  MiniTest.expect.equality(invalid, nil)
+  MiniTest.expect.equality(err, "Run socket returned an invalid snapshot")
 end
 
 T["closes a disconnected handle so a new client can reconcile"] = function()

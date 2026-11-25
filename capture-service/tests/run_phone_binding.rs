@@ -143,6 +143,60 @@ fn protected_projection_checks_current_revision_while_contributors_are_locked() 
 }
 
 #[test]
+fn durable_views_distinguish_unknown_and_advertised_load_session() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RunStore::new(root.path()).unwrap();
+    store
+        .admit_phone_bound(admission(), TOKEN, binding())
+        .unwrap();
+    let admitted = serde_json::to_value(store.view(RUN).unwrap()).unwrap();
+    assert_eq!(admitted.get("load_session"), Some(&serde_json::Value::Null));
+    store
+        .attach(RunSession {
+            id: RUN.into(),
+            session_id: "codex/acp".into(),
+            agent: "codex".into(),
+            acp_session_id: "acp".into(),
+            working_dir: "/temporary/private-worker".into(),
+            load_session: false,
+        })
+        .unwrap();
+    let current = serde_json::to_value(store.view(RUN).unwrap()).unwrap();
+    let snapshot = serde_json::to_value(store.snapshot().unwrap()).unwrap();
+    assert_eq!(current["load_session"], false);
+    assert_eq!(snapshot[0], current);
+    assert!(!current.to_string().contains("/temporary/private-worker"));
+    drop(store);
+    let restored = RunStore::new(root.path()).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.view(RUN).unwrap()).unwrap()["load_session"],
+        false
+    );
+    let second = "22222222-2222-4222-8222-222222222222";
+    let mut other_admission = admission();
+    let mut other_binding = binding();
+    other_admission.id = second.into();
+    other_binding.run_id = second.into();
+    restored
+        .admit_phone_bound(other_admission, TOKEN, other_binding)
+        .unwrap();
+    restored
+        .attach(RunSession {
+            id: second.into(),
+            session_id: "codex/other".into(),
+            agent: "codex".into(),
+            acp_session_id: "other".into(),
+            working_dir: "/temporary/private-worker".into(),
+            load_session: true,
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.view(second).unwrap()).unwrap()["load_session"],
+        true
+    );
+}
+
+#[test]
 fn syntactically_valid_contributor_corruption_is_refused() {
     let root = tempfile::tempdir().unwrap();
     let store = RunStore::new(root.path()).unwrap();

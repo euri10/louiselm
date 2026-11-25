@@ -188,6 +188,9 @@ pub struct RunView {
     pub state: String,
     /// Agent-scoped actor, when a Session is attached.
     pub session_id: Option<String>,
+    /// Whether the attached Agent advertised `session/load`, if known.
+    /// This is not a guarantee of lossless recovery or currently available history.
+    pub load_session: Option<bool>,
     /// Operator-approved absolute capacity ceiling.
     pub generated_work_ceiling: u64,
     /// Capacity consumed by confirmed outputs.
@@ -854,32 +857,7 @@ impl RunStore {
             if validate_id(&id).is_err() {
                 continue;
             }
-            let run = self.run(&id)?;
-            views.push(RunView {
-                id: run.id,
-                revision: run.revision,
-                state: run.state,
-                session_id: run.session_id,
-                generated_work_ceiling: run.generated_work.ceiling,
-                generated_work_consumed: run.generated_work.consumed,
-                generated_work_reserved: run.generated_work.reserved,
-                pending_mutation_ids: run
-                    .generated_work
-                    .pending
-                    .into_iter()
-                    .map(|pending| pending.mutation_id)
-                    .collect(),
-                triggering_mutation_id: run.triggering_mutation_id,
-                park_expires_at_ms: run.park_expires_at_ms,
-                resume_operation_id: run
-                    .resume_attempt
-                    .as_ref()
-                    .map(|attempt| attempt.operation_id.clone()),
-                resume_deadline_ms: run
-                    .resume_attempt
-                    .as_ref()
-                    .map(|attempt| attempt.deadline_ms),
-            });
+            views.push(run_view(self.run(&id)?));
         }
         views.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(views)
@@ -1257,6 +1235,7 @@ fn run_view(run: Run) -> RunView {
         revision: run.revision,
         state: run.state,
         session_id: run.session_id,
+        load_session: run.load_session,
         generated_work_ceiling: run.generated_work.ceiling,
         generated_work_consumed: run.generated_work.consumed,
         generated_work_reserved: run.generated_work.reserved,

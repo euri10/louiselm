@@ -15,6 +15,7 @@ local nvim = vim
 ---@field revision integer
 ---@field state string
 ---@field session_id? string
+---@field load_session? boolean Agent-advertised session/load support; not a lossless-recovery guarantee.
 ---@field generated_work_ceiling integer
 ---@field generated_work_consumed integer
 ---@field generated_work_reserved integer
@@ -55,6 +56,7 @@ local function valid_run(run)
     and run.revision >= 1
     and run.revision % 1 == 0
     and type(run.state) == "string"
+    and (run.load_session == nil or type(run.load_session) == "boolean")
     and type(run.generated_work_ceiling) == "number"
     and type(run.generated_work_consumed) == "number"
     and type(run.generated_work_reserved) == "number"
@@ -66,7 +68,13 @@ local function normalize_optional_fields(run)
   if type(run) ~= "table" then
     return
   end
-  for _, field in ipairs({ "session_id", "triggering_mutation_id", "resume_operation_id", "resume_deadline_ms" }) do
+  for _, field in ipairs({
+    "session_id",
+    "load_session",
+    "triggering_mutation_id",
+    "resume_operation_id",
+    "resume_deadline_ms",
+  }) do
     if run[field] == nvim.NIL then
       run[field] = nil
     end
