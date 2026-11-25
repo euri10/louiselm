@@ -101,6 +101,35 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
     return session:inspect().status == "ready" and Louise.phone_control_subject(session) ~= nil
   end))
   local identity = assert(Louise.phone_control_subject(session))
+  local phone_text = string.char(1) .. "unguarded phone instruction"
+  local phone_payload = (phone_text:gsub(".", function(byte)
+    return string.format("%02x", byte:byte())
+  end))
+  assert(peer):write(nvim.json.encode({
+    v = 1,
+    type = "send_prompt",
+    controller_id = identity.controller_id,
+    grant = { projects = { root }, agents = { "mock" }, groups = { "operate_sessions" } },
+    period = {},
+    proof = {},
+    request = {
+      controller_id = identity.controller_id,
+      subject_id = identity.subject_id,
+      operation_id = string.rep("a", 32),
+      action = 3,
+      interaction = 1,
+      expected_revision = 1,
+      payload = phone_payload,
+      payload_hash = nvim.fn.sha256(phone_text),
+    },
+  }) .. "\n")
+  assert(nvim.wait(6000, function()
+    return #responses == 1
+  end))
+  MiniTest.expect.equality(responses[1], { v = 1, type = "error", code = "unsupported" })
+  MiniTest.expect.equality(session:inspect().current_turn, 0)
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  responses = {}
   local done = false
   assert(session:prompt("sent from headless", function(_, err)
     assert(err == nil, err)
