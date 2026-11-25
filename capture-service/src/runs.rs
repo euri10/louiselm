@@ -553,6 +553,38 @@ impl RunStore {
         })
     }
 
+    /// Check that an exact canonical UUID has never been admitted while holding
+    /// the Run lock across a short draft-publication or delivery operation.
+    ///
+    /// Acquire current authority and pairing first, then this Run lock, then
+    /// any prepared-registration lock. The callback may update bounded local
+    /// storage but must not perform network, subprocess, or long-running work.
+    /// This guard does not authenticate a caller or authorize publication.
+    ///
+    /// # Errors
+    /// Refuses malformed, already-used or UUID-ambiguous identities and storage errors.
+    pub fn with_unused_run<T>(
+        &self,
+        id: &str,
+        action: impl FnOnce() -> T,
+    ) -> Result<T, RunStoreError> {
+        if Uuid::parse_str(id).map(|parsed| parsed.to_string()) != Ok(id.to_owned()) {
+            return Err(RunStoreError::Invalid(
+                "Run id must be canonical".to_owned(),
+            ));
+        }
+        self.locked(|| {
+            self.require_unambiguous_id(id)?;
+            match fs::symlink_metadata(self.path(id)) {
+                Ok(_) => Err(RunStoreError::Invalid(
+                    "Run UUID is already in use".to_owned(),
+                )),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(action()),
+                Err(error) => Err(error.into()),
+            }
+        })
+    }
+
     /// Reserve generated-work capacity before an external mutation begins.
     ///
     /// # Errors

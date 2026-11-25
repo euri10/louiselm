@@ -176,6 +176,51 @@ fn competing_case_alias_admissions_cannot_both_win() {
 }
 
 #[test]
+fn unpublished_draft_checks_unused_uuid_under_the_run_lock() {
+    use fs2::FileExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let store = RunStore::new(root.path()).unwrap();
+    let competing = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.path().join(".lock"))
+        .unwrap();
+    let value = store
+        .with_unused_run(RUN, || {
+            assert_eq!(
+                competing.try_lock_exclusive().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            42
+        })
+        .unwrap();
+    assert_eq!(value, 42);
+    competing.try_lock_exclusive().unwrap();
+    FileExt::unlock(&competing).unwrap();
+    store.admit(admission(), TOKEN).unwrap();
+    assert!(store.with_unused_run(RUN, || ()).is_err());
+    assert!(
+        store
+            .with_unused_run("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", || ())
+            .is_err()
+    );
+}
+
+#[test]
+fn unused_uuid_guard_refuses_a_case_equivalent_legacy_record() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RunStore::new(root.path()).unwrap();
+    let lower = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let mut old = admission();
+    old.id = lower.to_ascii_uppercase();
+    store.admit(old, TOKEN).unwrap();
+    assert!(store.with_unused_run(lower, || ()).is_err());
+}
+
+#[test]
 fn contributor_updates_are_serialized() {
     let root = tempfile::tempdir().unwrap();
     let store = RunStore::new(root.path()).unwrap();
