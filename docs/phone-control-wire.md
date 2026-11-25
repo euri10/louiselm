@@ -375,6 +375,26 @@ resolution. This owner-only lookup carries no prompt and grants no action or
 content authority; the receiver still checks the current grant and durably
 reserves the write before forwarding it.
 
+After that reservation, the receiver forwards the signed `send_prompt` frame
+with the same fields as `read_session`. The controller verifies the signatures,
+current Session and scope, and durably begins the exact owner operation. It
+then replies `{v:1,type:"action_prepared",controller_id:hex16,subject_id:hex16,
+operation_id:hex16}` without prompting. While serializing revocation with this
+admission, the receiver rechecks the current pairing, grant and monotonic lease,
+then sends `{v:1,type:"action_commit",controller_id:hex16,operation_id:hex16,
+remaining_ms:integer}` over that same authenticated connection. The remaining
+time is bounded by both lease deadlines and is never an extension. The owner
+subtracts all monotonic time since it sent `action_prepared`, rechecks its
+exact Session and revision, and only then calls `Session:prompt`.
+
+The owner replies `{v:1,type:"action_result",operation_id:hex16,state:string,
+code:string,evidence:hex32}` only after its evidence is durable. State is
+`accepted` with an empty code, or `fenced_no_effect` with `expired`,
+`stale_subject`, `busy`, or `unavailable`. Acceptance is not completion. A
+disconnect, missing response, or failure to persist the owner report remains
+unknown. These local messages are not phone endpoints, and a commit is valid
+only for its prepared operation on the same live controller connection.
+
 `louiselm-capture phone-control owner-journal` is a local storage helper for
 the trusted native owner, not an HTTPS action or a source of phone authority.
 It reads one bounded JSON object on stdin and returns one JSON object. Its

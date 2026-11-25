@@ -725,6 +725,9 @@ jobs:
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             nvim --headless --noplugin -u ./tests/minimal_init.lua \
               -c 'lua MiniTest.run_file("tests/phone_control/action_dispatch_spec.lua")' -c 'qa!'
+          LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            nvim --headless --noplugin -u ./tests/minimal_init.lua \
+              -c 'lua MiniTest.run_file("tests/phone_control/action_controller_spec.lua")' -c 'qa!'
           LOUISELM_TEST_NVIM="$(command -v nvim)" \
             LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib \

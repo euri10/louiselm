@@ -5,6 +5,8 @@ local nvim = vim
 local Projection = require("louiselm.phone_control.projection")
 local Discovery = require("louiselm.phone_control.discovery")
 local Scope = require("louiselm.phone_control.scope")
+local Action = require("louiselm.phone_control.action")
+local ActionJournal = require("louiselm.phone_control.action_journal")
 local M = {}
 local Controller = {}
 Controller.__index = Controller
@@ -55,6 +57,30 @@ local function parse_payload(payload)
   return before, limit
 end
 
+local function parse_send_payload(request)
+  local payload = request.payload
+  if
+    type(payload) ~= "string"
+    or #payload < 4
+    or #payload > 8192
+    or #payload % 2 ~= 0
+    or payload:match("^[0-9a-f]+$") == nil
+    or payload:sub(1, 2) ~= "01"
+    or request.interaction ~= 1
+    or type(request.payload_hash) ~= "string"
+  then
+    return nil
+  end
+  local bytes = payload:gsub("..", function(pair)
+    return string.char(tonumber(pair, 16))
+  end)
+  local text = bytes:sub(2)
+  if text:find("\0", 1, true) ~= nil or nvim.fn.sha256(bytes) ~= request.payload_hash then
+    return nil
+  end
+  return text
+end
+
 local function current(self, subject_id)
   local subject = self.subjects[subject_id]
   if subject == nil then
@@ -98,6 +124,7 @@ local function action_scope(self, message, line, callback)
   if
     count ~= 5
     or message.v ~= 1
+    or not line:match('"v"%s*:%s*1%s*[,}]')
     or not hex_id(message.controller_id)
     or not hex_id(message.subject_id)
     or not hex_id(message.operation_id)
@@ -153,6 +180,68 @@ local function action_scope(self, message, line, callback)
       end
     end)
   end)
+end
+
+local function action_commit(self, message, line, callback)
+  local pending = self.pending_action
+  if pending == nil or pending.authorize == nil or pending.commit ~= nil then
+    nvim.schedule(function()
+      callback(error_result("unavailable"))
+    end)
+    return
+  end
+  local fields = { v = true, type = true, controller_id = true, operation_id = true, remaining_ms = true }
+  local count, seen = 0, {}
+  if line:find("\\", 1, true) then
+    nvim.schedule(function()
+      callback(error_result("malformed"))
+    end)
+    return
+  end
+  for name in line:gmatch('"([a-z_]+)"%s*:') do
+    if seen[name] then
+      nvim.schedule(function()
+        callback(error_result("malformed"))
+      end)
+      return
+    end
+    seen[name] = true
+  end
+  for name in pairs(message) do
+    if not fields[name] then
+      nvim.schedule(function()
+        callback(error_result("malformed"))
+      end)
+      return
+    end
+    count = count + 1
+  end
+  local remaining = message.remaining_ms
+  if
+    count ~= 5
+    or message.v ~= 1
+    or not line:match('"v"%s*:%s*1%s*[,}]')
+    or message.controller_id ~= self.controller_id
+    or message.operation_id ~= pending.operation_id
+    or type(remaining) ~= "number"
+    or remaining < 0
+    or remaining > 3600000
+    or remaining % 1 ~= 0
+    or not line:match('"remaining_ms"%s*:%s*%d+%s*[,}]')
+  then
+    nvim.schedule(function()
+      callback(error_result("malformed"))
+    end)
+    return
+  end
+  self.pending = true
+  pending.commit = callback
+  pending.authorize({
+    valid = function()
+      return (nvim.uv.hrtime() - pending.started) / 1000000 < remaining
+    end,
+    release = function() end,
+  })
 end
 
 local function allocate(self, subject)
@@ -264,6 +353,10 @@ function Controller:read(line, callback)
     action_scope(self, message, line, callback)
     return
   end
+  if type(message) == "table" and message.type == "action_commit" then
+    action_commit(self, message, line, callback)
+    return
+  end
   if type(message) ~= "table" or type(message.request) ~= "table" or type(message.grant) ~= "table" then
     nvim.schedule(function()
       callback(error_result("malformed"))
@@ -272,13 +365,18 @@ function Controller:read(line, callback)
   end
   local request, grant = message.request, message.grant
   local listing = message.type == "list_sessions" and request.action == 49
-  if message.v ~= 1 or not (listing or (message.type == "read_session" and request.action == 1)) then
+  local sending = message.type == "send_prompt" and request.action == 3
+  if message.v ~= 1 or not (listing or sending or (message.type == "read_session" and request.action == 1)) then
     nvim.schedule(function()
       callback(error_result("unsupported"))
     end)
     return
   end
   local before, limit = parse_payload(request.payload)
+  local send_text = sending and parse_send_payload(request) or nil
+  if sending and send_text ~= nil then
+    before, limit = 0, 1
+  end
   if listing then
     before, limit = nil, nil
     local payload = request.payload
@@ -298,12 +396,14 @@ function Controller:read(line, callback)
   local expected = request.expected_revision
   if
     before == nil
+    or (sending and (send_text == nil or self.pending_action ~= nil))
     or not hex_id(request.subject_id)
     or not hex_id(request.operation_id)
     or type(expected) ~= "number"
     or expected < 0
     or expected > MAX_INTEGER
     or expected % 1 ~= 0
+    or (sending and expected == 0)
   then
     nvim.schedule(function()
       callback(error_result("malformed"))
@@ -382,7 +482,9 @@ function Controller:read(line, callback)
         finish(error_result("stale_subject"))
         return
       end
-      if not contains(grant.groups, "read") or not contains(grant.agents, state.agent) then
+      if
+        not contains(grant.groups, sending and "operate_sessions" or "read") or not contains(grant.agents, state.agent)
+      then
         finish(error_result("out_of_scope"))
         return
       end
@@ -409,6 +511,69 @@ function Controller:read(line, callback)
             finish(error_result("unavailable"))
           elseif not within_project(grant.projects, canonical) then
             finish(error_result("out_of_scope"))
+          elseif sending then
+            local page, page_error = subject.projection:page(0, 1, expected)
+            if page == nil then
+              finish(error_result(page_error or "unavailable"))
+              return
+            end
+            local identity = {
+              operation_id = request.operation_id,
+              receiver_identity = request.receiver_identity,
+              controller_id = attached,
+              subject_id = request.subject_id,
+              action = 3,
+              payload_hash = request.payload_hash,
+              grant_id = request.grant_id,
+              grant_revision = request.grant_revision,
+              period_id = request.period_id,
+              expected_revision = expected,
+              project = canonical,
+              agent = agent,
+              recorded_at_ms = os.time() * 1000,
+            }
+            local journal = ActionJournal.new({ service = self.service })
+            local pending = { operation_id = request.operation_id, journal = journal }
+            self.pending_action = pending
+            local action = Action.new({
+              journal = journal,
+              session = subject.session,
+              projection = subject.projection,
+              current = function()
+                return self.generation == generation
+                  and self.controller_id == attached
+                  and current(self, request.subject_id) == subject
+              end,
+              authorize = function(done)
+                pending.authorize, pending.started = done, nvim.uv.hrtime()
+                finish({
+                  v = 1,
+                  type = "action_prepared",
+                  controller_id = attached,
+                  subject_id = request.subject_id,
+                  operation_id = request.operation_id,
+                })
+              end,
+            })
+            pending.action = action
+            action:send(identity, send_text, function(outcome)
+              if self.disposed or self.generation ~= generation then
+                return
+              end
+              self.pending_action = nil
+              action:dispose()
+              local stopped, cause = journal:dispose()
+              if not stopped then
+                self.last_error = { code = "unavailable", cause = cause }
+                outcome = error_result("unavailable")
+              end
+              if pending.commit ~= nil then
+                self.pending = false
+                pending.commit(outcome)
+              else
+                finish(outcome)
+              end
+            end)
           else
             local page, page_error = subject.projection:page(before, limit, expected)
             if page == nil then
@@ -463,6 +628,16 @@ function Controller:detach()
   self.controller_id = nil
   self.subjects = {}
   self.pending = false
+  local failure
+  if self.pending_action ~= nil then
+    self.pending_action.action:dispose()
+    local stopped, cause = self.pending_action.journal:dispose()
+    self.pending_action = nil
+    if not stopped then
+      self.last_error = { code = "unavailable", cause = cause }
+      failure = "could not stop action journal"
+    end
+  end
   for _, subject in pairs(self.sessions) do
     subject.id = nil
   end
@@ -472,10 +647,10 @@ function Controller:detach()
     local stopped, cause = pcall(process.kill, process, 15)
     if not stopped then
       self.last_error = { code = "unavailable", cause = cause }
-      return false, "could not stop phone-control verifier"
+      failure = failure or "could not stop phone-control verifier"
     end
   end
-  return true
+  return failure == nil, failure
 end
 
 ---Release all subscriptions and any in-flight verifier.
