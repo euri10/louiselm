@@ -627,6 +627,17 @@ class MainActivity : Activity() {
                         text = getString(R.string.phone_open_session)
                         setOnClickListener { open() }
                     }, matchWidth())
+                } else if (item.subjectKind == AttentionSubjectKind.RUN) {
+                    val open = {
+                        startActivity(Intent(this@MainActivity, PhoneControlActivity::class.java)
+                            .putExtra(PhoneControlActivity.ATTENTION, true)
+                            .putExtra(PhoneControlActivity.RUN_ID, item.subjectId))
+                    }
+                    card.setOnClickListener { open() }
+                    card.addView(Button(this).apply {
+                        text = getString(R.string.phone_open_run)
+                        setOnClickListener { open() }
+                    }, matchWidth())
                 }
                 card.addView(TextView(this).apply {
                     text = getString(when (item.kind) {

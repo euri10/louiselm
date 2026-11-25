@@ -334,6 +334,30 @@ class MainActivityTest {
 
     @Test
     @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun tappingRunAttentionCarriesOnlyTheExactDurableRunIdentity() {
+        val runId = "11111111-1111-4111-8111-111111111111"
+        val item = JSONObject().put("subject_kind", "run").put("subject_id", runId)
+            .put("kind", "run_parked").put("reason", "Run is Parked").put("source_operation_id", SUPPLY_REQUEST)
+            .put("created_at_ms", 123).put("eligible", true)
+        val payload = JSONObject().put("generation", 13).put("items", JSONArray().put(item))
+        activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).edit()
+            .putString("payload", payload.toString()).commit()
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        button(R.string.phone_open_run).performClick()
+        val launched = shadowOf(activity).nextStartedActivity
+        assertEquals(PhoneControlActivity::class.java.name, launched.component?.className)
+        assertEquals(runId, launched.getStringExtra(PhoneControlActivity.RUN_ID))
+        assertEquals(null, launched.getStringExtra(PhoneControlActivity.CONTROLLER_ID))
+        assertEquals(null, launched.getStringExtra(PhoneControlActivity.SUBJECT_ID))
+        assertEquals(runId, AttentionState(activity).cached("fixture-pair")?.items?.single()?.subjectId)
+    }
+
+    @Test
+    @Config(
         sdk = [30, 34, 37],
         shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
         instrumentedPackages = ["dev.louiselm.capture"],
