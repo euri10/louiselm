@@ -30,6 +30,8 @@ internal sealed class PhoneControlReply {
     data class PreparedPage(val requestId: String, val items: List<PhonePreparedSummary>, val nextAfter: String) : PhoneControlReply()
     data class PreparedDetail(val requestId: String, val registrationId: String, val runId: String,
         val revision: Long, val detail: PhonePreparedDraft) : PhoneControlReply()
+    data class RunPage(val requestId: String, val items: List<PhoneRunSummary>, val nextAfter: String) : PhoneControlReply()
+    data class RunDetail(val requestId: String, val run: PhoneRunView) : PhoneControlReply()
     data class ActionHistory(val requestId: String, val record: PhoneActionRecord) : PhoneControlReply()
     data class ActionHistoryPage(val requestId: String, val records: List<PhoneActionRecord>, val nextAfter: String) : PhoneControlReply()
 }
@@ -304,6 +306,8 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
             }
             "prepared_page" -> parsePreparedPage(fields)
             "prepared_detail" -> parsePreparedDetail(fields)
+            "run_page" -> parseRunPage(fields)
+            "run_detail" -> parseRunDetail(fields)
             "action_history" -> {
                 keys("request_id", "record")
                 PhoneControlReply.ActionHistory(hex("request_id", 16), parseActionRecord(requireNotNull(fields["record"])))
