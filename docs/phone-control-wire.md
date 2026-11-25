@@ -153,6 +153,37 @@ reusable ACP or local Session ID. A lost/restarted controller, disposed subject,
 reused local ID, wrong controller, or mismatched nonzero revision cannot select
 a replacement. Other actions need a defined versioned schema before use.
 
+Action `48`, `list_controllers`, requires `read`. Its signed controller and
+subject IDs are all-zero 16-byte values: this receiver-wide discovery request
+has no Session target. The payload is `after_controller_id[16] | limit:u8`;
+the all-zero cursor starts at the first page and limit is 1–50.
+`expected_revision` is zero. Success is the closed object
+`{v,type:"controller_list",operation_id:hex16,controllers:[hex16],next_after:hex16-or-empty-string}`.
+The opaque IDs identify currently attached controllers, sorted ascending;
+`next_after` is the last returned ID only when another remains. They reveal no
+Session metadata or authority. A subsequent list request is signed for the
+exact controller. No attached controllers means `unavailable`.
+
+Action `49`, `list_sessions`, requires `read`. The signed controller ID is
+the exact attached incarnation and the subject ID is all zeroes. The payload
+is `after_subject_id[16] | limit:u8`; the all-zero cursor starts at the first
+page and limit is 1–50. `expected_revision` is zero. The controller verifies
+the original phone proof and lists only live Sessions in the approved project
+and Agent scope, using its actual registries. Success is the closed object
+`{v,type:"session_list",controller_id:hex16,operation_id:hex16,sessions:[SessionSummary],next_after:hex16-or-empty-string}`.
+Each `SessionSummary` is exactly `{subject_id:hex16,name:string,agent:string,
+project:string,status:string,truncated:boolean}`. Name, Agent and canonical
+working directory labels are each bounded to 512 UTF-8 bytes; shortening is
+indicated by `truncated`. Status uses the `session_page` values except
+`disposed`. Subjects are sorted ascending; `next_after` is the final returned
+subject only when another authorized Session remains. Refresh from the first
+page to discover new Sessions. A row's controller and subject IDs are an exact
+navigation target, not a reusable registry-local ID. A missing or replaced
+controller and a disposed Session cannot select a replacement. The receiver
+rechecks pairing, grant, period and controller before protected delivery.
+For either action `interaction` may be one only for an explicit phone action;
+automatic page continuation and background reads use zero.
+
 Action `2`, `read_action_history`, also requires `read`. Its decoded payload is
 one of `00 | operation_id[16]` (one record), `01 | limit:u8` (first page), or
 `02 | after_operation_id[16] | limit:u8` (next page), with limit 1–50. For one

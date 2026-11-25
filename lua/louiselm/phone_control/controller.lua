@@ -3,6 +3,8 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns the process and filesystem boundaries.
 local nvim = vim
 local Projection = require("louiselm.phone_control.projection")
+local Discovery = require("louiselm.phone_control.discovery")
+local Scope = require("louiselm.phone_control.scope")
 local M = {}
 local Controller = {}
 Controller.__index = Controller
@@ -38,31 +40,8 @@ local function random_id()
   end))
 end
 
-local function contains(values, wanted)
-  if type(values) ~= "table" or #values > 50 then
-    return false
-  end
-  for _, value in ipairs(values) do
-    if type(value) == "string" and value == wanted then
-      return true
-    end
-  end
-  return false
-end
-
-local function within_project(projects, cwd)
-  if type(projects) ~= "table" or #projects > 50 then
-    return false
-  end
-  for _, root in ipairs(projects) do
-    if type(root) == "string" and root:sub(1, 1) == "/" then
-      if cwd == root or (root == "/" and cwd:sub(1, 1) == "/") or cwd:sub(1, #root + 1) == root .. "/" then
-        return true
-      end
-    end
-  end
-  return false
-end
+local contains = Scope.contains
+local within_project = Scope.within_project
 
 local function parse_payload(payload)
   if type(payload) ~= "string" or #payload ~= 20 or payload:match("^[0-9a-f]+$") == nil then
@@ -201,13 +180,29 @@ function Controller:read(line, callback)
     return
   end
   local request, grant = message.request, message.grant
-  if message.v ~= 1 or message.type ~= "read_session" or request.action ~= 1 then
+  local listing = message.type == "list_sessions" and request.action == 49
+  if message.v ~= 1 or not (listing or (message.type == "read_session" and request.action == 1)) then
     nvim.schedule(function()
       callback(error_result("unsupported"))
     end)
     return
   end
   local before, limit = parse_payload(request.payload)
+  if listing then
+    local payload = request.payload
+    if type(payload) == "string" and #payload == 34 and payload:match("^[0-9a-f]+$") then
+      before, limit = 0, tonumber(payload:sub(33), 16)
+      if
+        request.subject_id ~= string.rep("0", 32)
+        or request.expected_revision ~= 0
+        or limit == nil
+        or limit < 1
+        or limit > 50
+      then
+        before = nil
+      end
+    end
+  end
   local expected = request.expected_revision
   if
     before == nil
@@ -272,6 +267,16 @@ function Controller:read(line, callback)
       if output ~= '{"v":1,"type":"verified"}' then
         local code = output:match('^%{"v":1,"type":"error","code":"([a-z_]+)"%}$')
         finish(error_result(codes[code] and code or "unavailable"))
+        return
+      end
+      if listing then
+        if self.controller_id ~= attached or message.controller_id ~= attached or request.controller_id ~= attached then
+          finish(error_result("stale_subject"))
+        elseif not contains(grant.groups, "read") then
+          finish(error_result("out_of_scope"))
+        else
+          Discovery.list(self, grant, request, finish)
+        end
         return
       end
       local subject, state = current(self, request.subject_id)
