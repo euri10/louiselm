@@ -106,6 +106,13 @@ pub(super) enum PhoneControl {
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         revision: u64,
     },
+    /// Open the current published private selection for a waiting controller, without starting it.
+    OpenPrepared {
+        #[arg(long)]
+        registration_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        revision: u64,
+    },
     /// Remove one exact revision from phone discovery without deleting it.
     UnpublishPrepared {
         #[arg(long)]

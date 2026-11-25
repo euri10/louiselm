@@ -283,37 +283,13 @@ fn phone_control_admin_request(
     capability: &str,
 ) -> Result<(serde_json::Value, &'static str), CliError> {
     Ok(match command {
-        PhoneControl::PublishPrepared {
-            run_id,
-            source_id,
-            checkout_id,
-            selection,
-            registration_id,
-            expected_revision,
-        } => (
-            serde_json::json!({"v":1,"type":"publish_prepared","capability":capability,
-                "run_id":run_id,"source_id":source_id,"checkout_id":checkout_id,"selection":selection,
-                "registration_id":registration_id.unwrap_or_default(),"expected_revision":expected_revision.unwrap_or_default()}),
-            "prepared_registered",
-        ),
-        PhoneControl::ListPrepared => (
-            serde_json::json!({"v":1,"type":"list_prepared","capability":capability}),
-            "prepared_list",
-        ),
-        PhoneControl::InspectPrepared {
-            registration_id,
-            revision,
-        } => (
-            serde_json::json!({"v":1,"type":"inspect_prepared","capability":capability,"registration_id":registration_id,"revision":revision}),
-            "prepared_inspection",
-        ),
-        PhoneControl::UnpublishPrepared {
-            registration_id,
-            expected_revision,
-        } => (
-            serde_json::json!({"v":1,"type":"unpublish_prepared","capability":capability,"registration_id":registration_id,"expected_revision":expected_revision}),
-            "prepared_unpublished",
-        ),
+        prepared @ (PhoneControl::PublishPrepared { .. }
+        | PhoneControl::ListPrepared
+        | PhoneControl::InspectPrepared { .. }
+        | PhoneControl::OpenPrepared { .. }
+        | PhoneControl::UnpublishPrepared { .. }) => {
+            return phone_control_prepared_request(prepared, capability);
+        }
         PhoneControl::PrepareRunCheckout {
             run_id,
             source_id,
@@ -381,6 +357,53 @@ fn phone_control_admin_request(
             "legacy_project_confirmed",
         ),
         enrollment => return phone_control_enrollment_request(enrollment, capability),
+    })
+}
+
+fn phone_control_prepared_request(
+    command: PhoneControl,
+    capability: &str,
+) -> Result<(serde_json::Value, &'static str), CliError> {
+    Ok(match command {
+        PhoneControl::PublishPrepared {
+            run_id,
+            source_id,
+            checkout_id,
+            selection,
+            registration_id,
+            expected_revision,
+        } => (
+            serde_json::json!({"v":1,"type":"publish_prepared","capability":capability,
+                "run_id":run_id,"source_id":source_id,"checkout_id":checkout_id,"selection":selection,
+                "registration_id":registration_id.unwrap_or_default(),"expected_revision":expected_revision.unwrap_or_default()}),
+            "prepared_registered",
+        ),
+        PhoneControl::ListPrepared => (
+            serde_json::json!({"v":1,"type":"list_prepared","capability":capability}),
+            "prepared_list",
+        ),
+        PhoneControl::InspectPrepared {
+            registration_id,
+            revision,
+        } => (
+            serde_json::json!({"v":1,"type":"inspect_prepared","capability":capability,"registration_id":registration_id,"revision":revision}),
+            "prepared_inspection",
+        ),
+        PhoneControl::OpenPrepared {
+            registration_id,
+            revision,
+        } => (
+            serde_json::json!({"v":1,"type":"open_prepared","capability":capability,"registration_id":registration_id,"revision":revision}),
+            "prepared_waiting",
+        ),
+        PhoneControl::UnpublishPrepared {
+            registration_id,
+            expected_revision,
+        } => (
+            serde_json::json!({"v":1,"type":"unpublish_prepared","capability":capability,"registration_id":registration_id,"expected_revision":expected_revision}),
+            "prepared_unpublished",
+        ),
+        _ => return Err(CliError::Invalid("expected a prepared Run command".into())),
     })
 }
 

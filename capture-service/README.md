@@ -144,6 +144,9 @@ an exact registered revision and discover eligible registrations with current
 phone scope. Android can browse these inactive drafts and inspect their exact
 protected instructions and limits while unlocked. Neither operation starts a
 Run or opens a waiting controller.
+The local `open-prepared` command loads only the current published revision for
+an explicit waiting controller; its private output can contain instructions and
+paths. Loading it creates no controller and grants no authority.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver

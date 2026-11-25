@@ -160,11 +160,18 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   is `{run_id:uuid,project_id:hex16,source_id:hex16,checkout_id:hex16,agents:[string]}`.
   The selection is the private exact UTF-8 snapshot and may contain instructions
   and local paths. This endpoint is desktop-only, not a protected phone detail.
+- `{v:1,type:"open_prepared",capability:string,registration_id:hex16,revision:integer}`
+  returns `{v:1,type:"prepared_waiting",registration_id:hex16,revision:integer,binding:RunBinding,selection:string}`
+  only for the current published revision with an unused Run identity and its
+  retained source/checkout chain. This private desktop response permits the
+  operator to construct a waiting controller; it does not start a Run, register
+  a live controller, approve access, or guarantee the checkout is still clean.
+  Any later Start must independently recheck the selection and native authority.
 - `{v:1,type:"unpublish_prepared",capability:string,registration_id:hex16,expected_revision:integer}`
   returns `{v:1,type:"prepared_unpublished",registration_id:hex16,revision:integer}`
   only for the current published revision. It retains all private revisions and
   does not cancel an admitted Run. These owner operations require Run support;
-  publishing, listing and inspection also return `unsupported` if the optional
+  publishing, listing, inspection and opening also return `unsupported` if the optional
   skills integration is absent. None opens a controller or changes an Attention.
 - `{v:1,type:"register_root",capability:string,path:string}` returns
   `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a

@@ -616,6 +616,12 @@ enum AdminRequest {
         registration_id: String,
         revision: u64,
     },
+    OpenPrepared {
+        v: u64,
+        capability: String,
+        registration_id: String,
+        revision: u64,
+    },
     UnpublishPrepared {
         v: u64,
         capability: String,
@@ -739,6 +745,7 @@ impl AdminRequest {
             Self::PublishPrepared { v, capability, .. }
             | Self::ListPrepared { v, capability, .. }
             | Self::InspectPrepared { v, capability, .. }
+            | Self::OpenPrepared { v, capability, .. }
             | Self::UnpublishPrepared { v, capability, .. }
             | Self::PrepareRunCheckout { v, capability, .. }
             | Self::InspectRunCheckout { v, capability, .. }
@@ -888,6 +895,7 @@ fn process_admin(
         request @ (AdminRequest::PublishPrepared { .. }
         | AdminRequest::ListPrepared { .. }
         | AdminRequest::InspectPrepared { .. }
+        | AdminRequest::OpenPrepared { .. }
         | AdminRequest::UnpublishPrepared { .. }) => {
             process_prepared_admin(prepared.ok_or(Refusal::Unsupported)?, request)
         }
@@ -1020,6 +1028,25 @@ fn process_prepared_admin(owner: &PreparedOwner, request: AdminRequest) -> Resul
             Ok(
                 json!({"v":1,"type":"prepared_inspection","registration_id":registration.id,"published":registration.published,"revision":saved.revision,"binding":saved.binding,"selection":saved.selection}),
             )
+        }
+        AdminRequest::OpenPrepared {
+            registration_id,
+            revision,
+            ..
+        } => {
+            if revision == 0 || revision > MAX_INTEGER {
+                return Err(Refusal::Malformed);
+            }
+            owner
+                .with_published(&registration_id, revision, |saved, uid| {
+                    super::prepared_selection::project_detail(saved, uid)
+                        .map_err(|_| Refusal::Malformed)?;
+                    Ok(
+                        json!({"v":1,"type":"prepared_waiting","registration_id":registration_id,
+                    "revision":saved.revision,"binding":saved.binding,"selection":saved.selection}),
+                    )
+                })
+                .map_err(|error| prepared_refusal(&error))?
         }
         AdminRequest::UnpublishPrepared {
             registration_id,
@@ -1345,6 +1372,13 @@ mod tests {
         )
         .await;
         assert_eq!(absent["code"], "unsupported");
+        let waiting = exchange(
+            &path,
+            json!({"v":1,"type":"open_prepared","capability":token,
+            "registration_id":"22".repeat(16),"revision":1}),
+        )
+        .await;
+        assert_eq!(waiting["code"], "unsupported");
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
     }
@@ -1546,9 +1580,30 @@ mod tests {
         };
         let saved = exchange(&path, inspect()).await;
         assert_eq!(saved["selection"], selection);
+        let waiting_request = |capability: &str, revision: u64| {
+            json!({"v":1,"type":"open_prepared",
+            "capability":capability,"registration_id":registration["registration_id"],"revision":revision})
+        };
+        assert_eq!(
+            exchange(&path, waiting_request("wrong", 1)).await["code"],
+            "unauthenticated"
+        );
+        assert_eq!(
+            exchange(&path, waiting_request(&token, 2)).await["code"],
+            "stale_subject"
+        );
+        let waiting = exchange(&path, waiting_request(&token, 1)).await;
+        assert_eq!(waiting["type"], "prepared_waiting");
+        assert_eq!(waiting["selection"], selection);
+        assert_eq!(waiting["binding"]["run_id"], run_id);
+        assert!(runs.run(run_id).is_err());
         let removed = exchange(&path, json!({"v":1,"type":"unpublish_prepared","capability":token,
             "registration_id":registration["registration_id"],"expected_revision":registration["revision"]})).await;
         assert_eq!(removed["type"], "prepared_unpublished");
+        assert_eq!(
+            exchange(&path, waiting_request(&token, 1)).await["code"],
+            "stale_subject"
+        );
         assert_eq!(exchange(&path, inspect()).await["selection"], selection);
         assert_eq!(
             exchange(
