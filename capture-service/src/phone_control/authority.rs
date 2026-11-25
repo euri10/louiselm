@@ -1,11 +1,14 @@
 //! Durable grants and ephemeral phone-control authority.
 
+#[path = "sleep_clock.rs"]
+mod sleep_clock;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -176,6 +179,7 @@ struct WorkingLease {
     proof: Proof,
     idle_deadline: Instant,
     absolute_deadline: Instant,
+    sleep: sleep_clock::Lease,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -185,6 +189,8 @@ pub(super) struct ReadPermit {
     period_id: String,
     operation_id: String,
     interaction: bool,
+    interaction_started: Instant,
+    sleep_started: sleep_clock::Sample,
     pub(super) frame: Vec<u8>,
 }
 
@@ -213,10 +219,21 @@ pub(super) struct Authority {
     path: PathBuf,
     receiver_identity: String,
     projects: Result<PhoneProjectStore, PhoneProjectError>,
+    sleep_clock: Arc<dyn Fn() -> io::Result<sleep_clock::Sample> + Send + Sync>,
     state: Mutex<State>,
 }
 
 impl Authority {
+    fn sleep_now(&self) -> Result<sleep_clock::Sample, Refusal> {
+        (self.sleep_clock)().map_err(|error| {
+            if error.kind() == io::ErrorKind::Unsupported {
+                Refusal::Unsupported
+            } else {
+                Refusal::Unavailable
+            }
+        })
+    }
+
     fn source_store(&self) -> Result<PhoneSourceStore, Refusal> {
         let parent = self.path.parent().ok_or(Refusal::Unavailable)?;
         PhoneSourceStore::open(parent.join("run-sources")).map_err(source_refusal)
@@ -398,6 +415,14 @@ impl Authority {
     }
 
     pub(super) fn open(path: &Path, receiver_identity: &str) -> Result<Self, Refusal> {
+        Self::open_with_clock(path, receiver_identity, Arc::new(sleep_clock::sample))
+    }
+
+    fn open_with_clock(
+        path: &Path,
+        receiver_identity: &str,
+        sleep_clock: Arc<dyn Fn() -> io::Result<sleep_clock::Sample> + Send + Sync>,
+    ) -> Result<Self, Refusal> {
         fixed::<32>(receiver_identity).map_err(|_| Refusal::Malformed)?;
         let parent = path.parent().ok_or(Refusal::Unavailable)?;
         fs::create_dir_all(parent).map_err(|_| Refusal::Unavailable)?;
@@ -452,6 +477,7 @@ impl Authority {
             path: path.to_owned(),
             receiver_identity: receiver_identity.to_owned(),
             projects: PhoneProjectStore::open(parent.join("project-identities")),
+            sleep_clock,
             state: Mutex::new(State {
                 grants: stored.grants,
                 revisions: stored.revisions,
@@ -676,6 +702,7 @@ impl Authority {
         wall_ms: u64,
     ) -> Result<Lease, Refusal> {
         let started = Instant::now();
+        let sleep_started = self.sleep_now()?;
         validate_proof_shape(proof).map_err(refusal)?;
         let mut state = self.lock()?;
         let grant = state.grants.get(device).ok_or(Refusal::Revoked)?;
@@ -714,6 +741,8 @@ impl Authority {
         let absolute_deadline = now
             .checked_add(ABSOLUTE_LIFETIME)
             .ok_or(Refusal::Unavailable)?;
+        let mut sleep = sleep_clock::Lease::new(&sleep_started)?;
+        sleep.check(&self.sleep_now()?)?;
         state.challenges.remove(device);
         state.periods.insert(
             device.to_owned(),
@@ -722,6 +751,7 @@ impl Authority {
                 proof: proof.clone(),
                 idle_deadline,
                 absolute_deadline,
+                sleep,
             },
         );
         Ok(public)
@@ -734,20 +764,24 @@ impl Authority {
         now: Instant,
     ) -> Result<ReadPermit, Refusal> {
         let started = Instant::now();
+        let sleep_started = self.sleep_now()?;
         if request.action == 1 {
             validate_request_shape(request).map_err(refusal)?;
         } else {
             super::validate_discovery_request_shape(request).map_err(refusal)?;
         }
         let mut state = self.lock()?;
-        let grant = state.grants.get(device).ok_or(Refusal::Revoked)?;
+        let grant = state.grants.get(device).cloned().ok_or(Refusal::Revoked)?;
         if grant.grant_id != request.grant_id
             || grant.grant_revision != request.grant_revision
             || grant.receiver_identity != self.receiver_identity
         {
             return Err(Refusal::Revoked);
         }
-        let lease = state.periods.get(device).ok_or(Refusal::Unauthenticated)?;
+        let lease = state
+            .periods
+            .get_mut(device)
+            .ok_or(Refusal::Unauthenticated)?;
         if lease.public.period_id != request.period_id {
             return Err(Refusal::Unauthenticated);
         }
@@ -755,6 +789,7 @@ impl Authority {
         if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
             return Err(Refusal::Expired);
         }
+        lease.sleep.check(&self.sleep_now()?)?;
         let frame = Frame {
             v: 1,
             kind: match request.action {
@@ -791,6 +826,7 @@ impl Authority {
         if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
             return Err(Refusal::Expired);
         }
+        lease.sleep.check(&self.sleep_now()?)?;
         if !grant.scope.groups.iter().any(|group| group == "read") {
             return Err(Refusal::OutOfScope);
         }
@@ -804,6 +840,8 @@ impl Authority {
             period_id: request.period_id.clone(),
             operation_id: request.operation_id.clone(),
             interaction: request.interaction == 1,
+            interaction_started: now,
+            sleep_started,
             frame,
         })
     }
@@ -878,16 +916,33 @@ impl Authority {
         if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
             return Err(Refusal::Expired);
         }
+        let sleep_now = self.sleep_now()?;
+        lease.sleep.check(&sleep_now)?;
         if !success {
             return Err(Refusal::Unavailable);
         }
         if permit.interaction {
-            lease.idle_deadline = now
+            lease.sleep.renew_idle(&permit.sleep_started, &sleep_now)?;
+            let requested = permit
+                .interaction_started
                 .checked_add(IDLE_LIFETIME)
-                .ok_or(Refusal::Unavailable)?
+                .ok_or(Refusal::Unavailable)?;
+            lease.idle_deadline = lease
+                .idle_deadline
+                .max(requested)
                 .min(lease.absolute_deadline);
-            lease.public.idle_expires_at_ms =
-                expiry_ms(wall_ms, IDLE_LIFETIME)?.min(lease.public.absolute_expires_at_ms);
+            let elapsed_ms = sleep_now
+                .centiseconds
+                .checked_sub(permit.sleep_started.centiseconds)
+                .and_then(|value| value.checked_add(1))
+                .and_then(|value| value.checked_mul(10))
+                .ok_or(Refusal::Unavailable)?;
+            let expires = expiry_ms(wall_ms.saturating_sub(elapsed_ms), IDLE_LIFETIME)?;
+            lease.public.idle_expires_at_ms = lease
+                .public
+                .idle_expires_at_ms
+                .max(expires)
+                .min(lease.public.absolute_expires_at_ms);
         }
         Ok(())
     }
@@ -902,14 +957,17 @@ impl Authority {
         let started = Instant::now();
         let query = validate_history_request_shape(request).map_err(refusal)?;
         let mut state = self.lock()?;
-        let grant = state.grants.get(device).ok_or(Refusal::Revoked)?;
+        let grant = state.grants.get(device).cloned().ok_or(Refusal::Revoked)?;
         if grant.grant_id != request.grant_id
             || grant.grant_revision != request.grant_revision
             || grant.receiver_identity != self.receiver_identity
         {
             return Err(Refusal::Revoked);
         }
-        let lease = state.periods.get(device).ok_or(Refusal::Unauthenticated)?;
+        let lease = state
+            .periods
+            .get_mut(device)
+            .ok_or(Refusal::Unauthenticated)?;
         if lease.public.period_id != request.period_id {
             return Err(Refusal::Unauthenticated);
         }
@@ -917,6 +975,7 @@ impl Authority {
         if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
             return Err(Refusal::Expired);
         }
+        lease.sleep.check(&self.sleep_now()?)?;
         let frame = Frame {
             v: 1,
             kind: "read_action_history".into(),
@@ -986,11 +1045,12 @@ impl Authority {
                 History::Page { records, next }
             }
         };
-        let lease = state.periods.get(device).ok_or(Refusal::Revoked)?;
+        let lease = state.periods.get_mut(device).ok_or(Refusal::Revoked)?;
         let checked_now = elapsed_now(now, started)?;
         if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
             return Err(Refusal::Expired);
         }
+        lease.sleep.check(&self.sleep_now()?)?;
         Ok(result)
     }
 
@@ -1295,6 +1355,10 @@ fn persist(
 mod tests {
     use std::{
         path::Path,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{Duration, Instant},
     };
 
@@ -1439,6 +1503,23 @@ mod tests {
         authority
             .unlock("phone", &signed_proof(grant, &challenge), now, 1_000)
             .unwrap()
+    }
+
+    fn clocked_authority(directory: &Path) -> (Authority, Arc<AtomicU64>) {
+        let ticks = Arc::new(AtomicU64::new(10_000));
+        let source = Arc::clone(&ticks);
+        let authority = Authority::open_with_clock(
+            &directory.join("grants"),
+            &"01".repeat(32),
+            Arc::new(move || {
+                Ok(super::sleep_clock::Sample {
+                    centiseconds: source.load(Ordering::SeqCst),
+                    namespace: "time:[1]".into(),
+                })
+            }),
+        )
+        .unwrap();
+        (authority, ticks)
     }
 
     fn approved(authority: &Authority, project: &Path, now: Instant) -> StoredGrant {
@@ -1847,6 +1928,56 @@ mod tests {
     }
 
     #[test]
+    fn history_polling_does_not_renew_the_sleep_aware_idle_deadline() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let (authority, ticks) = clocked_authority(temporary.path());
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        let store = ActionEvidenceStore::open(temporary.path().join("history")).unwrap();
+        let original = ActionIdentity {
+            operation_id: "11".repeat(16),
+            receiver_identity: "01".repeat(32),
+            controller_id: "12".repeat(16),
+            subject_id: "13".repeat(16),
+            action: 3,
+            payload_hash: "14".repeat(32),
+            grant_id: grant.grant_id.clone(),
+            grant_revision: grant.grant_revision,
+            period_id: lease.period_id.clone(),
+            expected_revision: 1,
+            project: std::fs::canonicalize(temporary.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1_000,
+        };
+        store.reserve(&original).unwrap();
+        ticks.store(10_000 + 299 * 100, Ordering::SeqCst);
+        assert!(matches!(
+            authority.read_history(
+                &store,
+                "phone",
+                &signed_history(&grant, &lease, &original, 1_100),
+                now
+            ),
+            Ok(History::Record(_))
+        ));
+        ticks.store(10_000 + 300 * 100, Ordering::SeqCst);
+        assert_eq!(
+            authority.read_history(
+                &store,
+                "phone",
+                &signed_history(&grant, &lease, &original, 1_101),
+                now
+            ),
+            Err(Refusal::Expired)
+        );
+    }
+
+    #[test]
     fn enrollment_requires_current_offer_and_explicit_approval() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("grants.json");
@@ -2131,6 +2262,191 @@ mod tests {
             ),
             Err(Refusal::Expired)
         );
+    }
+
+    #[test]
+    fn suspended_time_expires_an_idle_period_before_protected_read() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let (authority, ticks) = clocked_authority(temporary.path());
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        ticks.store(10_000 + 300 * 100, Ordering::SeqCst);
+        assert!(matches!(
+            authority.begin_read("phone", &signed_request(&grant, &lease, 0, 901), now),
+            Err(Refusal::Expired)
+        ));
+    }
+
+    #[test]
+    fn suspended_time_expires_in_flight_delivery() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let (authority, ticks) = clocked_authority(temporary.path());
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        let permit = authority
+            .begin_read("phone", &signed_request(&grant, &lease, 1, 902), now)
+            .unwrap();
+        ticks.store(10_000 + 300 * 100, Ordering::SeqCst);
+        assert_eq!(
+            authority.finish_read(&permit, true, now, 1_000),
+            Err(Refusal::Expired)
+        );
+    }
+
+    #[test]
+    fn delayed_delivery_does_not_extend_idle_past_the_phone_interaction() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let (authority, ticks) = clocked_authority(temporary.path());
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        ticks.store(10_000 + 100 * 100, Ordering::SeqCst);
+        let permit = authority
+            .begin_read("phone", &signed_request(&grant, &lease, 1, 903), now)
+            .unwrap();
+        ticks.store(10_000 + 200 * 100, Ordering::SeqCst);
+        authority.finish_read(&permit, true, now, 201_000).unwrap();
+        let next = authority
+            .begin_read("phone", &signed_request(&grant, &lease, 0, 905), now)
+            .unwrap();
+        let frame: Value = serde_json::from_slice(&next.frame).unwrap();
+        assert_eq!(frame["period"]["idle_expires_at_ms"], 400_990);
+        ticks.store(10_000 + 400 * 100, Ordering::SeqCst);
+        assert!(matches!(
+            authority.begin_read("phone", &signed_request(&grant, &lease, 0, 904), now),
+            Err(Refusal::Expired)
+        ));
+    }
+
+    #[test]
+    fn older_delayed_interaction_cannot_shorten_a_newer_idle_deadline() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let (authority, ticks) = clocked_authority(temporary.path());
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        ticks.store(10_000 + 100 * 100, Ordering::SeqCst);
+        let earlier = authority
+            .begin_read("phone", &signed_request(&grant, &lease, 1, 920), now)
+            .unwrap();
+        ticks.store(10_000 + 150 * 100, Ordering::SeqCst);
+        let later = authority
+            .begin_read("phone", &signed_request(&grant, &lease, 1, 921), now)
+            .unwrap();
+        ticks.store(10_000 + 200 * 100, Ordering::SeqCst);
+        authority.finish_read(&later, true, now, 201_000).unwrap();
+        ticks.store(10_000 + 220 * 100, Ordering::SeqCst);
+        authority.finish_read(&earlier, true, now, 221_000).unwrap();
+        ticks.store(10_000 + 440 * 100, Ordering::SeqCst);
+        let next = authority
+            .begin_read("phone", &signed_request(&grant, &lease, 0, 922), now)
+            .unwrap();
+        let frame: Value = serde_json::from_slice(&next.frame).unwrap();
+        assert_eq!(frame["period"]["idle_expires_at_ms"], 450_990);
+        ticks.store(10_000 + 450 * 100, Ordering::SeqCst);
+        assert!(matches!(
+            authority.begin_read("phone", &signed_request(&grant, &lease, 0, 923), now),
+            Err(Refusal::Expired)
+        ));
+    }
+
+    #[test]
+    fn unsupported_sleep_clock_cannot_start_a_working_period() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let authority = Authority::open_with_clock(
+            &temporary.path().join("grants"),
+            &"01".repeat(32),
+            Arc::new(|| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "unsupported",
+                ))
+            }),
+        )
+        .unwrap();
+        let grant = approved(&authority, temporary.path(), now);
+        let challenge = authority
+            .challenge("phone", &grant.grant_id, grant.grant_revision, now, 1_000)
+            .unwrap();
+        assert_eq!(
+            authority.unlock("phone", &signed_proof(&grant, &challenge), now, 1_000),
+            Err(Refusal::Unsupported)
+        );
+    }
+
+    #[test]
+    fn suspended_time_counts_toward_absolute_cap_despite_interaction() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let (authority, ticks) = clocked_authority(temporary.path());
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        for step in 1..=12_u64 {
+            ticks.store(10_000 + step * 299 * 100, Ordering::SeqCst);
+            let permit = authority
+                .begin_read(
+                    "phone",
+                    &signed_request(&grant, &lease, 1, u128::from(910 + step)),
+                    now,
+                )
+                .unwrap();
+            authority.finish_read(&permit, true, now, 1_000).unwrap();
+        }
+        ticks.store(10_000 + 3_600 * 100, Ordering::SeqCst);
+        assert!(matches!(
+            authority.begin_read("phone", &signed_request(&grant, &lease, 1, 999), now),
+            Err(Refusal::Expired)
+        ));
+    }
+
+    #[test]
+    fn unavailable_rewinding_or_changed_namespace_clock_cannot_authorize_reads() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let current = Arc::new(Mutex::new(Some(super::sleep_clock::Sample {
+            centiseconds: 10_000,
+            namespace: "time:[1]".into(),
+        })));
+        let source = Arc::clone(&current);
+        let authority = Authority::open_with_clock(
+            &temporary.path().join("grants"),
+            &"01".repeat(32),
+            Arc::new(move || {
+                source
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| std::io::Error::other("unavailable"))
+            }),
+        )
+        .unwrap();
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        current.lock().unwrap().as_mut().unwrap().centiseconds = 11_000;
+        authority
+            .begin_read("phone", &signed_request(&grant, &lease, 0, 1_001), now)
+            .unwrap();
+        current.lock().unwrap().as_mut().unwrap().centiseconds = 10_999;
+        assert!(matches!(
+            authority.begin_read("phone", &signed_request(&grant, &lease, 0, 1_002), now),
+            Err(Refusal::Unavailable)
+        ));
+        *current.lock().unwrap() = Some(super::sleep_clock::Sample {
+            centiseconds: 11_001,
+            namespace: "time:[2]".into(),
+        });
+        assert!(matches!(
+            authority.begin_read("phone", &signed_request(&grant, &lease, 0, 1_003), now),
+            Err(Refusal::Unavailable)
+        ));
+        *current.lock().unwrap() = None;
+        assert!(matches!(
+            authority.begin_read("phone", &signed_request(&grant, &lease, 0, 1_004), now),
+            Err(Refusal::Unavailable)
+        ));
     }
 
     #[test]

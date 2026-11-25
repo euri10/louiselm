@@ -211,7 +211,10 @@ receiver_identity[32] | challenge_id[16] | challenge[32] | working_key[65]
 The trusted computer enforces five minutes of actual phone-interaction
 inactivity and a one-hour absolute period limit. Background polling, output,
 sync, failed requests and replay never refresh inactivity. A valid explicit
-interaction may refresh only an unexpired period and never the absolute limit.
+interaction may refresh only an unexpired period and never the absolute limit;
+its idle deadline starts at the interaction, not delayed response delivery.
+Both limits include computer suspend. An unavailable or inconsistent Linux
+boot clock refuses workspace authority instead of extending it.
 Locking the phone or process death destroys the working key; brief app switching
 does not reset either timer. Recheck revocation, scope and both deadlines before
 protected delivery and admission, serialized with their owning state changes.
