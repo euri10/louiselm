@@ -12,7 +12,7 @@ use std::{
 };
 
 use super::{
-    prepared_owner::{Publication, publish_with},
+    prepared_owner::{PreparedOwner, Publication, project_detail, publish_with},
     source_checkout_tests::{materialize, setup},
 };
 use crate::{PreparedRunStore, RunAdmission, RunStore};
@@ -217,6 +217,11 @@ fn publication_rejects_incomplete_active_or_contradictory_drafts() {
     skills["manifest"]["skills"] = serde_json::json!({"mode":"off","view_digest":"bad"});
     let mut commands = valid.clone();
     commands["envelope"]["commands"] = serde_json::json!({"expires_at_ms":0});
+    let mut credential_url = valid.clone();
+    credential_url["envelope"]["provider_requests"]["upstream"] =
+        "https://secret@api.openai.com/v1/responses".into();
+    let mut multicast = valid.clone();
+    multicast["envelope"]["provider_requests"]["addresses"] = serde_json::json!(["224.0.0.1"]);
     for value in [
         incomplete,
         active,
@@ -225,6 +230,8 @@ fn publication_rejects_incomplete_active_or_contradictory_drafts() {
         null_execution,
         skills,
         commands,
+        credential_url,
+        multicast,
     ] {
         private_file(&file, &value.to_string());
         assert!(
@@ -232,5 +239,162 @@ fn publication_rejects_incomplete_active_or_contradictory_drafts() {
             "invalid draft published"
         );
     }
+    for upstream in [
+        "http://api.openai.com/v1/responses",
+        "https://api.openai.com/v1/responses?token=dummy",
+        "https://api.openai.com/v1/responses#fragment",
+        "https://api.openai.com:443/v1/responses",
+        "https://api.openai.com/other",
+    ] {
+        let mut invalid = valid.clone();
+        invalid["envelope"]["provider_requests"]["upstream"] = upstream.into();
+        private_file(&file, &invalid.to_string());
+        assert!(publish_with(&sources, &prepared, &runs, &request, |_| Ok(())).is_err());
+    }
+    for addresses in [
+        serde_json::json!([]),
+        serde_json::json!(["0.0.0.0"]),
+        serde_json::json!(["127.0.0.1", "127.0.0.1"]),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["envelope"]["provider_requests"]["addresses"] = addresses;
+        private_file(&file, &invalid.to_string());
+        assert!(publish_with(&sources, &prepared, &runs, &request, |_| Ok(())).is_err());
+    }
     assert_eq!(prepared.list().unwrap(), Vec::new());
+}
+
+#[test]
+fn prepared_detail_is_exact_bounded_and_omits_local_input_paths() {
+    let (root, sources, source_id) = setup();
+    let checkout = sources
+        .prepare_checkout_with(RUN, &source_id, &root.path().join("checkout"), materialize)
+        .unwrap();
+    let prepared = PreparedRunStore::open(root.path().join("prepared")).unwrap();
+    let runs = RunStore::new(root.path().join("runs")).unwrap();
+    let file = root.path().join("selection.json");
+    private_file(
+        &file,
+        &selection(root.path(), &checkout.head, "inspect /intentional/path"),
+    );
+    let request = Publication {
+        run_id: RUN,
+        source_id: &source_id,
+        checkout_id: &checkout.checkout_id,
+        selection: &file,
+        previous: None,
+    };
+    let summary = publish_with(&sources, &prepared, &runs, &request, |_| Ok(())).unwrap();
+    let saved = prepared.read(&summary.id, summary.revision).unwrap();
+    let detail = project_detail(&saved, std::fs::metadata(root.path()).unwrap().uid()).unwrap();
+    assert_eq!(detail["state"], "prepared");
+    assert_eq!(detail["beads"][0]["prompt"], "inspect /intentional/path");
+    assert_eq!(
+        detail["execution"],
+        serde_json::json!({"kind":"duration","duration_ms":1_800_000})
+    );
+    assert_eq!(detail["max_sessions"], 6);
+    assert_eq!(detail["bead_scope"]["max_mutations"], 3);
+    assert_eq!(detail["provider_requests"]["max_run_requests"], 3);
+    assert_eq!(
+        detail["provider_requests"]["models"],
+        serde_json::json!(["gpt-5.6-luna"])
+    );
+    assert!(!detail.to_string().contains("/private/cache"));
+    assert!(!detail.to_string().contains("/private/journal"));
+    assert!(!detail.to_string().contains(root.path().to_str().unwrap()));
+    assert!(runs.run(RUN).is_err());
+    let mut formerly_published = saved.clone();
+    let mut invalid: serde_json::Value =
+        serde_json::from_str(&formerly_published.selection).unwrap();
+    invalid["envelope"]["provider_requests"]["upstream"] =
+        "https://secret@api.openai.com/v1/responses".into();
+    formerly_published.selection = invalid.to_string();
+    assert!(
+        project_detail(
+            &formerly_published,
+            std::fs::metadata(root.path()).unwrap().uid()
+        )
+        .is_err()
+    );
+    let mut wrong = saved;
+    wrong.binding.agents = vec!["other".into()];
+    assert!(project_detail(&wrong, std::fs::metadata(root.path()).unwrap().uid()).is_err());
+}
+
+#[test]
+fn protected_detail_holds_unused_run_and_exact_publication_locks() {
+    use fs2::FileExt;
+    let (root, sources, source_id) = setup();
+    let checkout = sources
+        .prepare_checkout_with(RUN, &source_id, &root.path().join("checkout"), materialize)
+        .unwrap();
+    std::fs::rename(root.path().join("sources"), root.path().join("run-sources")).unwrap();
+    let prepared = PreparedRunStore::open(root.path().join("prepared-runs")).unwrap();
+    let runs = RunStore::new(root.path().join("runs")).unwrap();
+    let source_store =
+        super::source::PhoneSourceStore::open(root.path().join("run-sources")).unwrap();
+    let file = root.path().join("selection.json");
+    private_file(&file, &selection(root.path(), &checkout.head, "private"));
+    let request = Publication {
+        run_id: RUN,
+        source_id: &source_id,
+        checkout_id: &checkout.checkout_id,
+        selection: &file,
+        previous: None,
+    };
+    let summary = publish_with(&source_store, &prepared, &runs, &request, |_| Ok(())).unwrap();
+    let owner = PreparedOwner::new(root.path().to_path_buf(), runs.clone());
+    let open_lock = |path: &Path| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap()
+    };
+    let run_lock = open_lock(&root.path().join("runs/.lock"));
+    let prepared_lock = open_lock(&root.path().join("prepared-runs/.lock"));
+    owner
+        .with_published_by(
+            &summary.id,
+            summary.revision,
+            || Ok(()),
+            |saved, uid| {
+                assert_eq!(
+                    run_lock.try_lock_exclusive().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                assert_eq!(
+                    prepared_lock.try_lock_exclusive().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                assert_eq!(project_detail(saved, uid).unwrap()["state"], "prepared");
+            },
+        )
+        .unwrap();
+    assert!(
+        owner
+            .with_published_by(&summary.id, summary.revision + 1, || Ok(()), |_, _| ())
+            .is_err()
+    );
+    runs.admit(
+        RunAdmission {
+            id: RUN.into(),
+            generated_work_ceiling: 1,
+            park_ttl_ms: 1000,
+        },
+        "generate-token-1234",
+    )
+    .unwrap();
+    assert!(
+        owner
+            .with_published_by(&summary.id, summary.revision, || Ok(()), |_, _| ())
+            .is_err()
+    );
+    prepared.unpublish(&summary.id, summary.revision).unwrap();
+    assert!(
+        owner
+            .with_published_by(&summary.id, summary.revision, || Ok(()), |_, _| ())
+            .is_err()
+    );
 }

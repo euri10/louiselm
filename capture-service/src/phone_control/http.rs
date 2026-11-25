@@ -19,9 +19,14 @@ use super::{
 };
 use super::{
     authority::{Authority, EnrollmentStatus, History, ReadPermit, Refusal},
+    prepared_owner::PreparedReader,
     socket::{ControllerRegistry, validate_read_response},
 };
 use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
+
+#[cfg(test)]
+#[path = "http_prepared_tests.rs"]
+mod prepared_tests;
 
 #[derive(Clone)]
 struct HttpState {
@@ -29,6 +34,7 @@ struct HttpState {
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
+    prepared: Option<PreparedReader>,
 }
 
 pub(super) fn router(
@@ -36,6 +42,7 @@ pub(super) fn router(
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
+    prepared: Option<PreparedReader>,
 ) -> Router {
     Router::new()
         .route("/v1/phone-control/enrollment/offer", post(handle))
@@ -50,6 +57,7 @@ pub(super) fn router(
             pairing,
             controllers,
             evidence,
+            prepared,
         })
 }
 
@@ -183,7 +191,7 @@ async fn process_http(
             .ok_or(Refusal::Unauthenticated)?;
         if path == "/v1/phone-control/request" {
             let signed: SignedRequest = decode(&body, "request")?;
-            if matches!(signed.request.action, 1 | 48 | 49) {
+            if matches!(signed.request.action, 1 | 48 | 49 | 53) {
                 let permit =
                     initial_state
                         .authority
@@ -208,6 +216,9 @@ async fn process_http(
     match started {
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
+            if request.action == 53 {
+                return finish_prepared(state, credential, *permit).await;
+            }
             let mut listed_controllers = Vec::new();
             let response = if request.action == 48 {
                 match controller_page(&state.controllers, &request) {
@@ -258,6 +269,23 @@ async fn process_http(
         }
         Err(error) => Err(error),
     }
+}
+
+async fn finish_prepared(
+    state: HttpState,
+    credential: String,
+    permit: ReadPermit,
+) -> Result<Value, Refusal> {
+    tokio::task::spawn_blocking(move || {
+        state.authority.finish_prepared_delivery(
+            &permit,
+            &state.pairing,
+            &credential,
+            state.prepared.as_ref(),
+        )
+    })
+    .await
+    .unwrap_or(Err(Refusal::Unavailable))
 }
 
 fn controller_page(
@@ -453,7 +481,7 @@ mod tests {
     };
     use crate::{PairingRegistry, hex::lower_hex};
 
-    fn unhex(text: &str) -> Vec<u8> {
+    pub(super) fn unhex(text: &str) -> Vec<u8> {
         text.as_bytes()
             .as_chunks::<2>()
             .0
@@ -989,13 +1017,34 @@ mod tests {
         }})
     }
 
-    async fn history_grant(
+    pub(super) async fn history_grant(
         service: &Service,
         app: &axum::Router,
         phone: &crate::DeviceCredential,
         fixture: &Value,
         project: &std::path::Path,
         groups: Vec<String>,
+    ) -> (StoredGrant, String) {
+        scoped_grant(
+            service,
+            app,
+            phone,
+            fixture,
+            Scope {
+                projects: vec![project.to_str().unwrap().into()],
+                agents: vec!["codex".into()],
+                groups,
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn scoped_grant(
+        service: &Service,
+        app: &axum::Router,
+        phone: &crate::DeviceCredential,
+        fixture: &Value,
+        scope: Scope,
     ) -> (StoredGrant, String) {
         let now = Instant::now();
         let offer = service
@@ -1015,18 +1064,7 @@ mod tests {
             .unwrap();
         let grant = service
             .authority
-            .approve(
-                &phone.device_id,
-                &offer.enrollment_id,
-                key,
-                Scope {
-                    projects: vec![project.to_str().unwrap().into()],
-                    agents: vec!["codex".into()],
-                    groups,
-                },
-                &[],
-                now,
-            )
+            .approve(&phone.device_id, &offer.enrollment_id, key, scope, &[], now)
             .unwrap();
         let period = history_period(app, phone, fixture, &grant).await;
         (grant, period)
@@ -1056,7 +1094,7 @@ mod tests {
         unlocked["period_id"].as_str().unwrap().to_owned()
     }
 
-    async fn post(
+    pub(super) async fn post(
         router: axum::Router,
         path: &str,
         credential: &str,
@@ -1328,6 +1366,7 @@ mod tests {
             pairing,
             Arc::default(),
             Arc::new(evidence),
+            None,
         );
         let (_, denied) = post(
             app.clone(),
@@ -1384,6 +1423,7 @@ mod tests {
             pairing,
             Arc::default(),
             Arc::new(evidence),
+            None,
         );
         let now = Instant::now();
         let offer = authority

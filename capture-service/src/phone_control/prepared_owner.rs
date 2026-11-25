@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
@@ -18,8 +18,8 @@ use super::{
     source_checkout::{CheckoutProof, verify_checkout},
 };
 use crate::{
-    PreparedRunError, PreparedRunRegistration, PreparedRunStore, PreparedRunSummary,
-    RunProjectBinding, RunStore, RunStoreError,
+    PreparedRunError, PreparedRunRegistration, PreparedRunRevision, PreparedRunStore,
+    PreparedRunSummary, RunProjectBinding, RunStore, RunStoreError,
 };
 
 const MAX_SELECTION: u64 = 65_536;
@@ -53,11 +53,32 @@ pub(super) struct Publication<'a> {
 pub(super) struct PreparedOwner {
     root: PathBuf,
     runs: RunStore,
+    integration: fn() -> Result<(), PhoneSourceError>,
 }
+
+/// Read-only view; the receiver never receives owner administration methods.
+#[derive(Clone)]
+pub(super) struct PreparedReader(PreparedOwner);
 
 impl PreparedOwner {
     pub(super) fn new(root: PathBuf, runs: RunStore) -> Self {
-        Self { root, runs }
+        Self {
+            root,
+            runs,
+            integration: require_installed_skills,
+        }
+    }
+
+    pub(super) fn reader(&self) -> PreparedReader {
+        PreparedReader(self.clone())
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_integration(
+        &mut self,
+        integration: fn() -> Result<(), PhoneSourceError>,
+    ) {
+        self.integration = integration;
     }
 
     fn store(&self) -> Result<PreparedRunStore, OwnerPreparedError> {
@@ -85,6 +106,63 @@ impl PreparedOwner {
     pub(super) fn unpublish(&self, id: &str, revision: u64) -> Result<(), OwnerPreparedError> {
         // Removal must remain possible when the optional integration is absent.
         Ok(self.store()?.unpublish(id, revision)?)
+    }
+
+    /// The caller holds current authority and pairing across this callback.
+    pub(super) fn with_published<T>(
+        &self,
+        id: &str,
+        revision: u64,
+        inspect: impl FnOnce(&PreparedRunRevision, u32) -> T,
+    ) -> Result<T, OwnerPreparedError> {
+        self.with_published_by(id, revision, self.integration, inspect)
+    }
+
+    pub(super) fn with_published_by<T>(
+        &self,
+        id: &str,
+        revision: u64,
+        integration: impl FnOnce() -> Result<(), PhoneSourceError>,
+        inspect: impl FnOnce(&PreparedRunRevision, u32) -> T,
+    ) -> Result<T, OwnerPreparedError> {
+        integration()?;
+        let owner = fs::metadata(&self.root)?.uid();
+        let prepared = self.store()?;
+        let candidate = prepared.read(id, revision)?;
+        let sources = PhoneSourceStore::open(self.root.join("run-sources"))?;
+        let source = sources.read(&candidate.binding.run_id)?;
+        let checkout = sources.read_checkout(&candidate.binding.run_id)?;
+        if source.project_id != candidate.binding.project_id
+            || source.source_id != candidate.binding.source_id
+            || checkout.project_id != source.project_id
+            || checkout.source_id != source.source_id
+            || checkout.checkout_id != candidate.binding.checkout_id
+            || checkout.snapshot_digest != source.snapshot_digest
+        {
+            return Err(OwnerPreparedError::Invalid(
+                "retained source binding differs",
+            ));
+        }
+        let result = self.runs.with_unused_run(&candidate.binding.run_id, || {
+            prepared.with_published(id, revision, |saved| {
+                if saved != &candidate {
+                    return Err(OwnerPreparedError::Invalid("prepared revision changed"));
+                }
+                Ok(inspect(saved, owner))
+            })
+        })?;
+        result?
+    }
+}
+
+impl PreparedReader {
+    pub(super) fn with_published<T>(
+        &self,
+        id: &str,
+        revision: u64,
+        inspect: impl FnOnce(&PreparedRunRevision, u32) -> T,
+    ) -> Result<T, OwnerPreparedError> {
+        self.0.with_published(id, revision, inspect)
     }
 }
 
@@ -121,7 +199,7 @@ struct DraftEnvelope {
     expires_at_ms: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BeadScope {
     project_digest: String,
@@ -132,13 +210,13 @@ struct BeadScope {
     expires_at_ms: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Effect {
     kind: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderScope {
     disclosure_profile: String,
@@ -151,18 +229,17 @@ struct ProviderScope {
     expires_at_ms: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SkillScope {
     agents: Vec<String>,
-    #[serde(rename = "allow_run")]
-    _allow_run: bool,
-    #[serde(default, rename = "allow_supply")]
-    _allow_supply: bool,
+    allow_run: bool,
+    #[serde(default)]
+    allow_supply: bool,
     expires_at_ms: u64,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Execution {
     Duration { duration_ms: u64 },
@@ -197,7 +274,7 @@ struct ManifestEnvelope {
     revision: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 enum Skills {
     Off {
@@ -214,7 +291,7 @@ struct Isolation {
     network: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Bead {
     id: String,
@@ -227,6 +304,40 @@ struct Worktree {
     path: String,
     journal_parent: String,
     head: String,
+}
+
+/// Builds protected content only; the caller must hold current phone authority,
+/// pairing, the unused-Run guard, and the exact publication revision lock.
+pub(super) fn project_detail(
+    saved: &PreparedRunRevision,
+    owner: u32,
+) -> Result<serde_json::Value, OwnerPreparedError> {
+    if saved.selection.len() as u64 > MAX_SELECTION {
+        return Err(OwnerPreparedError::Invalid("selection is too large"));
+    }
+    let selection: Selection = serde_json::from_str(&saved.selection)?;
+    validate_selection(&selection, owner)?;
+    if selection.envelope.run_id != saved.binding.run_id
+        || saved.binding.agents.as_slice() != [selection.manifest.agent.id.as_str()]
+    {
+        return Err(OwnerPreparedError::Invalid("selection binding differs"));
+    }
+    let skill_requests = selection.envelope.skill_requests.as_ref().map_or_else(
+        || serde_json::json!({"enabled":false,"agents":[],"allow_run":false,"allow_supply":false}),
+        |scope| serde_json::json!({"enabled":true,"agents":scope.agents,"allow_run":scope.allow_run,"allow_supply":scope.allow_supply}),
+    );
+    Ok(serde_json::json!({
+        "state": "prepared",
+        "agent": selection.manifest.agent.id,
+        "beads": selection.beads,
+        "execution": selection.execution,
+        "max_sessions": selection.envelope.max_sessions,
+        "bead_scope": selection.envelope.bead_scope,
+        "provider_requests": selection.envelope.provider_requests,
+        "skill_requests": skill_requests,
+        "skills": selection.manifest.skills,
+        "network": selection.manifest.isolation.network,
+    }))
 }
 
 pub(super) fn publish(
@@ -379,17 +490,7 @@ fn validate_selection(selection: &Selection, owner: u32) -> Result<(), OwnerPrep
         || scope.effects[0].kind != "comment_add"
         || scope.max_mutations != selection.beads.len() as u64
         || scope.expires_at_ms != 0
-        || !valid_digest(&provider.disclosure_profile)
-        || provider.provider.is_empty()
-        || provider.upstream.is_empty()
-        || provider.addresses.is_empty()
-        || provider.models != ["gpt-5.6-luna"]
-        || !matches!(
-            provider.max_effort.as_str(),
-            "none" | "minimal" | "low" | "medium" | "high"
-        )
-        || !(1..=10_000).contains(&provider.max_run_requests)
-        || provider.expires_at_ms != 0
+        || !valid_provider(provider)
         || !valid_skill_scope(envelope.skill_requests.as_ref())
         || !execution
         || manifest.envelope.id != envelope.envelope_id
@@ -427,6 +528,41 @@ fn valid_skill_scope(scope: Option<&SkillScope>) -> bool {
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             })
     })
+}
+
+fn valid_provider(scope: &ProviderScope) -> bool {
+    let upstream = url::Url::parse(&scope.upstream).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.as_str() == scope.upstream
+            && url.path() == "/v1/responses"
+    });
+    valid_digest(&scope.disclosure_profile)
+        && !scope.provider.is_empty()
+        && scope.provider.len() <= 64
+        && scope
+            .provider
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && scope.upstream.len() <= 2048
+        && upstream
+        && (1..=16).contains(&scope.addresses.len())
+        && scope.addresses.iter().collect::<BTreeSet<_>>().len() == scope.addresses.len()
+        && scope
+            .addresses
+            .iter()
+            .all(|address| !address.is_unspecified() && !address.is_multicast())
+        && scope.models == ["gpt-5.6-luna"]
+        && matches!(
+            scope.max_effort.as_str(),
+            "none" | "minimal" | "low" | "medium" | "high"
+        )
+        && (1..=10_000).contains(&scope.max_run_requests)
+        && scope.expires_at_ms == 0
 }
 
 fn same_file(left: &Metadata, right: &Metadata) -> bool {

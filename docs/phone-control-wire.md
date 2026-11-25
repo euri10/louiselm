@@ -297,6 +297,30 @@ rechecks pairing, grant, period and controller before protected delivery.
 For either action `interaction` may be one only for an explicit phone action;
 automatic page continuation and background reads use zero.
 
+Action `53`, `read_prepared`, requires `read`. The controller ID is all zeroes,
+the subject ID is the exact `hex16` registration ID, the payload is empty, and
+`expected_revision` is its nonzero published revision. This owner-backed read
+does not require a live controller. Success is
+`{v:1,type:"prepared_detail",request_id:hex16,registration_id:hex16,run_id:uuid,revision:integer,detail:PreparedDetail}`.
+The closed detail is `{state:"prepared",agent:string,beads:[{id:string,prompt:string}],execution:Execution,max_sessions:integer,bead_scope:BeadScope,provider_requests:ProviderScope,skill_requests:SkillScope,skills:Skills,network:string}`.
+`Execution` is `{kind:"duration",duration_ms:integer}` or
+`{kind:"stop_by",expires_at_ms:integer}`. `BeadScope` is exactly
+`{project_digest:string,role:"coordinator",issue_ids:[string],effects:[{kind:"comment_add"}],max_mutations:integer,expires_at_ms:0}`.
+`ProviderScope` is `{disclosure_profile:string,provider:string,upstream:string,addresses:[string],models:[string],max_effort:string,max_run_requests:integer,expires_at_ms:0}`.
+`SkillScope` is `{enabled:boolean,agents:[string],allow_run:boolean,allow_supply:boolean}`;
+disabled scope has an empty Agent list and both flags false. `Skills` is
+`{mode:"off",view_digest:string}` or
+`{mode:"enabled",generation_digest:string,view_digest:string}`; network is
+`denied` or `brokered`. There are three to five reviewed Beads and the complete
+private selection is bounded to 65,536 bytes. Prompts are exact and can contain
+sensitive text or paths; local cache, journal, checkout and selection-file paths
+are not included. The owner rechecks pairing, the current working period and
+Read grant, original-project and every contributing Agent scope, exact retained
+source/checkout identities, unused Run UUID, and published revision while
+serializing against unpublication and admission. Missing integration is
+`unsupported`; a stale, unpublished or already-admitted item is refused. A read
+does not open a controller, admit a Run, activate its deadline or grant a capability.
+
 Action `2`, `read_action_history`, also requires `read`. Its decoded payload is
 one of `00 | operation_id[16]` (one record), `01 | limit:u8` (first page), or
 `02 | after_operation_id[16] | limit:u8` (next page), with limit 1–50. For one

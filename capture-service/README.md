@@ -139,8 +139,10 @@ After reviewing the selection and checkout, the operator can explicitly
 retains its exact revision even if that file is later changed or deleted.
 Republication requires the current registration ID and revision; unpublication
 hides it while retaining the private snapshot. Inspection can print sensitive
-instructions and paths to the local terminal. These owner-only primitives do
-not yet provide a phone read route, start a Run, or open a waiting controller.
+instructions and paths to the local terminal. The protected receiver can read
+an exact registered revision with current phone scope; phone discovery and
+presentation are not yet provided. Neither operation starts a Run or opens a
+waiting controller.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver

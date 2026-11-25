@@ -78,6 +78,9 @@ impl Service {
             self.pairing.clone(),
             self.controllers.clone(),
             self.evidence.clone(),
+            self.prepared
+                .as_ref()
+                .map(prepared_owner::PreparedOwner::reader),
         )
     }
 
@@ -237,7 +240,9 @@ pub fn verify_phone_control_frame(
     }
     match header.get("type").and_then(serde_json::Value::as_str) {
         Some(kind) if !valid_string(kind) => return Err(Malformed),
-        Some("read_session" | "send_prompt" | "list_controllers" | "list_sessions") => {}
+        Some(
+            "read_session" | "send_prompt" | "list_controllers" | "list_sessions" | "read_prepared",
+        ) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
     }
@@ -252,6 +257,7 @@ pub fn verify_phone_control_frame(
                 | ("send_prompt", 3)
                 | ("list_controllers", 48)
                 | ("list_sessions", 49)
+                | ("read_prepared", 53)
         )
     {
         return Err(Unsupported);
@@ -273,6 +279,7 @@ impl Frame {
             }
             3 => validate_send_request_shape(request)?,
             48 | 49 => validate_discovery_request_shape(request)?,
+            53 => validate_prepared_request_shape(request)?,
             _ => return Err(Unsupported),
         }
         for number in [
@@ -416,6 +423,21 @@ fn validate_discovery_request_shape(request: &Request) -> Result<(), PhoneContro
         || request.expected_revision != 0
         || (request.action == 48 && controller != [0; 16])
         || (request.action == 49 && controller == [0; 16])
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    Ok(())
+}
+
+fn validate_prepared_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.action != 53 || request.interaction > 1 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    if fixed::<16>(&request.controller_id)? != [0; 16]
+        || fixed::<16>(&request.subject_id)? == [0; 16]
+        || request.expected_revision == 0
+        || !request.payload.is_empty()
     {
         return Err(PhoneControlError::Malformed);
     }
