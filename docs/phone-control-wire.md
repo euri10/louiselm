@@ -396,6 +396,24 @@ the owner ID changes on replacement or reconnect. A reconnected controller or ch
 an old Session subject must never be resolved to a replacement. This action does
 not itself authorize reading the linked Session or change the Run.
 
+Action `57`, `read_run_session`, reads a linked Session under the `read` group.
+The signed controller and subject are the exact `controller_id` and Session
+`subject_id` from action 56. Its 51-byte payload is version byte `01`, Run UUID
+(16 bytes), `owner_id` (16 bytes), exact durable Run revision (unsigned 64-bit
+big-endian), exclusive Session-history cursor (unsigned 64-bit big-endian),
+and page limit (unsigned 16-bit big-endian, 1–50). The signed
+`expected_revision` is the Session projection revision, zero for its current
+revision. The response is the same version-2 `session_page` as action 1. The
+controller verifies the signed request and checks that this exact current
+Session object belongs to the exact admitted Run-owner incarnation, including
+after asynchronous history reads. The receiver independently checks current
+pairing, Read grant, lease, original-project/source/checkout binding, complete
+contributing-Agent set, durable revision and controller before dispatch and
+again before delivery; the preflight does not renew the lease. The
+worker checkout need not itself be a separately approved project. A stale owner,
+Session, Run revision or controller is refused; an old target is never resolved
+through an ACP ID. Reading grants no control authority.
+
 Action `2`, `read_action_history`, also requires `read`. Its decoded payload is
 one of `00 | operation_id[16]` (one record), `01 | limit:u8` (first page), or
 `02 | after_operation_id[16] | limit:u8` (next page), with limit 1–50. For one

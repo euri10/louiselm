@@ -58,6 +58,40 @@ local function parse_payload(payload)
   return before, limit
 end
 
+local function parse_run_session_payload(payload)
+  if
+    type(payload) ~= "string"
+    or #payload ~= 102
+    or payload:match("^[0-9a-f]+$") == nil
+    or payload:sub(1, 2) ~= "01"
+  then
+    return nil
+  end
+  local uuid, owner = payload:sub(3, 34), payload:sub(35, 66)
+  local revision = tonumber(payload:sub(67, 82), 16)
+  local before, limit = parse_payload(payload:sub(83))
+  if
+    uuid == string.rep("0", 32)
+    or owner == string.rep("0", 32)
+    or revision == nil
+    or revision < 1
+    or revision > MAX_INTEGER
+    or before == nil
+  then
+    return nil
+  end
+  local id = uuid:sub(1, 8)
+    .. "-"
+    .. uuid:sub(9, 12)
+    .. "-"
+    .. uuid:sub(13, 16)
+    .. "-"
+    .. uuid:sub(17, 20)
+    .. "-"
+    .. uuid:sub(21, 32)
+  return { id = id, owner_id = owner, before = before, limit = limit }
+end
+
 local function parse_send_payload(request)
   local payload = request.payload
   if
@@ -93,6 +127,24 @@ local function current(self, subject_id)
     return nil
   end
   return subject, state
+end
+
+local function current_run_session(self, linked, subject_id)
+  local snapshot = self.runs:snapshot(linked.id, self.controller_id, function(session)
+    local tracked = self.sessions[session]
+    if tracked and tracked.id and current(self, tracked.id) == tracked then
+      return { controller_id = self.controller_id, subject_id = tracked.id }
+    end
+  end)
+  if snapshot == nil or not snapshot.admitted or snapshot.owner_id ~= linked.owner_id then
+    return false
+  end
+  for _, session in ipairs(snapshot.sessions) do
+    if session.subject_id == subject_id then
+      return true
+    end
+  end
+  return false
 end
 
 -- This private receiver-to-controller probe carries no phone authority. The
@@ -463,6 +515,7 @@ function Controller:read(line, callback)
   local request, grant = message.request, message.grant
   local listing = message.type == "list_sessions" and request.action == 49
   local sending = message.type == "send_prompt" and request.action == 3
+  local linked_read = message.type == "read_run_session" and request.action == 57
   if sending then
     -- The version-1 commit lacks the crash-safe guard and connection witness.
     nvim.schedule(function()
@@ -470,13 +523,20 @@ function Controller:read(line, callback)
     end)
     return
   end
-  if message.v ~= 1 or not (listing or sending or (message.type == "read_session" and request.action == 1)) then
+  if
+    message.v ~= 1
+    or not (listing or sending or linked_read or (message.type == "read_session" and request.action == 1))
+  then
     nvim.schedule(function()
       callback(error_result("unsupported"))
     end)
     return
   end
+  local linked = linked_read and parse_run_session_payload(request.payload) or nil
   local before, limit = parse_payload(request.payload)
+  if linked ~= nil then
+    before, limit = linked.before, linked.limit
+  end
   local send_text = sending and parse_send_payload(request) or nil
   if sending and send_text ~= nil then
     before, limit = 0, 1
@@ -500,6 +560,7 @@ function Controller:read(line, callback)
   local expected = request.expected_revision
   if
     before == nil
+    or (linked_read and linked == nil)
     or (sending and (send_text == nil or self.pending_action ~= nil))
     or not hex_id(request.subject_id)
     or not hex_id(request.operation_id)
@@ -597,7 +658,17 @@ function Controller:read(line, callback)
         finish(error_result("unavailable"))
         return
       end
-      nvim.uv.fs_realpath(working_dir, function(path_error, canonical)
+      local resolve = nvim.uv.fs_realpath
+      if linked ~= nil then
+        if not current_run_session(self, linked, request.subject_id) then
+          finish(error_result("stale_subject"))
+          return
+        end
+        resolve = function(_, callback)
+          callback(nil, working_dir)
+        end
+      end
+      resolve(working_dir, function(path_error, canonical)
         nvim.schedule(function()
           if self.disposed or self.generation ~= generation then
             return
@@ -609,11 +680,12 @@ function Controller:read(line, callback)
             or latest.working_dir ~= working_dir
             or latest.agent ~= agent
             or self.controller_id ~= attached
+            or (linked ~= nil and not current_run_session(self, linked, request.subject_id))
           then
             finish(error_result("stale_subject"))
           elseif path_error ~= nil or type(canonical) ~= "string" then
             finish(error_result("unavailable"))
-          elseif not within_project(grant.projects, canonical) then
+          elseif linked == nil and not within_project(grant.projects, canonical) then
             finish(error_result("out_of_scope"))
           elseif sending then
             local page, page_error = subject.projection:page(0, 1, expected)
@@ -696,6 +768,7 @@ function Controller:read(line, callback)
                 or state_now.working_dir ~= working_dir
                 or state_now.agent ~= agent
                 or self.controller_id ~= attached
+                or (linked ~= nil and not current_run_session(self, linked, request.subject_id))
               then
                 finish(error_result("stale_subject"))
               elseif page == nil then

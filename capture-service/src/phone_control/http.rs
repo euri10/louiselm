@@ -194,7 +194,10 @@ async fn process_http(
             .ok_or(Refusal::Unauthenticated)?;
         if path == "/v1/phone-control/request" {
             let signed: SignedRequest = decode(&body, "request")?;
-            if matches!(signed.request.action, 1 | 48 | 49 | 52 | 53 | 54 | 55 | 56) {
+            if matches!(
+                signed.request.action,
+                1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57
+            ) {
                 let permit =
                     initial_state
                         .authority
@@ -219,6 +222,9 @@ async fn process_http(
     match started {
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
+            if request.action == 57 {
+                return finish_run_session(state, credential, *permit, &request).await;
+            }
             if request.action == 56 {
                 return finish_live_run(state, credential, *permit, &request).await;
             }
@@ -274,6 +280,54 @@ async fn process_http(
             }
         }
         Err(error) => Err(error),
+    }
+}
+
+async fn finish_run_session(
+    state: HttpState,
+    credential: String,
+    permit: ReadPermit,
+    request: &Request,
+) -> Result<Value, Refusal> {
+    let before = state.clone();
+    let before_credential = credential.clone();
+    let (permit, checked) = tokio::task::spawn_blocking(move || {
+        let result = before.authority.preflight_run_session_delivery(
+            &permit,
+            &before.pairing,
+            &before_credential,
+            before.prepared.as_ref(),
+            &before.controllers,
+        );
+        (permit, result)
+    })
+    .await
+    .map_err(|_| Refusal::Unavailable)?;
+    checked?;
+    let response = match state
+        .controllers
+        .dispatch(&request.controller_id, permit.frame.clone())
+        .await
+    {
+        Ok(bytes) => validate_read_response(&bytes, request),
+        Err(error) => Err(error),
+    };
+    let success = response.is_ok();
+    let checked = tokio::task::spawn_blocking(move || {
+        state.authority.finish_run_session_delivery(
+            &permit,
+            &state.pairing,
+            &credential,
+            state.prepared.as_ref(),
+            &state.controllers,
+            success,
+        )
+    })
+    .await
+    .unwrap_or(Err(Refusal::Unavailable));
+    match (checked, response) {
+        (Ok(()), result) => result,
+        (Err(Refusal::Unavailable), Err(error)) | (Err(error), _) => Err(error),
     }
 }
 

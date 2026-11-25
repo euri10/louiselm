@@ -106,6 +106,64 @@ fn signed_run(
     }})
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the signed fixture names both exact owner incarnations"
+)]
+fn signed_run_session(
+    fixture: &Value,
+    grant: &StoredGrant,
+    period: &str,
+    controller: &str,
+    subject: &str,
+    run: &str,
+    owner: &str,
+    run_revision: u64,
+    operation: u128,
+) -> Value {
+    let mut payload = vec![1];
+    payload.extend(fixed::<16>(&run.replace('-', "")).unwrap());
+    payload.extend(fixed::<16>(owner).unwrap());
+    payload.extend(run_revision.to_be_bytes());
+    payload.extend(0_u64.to_be_bytes());
+    payload.extend(20_u16.to_be_bytes());
+    let hash = lower_hex(&Sha256::digest(&payload));
+    let operation = format!("{operation:032x}");
+    let mut bytes = prefix(2);
+    bytes.extend(fixed::<16>(&grant.grant_id).unwrap());
+    bytes.extend(grant.grant_revision.to_be_bytes());
+    bytes.extend(fixed::<16>(period).unwrap());
+    bytes.extend(fixed::<32>(&grant.receiver_identity).unwrap());
+    bytes.extend(fixed::<16>(controller).unwrap());
+    bytes.extend(fixed::<16>(subject).unwrap());
+    bytes.push(57);
+    bytes.extend(fixed::<32>(&hash).unwrap());
+    bytes.extend(fixed::<16>(&operation).unwrap());
+    bytes.extend(0_u64.to_be_bytes());
+    bytes.push(1);
+    let key = EcdsaKeyPair::from_pkcs8(
+        &ECDSA_P256_SHA256_ASN1_SIGNING,
+        &unhex(fixture["keys"]["working"]["pkcs8"].as_str().unwrap()),
+    )
+    .unwrap();
+    let signature = key.sign(&SystemRandom::new(), &bytes).unwrap();
+    json!({"v":1,"type":"request","request":{
+        "grant_id":grant.grant_id,"grant_revision":grant.grant_revision,"period_id":period,
+        "receiver_identity":grant.receiver_identity,"controller_id":controller,"subject_id":subject,
+        "action":57,"payload":lower_hex(&payload),"payload_hash":hash,"operation_id":operation,
+        "expected_revision":0,"interaction":1,"signature":lower_hex(signature.as_ref())
+    }})
+}
+
+fn session_page(request: &Value) -> Value {
+    json!({"v":2,"type":"session_page","controller_id":request["controller_id"],
+        "subject_id":request["subject_id"],"operation_id":request["operation_id"],
+        "revision":1,"status":"ready","entries":[{"kind":"message","seq":1,
+        "role":"assistant","text":"owned Session","truncated":false}],"next_before":0,
+        "complete":true,"source":{"replay":"not_applicable","archive":"unavailable",
+        "redaction":"unknown","missing":false,"truncated":false}})
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -403,6 +461,40 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     assert_eq!(live["live"]["sessions"][0]["subject_id"], subject_id);
     assert_eq!(live["live"]["phase"], "working");
     assert!(!live.to_string().contains(&saved.id));
+    let owner_id = "66".repeat(16);
+    let request = signed_run_session(
+        &fixture,
+        &grant,
+        &period,
+        &controller,
+        &subject_id,
+        run,
+        &owner_id,
+        1,
+        924,
+    );
+    let linked = tokio::spawn({
+        let app = app.clone();
+        let credential = phone.credential.clone();
+        async move {
+            post(
+                app,
+                "/v1/phone-control/request",
+                &credential,
+                &request.to_string(),
+            )
+            .await
+        }
+    });
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(1), read_probe(&mut stream))
+        .await
+        .expect("linked Session read must reach the exact controller");
+    assert_eq!(frame["type"], "read_run_session");
+    write_probe(&mut stream, &session_page(&frame["request"])).await;
+    assert_eq!(
+        linked.await.unwrap().1["entries"][0]["text"],
+        "owned Session"
+    );
     let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 923);
     let replacing = tokio::spawn({
         let app = app.clone();
@@ -572,6 +664,31 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     assert_eq!(read_probe(&mut stream).await["run_id"], run);
     write_probe(&mut stream, &observed).await;
     assert_eq!(pending_live.await.unwrap().1["code"], "stale_subject");
+    let new_subject = "55".repeat(16);
+    let new_owner = "88".repeat(16);
+    let stale_link = signed_run_session(
+        &fixture,
+        &grant,
+        &period,
+        &controller,
+        &new_subject,
+        run,
+        &new_owner,
+        1,
+        925,
+    );
+    let (_, stale_link) = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &stale_link.to_string(),
+        ),
+    )
+    .await
+    .expect("stale Run must be refused before reading Session history");
+    assert_eq!(stale_link["code"], "stale_subject");
     let next_offer = pairing
         .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
         .unwrap();
@@ -623,6 +740,25 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     )
     .await;
     assert_eq!(no_read_live["code"], "out_of_scope");
+    let no_read_link = signed_run_session(
+        &fixture,
+        &no_read,
+        &no_read_period,
+        &controller,
+        &new_subject,
+        run,
+        &new_owner,
+        2,
+        926,
+    );
+    let (_, no_read_link) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &no_read_phone.credential,
+        &no_read_link.to_string(),
+    )
+    .await;
+    assert_eq!(no_read_link["code"], "out_of_scope");
     let stale = signed_run(&fixture, &grant, &period, 55, &subject, &[], 1, 902);
     let (_, stale) = post(
         app.clone(),
@@ -649,6 +785,22 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .authority
         .begin_read(&phone.device_id, &pending.request, Instant::now())
         .unwrap();
+    let pending_link = signed_run_session(
+        &fixture,
+        &grant,
+        &period,
+        &controller,
+        &new_subject,
+        run,
+        &new_owner,
+        2,
+        927,
+    );
+    let pending_link: super::SignedRequest = serde_json::from_value(pending_link).unwrap();
+    let pending_link = service
+        .authority
+        .begin_read(&phone.device_id, &pending_link.request, Instant::now())
+        .unwrap();
     let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 0, 917);
     let pending_live = tokio::spawn({
         let app = app.clone();
@@ -665,6 +817,67 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     });
     assert_eq!(read_probe(&mut stream).await["run_id"], run);
     runs.add_phone_contributor(run, "claude").unwrap();
+    assert_eq!(
+        service.authority.finish_run_session_delivery(
+            &pending_link,
+            &pairing,
+            &phone.credential,
+            Some(&reader),
+            &service.controllers,
+            true,
+        ),
+        Err(super::Refusal::StaleSubject),
+    );
+    let grown = signed_run_session(
+        &fixture,
+        &grant,
+        &period,
+        &controller,
+        &new_subject,
+        run,
+        &new_owner,
+        runs.run(run).unwrap().revision,
+        929,
+    );
+    let grown: super::SignedRequest = serde_json::from_value(grown).unwrap();
+    let grown = service
+        .authority
+        .begin_read(&phone.device_id, &grown.request, Instant::now())
+        .unwrap();
+    assert_eq!(
+        service.authority.finish_run_session_delivery(
+            &grown,
+            &pairing,
+            &phone.credential,
+            Some(&reader),
+            &service.controllers,
+            true,
+        ),
+        Err(super::Refusal::OutOfScope)
+    );
+    let foreign = signed_run_session(
+        &fixture,
+        &grant,
+        &period,
+        &controller,
+        &new_subject,
+        run,
+        &new_owner,
+        runs.run(run).unwrap().revision,
+        930,
+    );
+    let (_, foreign) = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &foreign.to_string(),
+        ),
+    )
+    .await
+    .expect("foreign Run must be refused before reading Session history");
+    assert_eq!(foreign["code"], "out_of_scope");
     write_probe(&mut stream, &observed).await;
     assert_eq!(read_probe(&mut stream).await["run_id"], run);
     write_probe(&mut stream, &observed).await;
@@ -711,6 +924,22 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .authority
         .begin_read(&phone.device_id, &pending.request, Instant::now())
         .unwrap();
+    let pending_link = signed_run_session(
+        &fixture,
+        &grant,
+        &period,
+        &controller,
+        &new_subject,
+        run,
+        &new_owner,
+        runs.run(run).unwrap().revision,
+        928,
+    );
+    let pending_link: super::SignedRequest = serde_json::from_value(pending_link).unwrap();
+    let pending_link = service
+        .authority
+        .begin_read(&phone.device_id, &pending_link.request, Instant::now())
+        .unwrap();
     let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 0, 918);
     let pending_live = tokio::spawn({
         let app = app.clone();
@@ -727,6 +956,17 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     });
     assert_eq!(read_probe(&mut stream).await["run_id"], run);
     service.authority.disable(&phone.device_id).unwrap();
+    assert_eq!(
+        service.authority.finish_run_session_delivery(
+            &pending_link,
+            &pairing,
+            &phone.credential,
+            Some(&reader),
+            &service.controllers,
+            true,
+        ),
+        Err(super::Refusal::Revoked),
+    );
     write_probe(&mut stream, &observed).await;
     assert_eq!(read_probe(&mut stream).await["run_id"], run);
     write_probe(&mut stream, &observed).await;

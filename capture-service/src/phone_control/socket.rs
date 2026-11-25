@@ -302,11 +302,18 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             complete,
             source,
         } => {
-            let payload = fixed::<10>(&request.payload).map_err(|_| Refusal::Unavailable)?;
-            let mut before_bytes = [0_u8; 8];
-            before_bytes.copy_from_slice(&payload[..8]);
-            let before = u64::from_be_bytes(before_bytes);
-            let limit = usize::from(u16::from_be_bytes([payload[8], payload[9]]));
+            let (before, limit) = if request.action == 57 {
+                let query = super::run_session_query(request).map_err(|_| Refusal::Unavailable)?;
+                (query.before, usize::from(query.limit))
+            } else {
+                let payload = fixed::<10>(&request.payload).map_err(|_| Refusal::Unavailable)?;
+                let mut before_bytes = [0_u8; 8];
+                before_bytes.copy_from_slice(&payload[..8]);
+                (
+                    u64::from_be_bytes(before_bytes),
+                    usize::from(u16::from_be_bytes([payload[8], payload[9]])),
+                )
+            };
             let mut previous = 0;
             for entry in &entries {
                 let seq = entry.valid_sequence().ok_or(Refusal::Unavailable)?;

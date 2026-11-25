@@ -16,6 +16,12 @@ use super::super::{
 use super::{Authority, OwnerReadTiming, ReadPermit, Refusal, State, StoredGrant, refusal};
 use crate::{PairingRegistry, RunProjectBinding};
 
+#[derive(Clone, Copy)]
+enum OwnerDelivery<'a> {
+    Live(&'a Probe, &'a ControllerRegistry),
+    Session(&'a ControllerRegistry, Option<bool>),
+}
+
 impl Authority {
     pub(in crate::phone_control) fn finish_owner_delivery(
         &self,
@@ -41,8 +47,45 @@ impl Authority {
             pairing,
             credential,
             reader,
-            Some((probe, controllers)),
+            Some(OwnerDelivery::Live(probe, controllers)),
         )
+    }
+
+    pub(in crate::phone_control) fn finish_run_session_delivery(
+        &self,
+        permit: &ReadPermit,
+        pairing: &PairingRegistry,
+        credential: &str,
+        reader: Option<&OwnerRunReader>,
+        controllers: &ControllerRegistry,
+        success: bool,
+    ) -> Result<(), Refusal> {
+        self.finish_owner_delivery_inner(
+            permit,
+            pairing,
+            credential,
+            reader,
+            Some(OwnerDelivery::Session(controllers, Some(success))),
+        )
+        .map(|_| ())
+    }
+
+    pub(in crate::phone_control) fn preflight_run_session_delivery(
+        &self,
+        permit: &ReadPermit,
+        pairing: &PairingRegistry,
+        credential: &str,
+        reader: Option<&OwnerRunReader>,
+        controllers: &ControllerRegistry,
+    ) -> Result<(), Refusal> {
+        self.finish_owner_delivery_inner(
+            permit,
+            pairing,
+            credential,
+            reader,
+            Some(OwnerDelivery::Session(controllers, None)),
+        )
+        .map(|_| ())
     }
 
     fn finish_owner_delivery_inner(
@@ -51,7 +94,7 @@ impl Authority {
         pairing: &PairingRegistry,
         credential: &str,
         reader: Option<&OwnerRunReader>,
-        live: Option<(&Probe, &ControllerRegistry)>,
+        delivery: Option<OwnerDelivery<'_>>,
     ) -> Result<serde_json::Value, Refusal> {
         let now = Instant::now();
         let wall_ms = crate::time::now_ms();
@@ -68,7 +111,7 @@ impl Authority {
             let frame: Frame =
                 serde_json::from_slice(&permit.frame).map_err(|_| Refusal::Malformed)?;
             let request = &frame.request;
-            if !matches!(request.action, 52..=56)
+            if !matches!(request.action, 52..=57)
                 || request.operation_id != permit.operation_id
                 || request.grant_id != permit.grant_id
                 || request.period_id != permit.period_id
@@ -102,7 +145,9 @@ impl Authority {
                 54 => self.run_page(&mut state, permit, request, reader, &grant, timing),
                 55 => self.run_detail(&mut state, permit, request, reader, &grant, timing),
                 56 => {
-                    let (probe, controllers) = live.ok_or(Refusal::Unavailable)?;
+                    let Some(OwnerDelivery::Live(probe, controllers)) = delivery else {
+                        return Err(Refusal::Unavailable);
+                    };
                     self.run_live(
                         &mut state,
                         permit,
@@ -111,6 +156,20 @@ impl Authority {
                         &grant,
                         timing,
                         (probe, controllers),
+                    )
+                }
+                57 => {
+                    let Some(OwnerDelivery::Session(controllers, success)) = delivery else {
+                        return Err(Refusal::Unavailable);
+                    };
+                    self.run_session_finish(
+                        &mut state,
+                        permit,
+                        request,
+                        reader,
+                        &grant,
+                        timing,
+                        (controllers, success),
                     )
                 }
                 _ => Err(Refusal::Unsupported),

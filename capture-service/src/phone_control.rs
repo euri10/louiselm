@@ -253,7 +253,7 @@ pub fn verify_phone_control_frame(
         Some(kind) if !valid_string(kind) => return Err(Malformed),
         Some(
             "read_session" | "send_prompt" | "list_controllers" | "list_sessions" | "list_prepared"
-            | "read_prepared" | "list_runs" | "read_run" | "read_run_live",
+            | "read_prepared" | "list_runs" | "read_run" | "read_run_live" | "read_run_session",
         ) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
@@ -274,6 +274,7 @@ pub fn verify_phone_control_frame(
                 | ("list_runs", 54)
                 | ("read_run", 55)
                 | ("read_run_live", 56)
+                | ("read_run_session", 57)
         )
     {
         return Err(Unsupported);
@@ -299,6 +300,9 @@ impl Frame {
             53 => validate_prepared_request_shape(request)?,
             54 => validate_run_list_request_shape(request)?,
             55 | 56 => validate_run_request_shape(request)?,
+            57 => {
+                run_session_query(request)?;
+            }
             _ => return Err(Unsupported),
         }
         for number in [
@@ -504,6 +508,59 @@ fn validate_run_request_shape(request: &Request) -> Result<(), PhoneControlError
         return Err(PhoneControlError::Malformed);
     }
     Ok(())
+}
+
+struct RunSessionQuery {
+    run_id: String,
+    run_revision: u64,
+    before: u64,
+    limit: u16,
+}
+
+fn run_session_query(request: &Request) -> Result<RunSessionQuery, PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.action != 57 || request.interaction > 1 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    let payload = fixed::<51>(&request.payload)?;
+    let run: [u8; 16] = payload[1..17]
+        .try_into()
+        .map_err(|_| PhoneControlError::Malformed)?;
+    let owner: [u8; 16] = payload[17..33]
+        .try_into()
+        .map_err(|_| PhoneControlError::Malformed)?;
+    let run_revision = u64::from_be_bytes(
+        payload[33..41]
+            .try_into()
+            .map_err(|_| PhoneControlError::Malformed)?,
+    );
+    let before = u64::from_be_bytes(
+        payload[41..49]
+            .try_into()
+            .map_err(|_| PhoneControlError::Malformed)?,
+    );
+    let limit = u16::from_be_bytes(
+        payload[49..51]
+            .try_into()
+            .map_err(|_| PhoneControlError::Malformed)?,
+    );
+    if payload[0] != 1
+        || run == [0; 16]
+        || owner == [0; 16]
+        || fixed::<16>(&request.controller_id)? == [0; 16]
+        || fixed::<16>(&request.subject_id)? == [0; 16]
+        || !(1..=MAX_INTEGER).contains(&run_revision)
+        || before > MAX_INTEGER
+        || !(1..=50).contains(&limit)
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    Ok(RunSessionQuery {
+        run_id: uuid::Uuid::from_bytes(run).to_string(),
+        run_revision,
+        before,
+        limit,
+    })
 }
 
 enum HistoryQuery {

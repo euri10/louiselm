@@ -783,6 +783,9 @@ impl Authority {
             53 => super::validate_prepared_request_shape(request).map_err(refusal)?,
             54 => super::validate_run_list_request_shape(request).map_err(refusal)?,
             55 | 56 => super::validate_run_request_shape(request).map_err(refusal)?,
+            57 => {
+                super::run_session_query(request).map_err(refusal)?;
+            }
             _ => super::validate_discovery_request_shape(request).map_err(refusal)?,
         }
         let mut state = self.lock()?;
@@ -816,6 +819,7 @@ impl Authority {
                 54 => "list_runs",
                 55 => "read_run",
                 56 => "read_run_live",
+                57 => "read_run_session",
                 _ => return Err(Refusal::Unsupported),
             }
             .into(),
@@ -967,6 +971,34 @@ impl Authority {
                 .min(lease.public.absolute_expires_at_ms);
         }
         Ok(())
+    }
+
+    fn check_pending_read_locked(
+        &self,
+        state: &mut State,
+        permit: &ReadPermit,
+        now: Instant,
+        started: Instant,
+    ) -> Result<(), Refusal> {
+        if !state.pending_reads.contains(&permit.operation_id) {
+            return Err(Refusal::Unauthenticated);
+        }
+        let grant = state.grants.get(&permit.device).ok_or(Refusal::Revoked)?;
+        if grant.grant_id != permit.grant_id || grant.receiver_identity != self.receiver_identity {
+            return Err(Refusal::Revoked);
+        }
+        let lease = state
+            .periods
+            .get_mut(&permit.device)
+            .ok_or(Refusal::Revoked)?;
+        if lease.public.period_id != permit.period_id {
+            return Err(Refusal::Revoked);
+        }
+        let checked_now = elapsed_now(now, started)?;
+        if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
+            return Err(Refusal::Expired);
+        }
+        lease.sleep.check(&self.sleep_now()?)
     }
 
     pub(super) fn read_history(
@@ -2209,6 +2241,41 @@ mod tests {
                 &timed_proof,
                 now + Duration::from_secs(120),
                 121_000
+            ),
+            Err(Refusal::Expired)
+        );
+    }
+
+    #[test]
+    fn preflight_checks_pending_lease_without_consuming_or_renewing_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let authority =
+            Authority::open(&temporary.path().join("grants"), &"01".repeat(32)).unwrap();
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        let request = signed_request(&grant, &lease, 1, 444);
+        let permit = authority
+            .begin_read("phone", &request, now + Duration::from_secs(299))
+            .unwrap();
+        let mut state = authority.lock().unwrap();
+        let deadline = state.periods["phone"].idle_deadline;
+        authority
+            .check_pending_read_locked(
+                &mut state,
+                &permit,
+                now + Duration::from_secs(299),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(state.periods["phone"].idle_deadline, deadline);
+        assert!(state.pending_reads.contains(&permit.operation_id));
+        drop(state);
+        assert_eq!(
+            authority.begin_read(
+                "phone",
+                &signed_request(&grant, &lease, 1, 445),
+                now + Duration::from_secs(300)
             ),
             Err(Refusal::Expired)
         );

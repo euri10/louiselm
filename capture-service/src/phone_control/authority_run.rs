@@ -15,6 +15,46 @@ use crate::RunView;
 impl Authority {
     #[expect(
         clippy::too_many_arguments,
+        reason = "linked Session delivery rechecks the Run, grant and exact controller"
+    )]
+    pub(super) fn run_session_finish(
+        &self,
+        state: &mut State,
+        permit: &ReadPermit,
+        request: &Request,
+        reader: &OwnerRunReader,
+        grant: &StoredGrant,
+        timing: OwnerReadTiming,
+        delivery: (&ControllerRegistry, Option<bool>),
+    ) -> Result<Value, Refusal> {
+        let query = super::super::run_session_query(request).map_err(refusal)?;
+        reader
+            .with_bound_run(&query.run_id, query.run_revision, |binding, _| {
+                if !self.binding_in_scope(grant, binding)? {
+                    return Err(Refusal::OutOfScope);
+                }
+                if !delivery.0.contains(&request.controller_id) {
+                    return Err(Refusal::StaleSubject);
+                }
+                if let Some(success) = delivery.1 {
+                    self.finish_read_locked(
+                        state,
+                        permit,
+                        success,
+                        timing.now,
+                        timing.wall_ms,
+                        timing.started,
+                    )?;
+                } else {
+                    self.check_pending_read_locked(state, permit, timing.now, timing.started)?;
+                }
+                Ok(json!({}))
+            })
+            .map_err(|error| run_refusal(&error))?
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "the final read fence needs the current Run, grant and controller set"
     )]
     pub(super) fn run_live(
