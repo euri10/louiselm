@@ -141,6 +141,13 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
     return chat_idle
   end))
   assert(chat:queue_context({ label = "still private", text = "PRIVATE STAGED CONTEXT" }))
+  assert(view.draft:select_skill({
+    name = "private-native-skill",
+    description = "private selection",
+    explicit_only = false,
+    path = "/not-read/SKILL.md",
+    content = "PRIVATE NATIVE SKILL",
+  }, true) == nil)
   view.renderer:replace_prompt("PRIVATE DESKTOP DRAFT")
   view.draft:queue("PRIVATE WAITING QUEUE")
   local request = {
@@ -173,13 +180,20 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   MiniTest.expect.equality(nvim.json.encode(responses[1]):find("UNSENT DRAFT", 1, true), nil)
   MiniTest.expect.equality(nvim.json.encode(responses[1]):find("HIDDEN SENT CONTEXT", 1, true), nil)
   MiniTest.expect.equality(responses[1].entries[3].text, "visible typed message")
-  local private = { "PRIVATE STAGED CONTEXT", "PRIVATE DESKTOP DRAFT", "PRIVATE WAITING QUEUE" }
+  local private = {
+    "PRIVATE STAGED CONTEXT",
+    "PRIVATE DESKTOP DRAFT",
+    "PRIVATE WAITING QUEUE",
+    "PRIVATE NATIVE SKILL",
+    "private-native-skill",
+  }
   for _, marker in ipairs(private) do
     MiniTest.expect.equality(nvim.json.encode(responses[1]):find(marker, 1, true), nil)
   end
   MiniTest.expect.equality(view.draft.contexts[1].text, private[1])
   MiniTest.expect.equality(view.renderer:prompt_text(), private[2])
   MiniTest.expect.equality(view.draft.queued_prompt, private[3])
+  MiniTest.expect.equality(assert(view.draft.pending_skill).content, private[4])
 
   request.request.payload = "00000000000000000002"
   local pages, queued_visible = 0, false
@@ -204,7 +218,10 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   MiniTest.expect.no_equality(pages, 1)
   MiniTest.expect.equality(queued_visible, true)
   MiniTest.expect.equality(session:inspect().current_turn, 3)
+  MiniTest.expect.equality(view.draft.contexts[1].text, private[1])
+  MiniTest.expect.equality(view.renderer:prompt_text(), private[2])
   MiniTest.expect.equality(view.draft.queued_prompt, private[3])
+  MiniTest.expect.equality(assert(view.draft.pending_skill).content, private[4])
   assert(session:dispose())
   local response_index = #responses + 1
   assert(peer):write(nvim.json.encode(request) .. "\n")
