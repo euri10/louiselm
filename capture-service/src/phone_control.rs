@@ -45,6 +45,7 @@ pub(crate) struct Service {
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
     state_root: PathBuf,
     prepared: Option<prepared_owner::PreparedOwner>,
+    authority_available: bool,
 }
 
 impl Service {
@@ -53,8 +54,15 @@ impl Service {
         receiver: &str,
         pairing: Arc<PairingRegistry>,
     ) -> Result<Self, io::Error> {
-        let authority = authority::Authority::open(path, receiver)
-            .map_err(|_| io::Error::other("phone-control authority is unavailable"))?;
+        let (authority, authority_available) = match authority::Authority::open(path, receiver) {
+            Ok(authority) => (authority, true),
+            Err(authority::Refusal::Unavailable) => (
+                authority::Authority::unavailable(path, receiver)
+                    .map_err(|_| io::Error::other("phone-control authority is unavailable"))?,
+                false,
+            ),
+            Err(_) => return Err(io::Error::other("phone-control authority is unavailable")),
+        };
         let state_root = path
             .parent()
             .ok_or_else(|| io::Error::other("phone-control state has no parent"))?;
@@ -75,7 +83,12 @@ impl Service {
             )),
             state_root: state_root.to_owned(),
             prepared: None,
+            authority_available,
         })
+    }
+
+    pub(crate) fn authority_available(&self) -> bool {
+        self.authority_available
     }
 
     pub(crate) fn with_runs(mut self, runs: Option<RunStore>) -> Self {

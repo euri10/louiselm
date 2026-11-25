@@ -92,6 +92,12 @@ role is a scope grant. A revision change invalidates old proofs and periods.
 Re-enabling requires fresh local approval. Disable workspace keeps capture;
 Forget phone revokes both.
 
+If the persisted grant store cannot be validated, phone-control authority is
+unavailable for every phone; capture remains usable and the damaged store is
+retained unchanged. Forget still revokes pairing, fencing that phone. Recovery
+requires an explicit desktop operator action and fresh enrollment; the receiver
+never derives or repairs scope from damaged records.
+
 ### Local project administration
 
 These messages use the authenticated desktop-only administration socket and

@@ -520,6 +520,21 @@ impl Authority {
         Self::open_with_clock(path, receiver_identity, Arc::new(sleep_clock::sample))
     }
 
+    pub(super) fn unavailable(path: &Path, receiver_identity: &str) -> Result<Self, Refusal> {
+        fixed::<32>(receiver_identity).map_err(|_| Refusal::Malformed)?;
+        let parent = path.parent().ok_or(Refusal::Unavailable)?;
+        Ok(Self {
+            path: path.to_owned(),
+            receiver_identity: receiver_identity.to_owned(),
+            projects: PhoneProjectStore::open(parent.join("project-identities")),
+            sleep_clock: Arc::new(sleep_clock::sample),
+            state: Mutex::new(State {
+                failed: true,
+                ..State::default()
+            }),
+        })
+    }
+
     fn open_with_clock(
         path: &Path,
         receiver_identity: &str,
@@ -1277,7 +1292,11 @@ impl Authority {
     }
 
     pub(super) fn forget(&self, pairing: &PairingRegistry, device: &str) -> Result<(), Refusal> {
-        let mut state = self.lock()?;
+        let mut state = self.state.lock().map_err(|_| Refusal::Unavailable)?;
+        if state.failed {
+            // Pairing revocation fences this phone even when grants cannot be trusted or written.
+            return pairing.revoke(device).map_err(|_| Refusal::Unavailable);
+        }
         if state.grants.contains_key(device) {
             let mut grants = state.grants.clone();
             grants.remove(device);

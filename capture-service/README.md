@@ -128,6 +128,21 @@ project confirmations remain valid. This preserves the phone's existing grant
 and pairing, ends any old working period, and needs no new pairing. If the
 inspection changes before approval, inspect and review again.
 
+If the grant store is unreadable or fails its integrity checks, capture and
+pairing remain available, but phone control returns `unavailable` for every
+phone. The service logs a warning and leaves the damaged store untouched.
+`revoke-device` or `phone-control forget` still revokes a phone's pairing;
+workspace-only `disable` cannot safely edit an unreadable store.
+
+To reset an unrecoverable store, the desktop operator must stop the receiver,
+move `louiselm/capture/phone-control/grants.json` under the capture state root
+(normally `~/.local/state`) to a new private filename without overwriting an
+existing file, and restart the receiver. Keep the damaged file for inspection;
+do not restore unverified or stale grants. This explicit reset discards all
+workspace approvals, not capture pairings or recordings. Each phone needs a
+fresh enrollment, key comparison and complete scope approval before control
+resumes. A phone whose pairing was revoked must also be paired again.
+
 For protected Run reads, confirm each exact legacy project separately with
 `confirm-legacy-project` after scope re-approval. Existing intact project
 confirmations are retained. Damaged confirmations remain unavailable; the

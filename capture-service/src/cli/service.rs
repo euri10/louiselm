@@ -147,6 +147,11 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 pairing.clone(),
             )?
             .with_runs(runs.clone());
+            if !service.authority_available() {
+                eprintln!(
+                    "phone-control authority is unavailable; capture remains available; inspect the grant store and see the capture-service re-approval instructions"
+                );
+            }
             let receiver = receiver.with_phone_control(service.router());
             phone_control = Some(service);
             receiver
