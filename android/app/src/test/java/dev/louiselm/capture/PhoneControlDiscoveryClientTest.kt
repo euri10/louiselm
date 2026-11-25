@@ -32,7 +32,9 @@ class PhoneControlDiscoveryClientTest {
         PhoneControlStore(context).saveGrant(grant)
         val period = PhoneControlPeriod(grant, "22".repeat(16), working.private, 0)
         val controller = "33".repeat(16)
+        val otherController = "44".repeat(16)
         var mismatched = false
+        var includeOther = false
         var deliver = true
         val transport: PhoneControlTransport = { _, _, body, _ ->
             val wire = body.getJSONObject("request")
@@ -44,13 +46,22 @@ class PhoneControlDiscoveryClientTest {
             assertTrue(Signature.getInstance("SHA256withECDSA").run {
                 initVerify(working.public); update(request.transcript()); verify(phoneControlHex(wire.getString("signature")))
             })
-            if (action == 48) PhoneControlReply.ControllerList(id, listOf(controller), "")
-            else PhoneControlReply.SessionList(if (mismatched) "44".repeat(16) else controller, id,
-                listOf(PhoneControlSessionSummary("55".repeat(16), "same", "mock", "/work", "ready", false)), "")
+            if (action == 48) PhoneControlReply.ControllerList(id, listOf(controller, otherController), "")
+            else PhoneControlReply.SessionList(if (mismatched) "66".repeat(16) else request.controllerId, id,
+                if (request.controllerId == controller || includeOther)
+                    listOf(PhoneControlSessionSummary("55".repeat(16), "same", "mock", "/work", "ready", false))
+                else emptyList(), "")
         }
         val client = PhoneControlClient(context, keys, transport)
         assertTrue(client.listControllers(period, 1) { deliver } is PhoneControlResult.Value)
         assertTrue(client.listSessions(period, 1, controller) { deliver } is PhoneControlResult.Value)
+        val browser = PhoneControlBrowser(client)
+        val scoped = (browser.page(period, null, true) { deliver } as PhoneControlResult.Value).value
+        assertEquals(listOf(PhoneControlTarget(controller, "55".repeat(16))), scoped.rows.map { it.target })
+        includeOther = true
+        val both = (browser.page(period, null, true) { deliver } as PhoneControlResult.Value).value
+        assertEquals(listOf(controller, otherController), both.rows.map { it.target.controllerId })
+        assertEquals(both.rows.first().target.subjectId, both.rows.last().target.subjectId)
         mismatched = true
         assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED), client.listSessions(period, 1, controller) { deliver })
         deliver = false
