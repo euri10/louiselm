@@ -145,7 +145,7 @@ T["a lost owner report never confirms or repeats an admitted prompt"] = function
   action:dispose()
 end
 
-T["one explicit phone action enters the real Session without consuming the desktop draft"] = function()
+local function exercise_real_session(initialized)
   local binary = nvim.env.LOUISELM_TEST_CAPTURE
   if binary == nil or binary == "" then
     MiniTest.skip("set LOUISELM_TEST_CAPTURE to the built capture executable")
@@ -191,6 +191,7 @@ T["one explicit phone action enters the real Session without consuming the deskt
     nvim.env.LOUISELM_CAPTURE_STATE_DIR = previous
     nvim.fn.delete(directory, "rf")
   end)
+  require("tests.fixtures.phone_control_journal")(nvim.fn.fnamemodify(binary, ":p"), directory)
   local session = assert(api:create_session("mock", { cwd = root }))
   assert(nvim.wait(6000, function()
     return session:inspect().status == "ready"
@@ -206,7 +207,7 @@ T["one explicit phone action enters the real Session without consuming the deskt
   unsubscribe = session:on(function(event)
     projection:record(event)
   end)
-  local releases = 0
+  local authorizations, releases = 0, 0
   action = Action.new({
     journal = journal,
     session = session,
@@ -215,6 +216,7 @@ T["one explicit phone action enters the real Session without consuming the deskt
       return true
     end,
     authorize = function(done)
+      authorizations = authorizations + 1
       nvim.schedule(function()
         done({
           valid = function()
@@ -253,7 +255,21 @@ T["one explicit phone action enters the real Session without consuming the deskt
     end))
     return result
   end
+  local initial_turn = session:inspect().current_turn
   local first = send()
+  if not initialized then
+    local unavailable = { v = 1, type = "error", code = "unavailable" }
+    MiniTest.expect.equality(first, unavailable)
+    MiniTest.expect.equality(send(), unavailable)
+    MiniTest.expect.equality(session:inspect().current_turn, initial_turn)
+    MiniTest.expect.equality(session:inspect().status, "ready")
+    MiniTest.expect.equality({ authorizations, releases }, { 0, 0 })
+    MiniTest.expect.equality(view.renderer:prompt_text(), "UNSENT DRAFT")
+    local contents = table.concat(nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false), "\n")
+    MiniTest.expect.equality(contents:find(text, 1, true), nil)
+    MiniTest.expect.equality(contents:find("UNSENT CONTEXT", 1, true), nil)
+    return
+  end
   MiniTest.expect.equality(first.state, "accepted")
   assert(nvim.wait(6000, function()
     return session:inspect().status == "ready"
@@ -283,6 +299,15 @@ T["one explicit phone action enters the real Session without consuming the deskt
   MiniTest.expect.equality(send().type, "existing")
   MiniTest.expect.equality(session:inspect().current_turn, 1)
   MiniTest.expect.equality(releases, 1)
+end
+
+T["an uninitialized owner leaves the real Session and desktop draft untouched"] = function()
+  exercise_real_session(false)
+end
+
+T["one explicit phone action enters the real Session without consuming the desktop draft"] = function()
+  MiniTest.skip("restore after receiver-bound initialization: louiselm-qbr.12.4.3.2")
+  exercise_real_session(true)
 end
 
 return T

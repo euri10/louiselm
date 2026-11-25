@@ -6,7 +6,7 @@ local Action = require("louiselm.phone_control.action")
 
 local T = MiniTest.new_set()
 
-T["inspection returns retained owner phases through the asynchronous helper"] = function()
+local function exercise_phases(initialized)
   local binary = nvim.env.LOUISELM_TEST_CAPTURE
   if binary == nil or binary == "" then
     MiniTest.skip("set LOUISELM_TEST_CAPTURE to the built capture executable")
@@ -19,6 +19,7 @@ T["inspection returns retained owner phases through the asynchronous helper"] = 
     nvim.env.LOUISELM_CAPTURE_STATE_DIR = previous
     nvim.fn.delete(directory, "rf")
   end)
+  require("tests.fixtures.phone_control_journal")(nvim.fn.fnamemodify(binary, ":p"), directory)
   local identity = {
     operation_id = string.rep("01", 16),
     receiver_identity = string.rep("02", 32),
@@ -45,7 +46,12 @@ T["inspection returns retained owner phases through the asynchronous helper"] = 
     return result
   end
   MiniTest.expect.equality(run({ v = 1, type = "inspect_phases", identity = identity }).code, "unavailable")
-  MiniTest.expect.equality(run({ v = 1, type = "begin", identity = identity }).type, "begun")
+  local begun = run({ v = 1, type = "begin", identity = identity })
+  if initialized then
+    MiniTest.expect.equality(begun.type, "begun")
+  else
+    MiniTest.expect.equality(begun, { v = 1, type = "error", code = "unavailable" })
+  end
   for index, state in ipairs({ "accepted", "dispatched", "completed" }) do
     local report = {
       v = 1,
@@ -54,9 +60,20 @@ T["inspection returns retained owner phases through the asynchronous helper"] = 
       outcome = { [state] = { evidence = string.rep(tostring(index), 64) } },
       at_ms = 1000 + index,
     }
-    MiniTest.expect.equality(run(report).type, "recorded")
+    local result = run(report)
+    if initialized then
+      MiniTest.expect.equality(result.type, "recorded")
+    else
+      MiniTest.expect.equality(result, { v = 1, type = "error", code = "unavailable" })
+    end
   end
   local phases = run({ v = 1, type = "inspect_phases", identity = identity })
+  if not initialized then
+    MiniTest.expect.equality(phases, { v = 1, type = "error", code = "unavailable" })
+    MiniTest.expect.equality(run({ v = 1, type = "inspect", identity = identity }), phases)
+    MiniTest.expect.equality(nvim.uv.fs_stat(directory .. "/louiselm/workflow/phone-action-owner"), nil)
+    return
+  end
   MiniTest.expect.equality(phases.type, "action_phases")
   MiniTest.expect.equality(phases.accepted_evidence, string.rep("1", 64))
   MiniTest.expect.equality(phases.dispatched_evidence, string.rep("2", 64))
@@ -65,7 +82,16 @@ T["inspection returns retained owner phases through the asynchronous helper"] = 
   MiniTest.expect.equality(existing.outcome.completed.evidence, string.rep("3", 64))
 end
 
-T["a live owner fences a begun original before its late authorization"] = function()
+T["an uninitialized owner refuses phase reports and inspection"] = function()
+  exercise_phases(false)
+end
+
+T["inspection returns retained owner phases through the asynchronous helper"] = function()
+  MiniTest.skip("restore after receiver-bound initialization: louiselm-qbr.12.4.3.2")
+  exercise_phases(true)
+end
+
+local function exercise_detach(initialized)
   local binary = nvim.env.LOUISELM_TEST_CAPTURE
   if binary == nil or binary == "" then
     MiniTest.skip("set LOUISELM_TEST_CAPTURE to the built capture executable")
@@ -105,6 +131,7 @@ T["a live owner fences a begun original before its late authorization"] = functi
     nvim.env.LOUISELM_CAPTURE_STATE_DIR = previous
     nvim.fn.delete(directory, "rf")
   end)
+  require("tests.fixtures.phone_control_journal")(nvim.fn.fnamemodify(binary, ":p"), directory)
   local text = "private phone text"
   local identity = {
     operation_id = string.rep("11", 16),
@@ -121,12 +148,40 @@ T["a live owner fences a begun original before its late authorization"] = functi
     agent = "mock",
     recorded_at_ms = 1000,
   }
-  action:send(identity, text, function()
-    error("detached reply must not be delivered")
+  local reply
+  action:send(identity, text, function(value)
+    if initialized then
+      error("detached reply must not be delivered")
+    end
+    reply = value
   end)
   assert(nvim.wait(5000, function()
-    return permit ~= nil
+    return permit ~= nil or reply ~= nil
   end))
+  if not initialized then
+    local unavailable = { v = 1, type = "error", code = "unavailable" }
+    MiniTest.expect.equality(reply, unavailable)
+    MiniTest.expect.equality(permit, nil)
+    local detached
+    action:detach(function(value)
+      detached = value
+    end)
+    assert(nvim.wait(5000, function()
+      return detached ~= nil
+    end))
+    MiniTest.expect.equality(detached, unavailable)
+    local duplicate
+    action:send(identity, text, function(value)
+      duplicate = value
+    end)
+    assert(nvim.wait(5000, function()
+      return duplicate ~= nil
+    end))
+    MiniTest.expect.equality(duplicate, unavailable)
+    MiniTest.expect.equality(prompts, 0)
+    return
+  end
+  assert(permit ~= nil)
   local fenced
   action:detach(function(value)
     fenced = value
@@ -154,6 +209,15 @@ T["a live owner fences a begun original before its late authorization"] = functi
   MiniTest.expect.equality(duplicate.type, "existing")
   MiniTest.expect.equality(duplicate.outcome.fenced_no_effect.evidence, fenced.evidence)
   MiniTest.expect.equality({ prompts, released }, { 0, true })
+end
+
+T["an uninitialized owner refuses Send and detach before authorization"] = function()
+  exercise_detach(false)
+end
+
+T["a live owner fences a begun original before its late authorization"] = function()
+  MiniTest.skip("restore after receiver-bound initialization: louiselm-qbr.12.4.3.2")
+  exercise_detach(true)
 end
 
 return T

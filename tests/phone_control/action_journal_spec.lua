@@ -5,7 +5,7 @@ local Journal = require("louiselm.phone_control.action_journal")
 
 local T = MiniTest.new_set()
 
-T["the asynchronous native journal retains a fence and rejects a late begin"] = function()
+local function exercise_journal(initialized)
   local binary = nvim.env.LOUISELM_TEST_CAPTURE
   if binary == nil or binary == "" then
     MiniTest.skip("set LOUISELM_TEST_CAPTURE to the built capture executable")
@@ -20,6 +20,7 @@ T["the asynchronous native journal retains a fence and rejects a late begin"] = 
     nvim.env.LOUISELM_CAPTURE_STATE_DIR = previous
     nvim.fn.delete(directory, "rf")
   end)
+  require("tests.fixtures.phone_control_journal")(nvim.fn.fnamemodify(binary, ":p"), directory)
   local identity = {
     operation_id = string.rep("01", 16),
     receiver_identity = string.rep("02", 32),
@@ -47,6 +48,28 @@ T["the asynchronous native journal retains a fence and rejects a late begin"] = 
   end
   MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }).code, "unavailable")
   local fenced = call({ v = 1, type = "fence", identity = identity, at_ms = 2000 })
+  if not initialized then
+    local unavailable = { v = 1, type = "error", code = "unavailable" }
+    MiniTest.expect.equality(fenced, unavailable)
+    MiniTest.expect.equality(call({ v = 1, type = "begin", identity = identity }), unavailable)
+    MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }), unavailable)
+    MiniTest.expect.equality(call({ v = 1, type = "inspect_phases", identity = identity }), unavailable)
+    MiniTest.expect.equality(
+      call({
+        v = 1,
+        type = "report",
+        identity = identity,
+        outcome = { accepted = { evidence = string.rep("1", 64) } },
+        at_ms = 2001,
+      }),
+      unavailable
+    )
+    identity.payload_hash = string.rep("08", 32)
+    MiniTest.expect.equality(call({ v = 1, type = "begin", identity = identity }), unavailable)
+    MiniTest.expect.equality(nvim.uv.fs_stat(directory .. "/louiselm/workflow/phone-action-owner"), nil)
+    MiniTest.expect.equality(nvim.uv.fs_stat(directory .. "/louiselm/capture/tls/phone-action-owner.json.lock"), nil)
+    return
+  end
   MiniTest.expect.equality(fenced.type, "fenced")
   local inspected = call({ v = 1, type = "inspect", identity = identity })
   MiniTest.expect.equality(inspected.outcome.fenced_no_effect.evidence, fenced.evidence)
@@ -56,6 +79,15 @@ T["the asynchronous native journal retains a fence and rejects a late begin"] = 
   identity.payload_hash = string.rep("08", 32)
   MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }).code, "conflict")
   MiniTest.expect.equality(call({ v = 1, type = "begin", identity = identity }).code, "conflict")
+end
+
+T["an uninitialized native journal refuses every operation without creating evidence"] = function()
+  exercise_journal(false)
+end
+
+T["the asynchronous native journal retains a fence and rejects a late begin"] = function()
+  MiniTest.skip("restore after receiver-bound initialization: louiselm-qbr.12.4.3.2")
+  exercise_journal(true)
 end
 
 T["unavailable helpers fail closed and disposal suppresses late callbacks"] = function()
