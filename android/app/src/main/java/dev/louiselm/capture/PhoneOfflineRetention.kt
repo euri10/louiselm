@@ -4,7 +4,7 @@ import java.math.BigInteger
 
 internal const val PHONE_OFFLINE_DEFAULT_BUDGET = 512L * 1024 * 1024
 internal const val PHONE_OFFLINE_SESSION_LIMIT = 200
-private const val EXPIRY_MS = 30L * 24 * 60 * 60 * 1000
+internal const val PHONE_OFFLINE_EXPIRY_MS = 30L * 24 * 60 * 60 * 1000
 
 internal data class PhoneOfflineUsage(val id: String, val bytes: Long, val openedAtMs: Long, val pinned: Boolean)
 
@@ -28,7 +28,7 @@ internal fun planPhoneOfflineRetention(
     var count = retained.size
     val removed = mutableListOf<String>()
     for (item in removable) {
-        val expired = nowMs >= item.openedAtMs && nowMs - item.openedAtMs >= EXPIRY_MS
+        val expired = nowMs >= item.openedAtMs && nowMs - item.openedAtMs >= PHONE_OFFLINE_EXPIRY_MS
         if (expired || count > PHONE_OFFLINE_SESSION_LIMIT || bytes > BigInteger.valueOf(budget)) {
             removed.add(item.id)
             count--
