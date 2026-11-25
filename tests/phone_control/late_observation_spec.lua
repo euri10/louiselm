@@ -6,7 +6,7 @@ local PhoneControl = require("louiselm.phone_control")
 
 local T = MiniTest.new_set()
 
-T["reports history missed before observation without marking new Sessions incomplete"] = function()
+T["recovers history before observation and keeps new Sessions complete"] = function()
   local root = nvim.fn.getcwd()
   local directory = nvim.fn.tempname()
   local workflow = directory .. "/louiselm/workflow"
@@ -125,7 +125,9 @@ T["reports history missed before observation without marking new Sessions incomp
     return result
   end
 
-  MiniTest.expect.equality(page(existing).complete, false)
+  local existing_page = page(existing)
+  MiniTest.expect.equality(existing_page.complete, true)
+  MiniTest.expect.equality(existing_page.entries[1].text, "before phone control")
   local fresh = assert(api:create_session("mock", { cwd = root }))
   assert(nvim.wait(6000, function()
     return fresh:inspect().status == "ready"

@@ -26,6 +26,7 @@ T["a Send waits for current authority after durable owner reservation"] = functi
   owner.sessions.s = session
   local controller =
     Controller.new({ service = { "/bin/sh", root .. "/tests/fixtures/phone_control_action_stub.sh", binary } })
+  require("tests.fixtures.phone_control_history")(session, controller)
   assert(controller:attach(string.rep("01", 16)))
   local subject = assert(controller:track(session))
   MiniTest.finally(function()

@@ -55,13 +55,9 @@ function M.start(config)
   local service = config.capture and config.capture.service or Config.schema.fields.capture.fields.service.default
   ---@cast service string[] -- The validated capture schema defines this default as an argv array.
   local controller = Controller.new({ service = service })
-  local unsubscribe = Registry.observe_sessions(function(session, present, existing)
+  local unsubscribe = Registry.observe_sessions(function(session, present)
     if present then
       controller:track(session)
-      if existing then
-        -- Events before registration cannot be reconstructed by this projection.
-        controller.sessions[session].projection.omitted = true
-      end
     else
       controller:untrack(session)
     end

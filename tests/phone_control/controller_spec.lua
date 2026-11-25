@@ -17,6 +17,7 @@ local function fixture()
   owner.sessions[state.id] = session
   local controller =
     Controller.new({ service = { nvim.fn.getcwd() .. "/tests/fixtures/phone_control_verify_stub.sh" } })
+  require("tests.fixtures.phone_control_history")(session, controller)
   assert(controller:attach(controller_id))
   local subject_id = assert(controller:track(session))
   local request = {
@@ -117,6 +118,54 @@ T["refuses a revision changed while verification is in flight"] = function()
     return result ~= nil
   end))
   MiniTest.expect.equality(result.code, "stale_subject")
+end
+
+T["fences an owner page after a revision change or Session removal"] = function()
+  for _, change in ipairs({ "revision", "untrack" }) do
+    local controller, session, request = fixture()
+    local reply
+    function session:read_history(_, callback)
+      reply = callback
+      return function() end
+    end
+    local result
+    controller:read(nvim.json.encode(request), function(value)
+      result = value
+    end)
+    assert(nvim.wait(5000, function()
+      return reply ~= nil
+    end))
+    if change == "revision" then
+      controller.subjects[request.request.subject_id].projection:record({ type = "state_changed", data = {} })
+    else
+      controller:untrack(session)
+    end
+    reply({ subject = "owner", revision = 1, status = "ready", entries = {}, next_before = 0, complete = true })
+    MiniTest.expect.equality(result.code, "stale_subject")
+  end
+end
+
+T["cancels owner reads and suppresses late pages after reconnect"] = function()
+  local controller, session, request = fixture()
+  local reply, cancelled
+  function session:read_history(_, callback)
+    reply = callback
+    return function()
+      cancelled = true
+    end
+  end
+  local called = false
+  controller:read(nvim.json.encode(request), function()
+    called = true
+  end)
+  assert(nvim.wait(5000, function()
+    return reply ~= nil
+  end))
+  assert(controller:detach())
+  assert(controller:attach(string.rep("3", 32)))
+  reply({ subject = "owner", revision = 1, status = "ready", entries = {}, next_before = 0, complete = true })
+  MiniTest.expect.equality(cancelled, true)
+  MiniTest.expect.equality(called, false)
 end
 
 T["refuses a previously attached controller identity"] = function()

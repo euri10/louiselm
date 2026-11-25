@@ -15,6 +15,7 @@ T["a local scope lookup identifies only the exact live Session incarnation"] = f
   end
   owner.sessions.s = session
   local controller = Controller.new({ service = { "unused" } })
+  require("tests.fixtures.phone_control_history")(session, controller)
   assert(controller:attach(controller_id))
   local subject = assert(controller:track(session))
   MiniTest.finally(function()

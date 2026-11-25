@@ -22,6 +22,7 @@ local function fixture()
   local function add(id, agent, cwd, name)
     local session =
       { owner = owner, state = { id = id, name = name, agent = agent, working_dir = cwd, status = "ready" } }
+    require("tests.fixtures.phone_control_history")(session, controller)
     function session:inspect()
       return nvim.deepcopy(self.state)
     end

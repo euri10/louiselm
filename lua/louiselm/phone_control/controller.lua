@@ -293,10 +293,12 @@ function Controller:track(session)
       { session = session, projection = Projection.new(function()
         return session:inspect().status
       end) }
+    subject.projection.revision = session.history.revision
     self.sessions[session] = subject
     if type(session.on) == "function" then
       subject.unsubscribe = session:on(function(event)
         subject.projection:record(event)
+        subject.projection.revision = session.history.revision
       end)
     end
   end
@@ -575,36 +577,42 @@ function Controller:read(line, callback)
               end
             end)
           else
-            local page, page_error = subject.projection:page(before, limit, expected)
-            if page == nil then
-              finish(error_result(page_error or "unavailable"))
-              return
-            end
-            page.v, page.type = 1, "session_page"
-            page.controller_id, page.subject_id, page.operation_id = attached, request.subject_id, request.operation_id
-            local budget = MAX_LINE - 1024
-            local first = 1
-            for index = #page.entries, 1, -1 do
-              budget = budget - #nvim.json.encode(page.entries[index]) - 1
-              if budget < 0 then
-                first = index + 1
-                break
+            self.cancel_history = subject.session:read_history({
+              subject = (before ~= 0 or expected ~= 0) and subject.history_subject or nil,
+              before = before,
+              limit = limit,
+              revision = expected,
+            }, function(page, page_error)
+              if self.disposed or self.generation ~= generation then
+                return
               end
-            end
-            local unfit = #page.entries > 0 and first > #page.entries
-            if first > 1 and not unfit then
-              page.next_before = page.entries[first].seq
-              local retained = {}
-              for index = first, #page.entries do
-                retained[#retained + 1] = page.entries[index]
+              self.cancel_history = nil
+              local still, state_now = current(self, request.subject_id)
+              if
+                still ~= subject
+                or state_now == nil
+                or state_now.working_dir ~= working_dir
+                or state_now.agent ~= agent
+                or self.controller_id ~= attached
+              then
+                finish(error_result("stale_subject"))
+              elseif page == nil then
+                finish(error_result(codes[page_error] and page_error or "unavailable"))
+              elseif page.revision ~= subject.projection.revision then
+                finish(error_result("stale_subject"))
+              else
+                subject.history_subject = page.subject
+                page.subject, page.source = nil, nil
+                page.v, page.type = 1, "session_page"
+                page.controller_id, page.subject_id, page.operation_id =
+                  attached, request.subject_id, request.operation_id
+                if #nvim.json.encode(page) + 1 > MAX_LINE then
+                  finish(error_result("unavailable"))
+                else
+                  finish(page)
+                end
               end
-              page.entries = retained
-            end
-            if unfit or #nvim.json.encode(page) + 1 > MAX_LINE then
-              finish(error_result("unavailable"))
-            else
-              finish(page)
-            end
+            end)
           end
         end)
       end)
@@ -629,6 +637,10 @@ function Controller:detach()
   self.subjects = {}
   self.pending = false
   local failure
+  if self.cancel_history ~= nil then
+    self.cancel_history()
+    self.cancel_history = nil
+  end
   if self.pending_action ~= nil then
     self.pending_action.action:dispose()
     local stopped, cause = self.pending_action.journal:dispose()
@@ -640,6 +652,7 @@ function Controller:detach()
   end
   for _, subject in pairs(self.sessions) do
     subject.id = nil
+    subject.history_subject = nil
   end
   if self.process ~= nil then
     local process = self.process

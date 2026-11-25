@@ -45,6 +45,7 @@ T["the real capture verifier authenticates both signatures before projection"] =
       return nvim.deepcopy(self.state)
     end,
   }
+  require("tests.fixtures.phone_control_history")(session, controller)
   owner.sessions[state.id] = session
   assert(controller:attach(request.controller_id))
   local random_subject = assert(controller:track(session))

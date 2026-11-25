@@ -54,6 +54,7 @@ T["attaches over a private local socket and reattaches with fresh subjects"] = f
       return nvim.deepcopy(self.state)
     end,
   }
+  require("tests.fixtures.phone_control_history")(session, controller)
   owner.sessions[state.id] = session
   controller:track(session)
   local transport = assert(Transport.connect({
