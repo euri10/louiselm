@@ -153,30 +153,39 @@ reusable ACP or local Session ID. A lost/restarted controller, disposed subject,
 reused local ID, wrong controller, or mismatched nonzero revision cannot select
 a replacement. Other actions need a defined versioned schema before use.
 
-Action `2`, `read_action_history`, also requires `read`. Its payload is the
-16 decoded bytes of the original write operation ID. The signed controller and
-subject IDs identify that operation's original incarnations, even after their
-owner disconnects; `expected_revision` and `interaction` must both be zero.
-The request has its own fresh operation ID. It never forwards to Neovim or
-renews the working period. Capture-service checks the current pairing, grant,
-lease, signature, replay guard and the retained operation's locally established
-project and Agent scope before delivery. A replacement phone with a matching
-current read grant may inspect history; a revoked or out-of-scope phone cannot.
+Action `2`, `read_action_history`, also requires `read`. Its decoded payload is
+one of `00 | operation_id[16]` (one record), `01 | limit:u8` (first page), or
+`02 | after_operation_id[16] | limit:u8` (next page), with limit 1–50. For one
+record, the signed controller and subject IDs identify the original
+incarnations, even after their owner disconnects. For pages both IDs are 16 zero
+bytes. `expected_revision` and `interaction` must both be zero. The request has
+its own fresh operation ID. It never forwards to Neovim or renews the working
+period. Capture-service checks the current pairing, grant, lease, signature,
+replay guard and each retained operation's locally established project and
+Agent scope before delivery. A replacement phone with a matching current read
+grant may discover and inspect history; a revoked or out-of-scope phone cannot.
 
-Success is the closed object `{v,type:"action_history",operation_id:hex16,
-receiver_identity:hex32,controller_id:hex16,subject_id:hex16,action:integer,
-payload_hash:hex32,grant_id:hex16,grant_revision:integer,
-expected_revision:integer,recorded_at_ms:integer,updated_at_ms:integer,
-state:string,evidence:hex32-or-empty-string}`. The operation ID is the original
-write, not the lookup's ID. State is `unknown`, `accepted`, `rejected`, or
-`fenced_no_effect`. Empty evidence is used only for `unknown`; other states
-carry the native owner's opaque evidence digest. Acceptance does not mean the
-action completed. `fenced_no_effect` may be archived only after the native
-owner has proved no effect and durably fenced late execution. Capture-service
-neither supplies that proof nor authorizes a new attempt. Missing or damaged
-evidence returns `unavailable`, never a claim that the operation was not sent.
-The journal holds no payload or result copy. Its size is bounded; exhaustion
-refuses new evidence instead of evicting existing records.
+One-record success is `{v,type:"action_history",request_id:hex16,record:ActionRecord}`.
+A page is `{v,type:"action_history_page",request_id:hex16,records:[ActionRecord],
+next_after:hex16-or-empty-string}`. `request_id` is the lookup's operation ID.
+Records are ordered by their original operation IDs; `next_after` is the last
+returned ID when another authorized record remains, otherwise the empty string.
+Restart at the first page to discover records added before a prior cursor.
+
+`ActionRecord` is the closed object `{operation_id:hex16,receiver_identity:hex32,
+controller_id:hex16,subject_id:hex16,action:integer,payload_hash:hex32,
+grant_id:hex16,grant_revision:integer,expected_revision:integer,
+recorded_at_ms:integer,updated_at_ms:integer,state:string,
+evidence:hex32-or-empty-string}`. Its operation ID is the original write.
+State is `unknown`, `accepted`, `rejected`, or `fenced_no_effect`. Empty
+evidence is used only for `unknown`; other states carry the native owner's
+opaque evidence digest. Acceptance does not mean the action completed.
+`fenced_no_effect` may be archived only after the native owner has proved no
+effect and durably fenced late execution. Capture-service neither supplies
+that proof nor authorizes a new attempt. Missing or damaged evidence returns
+`unavailable`, never a claim that the operation was not sent. The journal holds
+no payload or result copy. Its size is bounded; exhaustion refuses new evidence
+instead of evicting existing records.
 
 ## Local controller channel
 
