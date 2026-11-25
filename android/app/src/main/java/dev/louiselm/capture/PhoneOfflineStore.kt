@@ -26,7 +26,7 @@ internal data class PhoneOfflineSource(
 
 internal data class PhoneOfflineCopy(
     val source: PhoneOfflineSource, val openedAtMs: Long, val refreshedAtMs: Long, val pinned: Boolean,
-    val pages: Int, val incomplete: Boolean, val bytes: Long, internal val version: String,
+    val pages: Int, val incomplete: Boolean, val refreshFailed: Boolean, val bytes: Long, internal val version: String,
 )
 
 internal data class PhoneOfflineListing(val copies: List<PhoneOfflineCopy>, val damaged: List<String>)
@@ -88,7 +88,7 @@ internal class PhoneOfflineStore(private val root: File) {
                 val opened = openedAtMs ?: old?.openedAtMs ?: throw IllegalArgumentException("a copy must first be opened")
                 val dataBytes = temporary.length()
                 val copy = PhoneOfflineCopy(source, opened, nowMs, pin || old?.pinned == true,
-                    count, incomplete, dataBytes + META_BYTES, version)
+                    count, incomplete, false, dataBytes + META_BYTES, version)
                 val usage = listing.copies.map { PhoneOfflineUsage(copyId(it.source), it.bytes, it.openedAtMs, it.pinned) }
                 val decision = planPhoneOfflineRetention(usage, PhoneOfflineUsage(id, copy.bytes, opened, copy.pinned), budget, nowMs)
                 when (decision) {
@@ -197,6 +197,10 @@ internal class PhoneOfflineStore(private val root: File) {
 
     fun setPinned(source: PhoneOfflineSource, pinned: Boolean, key: SecretKey) {
         updateMetadata(source, key) { it.copy(pinned = pinned) }
+    }
+
+    fun markRefreshFailed(source: PhoneOfflineSource, key: SecretKey) {
+        updateMetadata(source, key) { if (it.pinned) it.copy(refreshFailed = true) else it }
     }
 
     fun remove(source: PhoneOfflineSource) = denySource(source)
@@ -329,7 +333,7 @@ internal class PhoneOfflineStore(private val root: File) {
         val encoded = ByteArray(length).also { buffer.get(it) }
         val json = JSONObject(String(encoded, Charsets.UTF_8))
         require(json.keys().asSequence().toSet() == setOf("v", "receiver", "controller", "subject", "name", "agent", "project",
-            "opened", "refreshed", "pinned", "pages", "incomplete", "length", "version"))
+            "opened", "refreshed", "pinned", "pages", "incomplete", "refresh_failed", "length", "version"))
         fun text(name: String) = json.get(name) as? String ?: throw IllegalArgumentException("invalid metadata")
         fun number(name: String): Long = when (val value = json.get(name)) {
             is Int -> value.toLong()
@@ -349,7 +353,8 @@ internal class PhoneOfflineStore(private val root: File) {
         val version = text("version")
         phoneControlHex(version, 16)
         require(opened >= 0 && refreshed >= 0 && pages in 1..MAX_PAGES.toLong() && bytes in 4..Long.MAX_VALUE - META_BYTES)
-        return PhoneOfflineCopy(source, opened, refreshed, boolean("pinned"), pages.toInt(), boolean("incomplete"), bytes + META_BYTES, version)
+        return PhoneOfflineCopy(source, opened, refreshed, boolean("pinned"), pages.toInt(), boolean("incomplete"),
+            boolean("refresh_failed"), bytes + META_BYTES, version)
     }
 
     private fun writeMetadata(directory: File, id: String, copy: PhoneOfflineCopy, dataBytes: Long, key: SecretKey) {
@@ -357,7 +362,8 @@ internal class PhoneOfflineStore(private val root: File) {
         val json = JSONObject().put("v", 1).put("receiver", source.receiver).put("controller", source.target.controllerId)
             .put("subject", source.target.subjectId).put("name", source.name).put("agent", source.agent).put("project", source.project)
             .put("opened", copy.openedAtMs).put("refreshed", copy.refreshedAtMs).put("pinned", copy.pinned)
-            .put("pages", copy.pages).put("incomplete", copy.incomplete).put("length", dataBytes).put("version", copy.version)
+            .put("pages", copy.pages).put("incomplete", copy.incomplete).put("refresh_failed", copy.refreshFailed)
+            .put("length", dataBytes).put("version", copy.version)
         val encoded = json.toString().toByteArray(Charsets.UTF_8)
         require(encoded.size <= META_PLAINTEXT_BYTES - 4)
         val plain = ByteBuffer.allocate(META_PLAINTEXT_BYTES).putInt(encoded.size).put(encoded).array()

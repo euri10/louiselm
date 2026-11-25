@@ -55,6 +55,46 @@ class PhoneOfflineDownloadTest {
     }
 
     @Test
+    fun failedRefreshKeepsAPreviouslyCompletePinAndMarksItOutdated() {
+        val store = PhoneOfflineStore(temporary.newFolder())
+        assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(page(1, 0)), true, 10, 10, 1_000_000, key) { true })
+        val old = store.list(source.receiver, key).copies.single()
+        assertFalse(old.incomplete)
+        val refresh = downloadPhoneOffline(store, source, key, 1_000_000, 20, false, { true }, {}) { _, _, interaction ->
+            assertFalse(interaction)
+            PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        }
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE), refresh)
+        val retained = store.list(source.receiver, key).copies.single()
+        assertFalse(retained.incomplete)
+        assertTrue(retained.refreshFailed)
+        assertEquals(old.openedAtMs, retained.openedAtMs)
+        assertEquals(old.refreshedAtMs, retained.refreshedAtMs)
+        assertEquals(page(1, 0), store.readPage(source, 0, key))
+        val success = downloadPhoneOffline(store, source, key, 1_000_000, 30, false, { true }, {}) { _, _, _ ->
+            PhoneControlResult.Value(page(2, 0))
+        }
+        assertEquals(PhoneControlResult.Value(PhoneOfflineDownload(PhoneOfflineSave.SAVED, null)), success)
+        val updated = store.list(source.receiver, key).copies.single()
+        assertFalse(updated.incomplete)
+        assertFalse(updated.refreshFailed)
+        assertEquals(old.openedAtMs, updated.openedAtMs)
+        assertEquals(30, updated.refreshedAtMs)
+    }
+
+    @Test
+    fun overBudgetRefreshRetainsThePinAndMarksItOutdated() {
+        val store = PhoneOfflineStore(temporary.newFolder())
+        assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(page(1, 0)), true, 10, 10, 1_000_000, key) { true })
+        val refresh = downloadPhoneOffline(store, source, key, 1, 20, false, { true }, {}) { _, _, _ ->
+            PhoneControlResult.Value(page(2, 0))
+        }
+        assertEquals(PhoneControlResult.Value(PhoneOfflineDownload(PhoneOfflineSave.BYTE_LIMIT, null)), refresh)
+        assertTrue(store.list(source.receiver, key).copies.single().refreshFailed)
+        assertEquals(page(1, 0), store.readPage(source, 0, key))
+    }
+
+    @Test
     fun revocationDuringDownloadNeverPublishesPartialData() {
         val store = PhoneOfflineStore(temporary.newFolder())
         val result = downloadPhoneOffline(store, source, key, 1_000_000, 10, true, { true }, {}) { cursor, _, _ ->

@@ -100,8 +100,10 @@ class PhoneControlActivity : Activity() {
     private var browsePage: PhoneBrowsePage? = null
     private var actionHistoryPage: PhoneControlReply.ActionHistoryPage? = null
     private var showingActionHistory = false
+    private var pinRefreshIndex = 0
     private val expiryCheck = Runnable { scheduleExpiry() }
     private val offlineExpiryCheck = Runnable { scheduleOfflineExpiry() }
+    private val pinRefresh = Runnable { refreshPinnedCopy() }
     private val refreshPoll = Runnable {
         if (foreground && !busy && !showingActionHistory && period != null && target != null && hasReceiverNetworkAccess(this)) {
             readTarget(interaction = false)
@@ -155,6 +157,7 @@ class PhoneControlActivity : Activity() {
             lockWorkspace()
             return
         }
+        schedulePinRefresh()
         if (showingOffline) {
             if (offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true) {
                 conversation.visibility = View.VISIBLE
@@ -193,6 +196,7 @@ class PhoneControlActivity : Activity() {
     override fun onPause() {
         foreground = false
         handler.removeCallbacks(refreshPoll)
+        handler.removeCallbacks(pinRefresh)
         conversation.visibility = View.GONE
         super.onPause()
     }
@@ -469,6 +473,7 @@ class PhoneControlActivity : Activity() {
                 offlinePeriod?.lock()
                 offlinePeriod = unlocked
                 scheduleOfflineExpiry()
+                schedulePinRefresh()
                 render()
                 if (foreground) after(true)
             }
@@ -498,7 +503,8 @@ class PhoneControlActivity : Activity() {
                 conversation.addView(Button(this).apply {
                     text = getString(R.string.phone_offline_row, copy.source.name, copy.source.agent, copy.source.project,
                         DateFormat.getDateTimeInstance().format(Date(copy.refreshedAtMs)),
-                        if (copy.pinned) getString(R.string.phone_offline_pinned) else "")
+                        if (copy.pinned) getString(R.string.phone_offline_pinned) else "") +
+                        if (copy.incomplete || copy.refreshFailed) "\n${getString(R.string.phone_offline_incomplete)}" else ""
                     setOnClickListener {
                         selectedOffline = copy
                         offlinePageIndex = 0
@@ -535,7 +541,7 @@ class PhoneControlActivity : Activity() {
                     copy.source.receiver, copy.source.target.controllerId, copy.source.target.subjectId,
                     DateFormat.getDateTimeInstance().format(Date(copy.refreshedAtMs)))
             }, 1)
-            if (copy.incomplete) conversation.addView(TextView(this).apply { text = getString(R.string.phone_offline_incomplete) }, 2)
+            if (copy.incomplete || copy.refreshFailed) conversation.addView(TextView(this).apply { text = getString(R.string.phone_offline_incomplete) }, 2)
             conversation.addView(TextView(this).apply { text = getString(R.string.phone_offline_copy_notice) })
             conversation.visibility = View.VISIBLE
         }
@@ -743,6 +749,7 @@ class PhoneControlActivity : Activity() {
                     is PhoneControlResult.Value -> {
                         period = takePeriod(token) ?: return@runOnUiThread
                         scheduleExpiry()
+                        schedulePinRefresh()
                         render()
                         val continueOnline = {
                             if (target != null) withNetwork { readTarget() }
@@ -1198,6 +1205,61 @@ class PhoneControlActivity : Activity() {
         }
     }
 
+    private fun schedulePinRefresh() {
+        handler.removeCallbacks(pinRefresh)
+        val now = SystemClock.elapsedRealtime()
+        if (foreground && period?.isActive(now) == true && offlinePeriod?.isActive(now) == true) {
+            handler.postDelayed(pinRefresh, PIN_REFRESH_INTERVAL_MS)
+        }
+    }
+
+    /** Refresh one pin per tick without renewing either authority or its actual-open timestamp. */
+    private fun refreshPinnedCopy() {
+        val online = period ?: return
+        val local = offlinePeriod ?: return
+        if (!foreground || busy || !hasReceiverNetworkAccess(this)) {
+            schedulePinRefresh()
+            return
+        }
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        val token = generation.get()
+        val index = pinRefreshIndex
+        pinRefreshIndex = (pinRefreshIndex + 1) % PHONE_OFFLINE_SESSION_LIMIT
+        networkExecutor.execute {
+            val result = offlineResult {
+                val key = local.key(SystemClock.elapsedRealtime())
+                    ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                val mayContinue = {
+                    foreground && active(token) && pairing.binding() == binding &&
+                        online.isActive(SystemClock.elapsedRealtime()) && local.isActive(SystemClock.elapsedRealtime())
+                }
+                if (!mayContinue()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                val pins = offlineStore.list(online.grant.receiverIdentity, key).copies.filter { it.pinned }
+                if (pins.isEmpty()) return@offlineResult PhoneControlResult.Value(null)
+                val copy = pins[index % pins.size]
+                val refresh = downloadPhoneOffline(offlineStore, copy.source, key, offlineBudget(), System.currentTimeMillis(),
+                    false, mayContinue, {}) { cursor, revision, interaction ->
+                    client.readSession(online, copy.source.target, SystemClock.elapsedRealtime(), before = cursor,
+                        expectedRevision = revision, interaction = interaction, maySend = mayContinue)
+                }
+                PhoneControlResult.Value(copy.source to refresh)
+            }
+            runOnUiThread {
+                if (foreground && period === online && offlinePeriod === local && !isDestroyed && !isFinishing) {
+                    if (active(token)) {
+                        val refreshed = (result as? PhoneControlResult.Value)?.value?.second
+                        val failed = result is PhoneControlResult.Failure || refreshed is PhoneControlResult.Failure ||
+                            refreshed is PhoneControlResult.Value &&
+                            (refreshed.value.save != PhoneOfflineSave.SAVED || refreshed.value.interruption != null)
+                        if (failed) render(R.string.phone_offline_incomplete)
+                    }
+                    schedulePinRefresh()
+                }
+            }
+        }
+    }
+
     private fun withNetwork(action: () -> Unit) {
         if (hasReceiverNetworkAccess(this)) {
             action()
@@ -1225,6 +1287,7 @@ class PhoneControlActivity : Activity() {
         private const val LOCAL_NETWORK_REQUEST = 1
         private const val HISTORY_WINDOW = 500
         private const val REFRESH_INTERVAL_MS = 5_000L
+        private const val PIN_REFRESH_INTERVAL_MS = 10_000L
         private const val MEBIBYTE = 1024L * 1024
     }
 }

@@ -432,6 +432,43 @@ class PhoneControlActivityTest {
     }
 
     @Test
+    fun unlockedWorkspaceRefreshesPinsWithoutExtendingEitherPeriod() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        controller.close()
+        create()
+        val target = PhoneControlTarget("aa".repeat(16), "bb".repeat(16))
+        val source = PhoneOfflineSource(PhoneScreenFixture.grant.receiverIdentity, target, "saved", "agent", "project")
+        val old = PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16), 1, "ready",
+            listOf(PhoneControlEntry.Message(1, "assistant", "old", false)), 0, true,
+            PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false))
+        val store = PhoneOfflineStore(File(activity.filesDir, "phone-offline-v1"))
+        val key = SecretKeySpec(PhoneScreenFixture.offlineMaterial, "AES")
+        assertEquals(PhoneOfflineSave.SAVED, store.save(source, sequenceOf(old), true, 1, 1, 1_000_000, key) { true })
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(3) { drain() }
+        val online = requireNotNull(PhoneScreenFixture.lastPeriod)
+        val local = ReflectionHelpers.getField<PhoneOfflinePeriod>(activity, "offlinePeriod")
+        val onlineBefore = online.remainingMs(SystemClock.elapsedRealtime())
+        val localBefore = local.remainingMs(SystemClock.elapsedRealtime())
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+        repeat(3) { drain() }
+        val refreshed = store.list(source.receiver, key).copies.single()
+        assertEquals(1, refreshed.openedAtMs)
+        assertTrue(refreshed.refreshedAtMs > 1)
+        assertEquals(Triple(0L, 0L, false), PhoneScreenFixture.readRequests.last())
+        assertTrue(online.remainingMs(SystemClock.elapsedRealtime()) <= onlineBefore - 10_000)
+        assertTrue(local.remainingMs(SystemClock.elapsedRealtime()) <= localBefore - 10_000)
+        assertEquals("private session text", (store.readPage(source, 0, key).entries.single() as PhoneControlEntry.Message).text)
+        PhoneScreenFixture.staleRead = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+        repeat(3) { drain() }
+        assertTrue(store.list(source.receiver, key).copies.single().refreshFailed)
+        assertEquals("private session text", (store.readPage(source, 0, key).entries.single() as PhoneControlEntry.Message).text)
+    }
+
+    @Test
     fun historyPagingAndPassiveRefreshKeepOneOrderedSnapshot() {
         PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
         PhoneScreenFixture.latest = listOf(PhoneControlEntry.Message(3, "user", "third", false),

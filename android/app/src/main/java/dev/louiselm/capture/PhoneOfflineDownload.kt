@@ -17,7 +17,7 @@ internal fun downloadPhoneOffline(
     progress: (Int) -> Unit,
     read: (Long, Long, Boolean) -> PhoneControlResult<PhoneControlReply.SessionPage>,
 ): PhoneControlResult<PhoneOfflineDownload> {
-    val existing = store.list(source.receiver, key).copies.any { it.source.target == source.target }
+    val existing = store.list(source.receiver, key).copies.firstOrNull { it.source.target == source.target }
     var interruption: PhoneControlOutcome? = null
     var count = 0
     val pages = sequence {
@@ -27,7 +27,7 @@ internal fun downloadPhoneOffline(
             if (!mayContinue()) throw DownloadRefusal(PhoneControlOutcome.UNAVAILABLE)
             when (val response = read(cursor, revision, interaction && count == 0)) {
                 is PhoneControlResult.Failure -> {
-                    if (response.outcome == PhoneControlOutcome.UNAVAILABLE && count > 0 && !existing && mayContinue()) {
+                    if (response.outcome == PhoneControlOutcome.UNAVAILABLE && count > 0 && existing == null && mayContinue()) {
                         interruption = response.outcome
                         break
                     }
@@ -46,8 +46,21 @@ internal fun downloadPhoneOffline(
     }
     return try {
         val saved = store.save(source, pages, true, if (interaction) nowMs else null, nowMs, budget, key, mayContinue)
+        if (existing?.pinned == true && saved != PhoneOfflineSave.SAVED && saved != PhoneOfflineSave.REVOKED &&
+            saved != PhoneOfflineSave.CANCELLED && mayContinue()) store.markRefreshFailed(existing.source, key)
         PhoneControlResult.Value(PhoneOfflineDownload(saved, interruption))
     } catch (failure: DownloadRefusal) {
+        if (existing?.pinned == true && failure.outcome != PhoneControlOutcome.REVOKED &&
+            failure.outcome != PhoneControlOutcome.OUT_OF_SCOPE && mayContinue()) store.markRefreshFailed(existing.source, key)
         PhoneControlResult.Failure(failure.outcome)
+    } catch (failure: Exception) {
+        if (existing?.pinned == true && mayContinue()) {
+            try {
+                store.markRefreshFailed(existing.source, key)
+            } catch (markFailure: Exception) {
+                failure.addSuppressed(markFailure)
+            }
+        }
+        throw failure
     }
 }
