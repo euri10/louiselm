@@ -107,9 +107,16 @@ async fn phone_control_routes_exist_only_after_explicit_opt_in() {
         StatusCode::NOT_FOUND
     );
     assert!(!paths.phone_control_store().exists());
+    let evidence = paths
+        .phone_control_store()
+        .parent()
+        .unwrap()
+        .join("action-evidence");
+    assert!(!evidence.exists());
 
     features.phone_control = true;
     let enabled = prepare(paths, features).unwrap();
+    assert!(evidence.exists());
     let enabled_app = enabled.receiver.as_ref().unwrap().0.router();
     let response = enabled_app.oneshot(request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

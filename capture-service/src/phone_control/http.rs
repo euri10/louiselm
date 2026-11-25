@@ -13,9 +13,12 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::{MAX_FRAME, MAX_INTEGER, Proof, Request, fixed, valid_string};
 use super::{
-    authority::{Authority, EnrollmentStatus, Refusal},
+    ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionOutcome, MAX_FRAME,
+    MAX_INTEGER, Proof, Request, fixed, valid_string,
+};
+use super::{
+    authority::{Authority, EnrollmentStatus, History, Refusal},
     socket::ControllerRegistry,
 };
 use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
@@ -25,12 +28,14 @@ struct HttpState {
     authority: Arc<Authority>,
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
+    evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
 }
 
 pub(super) fn router(
     authority: Arc<Authority>,
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
+    evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
 ) -> Router {
     Router::new()
         .route("/v1/phone-control/enrollment/offer", post(handle))
@@ -44,6 +49,7 @@ pub(super) fn router(
             authority,
             pairing,
             controllers,
+            evidence,
         })
 }
 
@@ -152,7 +158,14 @@ async fn handle(
             .authenticate_device(&credential)
             .map_err(|_| Refusal::Unavailable)?
             .ok_or(Refusal::Unauthenticated)?;
-        process(&state.authority, &state.controllers, &device, &path, &body)
+        process(
+            &state.authority,
+            &state.controllers,
+            &state.evidence,
+            &device,
+            &path,
+            &body,
+        )
     })
     .await
     .unwrap_or(Err(Refusal::Unavailable));
@@ -162,6 +175,7 @@ async fn handle(
 fn process(
     authority: &Authority,
     controllers: &ControllerRegistry,
+    evidence: &Result<ActionEvidenceStore, ActionEvidenceError>,
     device: &str,
     path: &str,
     body: &[u8],
@@ -239,6 +253,12 @@ fn process(
         }
         "/v1/phone-control/request" => {
             let request: SignedRequest = decode(body, "request")?;
+            if request.request.action == 2 {
+                let store = evidence.as_ref().map_err(|_| Refusal::Unavailable)?;
+                let record =
+                    authority.read_history(store, device, &request.request, Instant::now())?;
+                return Ok(history_response(&record, &request.request.operation_id));
+            }
             let permit = authority.begin_read(device, &request.request, Instant::now())?;
             if !controllers.contains(&request.request.controller_id) {
                 return match authority.finish_read(&permit, false, Instant::now(), now_ms()) {
@@ -254,6 +274,32 @@ fn process(
         }
         _ => Err(Refusal::Unsupported),
     }
+}
+
+fn history_response(history: &History, request_id: &str) -> Value {
+    match history {
+        History::Record(record) => json!({"v":1,"type":"action_history",
+            "request_id":request_id,"record":history_record(record)}),
+        History::Page { records, next } => json!({"v":1,"type":"action_history_page",
+            "request_id":request_id,"records":records.iter().map(history_record).collect::<Vec<_>>(),
+            "next_after":next.as_deref().unwrap_or("")}),
+    }
+}
+
+fn history_record(record: &ActionEvidence) -> Value {
+    let (state, evidence) = match &record.outcome {
+        ActionOutcome::Unknown => ("unknown", ""),
+        ActionOutcome::Accepted { evidence } => ("accepted", evidence.as_str()),
+        ActionOutcome::Rejected { evidence } => ("rejected", evidence.as_str()),
+        ActionOutcome::FencedNoEffect { evidence } => ("fenced_no_effect", evidence.as_str()),
+    };
+    let identity = &record.identity;
+    json!({"operation_id":identity.operation_id,
+        "receiver_identity":identity.receiver_identity,"controller_id":identity.controller_id,
+        "subject_id":identity.subject_id,"action":identity.action,"payload_hash":identity.payload_hash,
+        "grant_id":identity.grant_id,"grant_revision":identity.grant_revision,
+        "expected_revision":identity.expected_revision,"recorded_at_ms":identity.recorded_at_ms,
+        "updated_at_ms":record.updated_at_ms,"state":state,"evidence":evidence})
 }
 
 fn outcome(result: Result<Value, Refusal>) -> (StatusCode, Json<Value>) {
@@ -295,10 +341,12 @@ mod tests {
     };
     use http_body_util::BodyExt;
     use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
     use tower::ServiceExt;
 
     use super::super::{
-        authority::{Authority, Scope},
+        ActionIdentity, ActionOutcome, Service,
+        authority::{Authority, Scope, StoredGrant},
         fixed, prefix,
     };
     use crate::{PairingRegistry, hex::lower_hex};
@@ -338,6 +386,145 @@ mod tests {
         }})
     }
 
+    fn signed_history(
+        fixture: &Value,
+        grant: &StoredGrant,
+        period: &str,
+        original: &ActionIdentity,
+        lookup: u128,
+    ) -> Value {
+        let mut payload = vec![0];
+        payload.extend(fixed::<16>(&original.operation_id).unwrap());
+        sign_history_payload(
+            fixture,
+            grant,
+            period,
+            (&original.controller_id, &original.subject_id),
+            &payload,
+            lookup,
+        )
+    }
+
+    fn signed_history_page(
+        fixture: &Value,
+        grant: &StoredGrant,
+        period: &str,
+        after: Option<&str>,
+        limit: u8,
+        lookup: u128,
+    ) -> Value {
+        let mut payload = vec![if after.is_some() { 2 } else { 1 }];
+        if let Some(after) = after {
+            payload.extend(fixed::<16>(after).unwrap());
+        }
+        payload.push(limit);
+        let zero = "00".repeat(16);
+        sign_history_payload(fixture, grant, period, (&zero, &zero), &payload, lookup)
+    }
+
+    fn sign_history_payload(
+        fixture: &Value,
+        grant: &StoredGrant,
+        period: &str,
+        owner: (&str, &str),
+        payload: &[u8],
+        lookup: u128,
+    ) -> Value {
+        let operation = format!("{lookup:032x}");
+        let hash = lower_hex(&Sha256::digest(payload));
+        let mut bytes = prefix(2);
+        bytes.extend(fixed::<16>(&grant.grant_id).unwrap());
+        bytes.extend(grant.grant_revision.to_be_bytes());
+        bytes.extend(fixed::<16>(period).unwrap());
+        bytes.extend(fixed::<32>(&grant.receiver_identity).unwrap());
+        bytes.extend(fixed::<16>(owner.0).unwrap());
+        bytes.extend(fixed::<16>(owner.1).unwrap());
+        bytes.push(2);
+        bytes.extend(fixed::<32>(&hash).unwrap());
+        bytes.extend(fixed::<16>(&operation).unwrap());
+        bytes.extend(0_u64.to_be_bytes());
+        bytes.push(0);
+        let key = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &unhex(fixture["keys"]["working"]["pkcs8"].as_str().unwrap()),
+        )
+        .unwrap();
+        let signature = key.sign(&SystemRandom::new(), &bytes).unwrap();
+        json!({"v":1,"type":"request","request":{
+            "grant_id":grant.grant_id,"grant_revision":grant.grant_revision,"period_id":period,
+            "receiver_identity":grant.receiver_identity,"controller_id":owner.0,
+            "subject_id":owner.1,"action":2,"payload":lower_hex(payload),
+            "payload_hash":hash,"operation_id":operation,"expected_revision":0,"interaction":0,
+            "signature":lower_hex(signature.as_ref())
+        }})
+    }
+
+    async fn history_grant(
+        service: &Service,
+        app: &axum::Router,
+        phone: &crate::DeviceCredential,
+        fixture: &Value,
+        project: &std::path::Path,
+        groups: Vec<String>,
+    ) -> (StoredGrant, String) {
+        let now = Instant::now();
+        let offer = service
+            .authority
+            .start(&phone.device_id, now, crate::time::now_ms())
+            .unwrap();
+        let key = fixture["keys"]["enrolled"]["sec1"].as_str().unwrap();
+        service
+            .authority
+            .submit(
+                &phone.device_id,
+                &offer.enrollment_id,
+                &offer.matching_code,
+                key,
+                now,
+            )
+            .unwrap();
+        let grant = service
+            .authority
+            .approve(
+                &phone.device_id,
+                &offer.enrollment_id,
+                key,
+                Scope {
+                    projects: vec![project.to_str().unwrap().into()],
+                    agents: vec!["codex".into()],
+                    groups,
+                },
+                now,
+            )
+            .unwrap();
+        let period = history_period(app, phone, fixture, &grant).await;
+        (grant, period)
+    }
+
+    async fn history_period(
+        app: &axum::Router,
+        phone: &crate::DeviceCredential,
+        fixture: &Value,
+        grant: &StoredGrant,
+    ) -> String {
+        let body = json!({"v":1,"type":"challenge","grant_id":grant.grant_id,"grant_revision":grant.grant_revision});
+        let (_, challenge) = post(
+            app.clone(),
+            "/v1/phone-control/challenge",
+            &phone.credential,
+            &body.to_string(),
+        )
+        .await;
+        let (_, unlocked) = post(
+            app.clone(),
+            "/v1/phone-control/unlock",
+            &phone.credential,
+            &signed_unlock(fixture, &challenge).to_string(),
+        )
+        .await;
+        unlocked["period_id"].as_str().unwrap().to_owned()
+    }
+
     async fn post(
         router: axum::Router,
         path: &str,
@@ -372,7 +559,13 @@ mod tests {
             .unwrap();
         let authority =
             Arc::new(Authority::open(&root.path().join("phone/grants"), &receiver).unwrap());
-        let app = super::router(authority.clone(), pairing, Arc::default());
+        let evidence = super::super::ActionEvidenceStore::open(root.path().join("evidence"));
+        let app = super::router(
+            authority.clone(),
+            pairing,
+            Arc::default(),
+            Arc::new(evidence),
+        );
         let (_, denied) = post(
             app.clone(),
             "/v1/phone-control/challenge",
@@ -422,7 +615,13 @@ mod tests {
             .unwrap();
         let authority =
             Arc::new(Authority::open(&root.path().join("phone/grants"), &receiver).unwrap());
-        let app = super::router(authority.clone(), pairing, Arc::default());
+        let evidence = super::super::ActionEvidenceStore::open(root.path().join("evidence"));
+        let app = super::router(
+            authority.clone(),
+            pairing,
+            Arc::default(),
+            Arc::new(evidence),
+        );
         let now = Instant::now();
         let offer = authority
             .start(&phone.device_id, now, crate::time::now_ms())
@@ -498,5 +697,248 @@ mod tests {
             replay,
             json!({"v":1,"type":"error","code":"unauthenticated"})
         );
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one history scenario follows replacement, revocation, and receiver restart"
+    )]
+    async fn history_uses_current_read_scope_without_a_controller_or_old_grant() {
+        let root = tempfile::tempdir().unwrap();
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let receiver = "01".repeat(32);
+        let create_phone = |name: &str| {
+            let offer = pairing
+                .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
+                .unwrap();
+            pairing.consume(&offer.token, name, 1_001).unwrap()
+        };
+        let old = create_phone("old phone");
+        let replacement = create_phone("replacement phone");
+        let service = Service::open(
+            &root.path().join("phone/grants"),
+            &receiver,
+            pairing.clone(),
+        )
+        .unwrap();
+        let app = service.router();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../android/app/src/test/resources/phone-control-v1.json"
+        ))
+        .unwrap();
+        let (old_grant, old_period) = history_grant(
+            &service,
+            &app,
+            &old,
+            &fixture,
+            root.path(),
+            vec!["read".into()],
+        )
+        .await;
+        let original = ActionIdentity {
+            operation_id: "10".repeat(16),
+            receiver_identity: receiver.clone(),
+            controller_id: "11".repeat(16),
+            subject_id: "12".repeat(16),
+            action: 3,
+            payload_hash: "13".repeat(32),
+            grant_id: old_grant.grant_id.clone(),
+            grant_revision: old_grant.grant_revision,
+            period_id: old_period.clone(),
+            expected_revision: 9,
+            project: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1_000,
+        };
+        let store = service.evidence.as_ref().as_ref().unwrap();
+        store.reserve(&original).unwrap();
+        store
+            .report(
+                &original,
+                &ActionOutcome::Accepted {
+                    evidence: "14".repeat(32),
+                },
+                2_000,
+            )
+            .unwrap();
+        let mut hidden = original.clone();
+        hidden.operation_id = "15".repeat(16);
+        hidden.agent = "other".into();
+        store.reserve(&hidden).unwrap();
+        let mut second = original.clone();
+        second.operation_id = "20".repeat(16);
+        store.reserve(&second).unwrap();
+        let (grant, period) = history_grant(
+            &service,
+            &app,
+            &replacement,
+            &fixture,
+            root.path(),
+            vec!["read".into()],
+        )
+        .await;
+        let lookup = signed_history(&fixture, &grant, &period, &original, 100);
+        let (status, history) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &lookup.to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(history["type"], "action_history");
+        assert_eq!(history["request_id"], format!("{:032x}", 100));
+        assert_eq!(history["record"]["operation_id"], original.operation_id);
+        assert_eq!(history["record"]["state"], "accepted");
+        assert_eq!(history["record"]["evidence"], "14".repeat(32));
+        assert!(history["record"].get("payload").is_none());
+
+        let page = signed_history_page(&fixture, &grant, &period, None, 1, 108);
+        let (_, first) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &page.to_string(),
+        )
+        .await;
+        assert_eq!(first["type"], "action_history_page");
+        assert_eq!(first["records"].as_array().unwrap().len(), 1);
+        assert_eq!(first["records"][0]["operation_id"], original.operation_id);
+        assert_eq!(first["next_after"], original.operation_id);
+        let page = signed_history_page(
+            &fixture,
+            &grant,
+            &period,
+            Some(&original.operation_id),
+            1,
+            109,
+        );
+        let (_, next) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &page.to_string(),
+        )
+        .await;
+        assert_eq!(next["records"].as_array().unwrap().len(), 1);
+        assert_eq!(next["records"][0]["operation_id"], second.operation_id);
+        assert_eq!(next["records"][0]["state"], "unknown");
+        assert_eq!(next["next_after"], "");
+        let invalid_page = signed_history_page(&fixture, &grant, &period, None, 0, 110);
+        let (_, denied) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &invalid_page.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "malformed");
+        let (_, replay) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &lookup.to_string(),
+        )
+        .await;
+        assert_eq!(replay["code"], "unauthenticated");
+
+        let mut tampered = signed_history(&fixture, &grant, &period, &original, 103);
+        tampered["request"]["payload"] = json!(format!("00{}", "99".repeat(16)));
+        let (_, denied) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &tampered.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "unauthenticated");
+        let mut absent = original.clone();
+        absent.operation_id = "98".repeat(16);
+        let missing = signed_history(&fixture, &grant, &period, &absent, 104);
+        let (_, denied) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &missing.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "unavailable");
+        let mut forged_interaction = signed_history(&fixture, &grant, &period, &original, 105);
+        forged_interaction["request"]["interaction"] = json!(1);
+        let (_, denied) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &forged_interaction.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "malformed");
+
+        service.authority.disable(&old.device_id).unwrap();
+        let old_lookup = signed_history(&fixture, &old_grant, &old_period, &original, 101);
+        let (_, denied) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &old.credential,
+            &old_lookup.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "revoked");
+        drop(app);
+        drop(service);
+        let service = Service::open(&root.path().join("phone/grants"), &receiver, pairing).unwrap();
+        let app = service.router();
+        let period = history_period(&app, &replacement, &fixture, &grant).await;
+        let resumed = signed_history(&fixture, &grant, &period, &original, 106);
+        let (_, history) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &resumed.to_string(),
+        )
+        .await;
+        assert_eq!(history["record"]["state"], "accepted");
+        let other_root = tempfile::tempdir().unwrap();
+        let (out_of_scope, next_period) = history_grant(
+            &service,
+            &app,
+            &replacement,
+            &fixture,
+            other_root.path(),
+            vec!["read".into()],
+        )
+        .await;
+        let request = signed_history(&fixture, &out_of_scope, &next_period, &original, 102);
+        let (_, denied) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &request.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "out_of_scope");
+        let (no_read, next_period) = history_grant(
+            &service,
+            &app,
+            &replacement,
+            &fixture,
+            root.path(),
+            vec!["operate_sessions".into()],
+        )
+        .await;
+        let request = signed_history(&fixture, &no_read, &next_period, &original, 107);
+        let (_, denied) = post(
+            app,
+            "/v1/phone-control/request",
+            &replacement.credential,
+            &request.to_string(),
+        )
+        .await;
+        assert_eq!(denied["code"], "out_of_scope");
     }
 }

@@ -157,6 +157,33 @@ fn only_the_exact_owner_can_record_one_terminal_outcome() {
 }
 
 #[test]
+fn owner_reported_fence_survives_restart_and_never_reopens_the_original() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    let original = identity(temp.path(), 6);
+    let fence = ActionOutcome::FencedNoEffect {
+        evidence: "16".repeat(32),
+    };
+    let store = ActionEvidenceStore::open(&path).unwrap();
+    store.reserve(&original).unwrap();
+    store.report(&original, &fence, 2_000).unwrap();
+    drop(store);
+    let store = ActionEvidenceStore::open(&path).unwrap();
+    assert_eq!(store.lookup(&original.operation_id).unwrap().outcome, fence);
+    assert_eq!(store.reserve(&original), Ok(ActionReservation::Existing));
+    assert_eq!(
+        store.report(
+            &original,
+            &ActionOutcome::Accepted {
+                evidence: "17".repeat(32)
+            },
+            3_000
+        ),
+        Err(ActionEvidenceError::Conflict)
+    );
+}
+
+#[test]
 fn owner_reports_and_fences_are_single_winner() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("actions");

@@ -14,9 +14,10 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use super::{
-    Frame, GrantRecord, MAX_FRAME, MAX_INTEGER, PeriodRecord, PhoneControlError, Proof, Request,
-    fixed, key, validate_list, validate_proof_shape, validate_request_shape,
-    verify_phone_control_frame, verify_proof,
+    ActionEvidence, ActionEvidenceStore, Frame, GrantRecord, HistoryQuery, MAX_FRAME, MAX_INTEGER,
+    PeriodRecord, PhoneControlError, Proof, Request, fixed, key, validate_history_request_shape,
+    validate_list, validate_proof_shape, validate_request_shape, verify_phone_control_frame,
+    verify_proof,
 };
 use crate::{PairingRegistry, hex::lower_hex, permissions::set_private_permissions};
 
@@ -138,6 +139,15 @@ pub(super) struct ReadPermit {
     operation_id: String,
     interaction: bool,
     pub(super) frame: Vec<u8>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum History {
+    Record(Box<ActionEvidence>),
+    Page {
+        records: Vec<ActionEvidence>,
+        next: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -576,6 +586,108 @@ impl Authority {
         Ok(())
     }
 
+    pub(super) fn read_history(
+        &self,
+        store: &ActionEvidenceStore,
+        device: &str,
+        request: &Request,
+        now: Instant,
+    ) -> Result<History, Refusal> {
+        let started = Instant::now();
+        let query = validate_history_request_shape(request).map_err(refusal)?;
+        let mut state = self.lock()?;
+        let grant = state.grants.get(device).ok_or(Refusal::Revoked)?;
+        if grant.grant_id != request.grant_id
+            || grant.grant_revision != request.grant_revision
+            || grant.receiver_identity != self.receiver_identity
+        {
+            return Err(Refusal::Revoked);
+        }
+        let lease = state.periods.get(device).ok_or(Refusal::Unauthenticated)?;
+        if lease.public.period_id != request.period_id {
+            return Err(Refusal::Unauthenticated);
+        }
+        let checked_now = elapsed_now(now, started)?;
+        if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
+            return Err(Refusal::Expired);
+        }
+        let frame = Frame {
+            v: 1,
+            kind: "read_action_history".into(),
+            controller_id: request.controller_id.clone(),
+            grant: GrantRecord {
+                grant_id: grant.grant_id.clone(),
+                grant_revision: grant.grant_revision,
+                enrolled_key: grant.enrolled_key.clone(),
+                projects: grant.scope.projects.clone(),
+                agents: grant.scope.agents.clone(),
+                groups: grant.scope.groups.clone(),
+            },
+            period: PeriodRecord {
+                period_id: lease.public.period_id.clone(),
+                challenge_id: lease.proof.challenge_id.clone(),
+                idle_expires_at_ms: lease.public.idle_expires_at_ms,
+                absolute_expires_at_ms: lease.public.absolute_expires_at_ms,
+            },
+            proof: lease.proof.clone(),
+            request: request.clone(),
+        };
+        frame.verify(&self.receiver_identity).map_err(refusal)?;
+        if !grant.scope.groups.iter().any(|group| group == "read") {
+            return Err(Refusal::OutOfScope);
+        }
+        let scope = grant.scope.clone();
+        // Authority precedes evidence; the evidence store never acquires authority.
+        if store
+            .is_reserved(&request.operation_id)
+            .map_err(|_| Refusal::Unavailable)?
+            || !state.operations.insert(request.operation_id.clone())
+        {
+            return Err(Refusal::Unauthenticated);
+        }
+        let result = match query {
+            HistoryQuery::One(operation_id) => {
+                let evidence = store
+                    .lookup(&operation_id)
+                    .map_err(|_| Refusal::Unavailable)?;
+                let identity = &evidence.identity;
+                if identity.receiver_identity != self.receiver_identity
+                    || identity.controller_id != request.controller_id
+                    || identity.subject_id != request.subject_id
+                {
+                    return Err(Refusal::StaleSubject);
+                }
+                if !scope.agents.contains(&identity.agent)
+                    || !scope
+                        .projects
+                        .iter()
+                        .any(|project| Path::new(&identity.project).starts_with(project))
+                {
+                    return Err(Refusal::OutOfScope);
+                }
+                History::Record(Box::new(evidence))
+            }
+            HistoryQuery::Page { after, limit } => {
+                let (records, next) = store
+                    .page(
+                        after.as_deref(),
+                        limit,
+                        &self.receiver_identity,
+                        &scope.projects,
+                        &scope.agents,
+                    )
+                    .map_err(|_| Refusal::Unavailable)?;
+                History::Page { records, next }
+            }
+        };
+        let lease = state.periods.get(device).ok_or(Refusal::Revoked)?;
+        let checked_now = elapsed_now(now, started)?;
+        if checked_now >= lease.idle_deadline || checked_now >= lease.absolute_deadline {
+            return Err(Refusal::Expired);
+        }
+        Ok(result)
+    }
+
     pub(super) fn disable(&self, device: &str) -> Result<(), Refusal> {
         let mut state = self.lock()?;
         if !state.grants.contains_key(device) {
@@ -780,9 +892,10 @@ mod tests {
         signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair},
     };
     use serde_json::Value;
+    use sha2::{Digest, Sha256};
 
-    use super::super::{Proof, Request, fixed, prefix};
-    use super::{Authority, IssuedChallenge, Lease, Refusal, Scope, StoredGrant};
+    use super::super::{ActionEvidenceStore, ActionIdentity, Proof, Request, fixed, prefix};
+    use super::{Authority, History, IssuedChallenge, Lease, Refusal, Scope, StoredGrant};
     use crate::hex::lower_hex;
 
     const FIXTURE: &str =
@@ -874,6 +987,40 @@ mod tests {
         }
     }
 
+    fn signed_history(
+        grant: &StoredGrant,
+        lease: &Lease,
+        original: &ActionIdentity,
+        operation: u128,
+    ) -> Request {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let mut request = signed_request(grant, lease, 0, operation);
+        request.action = 2;
+        request.controller_id.clone_from(&original.controller_id);
+        request.subject_id.clone_from(&original.subject_id);
+        request.payload = format!("00{}", original.operation_id);
+        request.payload_hash = lower_hex(&Sha256::digest(unhex(&request.payload)));
+        let mut bytes = prefix(2);
+        bytes.extend(fixed::<16>(&request.grant_id).unwrap());
+        bytes.extend(request.grant_revision.to_be_bytes());
+        bytes.extend(fixed::<16>(&request.period_id).unwrap());
+        bytes.extend(fixed::<32>(&request.receiver_identity).unwrap());
+        bytes.extend(fixed::<16>(&request.controller_id).unwrap());
+        bytes.extend(fixed::<16>(&request.subject_id).unwrap());
+        bytes.push(2);
+        bytes.extend(fixed::<32>(&request.payload_hash).unwrap());
+        bytes.extend(fixed::<16>(&request.operation_id).unwrap());
+        bytes.extend(request.expected_revision.to_be_bytes());
+        bytes.push(0);
+        let key = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &unhex(fixture["keys"]["working"]["pkcs8"].as_str().unwrap()),
+        )
+        .unwrap();
+        request.signature = lower_hex(key.sign(&SystemRandom::new(), &bytes).unwrap().as_ref());
+        request
+    }
+
     fn unlocked(authority: &Authority, grant: &StoredGrant, now: Instant) -> Lease {
         let challenge = authority
             .challenge("phone", &grant.grant_id, grant.grant_revision, now, 1_000)
@@ -909,6 +1056,47 @@ mod tests {
                 now,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn history_polling_cannot_renew_the_working_period() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let receiver = "01".repeat(32);
+        let authority = Authority::open(&temporary.path().join("grants"), &receiver).unwrap();
+        let grant = approved(&authority, temporary.path(), now);
+        let lease = unlocked(&authority, &grant, now);
+        let store = ActionEvidenceStore::open(temporary.path().join("history")).unwrap();
+        let original = ActionIdentity {
+            operation_id: "11".repeat(16),
+            receiver_identity: receiver,
+            controller_id: "12".repeat(16),
+            subject_id: "13".repeat(16),
+            action: 3,
+            payload_hash: "14".repeat(32),
+            grant_id: grant.grant_id.clone(),
+            grant_revision: grant.grant_revision,
+            period_id: lease.period_id.clone(),
+            expected_revision: 1,
+            project: std::fs::canonicalize(temporary.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1_000,
+        };
+        store.reserve(&original).unwrap();
+        let first = signed_history(&grant, &lease, &original, 300);
+        assert!(matches!(
+            authority.read_history(&store, "phone", &first, now + Duration::from_secs(299)),
+            Ok(History::Record(record)) if record.identity == original
+        ));
+        let second = signed_history(&grant, &lease, &original, 301);
+        assert_eq!(
+            authority.read_history(&store, "phone", &second, now + Duration::from_secs(300)),
+            Err(Refusal::Expired)
+        );
     }
 
     #[test]

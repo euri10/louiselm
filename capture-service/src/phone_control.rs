@@ -23,6 +23,7 @@ pub(crate) struct Service {
     authority: Arc<authority::Authority>,
     pairing: Arc<PairingRegistry>,
     controllers: Arc<socket::ControllerRegistry>,
+    evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
 }
 
 impl Service {
@@ -33,10 +34,15 @@ impl Service {
     ) -> Result<Self, io::Error> {
         let authority = authority::Authority::open(path, receiver)
             .map_err(|_| io::Error::other("phone-control authority is unavailable"))?;
+        let evidence_path = path
+            .parent()
+            .ok_or_else(|| io::Error::other("phone-control state has no parent"))?
+            .join("action-evidence");
         Ok(Self {
             authority: Arc::new(authority),
             pairing,
             controllers: Arc::default(),
+            evidence: Arc::new(ActionEvidenceStore::open(evidence_path)),
         })
     }
 
@@ -45,6 +51,7 @@ impl Service {
             self.authority.clone(),
             self.pairing.clone(),
             self.controllers.clone(),
+            self.evidence.clone(),
         )
     }
 
@@ -208,7 +215,10 @@ pub fn verify_phone_control_frame(
         None => return Err(Malformed),
     }
     let frame: Frame = serde_json::from_slice(input).map_err(|_| Malformed)?;
-    if frame.v != 1 || frame.kind != "read_session" {
+    if frame.request.action > MAX_INTEGER {
+        return Err(Malformed);
+    }
+    if frame.v != 1 || frame.kind != "read_session" || frame.request.action != 1 {
         return Err(Unsupported);
     }
     frame.verify(receiver_identity)
@@ -221,7 +231,13 @@ impl Frame {
         let proof = &self.proof;
         let request = &self.request;
         validate_proof_shape(proof)?;
-        validate_request_shape(request)?;
+        match request.action {
+            1 => validate_request_shape(request)?,
+            2 => {
+                validate_history_request_shape(request)?;
+            }
+            _ => return Err(Unsupported),
+        }
         for number in [
             grant.grant_revision,
             self.period.idle_expires_at_ms,
@@ -257,7 +273,7 @@ impl Frame {
         let subject_id = fixed::<16>(&request.subject_id)?;
         let payload_hash = fixed::<32>(&request.payload_hash)?;
         let operation_id = fixed::<16>(&request.operation_id)?;
-        let payload = fixed::<10>(&request.payload)?;
+        let payload = decode_hex(&request.payload)?;
         let request_signature = signature(&request.signature)?;
         if grant_id != fixed::<16>(&proof.grant_id)?
             || grant_id != fixed::<16>(&request.grant_id)?
@@ -281,7 +297,7 @@ impl Frame {
         request_bytes.extend(request_receiver);
         request_bytes.extend(controller_id);
         request_bytes.extend(subject_id);
-        request_bytes.push(1);
+        request_bytes.push(u8::try_from(request.action).map_err(|_| Malformed)?);
         request_bytes.extend(payload_hash);
         request_bytes.extend(operation_id);
         request_bytes.extend(request.expected_revision.to_be_bytes());
@@ -305,24 +321,10 @@ fn validate_proof_shape(proof: &Proof) -> Result<(), PhoneControlError> {
 }
 
 fn validate_request_shape(request: &Request) -> Result<(), PhoneControlError> {
-    if request.grant_revision == 0
-        || request.grant_revision > MAX_INTEGER
-        || request.expected_revision > MAX_INTEGER
-        || request.action > MAX_INTEGER
-        || request.interaction > MAX_INTEGER
-    {
-        return Err(PhoneControlError::Malformed);
-    }
+    validate_common_request_shape(request)?;
     if request.action != 1 || request.interaction > 1 {
         return Err(PhoneControlError::Unsupported);
     }
-    fixed::<16>(&request.grant_id)?;
-    fixed::<16>(&request.period_id)?;
-    fixed::<32>(&request.receiver_identity)?;
-    fixed::<16>(&request.controller_id)?;
-    fixed::<16>(&request.subject_id)?;
-    fixed::<32>(&request.payload_hash)?;
-    fixed::<16>(&request.operation_id)?;
     let payload = fixed::<10>(&request.payload)?;
     let before = u64::from_be_bytes(
         payload[..8]
@@ -337,6 +339,63 @@ fn validate_request_shape(request: &Request) -> Result<(), PhoneControlError> {
     if before > MAX_INTEGER || !(1..=50).contains(&limit) {
         return Err(PhoneControlError::Malformed);
     }
+    Ok(())
+}
+
+enum HistoryQuery {
+    One(String),
+    Page { after: Option<String>, limit: usize },
+}
+
+fn validate_history_request_shape(request: &Request) -> Result<HistoryQuery, PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.action != 2 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    // History checks are observation, never a working-period renewal.
+    if request.interaction != 0 || request.expected_revision != 0 {
+        return Err(PhoneControlError::Malformed);
+    }
+    let payload = decode_hex(&request.payload)?;
+    let query = match payload.first() {
+        Some(0) if payload.len() == 17 => HistoryQuery::One(crate::hex::lower_hex(&payload[1..])),
+        Some(1) if payload.len() == 2 => HistoryQuery::Page {
+            after: None,
+            limit: usize::from(payload[1]),
+        },
+        Some(2) if payload.len() == 18 => HistoryQuery::Page {
+            after: Some(crate::hex::lower_hex(&payload[1..17])),
+            limit: usize::from(payload[17]),
+        },
+        Some(0..=2) | None => return Err(PhoneControlError::Malformed),
+        Some(_) => return Err(PhoneControlError::Unsupported),
+    };
+    if let HistoryQuery::Page { limit, .. } = &query
+        && (!(1..=50).contains(limit)
+            || fixed::<16>(&request.controller_id)? != [0; 16]
+            || fixed::<16>(&request.subject_id)? != [0; 16])
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    Ok(query)
+}
+
+fn validate_common_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+    if request.grant_revision == 0
+        || request.grant_revision > MAX_INTEGER
+        || request.expected_revision > MAX_INTEGER
+        || request.action > MAX_INTEGER
+        || request.interaction > MAX_INTEGER
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    fixed::<16>(&request.grant_id)?;
+    fixed::<16>(&request.period_id)?;
+    fixed::<32>(&request.receiver_identity)?;
+    fixed::<16>(&request.controller_id)?;
+    fixed::<16>(&request.subject_id)?;
+    fixed::<32>(&request.payload_hash)?;
+    fixed::<16>(&request.operation_id)?;
     signature(&request.signature)?;
     Ok(())
 }

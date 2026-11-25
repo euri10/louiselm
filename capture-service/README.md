@@ -96,6 +96,13 @@ Neovim controller must use the same capture state directory as the receiver.
 The first Session read remains unavailable until the separate controller
 integration is wired; enrollment and unlock do not grant Session admission.
 
+Phone action evidence is retained without automatic expiry in the private
+capture state directory, without prompts or result copies. A currently
+authorized Read grant can inspect scoped history while Neovim is offline;
+history checks do not renew the working period. Missing or damaged evidence is
+unavailable, not proof that an action was never sent. The first phone write
+still requires the separate Send integration and its native-owner safeguards.
+
 When explicitly enabled, the receiver binds TLS on `127.0.0.1:7391` unless
 configured otherwise, and `pair` refuses while
 that safe, phone-unreachable default is active. Configure exactly one private

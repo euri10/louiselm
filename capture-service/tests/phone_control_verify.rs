@@ -209,6 +209,11 @@ fn refuses_ambiguous_or_unsupported_wire_values() {
     for (path, value, code) in [
         ("/request/action", json!(2), PhoneControlError::Unsupported),
         (
+            "/request/action",
+            json!(9_007_199_254_740_992_u64),
+            PhoneControlError::Malformed,
+        ),
+        (
             "/request/interaction",
             json!(2),
             PhoneControlError::Unsupported,

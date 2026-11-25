@@ -16,6 +16,7 @@ use thiserror::Error;
 use super::{MAX_INTEGER, fixed, valid_string};
 use crate::{hex::lower_hex, permissions::set_private_permissions};
 
+// ponytail: one bounded snapshot; partition records if 16 MiB becomes limiting.
 // Exhaustion refuses new writes; it never evicts unresolved or finished records.
 const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -270,6 +271,47 @@ impl ActionEvidenceStore {
         })
     }
 
+    pub(super) fn is_reserved(&self, operation_id: &str) -> Result<bool, ActionEvidenceError> {
+        fixed::<16>(operation_id).map_err(|_| ActionEvidenceError::Malformed)?;
+        self.access(|snapshot| Ok((snapshot.actions.contains_key(operation_id), false)))
+    }
+
+    pub(super) fn page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+        receiver: &str,
+        projects: &[String],
+        agents: &[String],
+    ) -> Result<(Vec<ActionEvidence>, Option<String>), ActionEvidenceError> {
+        self.access(|snapshot| {
+            let mut records: Vec<_> = snapshot
+                .actions
+                .values()
+                .filter(|record| {
+                    let identity = &record.identity;
+                    after.is_none_or(|cursor| identity.operation_id.as_str() > cursor)
+                        && identity.receiver_identity == receiver
+                        && agents.contains(&identity.agent)
+                        && projects
+                            .iter()
+                            .any(|project| Path::new(&identity.project).starts_with(project))
+                })
+                .take(limit + 1)
+                .cloned()
+                .collect();
+            let next = if records.len() > limit {
+                records.pop();
+                records
+                    .last()
+                    .map(|record| record.identity.operation_id.clone())
+            } else {
+                None
+            };
+            Ok(((records, next), false))
+        })
+    }
+
     /// Durably archive the exact native owner's report for a reserved action.
     ///
     /// The caller must authenticate and serialize the native owner. In
@@ -333,9 +375,12 @@ impl ActionEvidenceStore {
             }
         };
         let (result, changed) = operation(&mut snapshot)?;
-        if changed && let Err(error) = persist(&self.directory, &snapshot) {
-            *failed = true;
-            return Err(error);
+        if changed {
+            let bytes = snapshot_bytes(&snapshot)?;
+            if let Err(error) = persist_bytes(&self.directory, &bytes) {
+                *failed = true;
+                return Err(error);
+            }
         }
         Ok(result)
     }
@@ -431,17 +476,25 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, ActionEvidenceError>
 }
 
 fn persist(directory: &Path, snapshot: &Snapshot) -> Result<(), ActionEvidenceError> {
+    persist_bytes(directory, &snapshot_bytes(snapshot)?)
+}
+
+fn snapshot_bytes(snapshot: &Snapshot) -> Result<Vec<u8>, ActionEvidenceError> {
     let bytes = serde_json::to_vec(snapshot).map_err(|_| ActionEvidenceError::Unavailable)?;
     if bytes.len() as u64 > MAX_STORE_BYTES {
         return Err(ActionEvidenceError::Unavailable);
     }
+    Ok(bytes)
+}
+
+fn persist_bytes(directory: &Path, bytes: &[u8]) -> Result<(), ActionEvidenceError> {
     let seal = serde_json::to_vec(&Seal {
         v: 1,
         bytes: bytes.len() as u64,
-        sha256: lower_hex(&Sha256::digest(&bytes)),
+        sha256: lower_hex(&Sha256::digest(bytes)),
     })
     .map_err(|_| ActionEvidenceError::Unavailable)?;
-    replace(directory, "actions.json", &bytes)?;
+    replace(directory, "actions.json", bytes)?;
     replace(directory, "seal.json", &seal)
 }
 
@@ -472,7 +525,9 @@ fn unavailable(_: io::Error) -> ActionEvidenceError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
 mod tests {
-    use super::ActionEvidenceStore;
+    use super::{
+        ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
+    };
 
     #[test]
     #[allow(
@@ -488,5 +543,52 @@ mod tests {
         let reopened = ActionEvidenceStore::open(&path).unwrap();
         drop(reopened);
         drop(inherited);
+    }
+
+    #[test]
+    fn full_store_refuses_new_records_without_disabling_existing_history() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ActionEvidenceStore::open(root.path().join("actions")).unwrap();
+        let original = ActionIdentity {
+            operation_id: "01".repeat(16),
+            receiver_identity: "02".repeat(32),
+            controller_id: "03".repeat(16),
+            subject_id: "04".repeat(16),
+            action: 3,
+            payload_hash: "05".repeat(32),
+            grant_id: "06".repeat(16),
+            grant_revision: 1,
+            period_id: "07".repeat(16),
+            expected_revision: 1,
+            project: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1,
+        };
+        store.reserve(&original).unwrap();
+        let result = store.access(|snapshot| {
+            for number in 0..2_100 {
+                let mut identity = original.clone();
+                identity.operation_id = format!("{number:032x}");
+                identity.agent = "x".repeat(8192);
+                snapshot.actions.insert(
+                    identity.operation_id.clone(),
+                    ActionEvidence {
+                        identity,
+                        outcome: ActionOutcome::Unknown,
+                        updated_at_ms: 1,
+                    },
+                );
+            }
+            Ok(((), true))
+        });
+        assert_eq!(result, Err(ActionEvidenceError::Unavailable));
+        assert_eq!(
+            store.lookup(&original.operation_id).unwrap().identity,
+            original
+        );
     }
 }
