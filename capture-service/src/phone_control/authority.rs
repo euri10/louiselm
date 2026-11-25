@@ -545,6 +545,7 @@ impl Authority {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn finish_read(
         &self,
         permit: &ReadPermit,
@@ -554,6 +555,48 @@ impl Authority {
     ) -> Result<(), Refusal> {
         let started = Instant::now();
         let mut state = self.lock()?;
+        self.finish_read_locked(&mut state, permit, success, now, wall_ms, started)
+    }
+
+    pub(super) fn finish_read_delivery(
+        &self,
+        permit: &ReadPermit,
+        success: bool,
+        pairing: &PairingRegistry,
+        credential: &str,
+        controller_attached: impl FnOnce() -> bool,
+    ) -> Result<(), Refusal> {
+        let now = Instant::now();
+        let wall_ms = crate::time::now_ms();
+        let started = Instant::now();
+        let mut state = self.lock()?;
+        // Forget takes the authority lock before the pairing lock, too.
+        let result = pairing.with_authenticated_device(credential, |device| {
+            if device != Some(permit.device.as_str()) {
+                state.pending_reads.remove(&permit.operation_id);
+                return Err(Refusal::Revoked);
+            }
+            if !controller_attached() {
+                state.pending_reads.remove(&permit.operation_id);
+                return Err(Refusal::StaleSubject);
+            }
+            self.finish_read_locked(&mut state, permit, success, now, wall_ms, started)
+        });
+        if result.is_err() {
+            state.pending_reads.remove(&permit.operation_id);
+        }
+        result.map_err(|_| Refusal::Unavailable)?
+    }
+
+    fn finish_read_locked(
+        &self,
+        state: &mut State,
+        permit: &ReadPermit,
+        success: bool,
+        now: Instant,
+        wall_ms: u64,
+        started: Instant,
+    ) -> Result<(), Refusal> {
         if !state.pending_reads.remove(&permit.operation_id) {
             return Err(Refusal::Unauthenticated);
         }

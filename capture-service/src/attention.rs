@@ -129,6 +129,16 @@ pub struct AttentionKey {
     pub source_operation_id: String,
 }
 
+/// The random controller and Session incarnation to which a card points.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttentionPhoneControl {
+    /// Receiver-issued controller identity.
+    pub controller_id: String,
+    /// The controller's identity for this Session incarnation.
+    pub subject_id: String,
+}
+
 /// Validated operator-authored Attention data before persistence.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +150,9 @@ pub struct AttentionDraft {
     /// Optional inert Session display name, bounded to 256 UTF-8 bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
+    /// Exact live phone-control target, when the controller was attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_control: Option<Box<AttentionPhoneControl>>,
     /// Typed condition.
     pub kind: AttentionKind,
     /// Stable UUID for the source lifecycle operation.
@@ -183,6 +196,9 @@ pub struct AttentionItem {
     /// Optional inert Session display name, bounded to 256 UTF-8 bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
+    /// Original phone-control navigation hint; never authority by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_control: Option<Box<AttentionPhoneControl>>,
     /// Typed condition.
     pub kind: AttentionKind,
     /// Stable UUID for the source lifecycle operation.
@@ -358,6 +374,7 @@ impl AttentionStore {
                 subject_kind: draft.subject_kind,
                 subject_id: draft.subject_id,
                 session_name: draft.session_name,
+                phone_control: draft.phone_control,
                 kind: draft.kind,
                 source_operation_id: draft.source_operation_id,
                 created_at_ms: draft.created_at_ms,
@@ -604,6 +621,7 @@ fn reject_symlink(path: &Path, label: &str) -> Result<(), AttentionError> {
 fn validate_draft(draft: &AttentionDraft) -> Result<(), AttentionError> {
     validate_key(&draft.key())?;
     validate_session_name(draft.subject_kind, draft.session_name.as_deref())?;
+    validate_phone_control(draft.subject_kind, draft.phone_control.as_deref())?;
     if draft.created_at_ms == 0 {
         return Err(AttentionError::Invalid(
             "created_at_ms must be positive".to_owned(),
@@ -628,6 +646,7 @@ fn validate_draft(draft: &AttentionDraft) -> Result<(), AttentionError> {
 fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
     validate_key(&item.key())?;
     validate_session_name(item.subject_kind, item.session_name.as_deref())?;
+    validate_phone_control(item.subject_kind, item.phone_control.as_deref())?;
     if item.created_at_ms == 0 {
         return Err(AttentionError::Invalid(
             "created_at_ms must be positive".to_owned(),
@@ -652,6 +671,29 @@ fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
         item.stage.as_deref(),
         item.linked_run_id.as_deref(),
     )
+}
+
+fn validate_phone_control(
+    kind: AttentionSubjectKind,
+    target: Option<&AttentionPhoneControl>,
+) -> Result<(), AttentionError> {
+    if let Some(target) = target {
+        let valid = |id: &str| {
+            id.len() == 32
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        if kind != AttentionSubjectKind::Session
+            || !valid(&target.controller_id)
+            || !valid(&target.subject_id)
+        {
+            return Err(AttentionError::Invalid(
+                "invalid phone-control target".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_result(
@@ -848,6 +890,7 @@ fn same_content(left: &AttentionItem, right: &AttentionItem) -> bool {
     left.subject_kind == right.subject_kind
         && left.subject_id == right.subject_id
         && left.session_name == right.session_name
+        && left.phone_control == right.phone_control
         && left.kind == right.kind
         && left.source_operation_id == right.source_operation_id
         && left.created_at_ms == right.created_at_ms

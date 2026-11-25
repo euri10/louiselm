@@ -611,6 +611,22 @@ class MainActivity : Activity() {
                     setPadding(0, padding, 0, padding)
                     isScreenReaderFocusable = true
                 }
+                if (item.subjectKind == AttentionSubjectKind.SESSION) {
+                    val open = {
+                        val intent = Intent(this@MainActivity, PhoneControlActivity::class.java)
+                            .putExtra(PhoneControlActivity.ATTENTION, true)
+                        item.phoneControl?.let { target ->
+                            intent.putExtra(PhoneControlActivity.CONTROLLER_ID, target.controllerId)
+                            intent.putExtra(PhoneControlActivity.SUBJECT_ID, target.subjectId)
+                        }
+                        startActivity(intent)
+                    }
+                    card.setOnClickListener { open() }
+                    card.addView(Button(this).apply {
+                        text = getString(R.string.phone_open_session)
+                        setOnClickListener { open() }
+                    }, matchWidth())
+                }
                 card.addView(TextView(this).apply {
                     text = getString(when (item.kind) {
                         AttentionKind.TURN_READY -> R.string.attention_turn_ready

@@ -14,6 +14,18 @@ import org.robolectric.annotation.Config
 @Config(sdk = [30, 34])
 class AttentionStateTest {
     @Test
+    fun sessionNavigationSurvivesTheCacheAsAnExactIncarnation() {
+        val value = org.json.JSONObject(invalidatedAttentionPayload)
+        val item = value.getJSONArray("items").getJSONObject(0)
+        item.put("phone_control", org.json.JSONObject().put("controller_id", "aa".repeat(16)).put("subject_id", "bb".repeat(16)))
+        val snapshot = AttentionSnapshot.parse(value.toString())
+        assertEquals(PhoneControlTarget("aa".repeat(16), "bb".repeat(16)), snapshot.items.single().phoneControl)
+        val state = AttentionState(RuntimeEnvironment.getApplication()) { "pair" }
+        assertTrue(state.cache("pair", snapshot))
+        assertEquals(snapshot, state.cached("pair"))
+    }
+
+    @Test
     fun invalidatedEvidenceSurvivesCacheRestart() {
         val context = RuntimeEnvironment.getApplication()
         val state = AttentionState(context) { "pair" }

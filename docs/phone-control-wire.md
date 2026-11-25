@@ -209,7 +209,12 @@ canonical lowercase UUID form. Neovim gives
 each live Session a fresh random `subject_id`, never reuses it after disposal,
 and checks its actual registry and configured Agent/project on every read.
 Matching a phone navigation hint to that incarnation belongs to integration
-(.1); an old Attention item or bare ACP ID alone is not proof of identity.
+(.1). A Session Attention item may carry a `phone_control` object containing
+exactly `controller_id:hex16` and `subject_id:hex16`, captured from that Session
+when the condition was emitted. It is a navigation hint, not read authority.
+An item without this hint, or one whose controller or subject has disappeared,
+cannot be rebound by its ACP or local Session ID. Opening it does not resolve
+Attention; the protected response supplies the current Session state.
 
 The Neovim client connects to `louiselm/workflow/phone-control.sock` beneath
 `LOUISELM_CAPTURE_STATE_DIR`, or beneath `XDG_STATE_HOME` (default

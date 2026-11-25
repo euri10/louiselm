@@ -124,9 +124,14 @@ temporary working key remains only in the app process and is discarded on screen
 lock, expiry, or screen destruction; switching briefly to another app retains it.
 The computer also enforces five minutes of interaction inactivity and a one-hour
 absolute limit. Disabling workspace access on the computer leaves capture pairing
-and recordings intact. Forgetting the phone also revokes pairing. Session views
-are a separate integration; the enrollment screen does not display conversations.
-Physical Keystore and authentication acceptance is tracked in `louiselm-qbr.12.22`.
+and recordings intact. Forgetting the phone also revokes pairing. To read a
+Session, enable `phone_control.enabled` and Attention in the owning Neovim,
+then tap its Session card and unlock the workspace. The page shows current
+state and a bounded recent conversation; it has no Session action controls.
+Opening a card does not clear or answer Attention. Old cards may no longer
+point to a live Session; refresh the inbox instead of assuming the condition
+still applies. Physical Keystore and authentication acceptance is tracked in
+`louiselm-qbr.12.22`.
 
 When paired, **Attention inbox** reads the authenticated `/v1/attention`
 snapshot through the same pinned receiver identity. It displays only the

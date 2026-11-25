@@ -22,6 +22,7 @@ fn park_alert() -> AttentionDraft {
         subject_kind: AttentionSubjectKind::Run,
         subject_id: RUN.into(),
         session_name: None,
+        phone_control: None,
         kind: AttentionKind::RunParked,
         source_operation_id: PARK_OPERATION.into(),
         created_at_ms: 100,

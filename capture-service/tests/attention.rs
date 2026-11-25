@@ -226,6 +226,7 @@ fn draft() -> AttentionDraft {
         subject_kind: AttentionSubjectKind::Session,
         subject_id: SESSION_ID.to_owned(),
         session_name: None,
+        phone_control: None,
         kind: AttentionKind::TurnReady,
         source_operation_id: OPERATION_ID.to_owned(),
         created_at_ms: 100,
@@ -235,6 +236,25 @@ fn draft() -> AttentionDraft {
         withdrawal: None,
         result_id: None,
     }
+}
+
+#[test]
+fn session_navigation_is_bounded_and_preserved_with_the_attention_incarnation() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = AttentionStore::new(temporary.path(), None).unwrap();
+    let mut value = serde_json::to_value(draft()).unwrap();
+    value["phone_control"] =
+        serde_json::json!({"controller_id":"01".repeat(16), "subject_id":"02".repeat(16)});
+    let input: AttentionDraft = serde_json::from_value(value.clone()).unwrap();
+    let saved = store.upsert(input).unwrap();
+    assert_eq!(
+        serde_json::to_value(&saved.items[0]).unwrap()["phone_control"],
+        value["phone_control"]
+    );
+    assert_eq!(store.snapshot().unwrap(), saved);
+    value["phone_control"]["subject_id"] = serde_json::json!("bad");
+    let invalid: AttentionDraft = serde_json::from_value(value).unwrap();
+    assert!(store.upsert(invalid).is_err());
 }
 
 #[test]
@@ -249,6 +269,7 @@ fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
         subject_kind: AttentionSubjectKind::Run,
         subject_id: RUN_ID.to_owned(),
         session_name: None,
+        phone_control: None,
         kind: AttentionKind::SkillApprovalPending,
         source_operation_id: OPERATION_ID.to_owned(),
         created_at_ms: 100,
@@ -272,6 +293,7 @@ fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
         subject_kind: AttentionSubjectKind::Session,
         subject_id: SESSION_ID.to_owned(),
         session_name: None,
+        phone_control: None,
         kind: AttentionKind::SkillUnverified,
         source_operation_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned(),
         created_at_ms: 101,

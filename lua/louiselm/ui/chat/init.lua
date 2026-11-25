@@ -1271,7 +1271,11 @@ local function handle_event(self, view, event, completed_state)
       local seen = nvim.api.nvim_get_current_buf() == view.renderer.buffer
       view.unread_turn = not seen
       if self.attention ~= nil then
-        self.attention:turn_done(view.session:inspect(), seen)
+        self.attention:turn_done(
+          view.session:inspect(),
+          seen,
+          require("louiselm.ui.chat.command").phone_control_subject(view.session)
+        )
       end
       render_winbars(self)
     end
@@ -1345,7 +1349,11 @@ local function handle_event(self, view, event, completed_state)
     end
     local run = view.session.owner_run
     if self.attention ~= nil then
-      self.attention:session_failed(state, run and run.id or nil)
+      self.attention:session_failed(
+        state,
+        run and run.id or nil,
+        require("louiselm.ui.chat.command").phone_control_subject(view.session)
+      )
     end
   elseif event.type == "interaction_requested" then
     if event.data.kind == "plan_review" and event.data.plan_content ~= nil then
@@ -1356,7 +1364,11 @@ local function handle_event(self, view, event, completed_state)
     local data = event.data
     local state = view.session:inspect()
     if self.attention ~= nil and type(data) == "table" then
-      self.attention:permission_required(state, data)
+      self.attention:permission_required(
+        state,
+        data,
+        require("louiselm.ui.chat.command").phone_control_subject(view.session)
+      )
     end
     if type(data) == "table" and type(data.permission_error) == "string" then
       view.renderer:append({ "Warning: " .. data.permission_error })
@@ -1372,7 +1384,11 @@ local function handle_event(self, view, event, completed_state)
     view.renderer:finish_turn()
     local state = completed_state or view.session:inspect()
     if self.attention ~= nil then
-      self.attention:turn_done(state, nvim.api.nvim_get_current_buf() == view.renderer.buffer)
+      self.attention:turn_done(
+        state,
+        nvim.api.nvim_get_current_buf() == view.renderer.buffer,
+        require("louiselm.ui.chat.command").phone_control_subject(view.session)
+      )
     end
     local line = usage_line(state.usage)
     if line ~= nil then

@@ -46,12 +46,17 @@ class PhoneControlActivity : Activity() {
     private lateinit var checkButton: Button
     private lateinit var unlockButton: Button
     private lateinit var lockButton: Button
+    private lateinit var refreshButton: Button
+    private lateinit var conversation: LinearLayout
+    private var target: PhoneControlTarget? = null
+    private var attentionNavigation = false
     private var currentStatus: PhoneControlStatus = PhoneControlStatus.Disabled
     private var period: PhoneControlPeriod? = null
     private var preparedUnlock: PreparedPhoneControlUnlock? = null
     private var cancellation: CancellationSignal? = null
     private var pendingNetworkAction: (() -> Unit)? = null
     private var busy = false
+    private val expiryCheck = Runnable { scheduleExpiry() }
     private val screenOff = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_SCREEN_OFF) lockWorkspace()
@@ -61,6 +66,14 @@ class PhoneControlActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        attentionNavigation = intent.getBooleanExtra(ATTENTION, false) || intent.hasExtra(CONTROLLER_ID) || intent.hasExtra(SUBJECT_ID)
+        target = try {
+            val controller = intent.getStringExtra(CONTROLLER_ID)
+            val subject = intent.getStringExtra(SUBJECT_ID)
+            if (controller != null && subject != null) PhoneControlTarget(controller, subject) else null
+        } catch (_: IllegalArgumentException) {
+            null
+        }
         client = PhoneControlClient(applicationContext)
         val page = contentView()
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -74,13 +87,33 @@ class PhoneControlActivity : Activity() {
         task({ client.status() }) { status, _ ->
             currentStatus = status
             busy = false
-            render()
+            render(if (attentionNavigation && target == null) R.string.phone_stale else null)
         }
     }
 
     override fun onResume() {
         super.onResume()
-        if (!deviceUsable()) lockWorkspace()
+        if (!deviceUsable()) {
+            lockWorkspace()
+            return
+        }
+        val current = period ?: return
+        conversation.visibility = View.GONE
+        task({ client.status() }, { outcome ->
+            lockWorkspace()
+            showFailure(outcome)
+        }) { status, _ ->
+            busy = false
+            currentStatus = status
+            if (period !== current || status !is PhoneControlStatus.Granted || status.value != current.grant ||
+                !current.isActive(SystemClock.elapsedRealtime())) {
+                lockWorkspace()
+                showFailure(PhoneControlOutcome.REVOKED)
+            } else {
+                conversation.visibility = View.VISIBLE
+                render()
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -94,6 +127,7 @@ class PhoneControlActivity : Activity() {
         cancellation = null
         period?.lock()
         period = null
+        conversation.removeAllViews()
         handler.removeCallbacksAndMessages(null)
         unregisterReceiver(screenOff)
         networkExecutor.shutdown()
@@ -130,6 +164,10 @@ class PhoneControlActivity : Activity() {
         add(unlockButton)
         lockButton = Button(this).apply { text = getString(R.string.phone_lock); setOnClickListener { lockWorkspace() } }
         add(lockButton)
+        refreshButton = Button(this).apply { text = getString(R.string.phone_refresh); setOnClickListener { withNetwork { readTarget() } } }
+        add(refreshButton)
+        conversation = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        add(conversation)
         add(TextView(this).apply { text = getString(R.string.phone_admin) })
         return ScrollView(this).apply { addView(column) }
     }
@@ -148,6 +186,8 @@ class PhoneControlActivity : Activity() {
         checkButton.visibility = if (currentStatus is PhoneControlStatus.Pending) View.VISIBLE else View.GONE
         unlockButton.visibility = if (currentStatus is PhoneControlStatus.Granted && !unlocked) View.VISIBLE else View.GONE
         lockButton.visibility = if (unlocked) View.VISIBLE else View.GONE
+        refreshButton.visibility = if (unlocked && target != null) View.VISIBLE else View.GONE
+        refreshButton.isEnabled = !busy
         enableButton.isEnabled = !busy
         checkButton.isEnabled = !busy
         unlockButton.isEnabled = !busy
@@ -238,6 +278,7 @@ class PhoneControlActivity : Activity() {
                         period = takePeriod(token) ?: return@runOnUiThread
                         scheduleExpiry()
                         render()
+                        if (target != null) withNetwork { readTarget() }
                     }
                     is PhoneControlResult.Failure -> showFailure(result.outcome)
                 }
@@ -282,10 +323,79 @@ class PhoneControlActivity : Activity() {
 
     private fun active(token: Long): Boolean = generation.get() == token && !isDestroyed && !isFinishing && deviceUsable()
 
+    private fun readTarget() {
+        val current = period ?: return
+        val requested = target ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding()
+        if (binding == null) {
+            lockWorkspace()
+            render(R.string.phone_unavailable)
+            return
+        }
+        conversation.removeAllViews()
+        task({ maySend ->
+            client.readSession(current, requested, SystemClock.elapsedRealtime()) {
+                maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }) { page, _ ->
+            busy = false
+            if (pairing.binding() != binding) {
+                lockWorkspace()
+                render(R.string.phone_unavailable)
+                return@task
+            }
+            if (period !== current || !current.confirmInteraction(SystemClock.elapsedRealtime())) {
+                lockWorkspace()
+                return@task
+            }
+            scheduleExpiry()
+            render()
+            displayPage(page)
+        }
+    }
+
+    private fun displayPage(page: PhoneControlReply.SessionPage) {
+        fun line(value: String) {
+            conversation.addView(TextView(this).apply { text = value; textSize = 16f })
+        }
+        val state = when (page.status) {
+            "starting" -> R.string.phone_state_starting
+            "ready" -> R.string.phone_state_ready
+            "admitting" -> R.string.phone_state_admitting
+            "configuring" -> R.string.phone_state_configuring
+            "preparing" -> R.string.phone_state_preparing
+            "prompting" -> R.string.phone_state_prompting
+            "running" -> R.string.phone_state_running
+            "waiting_permission" -> R.string.phone_state_waiting_permission
+            "cancelling" -> R.string.phone_state_cancelling
+            else -> R.string.phone_state_error
+        }
+        line(getString(R.string.phone_session_state, getString(state)))
+        if (!page.complete) line(getString(R.string.phone_incomplete))
+        for (entry in page.entries) {
+            when (entry) {
+                is PhoneControlEntry.Message -> line(getString(if (entry.role == "user") R.string.phone_user_message else R.string.phone_agent_message, entry.text))
+                is PhoneControlEntry.Tool -> line(getString(R.string.phone_tool, entry.title, entry.status, entry.content))
+                is PhoneControlEntry.Question -> {
+                    line(getString(R.string.phone_question, entry.question))
+                    for (option in entry.options) line(getString(R.string.phone_option, option.label, option.description, option.preview))
+                }
+                is PhoneControlEntry.Plan -> line(getString(R.string.phone_plan, entry.text))
+            }
+            if (entry.truncated) line(getString(R.string.phone_truncated))
+        }
+    }
+
     private fun deviceUsable(): Boolean = getSystemService(PowerManager::class.java).isInteractive &&
         !getSystemService(KeyguardManager::class.java).isDeviceLocked
 
     private fun showFailure(outcome: PhoneControlOutcome) {
+        conversation.removeAllViews()
+        if (outcome == PhoneControlOutcome.EXPIRED) {
+            period?.lock()
+            period = null
+        }
         if (outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED) {
             period?.lock()
             period = null
@@ -297,7 +407,8 @@ class PhoneControlActivity : Activity() {
             PhoneControlOutcome.OUT_OF_SCOPE -> R.string.phone_out_of_scope
             PhoneControlOutcome.UNSUPPORTED -> R.string.phone_unsupported
             PhoneControlOutcome.UNAUTHENTICATED, PhoneControlOutcome.MALFORMED -> R.string.phone_invalid
-            PhoneControlOutcome.STALE_SUBJECT, PhoneControlOutcome.UNAVAILABLE -> R.string.phone_unavailable
+            PhoneControlOutcome.STALE_SUBJECT -> R.string.phone_stale
+            PhoneControlOutcome.UNAVAILABLE -> R.string.phone_unavailable
         })
     }
 
@@ -312,6 +423,8 @@ class PhoneControlActivity : Activity() {
         cancellation = null
         period?.lock()
         period = null
+        conversation.removeAllViews()
+        conversation.visibility = View.VISIBLE
         handler.removeCallbacksAndMessages(null)
         busy = false
         render(R.string.phone_locked)
@@ -328,12 +441,13 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun scheduleExpiry() {
+        handler.removeCallbacks(expiryCheck)
         val remaining = period?.remainingMs(SystemClock.elapsedRealtime()) ?: return
         if (remaining == 0L) {
             lockWorkspace()
             return
         }
-        handler.postDelayed({ scheduleExpiry() }, remaining)
+        handler.postDelayed(expiryCheck, remaining)
     }
 
     private fun withNetwork(action: () -> Unit) {
@@ -357,6 +471,9 @@ class PhoneControlActivity : Activity() {
     }
 
     companion object {
+        internal const val ATTENTION = "dev.louiselm.capture.ATTENTION_TARGET"
+        internal const val CONTROLLER_ID = "dev.louiselm.capture.CONTROLLER_ID"
+        internal const val SUBJECT_ID = "dev.louiselm.capture.SUBJECT_ID"
         private const val LOCAL_NETWORK_REQUEST = 1
     }
 }

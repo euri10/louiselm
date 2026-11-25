@@ -28,13 +28,13 @@ local RunClient = require("louiselm.workflow.run_client")
 ---@field key_namespace integer Input listener owned by this controller.
 ---@field paste_dispatcher louiselm.ui.AttentionPaste Shared paste dispatcher.
 ---@field disposed boolean
----@field turn_done fun(self: louiselm.ui.Attention, state: table, seen: boolean)
+---@field turn_done fun(self: louiselm.ui.Attention, state: table, seen: boolean, phone_control?: table)
 ---@field seen fun(self: louiselm.ui.Attention, session_id: string)
 ---@field prompt_started fun(self: louiselm.ui.Attention, session_id: string)
----@field permission_required fun(self: louiselm.ui.Attention, state: table, data: table)
+---@field permission_required fun(self: louiselm.ui.Attention, state: table, data: table, phone_control?: table)
 ---@field permission_resolved fun(self: louiselm.ui.Attention, session_id: string, request_id: string|number)
 ---@field permission_cancelled fun(self: louiselm.ui.Attention, session_id: string, request_ids: table)
----@field session_failed fun(self: louiselm.ui.Attention, state: table, linked_run_id?: string)
+---@field session_failed fun(self: louiselm.ui.Attention, state: table, linked_run_id?: string, phone_control?: table)
 ---@field session_resumed fun(self: louiselm.ui.Attention, session_id: string)
 ---@field run_parked fun(self: louiselm.ui.Attention, run_id: string)
 ---@field run_resumed fun(self: louiselm.ui.Attention, run_id: string)
@@ -365,7 +365,8 @@ end
 ---@param self louiselm.ui.Attention
 ---@param state table Session state.
 ---@param seen boolean Whether the source Session buffer is currently viewed.
-function Attention:turn_done(state, seen)
+---@param phone_control? table Exact controller and Session incarnation at this event.
+function Attention:turn_done(state, seen, phone_control)
   if
     self.disposed
     or state.status ~= "ready"
@@ -387,6 +388,7 @@ function Attention:turn_done(state, seen)
       subject_kind = "session",
       subject_id = state.acp_session_id,
       session_name = session_name(state),
+      phone_control = phone_control,
       kind = "turn_ready",
       source_operation_id = operation_id(state),
       created_at_ms = self.now_ms(),
@@ -443,7 +445,8 @@ end
 ---@param self louiselm.ui.Attention
 ---@param state table Session state.
 ---@param data table Normalized permission request data.
-function Attention:permission_required(state, data)
+---@param phone_control? table Exact controller and Session incarnation at this event.
+function Attention:permission_required(state, data, phone_control)
   if
     self.disposed
     or type(state.acp_session_id) ~= "string"
@@ -470,6 +473,7 @@ function Attention:permission_required(state, data)
       subject_kind = key.subject_kind,
       subject_id = key.subject_id,
       session_name = session_name(state),
+      phone_control = phone_control,
       kind = key.kind,
       source_operation_id = key.source_operation_id,
       created_at_ms = self.now_ms(),
@@ -517,7 +521,8 @@ end
 ---@param self louiselm.ui.Attention
 ---@param state table Session state.
 ---@param linked_run_id? string Durable workflow Run UUID.
-function Attention:session_failed(state, linked_run_id)
+---@param phone_control? table Exact controller and Session incarnation at this event.
+function Attention:session_failed(state, linked_run_id, phone_control)
   if self.disposed or type(state.acp_session_id) ~= "string" or state.acp_session_id == "" then
     return
   end
@@ -542,6 +547,7 @@ function Attention:session_failed(state, linked_run_id)
       linked_run_id = valid_uuid(linked_run_id) and linked_run_id or nil,
       stage = nil,
       session_name = session_name(state),
+      phone_control = phone_control,
     },
   })
 end

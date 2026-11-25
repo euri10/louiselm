@@ -2,6 +2,7 @@ package dev.louiselm.capture
 
 import android.Manifest
 import android.app.KeyguardManager
+import android.content.Intent
 import android.os.CancellationSignal
 import android.os.Looper
 import android.os.PowerManager
@@ -40,7 +41,15 @@ private object PhoneScreenFixture {
     var prompts = 0
     var loseEnrollmentReply = false
     var lastPeriod: PhoneControlPeriod? = null
-    fun reset() { status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0; loseEnrollmentReply = false; lastPeriod = null }
+    var reads = 0
+    var pairingBinding: String? = "fixture"
+    fun reset() { status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0; loseEnrollmentReply = false; lastPeriod = null; reads = 0; pairingBinding = "fixture" }
+}
+
+@Implements(PairingStore::class, isInAndroidSdk = false)
+class PhoneScreenPairingFixture {
+    @Implementation
+    fun binding(): String? = PhoneScreenFixture.pairingBinding
 }
 
 @Implements(PhoneControlClient::class, isInAndroidSdk = false)
@@ -90,6 +99,14 @@ class PhoneScreenClientFixture {
         PhoneScreenFixture.lastPeriod = period
         return PhoneControlResult.Value(period)
     }
+
+    @Implementation(methodName = "readSession")
+    internal fun readSession(period: PhoneControlPeriod, target: PhoneControlTarget, now: Long, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionPage> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.reads++
+        return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),
+            1, "ready", listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false)), 0, true))
+    }
 }
 
 @Implements(PhoneControlAuthenticator::class, isInAndroidSdk = false)
@@ -104,7 +121,7 @@ class PhoneScreenAuthenticatorFixture {
 }
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30, 34], shadows = [PhoneScreenClientFixture::class, PhoneScreenAuthenticatorFixture::class],
+@Config(sdk = [30, 34], shadows = [PhoneScreenClientFixture::class, PhoneScreenAuthenticatorFixture::class, PhoneScreenPairingFixture::class],
     instrumentedPackages = ["dev.louiselm.capture"])
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneControlActivityTest {
@@ -123,8 +140,9 @@ class PhoneControlActivityTest {
         create()
     }
 
-    private fun create() {
-        controller = Robolectric.buildActivity(PhoneControlActivity::class.java)
+    private fun create(intent: Intent? = null) {
+        controller = if (intent == null) Robolectric.buildActivity(PhoneControlActivity::class.java)
+            else Robolectric.buildActivity(PhoneControlActivity::class.java, intent)
         activity = controller.get()
         ReflectionHelpers.getField<ExecutorService>(activity, "networkExecutor").shutdown()
         executor = PausedExecutorService()
@@ -156,6 +174,81 @@ class PhoneControlActivityTest {
         .any { it.text.toString() == activity.getString(id) }
 
     @Test
+    fun attentionTargetUnlocksAndDisplaysCurrentReadOnlySession() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        drain()
+        assertEquals(1, PhoneScreenFixture.reads)
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun destroyingTheActivityFencesACompletedReadBeforeItsUiCallback() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain() // The unlock callback schedules the read on the executor.
+        executor.runAll() // The protected response is queued to the main loop.
+        assertEquals(1, PhoneScreenFixture.reads)
+        controller.close()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun screenLockFencesACompletedReadBeforeItsUiCallback() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        executor.runAll()
+        assertEquals(1, PhoneScreenFixture.reads)
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun pairingChangeFencesACompletedReadBeforeItsUiCallback() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        drain()
+        executor.runAll()
+        assertEquals(1, PhoneScreenFixture.reads)
+        PhoneScreenFixture.pairingBinding = "replacement"
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
     fun enrollmentAndUnlockSurviveAppSwitchButNotScreenLockOrRecreation() {
         button(R.string.phone_enable).performClick()
         drain()
@@ -170,6 +263,7 @@ class PhoneControlActivityTest {
         assertTrue(hasText(R.string.phone_unlocked))
         assertEquals(1, PhoneScreenFixture.sends)
         controller.pause().stop().restart().start().resume()
+        drain() // Revalidate the pairing before showing protected content on return.
         assertTrue(hasText(R.string.phone_unlocked))
         screenOff()
         assertTrue(hasText(R.string.phone_locked))

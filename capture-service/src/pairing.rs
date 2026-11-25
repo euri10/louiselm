@@ -278,20 +278,32 @@ impl PairingRegistry {
     ///
     /// Returns lock failure.
     pub fn authenticate_device(&self, credential: &str) -> Result<Option<String>, PairingError> {
+        self.with_authenticated_device(credential, |device| device.map(str::to_owned))
+    }
+
+    // Keep the pairing lock through a protected-delivery authority transition.
+    // Callers that also need the phone-control lock acquire that lock first,
+    // matching the workspace-forget operation's lock order.
+    pub(crate) fn with_authenticated_device<R>(
+        &self,
+        credential: &str,
+        operation: impl FnOnce(Option<&str>) -> R,
+    ) -> Result<R, PairingError> {
         self.with_state(false, |state| {
             let credential_hash = hash(credential);
-            Ok(state.devices.iter().find_map(|device| {
+            let device = state.devices.iter().find_map(|device| {
                 if bool::from(
                     device
                         .credential_sha256
                         .as_bytes()
                         .ct_eq(credential_hash.as_bytes()),
                 ) {
-                    Some(device.status.device_id.clone())
+                    Some(device.status.device_id.as_str())
                 } else {
                     None
                 }
-            }))
+            });
+            Ok(operation(device))
         })
     }
 

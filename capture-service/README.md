@@ -92,9 +92,11 @@ names and permission groups. Repeat `--project`, `--agent` and `--group` as
 needed; groups are `read`, `operate_sessions`, `control_runs` and
 `saved_results`. `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
-Neovim controller must use the same capture state directory as the receiver.
-The first Session read remains unavailable until the separate controller
-integration is wired; enrollment and unlock do not grant Session admission.
+Neovim controller must use the same capture state directory as the receiver
+and opt in with `phone_control = { enabled = true }`. With Attention enabled,
+a Session card can open its bounded current conversation after the
+phone unlocks. An old controller or Session identity fails closed; opening a
+card neither resolves Attention nor admits a Session action.
 
 Phone action evidence is retained without automatic expiry in the private
 capture state directory, without prompts or result copies. A currently

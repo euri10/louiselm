@@ -235,7 +235,8 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
     acp_session_id = "session-1",
     current_turn = 4,
   }
-  attention:turn_done(state, false)
+  local target = { controller_id = string.rep("a", 32), subject_id = string.rep("b", 32) }
+  attention:turn_done(state, false, target)
   MiniTest.expect.equality(fake.upserts, {})
   fake.ready = true
   connected({ generation = 0, items = {} })
@@ -243,6 +244,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   MiniTest.expect.equality(fake.upserts[1].subject_id, "session-1")
   MiniTest.expect.equality(fake.upserts[1].created_at_ms, 123)
   MiniTest.expect.equality(fake.upserts[1].session_name, "Android inbox polish")
+  MiniTest.expect.equality(fake.upserts[1].phone_control, target)
 
   scheduled[#scheduled]()
   MiniTest.expect.equality(#fake.eligibilities, 1)
@@ -259,6 +261,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   state.current_turn = 5
   attention:turn_done(state, false)
   MiniTest.expect.equality(fake.upserts[2].session_name, "session-7")
+  MiniTest.expect.equality(fake.upserts[2].phone_control, nil)
   state.name = "\n" .. string.rep("é", 200)
   state.current_turn = 6
   attention:turn_done(state, false)

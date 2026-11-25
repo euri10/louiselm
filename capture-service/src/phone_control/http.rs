@@ -18,8 +18,8 @@ use super::{
     MAX_INTEGER, Proof, Request, fixed, valid_string,
 };
 use super::{
-    authority::{Authority, EnrollmentStatus, History, Refusal},
-    socket::ControllerRegistry,
+    authority::{Authority, EnrollmentStatus, History, ReadPermit, Refusal},
+    socket::{ControllerRegistry, validate_read_response},
 };
 use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
 
@@ -115,6 +115,14 @@ struct SignedRequest {
     request: Request,
 }
 
+enum Started {
+    Response(Value),
+    Read {
+        permit: Box<ReadPermit>,
+        request: Box<Request>,
+    },
+}
+
 fn decode<T: DeserializeOwned>(body: &[u8], kind: &str) -> Result<T, Refusal> {
     let value: Value = serde_json::from_slice(body).map_err(|_| Refusal::Malformed)?;
     match value.get("v").and_then(Value::as_u64) {
@@ -152,29 +160,85 @@ async fn handle(
         _ => return outcome(Err(Refusal::Malformed)),
     };
     let path = uri.path().to_owned();
-    let result = tokio::task::spawn_blocking(move || {
-        let device = state
+    // Finish or reject an admitted read even if the HTTP peer disconnects.
+    let result = tokio::spawn(process_http(state, credential, path, body))
+        .await
+        .unwrap_or(Err(Refusal::Unavailable));
+    outcome(result)
+}
+
+async fn process_http(
+    state: HttpState,
+    credential: String,
+    path: String,
+    body: Bytes,
+) -> Result<Value, Refusal> {
+    let initial_state = state.clone();
+    let initial_credential = credential.clone();
+    let started = tokio::task::spawn_blocking(move || {
+        let device = initial_state
             .pairing
-            .authenticate_device(&credential)
+            .authenticate_device(&initial_credential)
             .map_err(|_| Refusal::Unavailable)?
             .ok_or(Refusal::Unauthenticated)?;
+        if path == "/v1/phone-control/request" {
+            let signed: SignedRequest = decode(&body, "request")?;
+            if signed.request.action == 1 {
+                let permit =
+                    initial_state
+                        .authority
+                        .begin_read(&device, &signed.request, Instant::now())?;
+                return Ok(Started::Read {
+                    permit: Box::new(permit),
+                    request: Box::new(signed.request),
+                });
+            }
+        }
         process(
-            &state.authority,
-            &state.controllers,
-            &state.evidence,
+            &initial_state.authority,
+            &initial_state.evidence,
             &device,
             &path,
             &body,
         )
+        .map(Started::Response)
     })
     .await
     .unwrap_or(Err(Refusal::Unavailable));
-    outcome(result)
+    match started {
+        Ok(Started::Response(value)) => Ok(value),
+        Ok(Started::Read { permit, request }) => {
+            let response = match state
+                .controllers
+                .dispatch(&request.controller_id, permit.frame.clone())
+                .await
+            {
+                Ok(bytes) => validate_read_response(&bytes, &request),
+                Err(error) => Err(error),
+            };
+            let success = response.is_ok();
+            let authority = state.authority.clone();
+            let pairing = state.pairing.clone();
+            let controllers = state.controllers.clone();
+            let controller_id = request.controller_id.clone();
+            let checked = tokio::task::spawn_blocking(move || {
+                authority.finish_read_delivery(&permit, success, &pairing, &credential, || {
+                    controllers.contains(&controller_id)
+                })
+            })
+            .await
+            .unwrap_or(Err(Refusal::Unavailable));
+            match (checked, response) {
+                (Ok(()), result) => result,
+                (Err(Refusal::Unavailable), Err(error)) | (Err(error), _) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn process(
     authority: &Authority,
-    controllers: &ControllerRegistry,
     evidence: &Result<ActionEvidenceStore, ActionEvidenceError>,
     device: &str,
     path: &str,
@@ -259,18 +323,7 @@ fn process(
                     authority.read_history(store, device, &request.request, Instant::now())?;
                 return Ok(history_response(&record, &request.request.operation_id));
             }
-            let permit = authority.begin_read(device, &request.request, Instant::now())?;
-            if !controllers.contains(&request.request.controller_id) {
-                return match authority.finish_read(&permit, false, Instant::now(), now_ms()) {
-                    Err(Refusal::Unavailable) => Err(Refusal::StaleSubject),
-                    Err(error) => Err(error),
-                    Ok(()) => Err(Refusal::Unavailable),
-                };
-            }
-            // The integration slice owns dispatch to a real controller; no
-            // protected response is delivered without that owner.
-            authority.finish_read(&permit, false, Instant::now(), now_ms())?;
-            Err(Refusal::Unavailable)
+            Err(Refusal::Unsupported)
         }
         _ => Err(Refusal::Unsupported),
     }
@@ -384,6 +437,396 @@ mod tests {
             "receiver_identity":field("receiver_identity"),"challenge_id":field("challenge_id"),
             "challenge":field("challenge"),"working_key":working_key,"signature":lower_hex(signature.as_ref())
         }})
+    }
+
+    fn signed_read(
+        fixture: &Value,
+        grant: &StoredGrant,
+        period: &str,
+        controller: &str,
+        subject: &str,
+        operation: u128,
+    ) -> Value {
+        let payload = [0, 0, 0, 0, 0, 0, 0, 0, 0, 50];
+        let digest = lower_hex(&Sha256::digest(payload));
+        let operation = format!("{operation:032x}");
+        let mut bytes = prefix(2);
+        bytes.extend(fixed::<16>(&grant.grant_id).unwrap());
+        bytes.extend(grant.grant_revision.to_be_bytes());
+        bytes.extend(fixed::<16>(period).unwrap());
+        bytes.extend(fixed::<32>(&grant.receiver_identity).unwrap());
+        bytes.extend(fixed::<16>(controller).unwrap());
+        bytes.extend(fixed::<16>(subject).unwrap());
+        bytes.push(1);
+        bytes.extend(fixed::<32>(&digest).unwrap());
+        bytes.extend(fixed::<16>(&operation).unwrap());
+        bytes.extend(0_u64.to_be_bytes());
+        bytes.push(1);
+        let key = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &unhex(fixture["keys"]["working"]["pkcs8"].as_str().unwrap()),
+        )
+        .unwrap();
+        let signature = key.sign(&SystemRandom::new(), &bytes).unwrap();
+        json!({"v":1,"type":"request","request":{
+            "grant_id":grant.grant_id,"grant_revision":grant.grant_revision,"period_id":period,
+            "receiver_identity":grant.receiver_identity,"controller_id":controller,"subject_id":subject,
+            "action":1,"payload":lower_hex(&payload),"payload_hash":digest,"operation_id":operation,
+            "expected_revision":0,"interaction":1,"signature":lower_hex(signature.as_ref())
+        }})
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One signed request sequence proves both revocation races."
+    )]
+    async fn signed_session_read_dispatches_to_the_current_controller_and_rechecks_revocation() {
+        use tokio::{
+            io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+            net::UnixStream,
+        };
+        for pairing_only in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+            let receiver = "01".repeat(32);
+            let offer = pairing
+                .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
+                .unwrap();
+            let phone = pairing.consume(&offer.token, "phone", 1_001).unwrap();
+            let service = Service::open(
+                &root.path().join("phone/grants"),
+                &receiver,
+                pairing.clone(),
+            )
+            .unwrap();
+            let socket = root.path().join("controller.sock");
+            let cap = root.path().join("capability");
+            let server = super::super::socket::ControllerSocket::bind(
+                &socket,
+                &cap,
+                service.controllers.clone(),
+            )
+            .await
+            .unwrap();
+            let token = std::fs::read_to_string(&cap).unwrap();
+            let server_task = tokio::spawn(server.serve());
+            let mut stream = UnixStream::connect(&socket).await.unwrap();
+            stream
+                .write_all(
+                    format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(&mut stream)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            let attached: Value = serde_json::from_str(&line).unwrap();
+            let controller = attached["controller_id"].as_str().unwrap().to_owned();
+            let app = service.router();
+            let fixture: Value = serde_json::from_str(include_str!(
+                "../../../android/app/src/test/resources/phone-control-v1.json"
+            ))
+            .unwrap();
+            let (grant, period) = history_grant(
+                &service,
+                &app,
+                &phone,
+                &fixture,
+                root.path(),
+                vec!["read".into()],
+            )
+            .await;
+            let subject = "02".repeat(16);
+            let request = signed_read(&fixture, &grant, &period, &controller, &subject, 1);
+            let worker = tokio::spawn(async move {
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let frame: Value = serde_json::from_str(&line).unwrap();
+                let request = &frame["request"];
+                let page = json!({"v":1,"type":"session_page","controller_id":request["controller_id"],
+                "subject_id":request["subject_id"],"operation_id":request["operation_id"],"revision":1,
+                "status":"ready","entries":[{"kind":"message","seq":1,"role":"assistant","text":"dummy","truncated":false}],
+                "next_before":0,"complete":true});
+                drop(reader);
+                stream
+                    .write_all(format!("{page}\n").as_bytes())
+                    .await
+                    .unwrap();
+                stream
+            });
+            let (_, page) = post(
+                app.clone(),
+                "/v1/phone-control/request",
+                &phone.credential,
+                &request.to_string(),
+            )
+            .await;
+            assert_eq!(page["entries"][0]["text"], "dummy");
+            let mut stream = worker.await.unwrap();
+            let (_, replay) = post(
+                app.clone(),
+                "/v1/phone-control/request",
+                &phone.credential,
+                &request.to_string(),
+            )
+            .await;
+            assert_eq!(replay["code"], "unauthenticated");
+            let next = signed_read(&fixture, &grant, &period, &controller, &subject, 2);
+            let pending = tokio::spawn({
+                let app = app.clone();
+                let credential = phone.credential.clone();
+                async move {
+                    post(
+                        app,
+                        "/v1/phone-control/request",
+                        &credential,
+                        &next.to_string(),
+                    )
+                    .await
+                }
+            });
+            let mut line = String::new();
+            BufReader::new(&mut stream)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            if pairing_only {
+                pairing.revoke(&phone.device_id).unwrap();
+            } else {
+                service.authority.disable(&phone.device_id).unwrap();
+            }
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            let request = &frame["request"];
+            let page = json!({"v":1,"type":"session_page","controller_id":request["controller_id"],"subject_id":request["subject_id"],
+            "operation_id":request["operation_id"],"revision":1,"status":"ready","entries":[],"next_before":0,"complete":true});
+            stream
+                .write_all(format!("{page}\n").as_bytes())
+                .await
+                .unwrap();
+            let (_, denied) = pending.await.unwrap();
+            assert_eq!(denied["code"], "revoked");
+            server_task.abort();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the built capture binary and a headless Neovim; run the explicit integration gate"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One isolated HTTPS and real headless Session sequence proves the controller boundary."
+    )]
+    async fn https_read_reaches_a_real_headless_session() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Command, Stdio};
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                // Test-owned mock children must not survive failed assertions.
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let nvim = std::env::var_os("LOUISELM_TEST_NVIM").unwrap();
+        let binary = std::env::var_os("LOUISELM_TEST_CAPTURE").unwrap();
+        assert!(!std::path::Path::new("/usr/bin/louiselm-skills").exists());
+        assert!(!std::path::Path::new("/bin/louiselm-skills").exists());
+        let project = std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let tls =
+            crate::TlsIdentity::load_or_create(root.path().join("louiselm/capture/tls")).unwrap();
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let offer = pairing
+            .issue(
+                "https://127.0.0.1:7391",
+                tls.public_key_sha256(),
+                1_000,
+                10_000,
+            )
+            .unwrap();
+        let phone = pairing
+            .consume(&offer.token, "fixture phone", 1_001)
+            .unwrap();
+        let service = Service::open(
+            &root.path().join("grants/state"),
+            tls.public_key_sha256(),
+            pairing.clone(),
+        )
+        .unwrap();
+        let workflow = root.path().join("louiselm/workflow");
+        let sockets = service
+            .bind(
+                &workflow.join("admin.sock"),
+                &workflow.join("phone-control.sock"),
+                &workflow.join("operator-capability"),
+            )
+            .await
+            .unwrap();
+        let controller_task = tokio::spawn(sockets.serve());
+        let attention = crate::AttentionStore::new(root.path().join("attention"), None).unwrap();
+        let app = crate::Receiver::with_attention(
+            crate::Store::new(root.path().join("captures")).unwrap(),
+            attention.clone(),
+            pairing,
+            root.path().join("uploads"),
+            tls.public_key_sha256(),
+        )
+        .unwrap()
+        .with_phone_control(service.router())
+        .router();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../android/app/src/test/resources/phone-control-v1.json"
+        ))
+        .unwrap();
+        let (grant, period) = history_grant(
+            &service,
+            &app,
+            &phone,
+            &fixture,
+            &project,
+            vec!["read".into()],
+        )
+        .await;
+        let mut child = ChildGuard(
+            Command::new(nvim)
+                .args(["--headless", "--noplugin", "-u", "NONE", "-l"])
+                .arg(project.join("tests/fixtures/phone_control_headless.lua"))
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", root.path())
+                .env("LANG", "C.UTF-8")
+                .env("LOUISELM_CAPTURE_STATE_DIR", root.path())
+                .env("LOUISELM_TEST_PROJECT", &project)
+                .env("LOUISELM_TEST_USAGE", root.path().join("usage"))
+                .env("LOUISELM_TEST_CAPTURE", binary)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = child.0.stdout.take().unwrap();
+        let ready = tokio::task::spawn_blocking(move || {
+            let mut line = String::new();
+            BufReader::new(stdout).read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        });
+        let target = tokio::time::timeout(std::time::Duration::from_secs(20), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        let controller = target["controller_id"].as_str().unwrap();
+        let subject = target["subject_id"].as_str().unwrap();
+        attention
+            .upsert(crate::AttentionDraft {
+                subject_kind: crate::AttentionSubjectKind::Session,
+                subject_id: "fixture-session".into(),
+                session_name: Some("Fixture Session".into()),
+                phone_control: Some(Box::new(crate::AttentionPhoneControl {
+                    controller_id: controller.into(),
+                    subject_id: subject.into(),
+                })),
+                kind: crate::AttentionKind::TurnReady,
+                source_operation_id: "11111111-2222-4333-8444-555555555555".into(),
+                created_at_ms: 1,
+                linked_run_id: None,
+                stage: None,
+                code: None,
+                withdrawal: None,
+                result_id: None,
+            })
+            .unwrap();
+        let request = signed_read(&fixture, &grant, &period, controller, subject, 100);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            tls.certificate_path(),
+            tls.private_key_path(),
+        )
+        .await
+        .unwrap();
+        let https = tokio::spawn(
+            axum_server::from_tcp_rustls(listener, config)
+                .unwrap()
+                .serve(app.clone().into_make_service()),
+        );
+        let certificate = std::fs::read(tls.certificate_path()).unwrap();
+        let credential = phone.credential.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            let trusted = reqwest::Certificate::from_pem(&certificate).unwrap();
+            let client = reqwest::blocking::Client::builder()
+                .tls_certs_only([trusted])
+                .build()
+                .unwrap();
+            client
+                .post(format!(
+                    "https://localhost:{}/v1/phone-control/request",
+                    address.port()
+                ))
+                .bearer_auth(credential)
+                .json(&request)
+                .send()
+                .unwrap()
+                .json::<Value>()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(response["type"], "session_page");
+        assert_eq!(response["controller_id"], controller);
+        assert_eq!(response["subject_id"], subject);
+        assert!(
+            response["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["text"] == "fixture request")
+        );
+        if std::env::var("LOUISELM_TEST_ANDROID").as_deref() == Ok("1") {
+            let android = project.join("android");
+            let url = format!("https://localhost:{}", address.port());
+            let receiver = tls.public_key_sha256().to_owned();
+            let credential = phone.credential.clone();
+            let device = phone.device_id.clone();
+            let grant_id = grant.grant_id.clone();
+            let status = tokio::task::spawn_blocking(move || {
+                let status = Command::new(android.join("gradlew"))
+                .current_dir(&android).args(["--no-daemon", "--max-workers=1", "--rerun-tasks", "-PlouiselmFirebase=false",
+                    "testDebugUnitTest", "--tests", "dev.louiselm.capture.PhoneControlEndToEndTest"])
+                .env("LOUISELM_E2E_URL", url).env("LOUISELM_E2E_RECEIVER", receiver)
+                .env("LOUISELM_E2E_CREDENTIAL", credential).env("LOUISELM_E2E_DEVICE", device)
+                .env("LOUISELM_E2E_GRANT", grant_id).status().unwrap();
+                let report = std::fs::read_to_string(android.join("app/build/test-results/testDebugUnitTest/TEST-dev.louiselm.capture.PhoneControlEndToEndTest.xml")).unwrap();
+                assert!(report.contains("tests=\"1\"") && report.contains("skipped=\"0\"")
+                    && report.contains("failures=\"0\"") && report.contains("errors=\"0\""));
+                status
+            }).await.unwrap();
+            assert!(status.success(), "Android phone-control integration failed");
+        }
+        child.0.stdin.take().unwrap().write_all(b"stop\n").unwrap();
+        let status = tokio::task::spawn_blocking(move || child.0.wait().unwrap())
+            .await
+            .unwrap();
+        assert!(status.success());
+        let last_period = history_period(&app, &phone, &fixture, &grant).await;
+        let old = signed_read(&fixture, &grant, &last_period, controller, subject, 101);
+        let (_, stale) = post(
+            app,
+            "/v1/phone-control/request",
+            &phone.credential,
+            &old.to_string(),
+        )
+        .await;
+        assert_eq!(stale["code"], "stale_subject");
+        https.abort();
+        controller_task.abort();
     }
 
     fn signed_history(

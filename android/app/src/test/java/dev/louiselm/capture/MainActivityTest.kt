@@ -314,6 +314,26 @@ class MainActivityTest {
 
     @Test
     @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun tappingSessionAttentionCarriesItsExactIncarnation() {
+        val value = JSONObject(invalidatedAttentionPayload)
+        value.getJSONArray("items").getJSONObject(0).put("phone_control", JSONObject()
+            .put("controller_id", "aa".repeat(16)).put("subject_id", "bb".repeat(16)))
+        activity.getSharedPreferences("attention-fixture", Context.MODE_PRIVATE).edit()
+            .putString("payload", value.toString()).commit()
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        button(R.string.phone_open_session).performClick()
+        val launched = shadowOf(activity).nextStartedActivity
+        assertEquals(PhoneControlActivity::class.java.name, launched.component?.className)
+        assertEquals("aa".repeat(16), launched.getStringExtra(PhoneControlActivity.CONTROLLER_ID))
+        assertEquals("bb".repeat(16), launched.getStringExtra(PhoneControlActivity.SUBJECT_ID))
+    }
+
+    @Test
+    @Config(
         sdk = [30, 34, 37],
         shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
         instrumentedPackages = ["dev.louiselm.capture"],

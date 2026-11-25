@@ -520,6 +520,25 @@ jobs:
           test "$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest application-id \
             app/build/outputs/apk/qa/app-qa.apk)" = "dev.louiselm.capture.qa"
 
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Test phone-control end to end
+        working-directory: .
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_25_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          rustup toolchain install
+          cargo build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
+          LOUISELM_TEST_NVIM="$(command -v nvim)" \
+            LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            LOUISELM_TEST_ANDROID=1 \
+            cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
+              phone_control::http::tests::https_read_reaches_a_real_headless_session -- --exact --ignored
+
   format:
     name: stylua
     runs-on: ubuntu-latest
@@ -700,6 +719,10 @@ jobs:
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             nvim --headless --noplugin -u ./tests/minimal_init.lua \
               -c 'lua MiniTest.run_file("tests/phone_control/real_verifier_spec.lua")' -c 'qa!'
+          LOUISELM_TEST_NVIM="$(command -v nvim)" \
+            LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
+              phone_control::http::tests::https_read_reaches_a_real_headless_session -- --exact --ignored
 
       - name: Test cross-service durable skill requests and Neovim observation
         run: |

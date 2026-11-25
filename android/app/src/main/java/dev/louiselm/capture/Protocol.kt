@@ -131,6 +131,7 @@ internal data class AttentionItem(
     val withdrawal: AttentionWithdrawal? = null,
     val sessionName: String? = null,
     val resultId: String? = null,
+    val phoneControl: PhoneControlTarget? = null,
 )
 
 internal data class AttentionSnapshot(
@@ -169,11 +170,18 @@ internal data class AttentionSnapshot(
                     "code",
                     "withdrawal",
                     "result_id",
+                    "phone_control",
                 ),
                 "attention item",
             )
             val subjectKind = AttentionSubjectKind.parse(requireString(value, "subject_kind"))
             val subjectId = requireString(value, "subject_id")
+            val phoneControl = if (value.has("phone_control") && !value.isNull("phone_control")) {
+                require(subjectKind == AttentionSubjectKind.SESSION) { "phone target requires Session" }
+                val target = value.getJSONObject("phone_control")
+                requireKeys(target, setOf("controller_id", "subject_id"), "phone target")
+                PhoneControlTarget(requireString(target, "controller_id"), requireString(target, "subject_id"))
+            } else null
             val sessionName = optionalString(value, "session_name")
             if (sessionName != null) {
                 require(subjectKind == AttentionSubjectKind.SESSION && sessionName.isNotBlank() &&
@@ -254,6 +262,7 @@ internal data class AttentionSnapshot(
                 withdrawal,
                 sessionName,
                 resultId,
+                phoneControl,
             )
         }
 
