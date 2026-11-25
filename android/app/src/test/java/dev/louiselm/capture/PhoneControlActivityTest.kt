@@ -523,7 +523,7 @@ class PhoneControlActivityTest {
         assertTrue(displayed.contains("Cold Parked"))
         assertTrue(displayed.contains("expired"))
         assertTrue(displayed.contains("No live Run controller"))
-        assertTrue(displayed.contains("2 remaining"))
+        assertTrue(displayed.contains("remaining: 2"))
         assertEquals(View.GONE, button(R.string.phone_send).visibility)
         assertEquals(0, PhoneScreenFixture.sendCalls)
         controller.pause()
@@ -531,7 +531,7 @@ class PhoneControlActivityTest {
         repeat(5) { drain() }
         assertEquals(Triple(PhoneScreenFixture.runSummary.runId, 0L, false), PhoneScreenFixture.runReads.last())
         screenOff()
-        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("2 remaining") })
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("remaining: 2") })
     }
 
     @Test
@@ -587,13 +587,13 @@ class PhoneControlActivityTest {
         }.performClick()
         repeat(3) { drain() }
         var text = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
-        assertTrue(text.contains("2 remaining"))
+        assertTrue(text.contains("remaining: 2"))
         assertTrue(text.contains("could not be verified"))
         PhoneScreenFixture.runLiveFailure = PhoneControlOutcome.STALE_SUBJECT
         button(R.string.phone_refresh).performClick()
         repeat(3) { drain() }
         text = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
-        assertFalse(text.contains("2 remaining"))
+        assertFalse(text.contains("remaining: 2"))
         assertTrue(text.contains("Run is unavailable"))
         PhoneScreenFixture.runLiveFailure = PhoneControlOutcome.UNSUPPORTED
         button(R.string.phone_refresh).performClick()
@@ -635,12 +635,12 @@ class PhoneControlActivityTest {
         PhoneScreenFixture.runFailure = PhoneControlOutcome.STALE_SUBJECT
         button(R.string.phone_refresh).performClick()
         repeat(2) { drain() }
-        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("2 remaining") })
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("remaining: 2") })
         assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("Run is unavailable") })
         PhoneScreenFixture.runFailure = null
         button(R.string.phone_refresh).performClick()
         repeat(2) { drain() }
-        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("2 remaining") })
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("remaining: 2") })
     }
 
     @Test

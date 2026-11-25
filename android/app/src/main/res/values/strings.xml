@@ -49,7 +49,7 @@
     <string name="phone_run_live_truncated">Additional linked Sessions were omitted.</string>
     <string name="phone_run_session_read_only">Run-linked Session is read-only and is not saved offline.</string>
     <string name="phone_run_identity">Run: %1$s\nRevision %2$d · %3$s</string>
-    <string name="phone_run_work">Generated work: %1$d consumed, %2$d reserved, %3$d remaining of %4$d. Pending mutations: %5$d.</string>
+    <string name="phone_run_work">Generated work — consumed: %1$d; reserved: %2$d; remaining: %3$d of %4$d; pending mutations: %5$d.</string>
     <string name="phone_run_admitted">Admitted</string>
     <string name="phone_run_active">Active</string>
     <string name="phone_run_parked">Warm Parked</string>
