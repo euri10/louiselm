@@ -164,6 +164,7 @@ impl OwnerJournal {
                 path,
                 tls.join("phone-action-owner.json"),
                 &receiver,
+                super::ActionEvidenceKind::Owner,
             )?,
         })
     }

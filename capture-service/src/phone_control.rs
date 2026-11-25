@@ -18,8 +18,8 @@ mod source_checkout_tests;
 mod source_tests;
 
 pub use evidence::{
-    ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
-    ActionReservation,
+    ActionEvidence, ActionEvidenceError, ActionEvidenceKind, ActionEvidenceStore, ActionIdentity,
+    ActionOutcome, ActionReservation,
 };
 
 use std::{
@@ -69,6 +69,7 @@ impl Service {
                 evidence_path,
                 guard_path,
                 receiver,
+                ActionEvidenceKind::Archive,
             )),
             state_root: state_root.to_owned(),
             prepared: None,

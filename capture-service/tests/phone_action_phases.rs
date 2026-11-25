@@ -137,6 +137,7 @@ fn native_owner_inspection_returns_every_durable_phase() {
         &root.path().join("louiselm/workflow/phone-action-owner"),
         &tls.join("phone-action-owner.json"),
         &request.receiver_identity,
+        louiselm_capture::ActionEvidenceKind::Owner,
     );
     let inspect = serde_json::json!({"v":1,"type":"inspect_phases","identity":request});
     assert_eq!(owner(root.path(), &inspect)["code"], "unavailable");

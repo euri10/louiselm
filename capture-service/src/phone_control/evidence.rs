@@ -132,6 +132,16 @@ pub enum ActionEvidenceError {
     Unavailable,
 }
 
+/// The distinct owner journal and capture-side evidence archive.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionEvidenceKind {
+    /// Native-owner reservations and proven outcomes.
+    Owner,
+    /// Capture-side archival evidence, never native-owner proof.
+    Archive,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Snapshot {
@@ -151,6 +161,7 @@ struct Seal {
 #[serde(deny_unknown_fields)]
 struct ReceiverGuard {
     v: u8,
+    kind: ActionEvidenceKind,
     receiver_identity: String,
     generation: String,
     bytes: u64,
@@ -181,6 +192,7 @@ struct GuardBinding {
     path: PathBuf,
     receiver: String,
     generation: String,
+    kind: ActionEvidenceKind,
 }
 
 struct StoreLock(File);
@@ -221,6 +233,7 @@ impl ActionEvidenceStore {
         directory: impl AsRef<Path>,
         guard: impl AsRef<Path>,
         receiver: &str,
+        kind: ActionEvidenceKind,
     ) -> Result<Self, ActionEvidenceError> {
         fixed::<32>(receiver).map_err(|_| ActionEvidenceError::Unavailable)?;
         let guard_lock_path = guard_lock_path(guard.as_ref());
@@ -234,7 +247,7 @@ impl ActionEvidenceStore {
         let mut store = Self::open_inner(directory.as_ref(), false)?;
         store.guard_lock = Some((guard_lock_path, guard_lock));
         store.verify_lock()?;
-        let record = read_guard(guard.as_ref(), receiver)?;
+        let record = read_guard(guard.as_ref(), receiver, kind)?;
         if record.pending.is_some() {
             recover_update(&store.directory, guard.as_ref(), receiver, record)?;
         }
@@ -247,11 +260,12 @@ impl ActionEvidenceStore {
             return Err(ActionEvidenceError::Unavailable);
         }
         let bytes = read_bounded(&store.directory.join("actions.json"), MAX_STORE_BYTES)?;
-        let record = verify_guard(guard.as_ref(), receiver, &bytes)?;
+        let record = verify_guard(guard.as_ref(), receiver, kind, &bytes)?;
         store.guard = Some(GuardBinding {
             path: guard.as_ref().to_owned(),
             receiver: receiver.to_owned(),
             generation: record.generation,
+            kind,
         });
         Ok(store)
     }
@@ -567,7 +581,7 @@ impl ActionEvidenceStore {
                 if let Some(guard) = &self.guard {
                     let bytes =
                         read_bounded(&self.directory.join("actions.json"), MAX_STORE_BYTES)?;
-                    let current = verify_guard(&guard.path, &guard.receiver, &bytes)?;
+                    let current = verify_guard(&guard.path, &guard.receiver, guard.kind, &bytes)?;
                     if current.generation != guard.generation {
                         return Err(ActionEvidenceError::Unavailable);
                     }
@@ -644,9 +658,10 @@ fn verify_lock(path: &Path, lock: &StoreLock) -> Result<(), ActionEvidenceError>
 fn verify_guard(
     path: &Path,
     receiver: &str,
+    kind: ActionEvidenceKind,
     bytes: &[u8],
 ) -> Result<ReceiverGuard, ActionEvidenceError> {
-    let record = read_guard(path, receiver)?;
+    let record = read_guard(path, receiver, kind)?;
     if record.pending.is_some()
         || record.bytes != bytes.len() as u64
         || record.sha256 != lower_hex(&Sha256::digest(bytes))
@@ -656,10 +671,15 @@ fn verify_guard(
     Ok(record)
 }
 
-fn read_guard(path: &Path, receiver: &str) -> Result<ReceiverGuard, ActionEvidenceError> {
+fn read_guard(
+    path: &Path,
+    receiver: &str,
+    kind: ActionEvidenceKind,
+) -> Result<ReceiverGuard, ActionEvidenceError> {
     let record: ReceiverGuard = serde_json::from_slice(&read_bounded(path, 1024)?)
         .map_err(|_| ActionEvidenceError::Unavailable)?;
     if record.v != 1
+        || record.kind != kind
         || record.receiver_identity != receiver
         || fixed::<16>(&record.generation).is_err()
         || record.bytes > MAX_STORE_BYTES
@@ -676,6 +696,7 @@ fn read_guard(path: &Path, receiver: &str) -> Result<ReceiverGuard, ActionEviden
 fn write_guard(guard: &GuardBinding, bytes: &[u8]) -> Result<(), ActionEvidenceError> {
     let record = ReceiverGuard {
         v: 1,
+        kind: guard.kind,
         receiver_identity: guard.receiver.clone(),
         generation: guard.generation.clone(),
         bytes: bytes.len() as u64,
@@ -701,14 +722,14 @@ fn stage_update(
     previous: &[u8],
     next: &[u8],
 ) -> Result<(), ActionEvidenceError> {
-    let mut record = verify_guard(&guard.path, &guard.receiver, previous)?;
+    let mut record = verify_guard(&guard.path, &guard.receiver, guard.kind, previous)?;
     if record.generation != guard.generation {
         return Err(ActionEvidenceError::Unavailable);
     }
     // The guard's pending digest commits these bounded images before replacement.
     replace(directory, "pending-before.json", previous)?;
     replace(directory, "pending-after.json", next)?;
-    if verify_guard(&guard.path, &guard.receiver, previous)? != record {
+    if verify_guard(&guard.path, &guard.receiver, guard.kind, previous)? != record {
         return Err(ActionEvidenceError::Unavailable);
     }
     record.pending = Some(PendingUpdate {
@@ -717,7 +738,7 @@ fn stage_update(
     });
     put_guard(&guard.path, &record)?;
     persist_bytes(directory, next)?;
-    if read_guard(&guard.path, &guard.receiver)? != record {
+    if read_guard(&guard.path, &guard.receiver, guard.kind)? != record {
         return Err(ActionEvidenceError::Unavailable);
     }
     write_guard(guard, next)
@@ -756,7 +777,7 @@ fn recover_update(
         return Err(ActionEvidenceError::Unavailable);
     }
     persist_bytes(directory, &next)?;
-    if read_guard(guard_path, receiver)? != record {
+    if read_guard(guard_path, receiver, record.kind)? != record {
         return Err(ActionEvidenceError::Unavailable);
     }
     write_guard(
@@ -764,6 +785,7 @@ fn recover_update(
             path: guard_path.to_owned(),
             receiver: receiver.to_owned(),
             generation: record.generation,
+            kind: record.kind,
         },
         &next,
     )
@@ -812,6 +834,7 @@ pub(super) fn initialize_receiver_fixture(directory: &Path, guard: &Path, receiv
             path: guard.to_owned(),
             receiver: receiver.to_owned(),
             generation: "09".repeat(16),
+            kind: ActionEvidenceKind::Archive,
         },
         &bytes,
     )

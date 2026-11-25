@@ -32,6 +32,7 @@ fn initialize(root: &std::path::Path) -> String {
         &root.join("louiselm/workflow/phone-action-owner"),
         &tls.join("phone-action-owner.json"),
         &receiver,
+        louiselm_capture::ActionEvidenceKind::Owner,
     );
     receiver
 }
@@ -186,6 +187,7 @@ fn owner_can_report_proven_evidence_when_capture_archive_is_lost() {
             .path()
             .join("louiselm/capture/tls/phone-action-evidence.json"),
         &receiver,
+        louiselm_capture::ActionEvidenceKind::Archive,
     );
     let request = identity(temp.path(), 13);
     let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
@@ -216,6 +218,27 @@ fn caller_cannot_choose_a_different_receiver_identity() {
     assert_eq!(invoke(temp.path(), &attempt)["code"], "unavailable");
     let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
     assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
+}
+
+#[test]
+fn capture_guard_cannot_initialize_the_native_owner_journal() {
+    let temp = tempfile::tempdir().unwrap();
+    let receiver = initialize(temp.path());
+    let tls = temp.path().join("louiselm/capture/tls");
+    let archive = temp
+        .path()
+        .join("louiselm/capture/phone-control/action-evidence");
+    let capture_guard = tls.join("phone-action-evidence.json");
+    phone_evidence::initialize(
+        &archive,
+        &capture_guard,
+        &receiver,
+        louiselm_capture::ActionEvidenceKind::Archive,
+    );
+    fs::copy(&capture_guard, tls.join("phone-action-owner.json")).unwrap();
+    let request = identity(temp.path(), 15);
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    assert_eq!(invoke(temp.path(), &begin)["code"], "unavailable");
 }
 
 #[test]

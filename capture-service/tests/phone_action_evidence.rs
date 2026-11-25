@@ -133,6 +133,27 @@ fn receiver_guard_refuses_missing_corrupt_and_rolled_back_history() {
 }
 
 #[test]
+fn owner_guard_cannot_be_used_for_the_capture_archive() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let owner = temp.path().join("owner");
+    let receiver = "02".repeat(32);
+    phone_evidence::initialize_store(&archive);
+    let owner_guard = owner.with_extension("guard");
+    phone_evidence::initialize(
+        &owner,
+        &owner_guard,
+        &receiver,
+        louiselm_capture::ActionEvidenceKind::Owner,
+    );
+    fs::copy(owner_guard, archive.with_extension("guard")).unwrap();
+    assert!(matches!(
+        phone_evidence::open(&archive),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+}
+
+#[test]
 fn loss_of_archive_and_lock_does_not_erase_unknown_actions() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("actions");

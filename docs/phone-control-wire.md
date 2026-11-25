@@ -575,8 +575,8 @@ caller must authenticate the request and establish the exact live owner,
 canonical project and configured Agent independently.
 
 The owner journal and capture archive each require a separate receiver-key-bound
-guard in `louiselm/capture/tls`. It records the store generation and current
-snapshot digest outside the store and its lock. A missing or damaged guard,
+guard in `louiselm/capture/tls`. It records the store kind, generation and
+current snapshot digest outside the store and its lock. A missing or damaged guard,
 missing store or lock, or an older store with a current guard is unavailable;
 none initializes an empty history. Initialization and operator recovery are
 not yet available, so existing receivers without these records also refuse

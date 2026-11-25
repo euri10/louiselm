@@ -1,9 +1,9 @@
 use std::{fmt::Write as _, fs, path::Path};
 
-use louiselm_capture::{ActionEvidenceError, ActionEvidenceStore};
+use louiselm_capture::{ActionEvidenceError, ActionEvidenceKind, ActionEvidenceStore};
 use sha2::{Digest, Sha256};
 
-pub fn initialize(directory: &Path, guard: &Path, receiver: &str) {
+pub fn initialize(directory: &Path, guard: &Path, receiver: &str, kind: ActionEvidenceKind) {
     fs::create_dir_all(directory).unwrap();
     fs::create_dir_all(guard.parent().unwrap()).unwrap();
     let mut guard_lock = guard.as_os_str().to_os_string();
@@ -25,7 +25,7 @@ pub fn initialize(directory: &Path, guard: &Path, receiver: &str) {
     fs::write(
         guard,
         serde_json::to_vec(&serde_json::json!({
-            "v":1,"receiver_identity":receiver,"generation":"09".repeat(16),
+            "v":1,"kind":kind,"receiver_identity":receiver,"generation":"09".repeat(16),
             "bytes":bytes.len(),"sha256":digest
         }))
         .unwrap(),
@@ -38,6 +38,7 @@ pub fn open(directory: &Path) -> Result<ActionEvidenceStore, ActionEvidenceError
         directory,
         directory.with_extension("guard"),
         &"02".repeat(32),
+        ActionEvidenceKind::Archive,
     )
 }
 
@@ -46,5 +47,6 @@ pub fn initialize_store(directory: &Path) {
         directory,
         &directory.with_extension("guard"),
         &"02".repeat(32),
+        ActionEvidenceKind::Archive,
     );
 }
