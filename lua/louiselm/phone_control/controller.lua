@@ -341,6 +341,11 @@ function Controller:attach(controller_id)
   end
   self.seen_controllers[controller_id] = true
   self.controller_id = controller_id
+  local refreshed, refresh_error = self.runs:reidentify()
+  if not refreshed then
+    self:detach()
+    return false, refresh_error
+  end
   for _, subject in pairs(self.sessions) do
     local id, err = allocate(self, subject)
     if id == nil then

@@ -65,6 +65,7 @@ end
 T["old connection and Session identities never resolve after reconnect"] = function()
   local controller, executor, _, subject_id = fixture()
   assert(controller:track_run(executor))
+  local original = probe(controller, { v = 1, type = "run_probe", controller_id = CONNECTION, run_id = RUN })
   assert(controller:detach())
   local new_connection = string.rep("4", 32)
   assert(controller:attach(new_connection))
@@ -73,6 +74,7 @@ T["old connection and Session identities never resolve after reconnect"] = funct
   request.controller_id = new_connection
   local found = probe(controller, request)
   MiniTest.expect.no_equality(found.run.sessions[1].subject_id, subject_id)
+  MiniTest.expect.no_equality(found.run.owner_id, original.run.owner_id)
   executor.status = "disposed"
   MiniTest.expect.equality(probe(controller, request).code, "stale_subject")
 end

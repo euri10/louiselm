@@ -194,7 +194,7 @@ async fn process_http(
             .ok_or(Refusal::Unauthenticated)?;
         if path == "/v1/phone-control/request" {
             let signed: SignedRequest = decode(&body, "request")?;
-            if matches!(signed.request.action, 1 | 48 | 49 | 52 | 53 | 54 | 55) {
+            if matches!(signed.request.action, 1 | 48 | 49 | 52 | 53 | 54 | 55 | 56) {
                 let permit =
                     initial_state
                         .authority
@@ -219,6 +219,9 @@ async fn process_http(
     match started {
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
+            if request.action == 56 {
+                return finish_live_run(state, credential, *permit, &request).await;
+            }
             if matches!(request.action, 52..=55) {
                 return finish_owner(state, credential, *permit).await;
             }
@@ -272,6 +275,30 @@ async fn process_http(
         }
         Err(error) => Err(error),
     }
+}
+
+async fn finish_live_run(
+    state: HttpState,
+    credential: String,
+    permit: ReadPermit,
+    request: &Request,
+) -> Result<Value, Refusal> {
+    let id =
+        uuid::Uuid::from_bytes(fixed::<16>(&request.subject_id).map_err(|_| Refusal::Malformed)?)
+            .to_string();
+    let probe = super::run_probe::collect(state.controllers.clone(), &id).await;
+    tokio::task::spawn_blocking(move || {
+        state.authority.finish_live_owner_delivery(
+            &permit,
+            &state.pairing,
+            &credential,
+            state.prepared.as_ref(),
+            &probe,
+            &state.controllers,
+        )
+    })
+    .await
+    .unwrap_or(Err(Refusal::Unavailable))
 }
 
 async fn finish_owner(

@@ -377,6 +377,25 @@ Agent and the exact locked Run revision through delivery. Missing integration
 is `unsupported`; an unbound, damaged or stale Run is refused. These reads
 neither verify a controller nor change Run state, deadline, spending or Attention.
 
+Action `56`, `read_run_live`, requires `read` and uses the same zero controller,
+Run UUID subject, empty payload, and durable `expected_revision` as action 55.
+Its closed response is
+`{v:1,type:"run_live",request_id:hex16,run_id:uuid,durable_revision:integer,controller:string,live:LiveRunView-or-null}`.
+`controller` is `connected`, `absent`, or `unreachable`. The receiver probes at
+most 50 current controller connections; `absent` means all answered and none
+owned this Run, while an incomplete, invalid or ambiguous result is
+`unreachable`. A connected `LiveRunView` is
+`{controller_id:hex16,owner_id:hex16,status:string,phase:string,bead_index:integer,bead_total:integer,bead_id:string,sessions:[{subject_id:hex16,agent:string,status:string}],sessions_truncated:boolean}`.
+It contains at most 50 current Session incarnations, no prompt or ACP ID, and
+is an observation made during this request, not cached durable state or a
+promise that the controller remains connected. The receiver checks the exact
+retained registration and source/checkout binding, all contributing Agents,
+current pairing, grant, lease, durable revision and unchanged controller set
+before delivery. It confirms the same live owner incarnation on a second probe;
+the owner ID changes on replacement or reconnect. A reconnected controller or changed Run requires a fresh read;
+an old Session subject must never be resolved to a replacement. This action does
+not itself authorize reading the linked Session or change the Run.
+
 Action `2`, `read_action_history`, also requires `read`. Its decoded payload is
 one of `00 | operation_id[16]` (one record), `01 | limit:u8` (first page), or
 `02 | after_operation_id[16] | limit:u8` (next page), with limit 1–50. For one
@@ -459,7 +478,7 @@ connection. The private receiver-to-controller probe is
 `{v:1,type:"run_probe",controller_id:hex16,run_id:uuid}`. Its closed reply is
 `{v:1,type:"run_probe",controller_id:hex16,run_id:uuid,state:"absent"}` or
 `{v:1,type:"run_probe",controller_id:hex16,run_id:uuid,state:"found",run:LiveRun}`.
-`LiveRun` is `{run_id:uuid,registration_id:hex16,registration_revision:integer,admitted:boolean,status:string,phase:string,bead_index:integer,bead_total:integer,bead_id:string,sessions:[LiveRunSession],sessions_truncated:boolean}`;
+`LiveRun` is `{run_id:uuid,owner_id:hex16,registration_id:hex16,registration_revision:integer,admitted:boolean,status:string,phase:string,bead_index:integer,bead_total:integer,bead_id:string,sessions:[LiveRunSession],sessions_truncated:boolean}`;
 `LiveRunSession` is `{subject_id:hex16,agent:string,status:string}`. At most 50
 current registry-owned Sessions belonging to that exact Run object are returned;
 the connection's subject identities change on reconnect. No ACP Session ID,

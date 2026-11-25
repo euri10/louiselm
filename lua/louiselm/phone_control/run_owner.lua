@@ -44,6 +44,21 @@ end
 
 M.valid_run_id = run_id
 
+local function allocate(self)
+  local bytes, err = nvim.uv.random(16)
+  if bytes == nil then
+    return nil, err or "Run owner identity unavailable"
+  end
+  local id = bytes:gsub(".", function(byte)
+    return string.format("%02x", byte:byte())
+  end)
+  if not hex_id(id) or self.seen[id] then
+    return nil, "Run owner identity collision"
+  end
+  self.seen[id] = true
+  return id
+end
+
 ---Register one exact operator-owned controller, without starting it.
 ---@param executor louiselm.workflow.BeadExecutor
 ---@return boolean tracked
@@ -78,13 +93,36 @@ function Owner:track(executor)
       return false, "invalid registered Bead identity"
     end
   end
+  local incarnation, err = allocate(self)
+  if incarnation == nil then
+    return false, err
+  end
   self.runs[run.id] = {
     executor = executor,
     run = run,
     prepared = nvim.deepcopy(options.prepared),
     agent_id = options.agent_id,
     bead_ids = nvim.deepcopy(options.bead_ids),
+    owner_id = incarnation,
   }
+  return true
+end
+
+---Invalidate all prior connection identities before a new attachment.
+---@return boolean refreshed
+---@return string? error_message
+function Owner:reidentify()
+  local fresh = {}
+  for id in pairs(self.runs) do
+    local value, err = allocate(self)
+    if value == nil then
+      return false, err
+    end
+    fresh[id] = value
+  end
+  for id, value in pairs(fresh) do
+    self.runs[id].owner_id = value
+  end
   return true
 end
 
@@ -172,6 +210,7 @@ function Owner:snapshot(id, controller_id, subject)
   end
   return {
     run_id = id,
+    owner_id = saved.owner_id,
     registration_id = saved.prepared.registration_id,
     registration_revision = saved.prepared.revision,
     admitted = executor.phone_admitted == true,
@@ -188,7 +227,7 @@ end
 ---Create an independent owner; callers own and release all registrations.
 ---@return table owner
 function M.new()
-  return setmetatable({ runs = {} }, Owner)
+  return setmetatable({ runs = {}, seen = {} }, Owner)
 end
 
 return M

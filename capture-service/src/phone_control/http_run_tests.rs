@@ -14,10 +14,54 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::UnixStream,
+};
 
 use super::super::{Service, authority::StoredGrant, fixed, prefix};
 use super::tests::{history_grant, post, unhex};
 use crate::{PairingRegistry, RunAdmission, RunProjectBinding, RunSession, hex::lower_hex};
+
+async fn exchange_probe(
+    app: axum::Router,
+    credential: &str,
+    stream: &mut UnixStream,
+    request: &Value,
+    response: &Value,
+) -> Value {
+    let credential = credential.to_owned();
+    let body = request.to_string();
+    let pending =
+        tokio::spawn(
+            async move { post(app, "/v1/phone-control/request", &credential, &body).await },
+        );
+    let probe = read_probe(stream).await;
+    assert_eq!(probe["type"], "run_probe");
+    assert_eq!(probe["controller_id"], response["controller_id"]);
+    assert_eq!(probe["run_id"], response["run_id"]);
+    write_probe(stream, response).await;
+    if response["state"] == "found" {
+        let confirmation = read_probe(stream).await;
+        assert_eq!(confirmation["controller_id"], response["controller_id"]);
+        assert_eq!(confirmation["run_id"], response["run_id"]);
+        write_probe(stream, response).await;
+    }
+    pending.await.unwrap().1
+}
+
+async fn read_probe(stream: &mut UnixStream) -> Value {
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).await.unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+async fn write_probe(stream: &mut UnixStream, response: &Value) {
+    stream
+        .write_all(format!("{response}\n").as_bytes())
+        .await
+        .unwrap();
+}
 
 #[expect(
     clippy::too_many_arguments,
@@ -138,6 +182,12 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .prepared
         .as_mut()
         .unwrap()
+        .set_test_integration(|| Err(super::super::source::PhoneSourceError::Unsupported));
+    let unsupported_app = service.router();
+    service
+        .prepared
+        .as_mut()
+        .unwrap()
         .set_test_integration(|| Ok(()));
     let app = service.router();
     let fixture: Value = serde_json::from_str(include_str!(
@@ -157,6 +207,15 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .authority
         .link_project_roots(&project_id, grant.project_roots().unwrap().unwrap())
         .unwrap();
+    let unsupported = signed_run(&fixture, &grant, &period, 56, &subject, &[], 0, 921);
+    let (_, unsupported) = post(
+        unsupported_app,
+        "/v1/phone-control/request",
+        &phone.credential,
+        &unsupported.to_string(),
+    )
+    .await;
+    assert_eq!(unsupported["code"], "unsupported");
     let old_id = "00000000-0000-4000-8000-000000000001";
     runs.admit(
         RunAdmission {
@@ -287,6 +346,232 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     assert_eq!(detail["run"]["work"]["remaining"], 3);
     assert_eq!(detail["run"]["load_session"], "unknown");
     assert_eq!(detail["run"]["resume_deadline_ms"], 0);
+    let live = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 912);
+    let (_, live) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &live.to_string(),
+    )
+    .await;
+    assert_eq!(live["type"], "run_live");
+    assert_eq!(live["controller"], "absent");
+    assert_eq!(live["run_id"], run);
+    assert_eq!(live["durable_revision"], 1);
+    let socket = root.path().join("live-controller.sock");
+    let capability = root.path().join("live-capability");
+    let server = super::super::socket::ControllerSocket::bind(
+        &socket,
+        &capability,
+        service.controllers.clone(),
+    )
+    .await
+    .unwrap();
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let server_task = tokio::spawn(server.serve());
+    let mut stream = UnixStream::connect(&socket).await.unwrap();
+    stream
+        .write_all(format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes())
+        .await
+        .unwrap();
+    let mut attached = String::new();
+    BufReader::new(&mut stream)
+        .read_line(&mut attached)
+        .await
+        .unwrap();
+    let mut controller = serde_json::from_str::<Value>(&attached).unwrap()["controller_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let subject_id = "44".repeat(16);
+    let mut observed = json!({"v":1,"type":"run_probe","controller_id":controller,"run_id":run,
+        "state":"found","run":{"run_id":run,"owner_id":"66".repeat(16),"registration_id":saved.id,
+        "registration_revision":saved.revision,"admitted":true,"status":"active","phase":"working",
+        "bead_index":1,"bead_total":3,"bead_id":"b-1","sessions":[{"subject_id":subject_id,
+        "agent":"codex","status":"ready"}],"sessions_truncated":false}});
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 913);
+    let live = exchange_probe(
+        app.clone(),
+        &phone.credential,
+        &mut stream,
+        &request,
+        &observed,
+    )
+    .await;
+    assert_eq!(live["controller"], "connected");
+    assert_eq!(live["live"]["controller_id"], controller);
+    assert_eq!(live["live"]["sessions"][0]["subject_id"], subject_id);
+    assert_eq!(live["live"]["phase"], "working");
+    assert!(!live.to_string().contains(&saved.id));
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 923);
+    let replacing = tokio::spawn({
+        let app = app.clone();
+        let credential = phone.credential.clone();
+        async move {
+            post(
+                app,
+                "/v1/phone-control/request",
+                &credential,
+                &request.to_string(),
+            )
+            .await
+        }
+    });
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
+    let mut replacement = observed.clone();
+    replacement["run"]["owner_id"] = json!("77".repeat(16));
+    write_probe(&mut stream, &replacement).await;
+    assert_eq!(replacing.await.unwrap().1["controller"], "unreachable");
+    let mut other = UnixStream::connect(&socket).await.unwrap();
+    other
+        .write_all(format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes())
+        .await
+        .unwrap();
+    let mut attached = String::new();
+    BufReader::new(&mut other)
+        .read_line(&mut attached)
+        .await
+        .unwrap();
+    let other_id = serde_json::from_str::<Value>(&attached).unwrap()["controller_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 920);
+    let ambiguous = tokio::spawn({
+        let app = app.clone();
+        let credential = phone.credential.clone();
+        async move {
+            post(
+                app,
+                "/v1/phone-control/request",
+                &credential,
+                &request.to_string(),
+            )
+            .await
+        }
+    });
+    assert_eq!(read_probe(&mut stream).await["controller_id"], controller);
+    assert_eq!(read_probe(&mut other).await["controller_id"], other_id);
+    write_probe(&mut stream, &observed).await;
+    let mut other_observed = observed.clone();
+    other_observed["controller_id"] = json!(other_id);
+    write_probe(&mut other, &other_observed).await;
+    assert_eq!(ambiguous.await.unwrap().1["controller"], "unreachable");
+    drop(other);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while service.controllers.contains(&other_id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    observed["run"]["registration_revision"] = json!(saved.revision + 1);
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 914);
+    let wrong = exchange_probe(
+        app.clone(),
+        &phone.credential,
+        &mut stream,
+        &request,
+        &observed,
+    )
+    .await;
+    assert_eq!(wrong["controller"], "unreachable");
+    assert_eq!(wrong["live"], Value::Null);
+    observed["run"]["registration_revision"] = json!(saved.revision);
+    observed["run"]["sessions"][0]["agent"] = json!("foreign-agent");
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 915);
+    let wrong = exchange_probe(
+        app.clone(),
+        &phone.credential,
+        &mut stream,
+        &request,
+        &observed,
+    )
+    .await;
+    assert_eq!(wrong["controller"], "unreachable");
+    observed["run"]["sessions"][0]["agent"] = json!("codex");
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 919);
+    let request: super::SignedRequest = serde_json::from_value(request).unwrap();
+    let permit = service
+        .authority
+        .begin_read(&phone.device_id, &request.request, Instant::now())
+        .unwrap();
+    let registry = service.controllers.clone();
+    let probing =
+        tokio::spawn(async move { super::super::run_probe::collect(registry, run).await });
+    assert_eq!(read_probe(&mut stream).await["controller_id"], controller);
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(read_probe(&mut stream).await["controller_id"], controller);
+    write_probe(&mut stream, &observed).await;
+    let probe = probing.await.unwrap();
+    drop(stream);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while service.controllers.contains(&controller) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        service.authority.finish_live_owner_delivery(
+            &permit,
+            &pairing,
+            &phone.credential,
+            Some(&reader),
+            &probe,
+            &service.controllers,
+        ),
+        Err(super::Refusal::StaleSubject)
+    );
+    let mut stream = UnixStream::connect(&socket).await.unwrap();
+    stream
+        .write_all(format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes())
+        .await
+        .unwrap();
+    let mut attached = String::new();
+    BufReader::new(&mut stream)
+        .read_line(&mut attached)
+        .await
+        .unwrap();
+    let next_controller = serde_json::from_str::<Value>(&attached).unwrap()["controller_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(controller, next_controller);
+    controller = next_controller;
+    observed["controller_id"] = json!(controller);
+    observed["run"]["owner_id"] = json!("88".repeat(16));
+    observed["run"]["sessions"][0]["subject_id"] = json!("55".repeat(16));
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 1, 916);
+    let pending_live = tokio::spawn({
+        let app = app.clone();
+        let credential = phone.credential.clone();
+        async move {
+            post(
+                app,
+                "/v1/phone-control/request",
+                &credential,
+                &request.to_string(),
+            )
+            .await
+        }
+    });
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
+    runs.attach(RunSession {
+        id: run.into(),
+        session_id: "codex/acp".into(),
+        agent: "codex".into(),
+        acp_session_id: "acp".into(),
+        working_dir: "/private/worker".into(),
+        load_session: false,
+    })
+    .unwrap();
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(pending_live.await.unwrap().1["code"], "stale_subject");
     let next_offer = pairing
         .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
         .unwrap();
@@ -320,15 +605,24 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     )
     .await;
     assert_eq!(no_read_result["code"], "out_of_scope");
-    runs.attach(RunSession {
-        id: run.into(),
-        session_id: "codex/acp".into(),
-        agent: "codex".into(),
-        acp_session_id: "acp".into(),
-        working_dir: "/private/worker".into(),
-        load_session: false,
-    })
-    .unwrap();
+    let no_read_live = signed_run(
+        &fixture,
+        &no_read,
+        &no_read_period,
+        56,
+        &subject,
+        &[],
+        0,
+        922,
+    );
+    let (_, no_read_live) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &no_read_phone.credential,
+        &no_read_live.to_string(),
+    )
+    .await;
+    assert_eq!(no_read_live["code"], "out_of_scope");
     let stale = signed_run(&fixture, &grant, &period, 55, &subject, &[], 1, 902);
     let (_, stale) = post(
         app.clone(),
@@ -355,7 +649,26 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .authority
         .begin_read(&phone.device_id, &pending.request, Instant::now())
         .unwrap();
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 0, 917);
+    let pending_live = tokio::spawn({
+        let app = app.clone();
+        let credential = phone.credential.clone();
+        async move {
+            post(
+                app,
+                "/v1/phone-control/request",
+                &credential,
+                &request.to_string(),
+            )
+            .await
+        }
+    });
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
     runs.add_phone_contributor(run, "claude").unwrap();
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(pending_live.await.unwrap().1["code"], "out_of_scope");
     assert_eq!(
         service.authority.finish_owner_delivery(
             &pending,
@@ -398,7 +711,26 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .authority
         .begin_read(&phone.device_id, &pending.request, Instant::now())
         .unwrap();
+    let request = signed_run(&fixture, &grant, &period, 56, &subject, &[], 0, 918);
+    let pending_live = tokio::spawn({
+        let app = app.clone();
+        let credential = phone.credential.clone();
+        async move {
+            post(
+                app,
+                "/v1/phone-control/request",
+                &credential,
+                &request.to_string(),
+            )
+            .await
+        }
+    });
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
     service.authority.disable(&phone.device_id).unwrap();
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(read_probe(&mut stream).await["run_id"], run);
+    write_probe(&mut stream, &observed).await;
+    assert_eq!(pending_live.await.unwrap().1["code"], "revoked");
     assert_eq!(
         service.authority.finish_owner_delivery(
             &pending,
@@ -417,4 +749,5 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     )
     .await;
     assert_eq!(revoked["code"], "revoked");
+    server_task.abort();
 }

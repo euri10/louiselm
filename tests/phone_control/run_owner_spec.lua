@@ -43,6 +43,8 @@ T["only projects an explicitly tracked exact owner and its current owned Session
   MiniTest.expect.equality(runs:snapshot(RUN, CONTROLLER, subject), nil)
   assert(runs:track(executor))
   local snapshot = assert(runs:snapshot(RUN, CONTROLLER, subject))
+  assert(type(snapshot.owner_id) == "string" and #snapshot.owner_id == 32)
+  snapshot.owner_id = nil
   MiniTest.expect.equality(snapshot, {
     run_id = RUN,
     registration_id = REGISTRATION,
@@ -92,6 +94,18 @@ T["rejects unregistered owners and omits identities from another connection"] = 
   executor.phone_admitted = false
   local waiting = assert(runs:snapshot(RUN, CONTROLLER, subject))
   MiniTest.expect.equality({ waiting.status, waiting.admitted, waiting.phase }, { "new", false, "none" })
+end
+
+T["a replacement Run owner receives a different incarnation on the same connection"] = function()
+  local runs, executor, _, subject = fixture()
+  assert(runs:track(executor))
+  local original = assert(runs:snapshot(RUN, CONTROLLER, subject)).owner_id
+  assert(type(original) == "string" and #original == 32)
+  runs:untrack(executor)
+  local replacement = nvim.deepcopy(executor)
+  assert(runs:track(replacement))
+  local current = assert(runs:snapshot(RUN, CONTROLLER, subject)).owner_id
+  MiniTest.expect.no_equality(current, original)
 end
 
 return T

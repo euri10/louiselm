@@ -782,7 +782,7 @@ impl Authority {
             52 => super::validate_prepared_list_request_shape(request).map_err(refusal)?,
             53 => super::validate_prepared_request_shape(request).map_err(refusal)?,
             54 => super::validate_run_list_request_shape(request).map_err(refusal)?,
-            55 => super::validate_run_request_shape(request).map_err(refusal)?,
+            55 | 56 => super::validate_run_request_shape(request).map_err(refusal)?,
             _ => super::validate_discovery_request_shape(request).map_err(refusal)?,
         }
         let mut state = self.lock()?;
@@ -815,6 +815,7 @@ impl Authority {
                 53 => "read_prepared",
                 54 => "list_runs",
                 55 => "read_run",
+                56 => "read_run_live",
                 _ => return Err(Refusal::Unsupported),
             }
             .into(),

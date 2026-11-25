@@ -8,6 +8,8 @@ use super::super::{
     Frame, Request, fixed,
     prepared_owner::{OwnerPreparedError, OwnerRunReader},
     prepared_selection::project_detail,
+    run_probe::Probe,
+    socket::ControllerRegistry,
     source::PhoneSourceError,
     verify_phone_control_frame,
 };
@@ -21,6 +23,35 @@ impl Authority {
         pairing: &PairingRegistry,
         credential: &str,
         reader: Option<&OwnerRunReader>,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.finish_owner_delivery_inner(permit, pairing, credential, reader, None)
+    }
+
+    pub(in crate::phone_control) fn finish_live_owner_delivery(
+        &self,
+        permit: &ReadPermit,
+        pairing: &PairingRegistry,
+        credential: &str,
+        reader: Option<&OwnerRunReader>,
+        probe: &Probe,
+        controllers: &ControllerRegistry,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.finish_owner_delivery_inner(
+            permit,
+            pairing,
+            credential,
+            reader,
+            Some((probe, controllers)),
+        )
+    }
+
+    fn finish_owner_delivery_inner(
+        &self,
+        permit: &ReadPermit,
+        pairing: &PairingRegistry,
+        credential: &str,
+        reader: Option<&OwnerRunReader>,
+        live: Option<(&Probe, &ControllerRegistry)>,
     ) -> Result<serde_json::Value, Refusal> {
         let now = Instant::now();
         let wall_ms = crate::time::now_ms();
@@ -37,7 +68,7 @@ impl Authority {
             let frame: Frame =
                 serde_json::from_slice(&permit.frame).map_err(|_| Refusal::Malformed)?;
             let request = &frame.request;
-            if !matches!(request.action, 52..=55)
+            if !matches!(request.action, 52..=56)
                 || request.operation_id != permit.operation_id
                 || request.grant_id != permit.grant_id
                 || request.period_id != permit.period_id
@@ -70,6 +101,18 @@ impl Authority {
                 53 => self.prepared_detail(&mut state, permit, request, reader, &grant, timing),
                 54 => self.run_page(&mut state, permit, request, reader, &grant, timing),
                 55 => self.run_detail(&mut state, permit, request, reader, &grant, timing),
+                56 => {
+                    let (probe, controllers) = live.ok_or(Refusal::Unavailable)?;
+                    self.run_live(
+                        &mut state,
+                        permit,
+                        request,
+                        reader,
+                        &grant,
+                        timing,
+                        (probe, controllers),
+                    )
+                }
                 _ => Err(Refusal::Unsupported),
             }
         });

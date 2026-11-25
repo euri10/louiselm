@@ -213,6 +213,34 @@ impl OwnerRunReader {
         }
     }
 
+    /// Match the live owner's exact retained selection, including after
+    /// unpublication. A published replacement cannot pass the unused-Run fence
+    /// after this Run is admitted.
+    pub(super) fn registration_matches(
+        &self,
+        id: &str,
+        revision: u64,
+        binding: &RunProjectBinding,
+    ) -> Result<bool, OwnerPreparedError> {
+        let registration = match self.0.store()?.inspect(id) {
+            Ok(registration) => registration,
+            Err(PreparedRunError::Invalid(_)) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(registration.revisions.last().is_some_and(|saved| {
+            saved.revision == revision
+                && saved.binding.run_id == binding.run_id
+                && saved.binding.project_id == binding.project_id
+                && saved.binding.source_id == binding.source_id
+                && saved.binding.checkout_id == binding.checkout_id
+                && saved
+                    .binding
+                    .agents
+                    .iter()
+                    .all(|agent| binding.agents.contains(agent))
+        }))
+    }
+
     pub(super) fn with_bound_run<T>(
         &self,
         id: &str,

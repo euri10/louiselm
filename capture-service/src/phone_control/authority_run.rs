@@ -5,12 +5,58 @@ use serde_json::{Value, json};
 use super::super::{
     MAX_INTEGER, Request, fixed,
     prepared_owner::{OwnerPreparedError, OwnerRunReader},
+    run_probe::{Observation, Probe},
+    socket::ControllerRegistry,
     source::PhoneSourceError,
 };
 use super::{Authority, OwnerReadTiming, ReadPermit, Refusal, State, StoredGrant, refusal};
 use crate::RunView;
 
 impl Authority {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the final read fence needs the current Run, grant and controller set"
+    )]
+    pub(super) fn run_live(
+        &self,
+        state: &mut State,
+        permit: &ReadPermit,
+        request: &Request,
+        reader: &OwnerRunReader,
+        grant: &StoredGrant,
+        timing: OwnerReadTiming,
+        live: (&Probe, &ControllerRegistry),
+    ) -> Result<Value, Refusal> {
+        let id =
+            uuid::Uuid::from_bytes(fixed::<16>(&request.subject_id).map_err(refusal)?).to_string();
+        reader.with_bound_run(&id, request.expected_revision, |binding, view| {
+            if !self.binding_in_scope(grant, binding)? {
+                return Err(Refusal::OutOfScope);
+            }
+            let (controller, projection) = match &live.0.observation {
+                Observation::Absent => ("absent", Value::Null),
+                Observation::Unreachable => ("unreachable", Value::Null),
+                Observation::Connected { controller, run } => {
+                    let matching = run.admitted
+                        && run.sessions.iter().all(|session| binding.agents.contains(&session.agent))
+                        && reader.registration_matches(&run.registration_id, run.registration_revision, binding)
+                            .map_err(|error| run_refusal(&error))?;
+                    if matching {
+                        ("connected", super::super::run_probe::project(controller, run))
+                    } else {
+                        ("unreachable", Value::Null)
+                    }
+                }
+            };
+            if !live.0.current(live.1) {
+                return Err(Refusal::StaleSubject);
+            }
+            self.finish_read_locked(state, permit, true, timing.now, timing.wall_ms, timing.started)?;
+            Ok(json!({"v":1,"type":"run_live","request_id":request.operation_id,"run_id":view.id,
+                "durable_revision":view.revision,"controller":controller,"live":projection}))
+        }).map_err(|error| run_refusal(&error))?
+    }
+
     pub(super) fn run_detail(
         &self,
         state: &mut State,
