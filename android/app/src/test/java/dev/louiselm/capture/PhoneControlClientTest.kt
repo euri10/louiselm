@@ -51,7 +51,7 @@ class PhoneControlPairingFixture {
     internal fun load(): PairingConfig? {
         val preferences = RuntimeEnvironment.getApplication().getSharedPreferences("control-pairing-fixture", Context.MODE_PRIVATE)
         if (!preferences.getBoolean("paired", true)) return null
-        return PairingConfig(preferences.getString("url", "https://192.0.2.1") ?: "", "aa".repeat(32),
+        return PairingConfig(preferences.getString("url", "https://192.0.2.1") ?: "", preferences.getString("receiver", "aa".repeat(32)) ?: "",
             "fixture", preferences.getString("credential", "dummy") ?: "")
     }
 }

@@ -109,7 +109,10 @@ class PhoneControlActivity : Activity() {
     }
     private val screenOff = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_OFF) lockWorkspace()
+            if (intent?.action == Intent.ACTION_SCREEN_OFF || intent?.action == PHONE_OFFLINE_REVOKED) {
+                lockWorkspace()
+                if (intent.action == PHONE_OFFLINE_REVOKED) render(R.string.phone_revoked)
+            }
         }
     }
 
@@ -136,7 +139,8 @@ class PhoneControlActivity : Activity() {
             insets
         }
         setContentView(page)
-        ContextCompat.registerReceiver(this, screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
+        val lockEvents = IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(PHONE_OFFLINE_REVOKED) }
+        ContextCompat.registerReceiver(this, screenOff, lockEvents, ContextCompat.RECEIVER_NOT_EXPORTED)
         task({ client.status() }) { status, _ ->
             currentStatus = status
             busy = false
@@ -597,6 +601,7 @@ class PhoneControlActivity : Activity() {
         PhoneOfflineSave.SESSION_LIMIT -> R.string.phone_offline_count
         PhoneOfflineSave.DAMAGED, PhoneOfflineSave.CANCELLED -> R.string.phone_offline_failed
         PhoneOfflineSave.KEEP_EXISTING -> R.string.phone_offline_incomplete
+        PhoneOfflineSave.REVOKED -> R.string.phone_revoked
     }
 
     private fun keepOffline() {

@@ -2,6 +2,7 @@ package dev.louiselm.capture
 
 import android.content.Context
 import android.os.SystemClock
+import java.io.File
 import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyPair
@@ -60,8 +61,10 @@ internal class PhoneControlClient(
         PinnedHttps.phoneControl(config, endpoint, body, maySend)
     },
 ) {
+    private val app = context.applicationContext
     private val pairingStore = PairingStore(context)
     private val store = PhoneControlStore(context)
+    private val offlineStore = PhoneOfflineStore(File(app.filesDir, "phone-offline-v1"))
 
     fun status(): PhoneControlResult<PhoneControlStatus> = guarded {
         val config = pairingStore.load() ?: run {
@@ -71,6 +74,7 @@ internal class PhoneControlClient(
         val grant = store.grant()
         if (grant != null) {
             if (!matches(config, grant.receiverIdentity, grant.pairingBinding)) {
+                if (config.receiverIdentitySha256.lowercase() != grant.receiverIdentity) revokePhoneOffline(app, grant.receiverIdentity)
                 store.clear()
                 return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
             }
@@ -79,6 +83,7 @@ internal class PhoneControlClient(
         val pending = store.pending()
         if (pending != null) {
             if (!matches(config, pending.receiverIdentity, pending.pairingBinding)) {
+                if (config.receiverIdentitySha256.lowercase() != pending.receiverIdentity) revokePhoneOffline(app, pending.receiverIdentity)
                 store.clear()
                 return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
             }
@@ -113,6 +118,7 @@ internal class PhoneControlClient(
         val config = pairingStore.load() ?: return@guarded unavailable()
         val pending = store.pending() ?: return@guarded unavailable()
         if (!matches(config, pending.receiverIdentity, pending.pairingBinding)) {
+            if (config.receiverIdentitySha256.lowercase() != pending.receiverIdentity) revokePhoneOffline(app, pending.receiverIdentity)
             store.clear()
             return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         }
@@ -126,6 +132,7 @@ internal class PhoneControlClient(
                     reply.keyHash != pending.keyHash || hash(keys.publicKey()) != pending.keyHash) return@guarded malformed()
                 if (!maySend()) return@guarded unavailable()
                 val grant = PhoneControlGrant(reply.grantId, reply.revision, reply.receiverIdentity, pending.pairingBinding, reply.keyHash)
+                offlineStore.allowReceiver(grant.receiverIdentity)
                 store.saveGrant(grant)
                 PhoneControlResult.Value(grant)
             }
@@ -191,7 +198,13 @@ internal class PhoneControlClient(
         if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
         val currentConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         if (currentGrant(currentConfig) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
-        if (reply !is PhoneControlReply.SessionPage) return@guarded refusal(reply)
+        val source = PhoneOfflineSource(period.grant.receiverIdentity, target, "", "", "")
+        if (reply !is PhoneControlReply.SessionPage) {
+            if (reply is PhoneControlReply.Failure && reply.outcome == PhoneControlOutcome.OUT_OF_SCOPE) {
+                denyPhoneOffline(app, source)
+            }
+            return@guarded refusal(reply)
+        }
         if (reply.controllerId != target.controllerId || reply.subjectId != target.subjectId || reply.operationId != operationId) {
             return@guarded malformed()
         }
@@ -202,6 +215,7 @@ internal class PhoneControlClient(
                 (first != null && reply.nextBefore > first) || (!reply.source.missing && reply.nextBefore != first)))) {
             return@guarded malformed()
         }
+        if (interaction) offlineStore.allowSource(source)
         PhoneControlResult.Value(reply)
     }
 
@@ -281,6 +295,7 @@ internal class PhoneControlClient(
     private fun currentGrant(config: PairingConfig): PhoneControlGrant? {
         val grant = store.grant() ?: return null
         if (!matches(config, grant.receiverIdentity, grant.pairingBinding)) {
+            if (config.receiverIdentitySha256.lowercase() != grant.receiverIdentity) revokePhoneOffline(app, grant.receiverIdentity)
             store.clear()
             throw LocalControlRevoked()
         }
@@ -300,6 +315,10 @@ internal class PhoneControlClient(
 
     private fun refusal(reply: PhoneControlReply): PhoneControlResult.Failure {
         val outcome = (reply as? PhoneControlReply.Failure)?.outcome ?: PhoneControlOutcome.MALFORMED
+        if (outcome == PhoneControlOutcome.REVOKED) {
+            val receiver = store.grant()?.receiverIdentity ?: store.pending()?.receiverIdentity
+            if (receiver != null) revokePhoneOffline(app, receiver)
+        }
         if (outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED) store.clear()
         return PhoneControlResult.Failure(outcome)
     }

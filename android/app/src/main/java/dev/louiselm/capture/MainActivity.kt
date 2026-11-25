@@ -433,6 +433,7 @@ class MainActivity : Activity() {
                             config.receiverIdentitySha256,
                         )
                         pairingStore.save(config)
+                        revokePhoneOffline(applicationContext, existing.receiverIdentitySha256.lowercase())
                     }
                 }
                 AttentionWorker.enqueue(applicationContext, replaceExisting = true)

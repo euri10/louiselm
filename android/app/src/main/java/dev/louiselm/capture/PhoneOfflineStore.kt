@@ -9,6 +9,7 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -29,7 +30,7 @@ internal data class PhoneOfflineCopy(
 )
 
 internal data class PhoneOfflineListing(val copies: List<PhoneOfflineCopy>, val damaged: List<String>)
-internal enum class PhoneOfflineSave { SAVED, BYTE_LIMIT, SESSION_LIMIT, DAMAGED, CANCELLED, KEEP_EXISTING }
+internal enum class PhoneOfflineSave { SAVED, BYTE_LIMIT, SESSION_LIMIT, DAMAGED, CANCELLED, KEEP_EXISTING, REVOKED }
 
 /** Encrypted app-private downloads. Call on a background thread with a locally unlocked download key. */
 internal class PhoneOfflineStore(private val root: File) {
@@ -79,6 +80,7 @@ internal class PhoneOfflineStore(private val root: File) {
             }
             return locked {
                 if (!mayCommit()) return@locked PhoneOfflineSave.CANCELLED
+                if (hasMarker(revocationFile(directory)) || hasMarker(denialFile(directory, id))) return@locked PhoneOfflineSave.REVOKED
                 val listing = readAll(key)
                 if (listing.damaged.isNotEmpty()) return@locked PhoneOfflineSave.DAMAGED
                 val old = listing.copies.firstOrNull { copyId(it.source) == id }
@@ -197,12 +199,25 @@ internal class PhoneOfflineStore(private val root: File) {
         updateMetadata(source, key) { it.copy(pinned = pinned) }
     }
 
-    fun remove(source: PhoneOfflineSource) = locked {
+    fun remove(source: PhoneOfflineSource) = denySource(source)
+
+    /** Fence one subject when read scope is lost or its saved copy is explicitly removed. */
+    fun denySource(source: PhoneOfflineSource) = locked {
         validateSource(source)
         val directory = directory(source.receiver)
+        ensureDirectory(directory)
         val id = copyId(source)
-        deleteFile(metadataFile(directory, id))
-        directory.listFiles()?.filter { it.name.startsWith("$id.") && it.name.endsWith(".data") }?.forEach(::deleteFile)
+        writeMarker(denialFile(directory, id))
+        purgeDeniedSource(directory, id)
+    }
+
+    /** Clear a subject fence only after a new authorized, explicit read. */
+    fun allowSource(source: PhoneOfflineSource) = locked {
+        validateSource(source)
+        val directory = directory(source.receiver)
+        if (hasMarker(revocationFile(directory))) throw SecurityException("downloads were revoked")
+        val marker = denialFile(directory, copyId(source))
+        if (hasMarker(marker)) deleteFile(marker)
     }
 
     /** Explicitly remove one unreadable download, leaving other copies and keys intact. */
@@ -211,6 +226,24 @@ internal class PhoneOfflineStore(private val root: File) {
         val directory = directory(receiver)
         deleteFile(metadataFile(directory, id))
         directory.listFiles()?.filter { it.name.startsWith("$id.") && it.name.endsWith(".data") }?.forEach(::deleteFile)
+    }
+
+    /** Fence this computer before removing its downloads; the fence survives process restarts. */
+    fun markRevoked(receiver: String) = locked {
+        val directory = directory(receiver)
+        ensureDirectory(directory)
+        writeMarker(revocationFile(directory))
+    }
+
+    /** Retain the fence until a new computer-approved grant exists. */
+    fun purgeRevoked(receiver: String) = locked { purgeRevokedContents(directory(receiver)) }
+
+    fun allowReceiver(receiver: String) = locked {
+        val directory = directory(receiver)
+        if (hasMarker(revocationFile(directory))) {
+            purgeRevokedContents(directory)
+            deleteFile(revocationFile(directory))
+        }
     }
 
     /** Remove only this receiver's encrypted downloads, including pins. */
@@ -245,9 +278,15 @@ internal class PhoneOfflineStore(private val root: File) {
 
     private fun readListing(directory: File, receiver: String?, key: SecretKey): PhoneOfflineListing {
         if (!directory.exists()) return PhoneOfflineListing(emptyList(), emptyList())
+        if (hasMarker(revocationFile(directory))) {
+            purgeRevokedContents(directory)
+            return PhoneOfflineListing(emptyList(), emptyList())
+        }
         val copies = mutableListOf<PhoneOfflineCopy>()
         val damaged = mutableListOf<String>()
-        val files = directory.listFiles() ?: throw IOException("downloads unavailable")
+        var files = directory.listFiles() ?: throw IOException("downloads unavailable")
+        for (file in files.filter { it.name.matches(DENIAL_NAME) }) purgeDeniedSource(directory, file.name.removePrefix(".deny-"))
+        files = directory.listFiles() ?: throw IOException("downloads unavailable")
         for (file in files.filter { it.name.matches(METADATA_NAME) }) {
             val id = file.name.removeSuffix(".meta")
             try {
@@ -272,6 +311,10 @@ internal class PhoneOfflineStore(private val root: File) {
     }
 
     private fun readMetadata(file: File, id: String, receiver: String?, key: SecretKey): PhoneOfflineCopy {
+        val directory = file.parentFile ?: throw IOException("invalid download path")
+        if (hasMarker(revocationFile(directory)) || hasMarker(denialFile(directory, id))) {
+            throw SecurityException("downloads were revoked")
+        }
         if (Files.isSymbolicLink(file.toPath())) throw IOException("invalid download path")
         if (file.length() != META_BYTES.toLong()) throw IOException("invalid download metadata")
         val encrypted = ByteArray(META_BYTES)
@@ -356,6 +399,8 @@ internal class PhoneOfflineStore(private val root: File) {
     private fun digest(value: String): String = phoneControlHex(MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)))
     private fun metadataFile(directory: File, id: String) = File(directory, "$id.meta")
     private fun dataFile(directory: File, id: String, version: String) = File(directory, "$id.$version.data")
+    private fun revocationFile(directory: File) = File(directory, ".revoked")
+    private fun denialFile(directory: File, id: String) = File(directory, ".deny-$id")
     private fun metadataAad(id: String) = "louiselm-offline-meta-v1:$id".toByteArray(Charsets.UTF_8)
     private fun pageAad(id: String, version: String, index: Int) = "louiselm-offline-page-v1:$id:$version:$index".toByteArray(Charsets.UTF_8)
 
@@ -385,7 +430,31 @@ internal class PhoneOfflineStore(private val root: File) {
     }
 
     private fun deleteFile(file: File) {
-        if (file.exists() && !file.delete()) throw IOException("download removal failed")
+        if (Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS) && !file.delete()) throw IOException("download removal failed")
+    }
+
+    private fun hasMarker(file: File) = Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+
+    private fun writeMarker(file: File) {
+        if (Files.isSymbolicLink(file.toPath())) throw IOException("invalid download path")
+        FileOutputStream(file, true).use { it.fd.sync() }
+    }
+
+    private fun purgeDeniedSource(directory: File, id: String) {
+        deleteFile(metadataFile(directory, id))
+        val files = directory.listFiles() ?: throw IOException("downloads unavailable")
+        files.filter { it.name.startsWith("$id.") && it.name.endsWith(".data") }.forEach(::deleteFile)
+    }
+
+    private fun purgeRevokedContents(directory: File) {
+        if (!hasMarker(revocationFile(directory))) return
+        val files = directory.listFiles() ?: throw IOException("downloads unavailable")
+        for (file in files) {
+            if (file.name != ".revoked") {
+                if (file.isDirectory && !Files.isSymbolicLink(file.toPath())) throw IOException("invalid download path")
+                deleteFile(file)
+            }
+        }
     }
 
     private companion object {
@@ -399,5 +468,6 @@ internal class PhoneOfflineStore(private val root: File) {
         val METADATA_NAME = Regex("[0-9a-f]{64}\\.meta")
         val DATA_NAME = Regex("[0-9a-f]{64}\\.[0-9a-f]{32}\\.data")
         val DIRECTORY_NAME = Regex("[0-9a-f]{64}")
+        val DENIAL_NAME = Regex("\\.deny-[0-9a-f]{64}")
     }
 }
