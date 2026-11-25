@@ -143,6 +143,44 @@ point to a live Session; refresh the inbox instead of assuming the condition
 still applies. Physical Keystore and authentication acceptance is tracked in
 `louiselm-qbr.12.22`.
 
+### Saved offline copies
+
+When prompted, unlock offline copies separately to save recently opened Session
+pages automatically. Cancelling that prompt leaves online reading available.
+**Keep offline** downloads the available older pages for the selected Session;
+progress and any missing, redacted, shortened or incomplete material are shown.
+Desktop archive history is not yet available. Saved-result previews are also
+not yet available for offline download.
+
+Use **Unlock offline copies** and **Offline copies** to read without a computer
+or network connection. Each copy shows its original computer, controller and
+Session, its last successful refresh and a stale-state warning. A saved copy is
+not authority to operate a live Session, including after a Neovim restart.
+Copies use a device-only download key, separate from pairing, phone-control and
+draft keys. Local unlock requires a strong biometric or device credential, locks
+after five minutes without interaction or one hour at most, and clears when the
+screen locks or the app process ends. Brief app switching retains the remaining
+time but hides protected content; screenshots and recording are blocked where
+the system supports it. Text explicitly copied out cannot be recalled.
+
+The default download limit is 512 MiB, adjustable from **Offline copies**, and
+the limit is 200 Sessions including kept copies. Unpinned copies expire 30 days
+after opening and are evicted least-recently-opened first as space is needed.
+Kept copies do not expire or get evicted routinely; unpin or remove them, or
+raise the byte limit, when needed. While the app is foregrounded and connected
+with both unlocks and current authorization active, it refreshes kept copies
+without resetting their open age or either unlock timer. A failed or oversized
+refresh keeps the previous copy and
+marks it out of date. An unreadable copy can be removed after confirmation;
+retry a temporary unlock failure first.
+
+An observed authenticated workspace revocation or a different paired computer
+removes the affected downloaded copies, including pins. A network failure alone
+does not, and a disconnected phone cannot learn about a remote revocation until
+it reconnects. Same-computer endpoint changes retain copies. Drafts, selected
+draft context and original recordings are separate and are not removed with a
+downloaded copy.
+
 When paired, **Attention inbox** reads the authenticated `/v1/attention`
 snapshot through the same pinned receiver identity. It displays only the
 closed typed kind, fixed reason, bounded Session or Run identifier, optional
