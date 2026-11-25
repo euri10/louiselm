@@ -172,6 +172,10 @@ internal class PhoneControlClient(
         period: PhoneControlPeriod,
         target: PhoneControlTarget,
         nowMs: Long,
+        before: Long = 0,
+        limit: Int = 50,
+        expectedRevision: Long = 0,
+        interaction: Boolean = true,
         maySend: () -> Boolean,
     ): PhoneControlResult<PhoneControlReply.SessionPage> = guarded {
         if (!period.isActive(nowMs)) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
@@ -180,8 +184,8 @@ internal class PhoneControlClient(
         if (currentGrant(config) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
         val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
-            period.grant.receiverIdentity, target.controllerId, target.subjectId, phoneControlReadPayload(0, 50),
-            operationId, 0, true)
+            period.grant.receiverIdentity, target.controllerId, target.subjectId, phoneControlReadPayload(before, limit),
+            operationId, expectedRevision, interaction)
         val signature = period.sign(request, nowMs) ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
         val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
         if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
@@ -189,6 +193,11 @@ internal class PhoneControlClient(
         if (currentGrant(currentConfig) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         if (reply !is PhoneControlReply.SessionPage) return@guarded refusal(reply)
         if (reply.controllerId != target.controllerId || reply.subjectId != target.subjectId || reply.operationId != operationId) {
+            return@guarded malformed()
+        }
+        if ((expectedRevision != 0L && reply.revision != expectedRevision) || reply.entries.size > limit ||
+            (before != 0L && reply.entries.any { it.seq >= before }) ||
+            (reply.nextBefore != 0L && (reply.entries.isEmpty() || reply.nextBefore != reply.entries.first().seq))) {
             return@guarded malformed()
         }
         PhoneControlResult.Value(reply)

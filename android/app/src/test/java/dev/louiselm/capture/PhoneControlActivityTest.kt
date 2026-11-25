@@ -101,7 +101,8 @@ class PhoneScreenClientFixture {
     }
 
     @Implementation(methodName = "readSession")
-    internal fun readSession(period: PhoneControlPeriod, target: PhoneControlTarget, now: Long, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionPage> {
+    internal fun readSession(period: PhoneControlPeriod, target: PhoneControlTarget, now: Long, before: Long,
+        limit: Int, expectedRevision: Long, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionPage> {
         if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
         PhoneScreenFixture.reads++
         return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),

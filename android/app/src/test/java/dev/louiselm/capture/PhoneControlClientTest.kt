@@ -78,9 +78,18 @@ class PhoneControlClientTest {
         val period = PhoneControlPeriod(grant, "22".repeat(16), working.private, 0)
         var mismatched = false
         var mayDeliver = true
+        var expectedBefore = 0L
+        var expectedLimit = 50
+        var expectedRevision = 0L
+        var expectedInteraction = true
+        var badRevision = false
+        var badCursor = false
         val transport: PhoneControlTransport = { _, path, body, _ ->
             assertEquals("request", path)
             val wire = body.getJSONObject("request")
+            assertArrayEquals(phoneControlReadPayload(expectedBefore, expectedLimit), phoneControlHex(wire.getString("payload")))
+            assertEquals(expectedRevision, wire.getLong("expected_revision"))
+            assertEquals(if (expectedInteraction) 1 else 0, wire.getInt("interaction"))
             val request = PhoneControlRequest(grant.grantId, grant.revision, period.periodId, grant.receiverIdentity,
                 wire.getString("controller_id"), wire.getString("subject_id"), phoneControlHex(wire.getString("payload")),
                 wire.getString("operation_id"), wire.getLong("expected_revision"), wire.getInt("interaction") == 1)
@@ -90,11 +99,33 @@ class PhoneControlClientTest {
                 verify(phoneControlHex(wire.getString("signature")))
             })
             PhoneControlReply.SessionPage(request.controllerId, if (mismatched) "44".repeat(16) else request.subjectId,
-                request.operationId, 1, "ready", emptyList(), 0, true)
+                request.operationId, if (badRevision) expectedRevision + 1 else if (expectedRevision == 0L) 1 else expectedRevision,
+                "ready", if (badCursor) listOf(PhoneControlEntry.Message(expectedBefore, "user", "wrong page", false)) else emptyList(),
+                0, true)
         }
         val client = PhoneControlClient(context, keys, transport)
         val target = PhoneControlTarget("33".repeat(16), "44".repeat(16))
         assertTrue(client.readSession(period, target, 1) { mayDeliver } is PhoneControlResult.Value)
+        expectedBefore = 42
+        expectedLimit = 12
+        expectedRevision = 7
+        expectedInteraction = false
+        assertTrue(client.readSession(period, target, 1, before = expectedBefore, limit = expectedLimit,
+            expectedRevision = expectedRevision, interaction = false) { mayDeliver } is PhoneControlResult.Value)
+        badRevision = true
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
+            client.readSession(period, target, 1, before = expectedBefore, limit = expectedLimit,
+                expectedRevision = expectedRevision, interaction = false) { mayDeliver })
+        badRevision = false
+        badCursor = true
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
+            client.readSession(period, target, 1, before = expectedBefore, limit = expectedLimit,
+                expectedRevision = expectedRevision, interaction = false) { mayDeliver })
+        badCursor = false
+        expectedBefore = 0
+        expectedLimit = 50
+        expectedRevision = 0
+        expectedInteraction = true
         mismatched = true
         val other = PhoneControlTarget(target.controllerId, "55".repeat(16))
         assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED), client.readSession(period, other, 2) { mayDeliver })
