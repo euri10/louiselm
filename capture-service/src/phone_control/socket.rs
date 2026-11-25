@@ -23,7 +23,7 @@ use super::{
     MAX_FRAME, MAX_INTEGER, Request,
     authority::{Authority, EnrollmentStatus, Refusal, Scope, random_hex},
     fixed,
-    prepared_owner::{OwnerPreparedError, PreparedOwner, Publication},
+    prepared_owner::{OwnerPreparedError, PreparedAdmission, PreparedOwner, Publication},
     source::PhoneSourceError,
     valid_string,
 };
@@ -622,6 +622,13 @@ enum AdminRequest {
         registration_id: String,
         revision: u64,
     },
+    AdmitPrepared {
+        v: u64,
+        capability: String,
+        registration_id: String,
+        revision: u64,
+        selection_sha256: String,
+    },
     UnpublishPrepared {
         v: u64,
         capability: String,
@@ -746,6 +753,7 @@ impl AdminRequest {
             | Self::ListPrepared { v, capability, .. }
             | Self::InspectPrepared { v, capability, .. }
             | Self::OpenPrepared { v, capability, .. }
+            | Self::AdmitPrepared { v, capability, .. }
             | Self::UnpublishPrepared { v, capability, .. }
             | Self::PrepareRunCheckout { v, capability, .. }
             | Self::InspectRunCheckout { v, capability, .. }
@@ -896,6 +904,7 @@ fn process_admin(
         | AdminRequest::ListPrepared { .. }
         | AdminRequest::InspectPrepared { .. }
         | AdminRequest::OpenPrepared { .. }
+        | AdminRequest::AdmitPrepared { .. }
         | AdminRequest::UnpublishPrepared { .. }) => {
             process_prepared_admin(prepared.ok_or(Refusal::Unsupported)?, request)
         }
@@ -975,6 +984,10 @@ fn process_admin(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one closed owner protocol dispatch keeps exact reply handling together"
+)]
 fn process_prepared_admin(owner: &PreparedOwner, request: AdminRequest) -> Result<Value, Refusal> {
     match request {
         AdminRequest::PublishPrepared {
@@ -1047,6 +1060,30 @@ fn process_prepared_admin(owner: &PreparedOwner, request: AdminRequest) -> Resul
                     )
                 })
                 .map_err(|error| prepared_refusal(&error))?
+        }
+        AdminRequest::AdmitPrepared {
+            registration_id,
+            revision,
+            selection_sha256,
+            ..
+        } => {
+            if revision == 0 || revision > MAX_INTEGER {
+                return Err(Refusal::Malformed);
+            }
+            let token = uuid::Uuid::new_v4().to_string();
+            let request = PreparedAdmission {
+                registration_id: &registration_id,
+                revision,
+                selection_sha256: &selection_sha256,
+                token: &token,
+            };
+            let run_id = owner
+                .admit(&request)
+                .map_err(|error| prepared_refusal(&error))?;
+            Ok(
+                json!({"v":1,"type":"prepared_admitted","registration_id":registration_id,
+                "revision":revision,"run_id":run_id,"token":token}),
+            )
         }
         AdminRequest::UnpublishPrepared {
             registration_id,
@@ -1379,6 +1416,13 @@ mod tests {
         )
         .await;
         assert_eq!(waiting["code"], "unsupported");
+        let admission = exchange(
+            &path,
+            json!({"v":1,"type":"admit_prepared","capability":token,
+            "registration_id":"22".repeat(16),"revision":1,"selection_sha256":"33".repeat(32)}),
+        )
+        .await;
+        assert_eq!(admission["code"], "unsupported");
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
     }
@@ -1435,6 +1479,7 @@ mod tests {
         reason = "one end-to-end owner lifecycle verifies source and checkout across restarts"
     )]
     async fn operator_source_freeze_survives_project_removal_and_restart() {
+        use sha2::{Digest, Sha256};
         use std::{os::unix::fs::PermissionsExt, process::Command};
 
         let root = tempfile::tempdir().unwrap();
@@ -1597,6 +1642,33 @@ mod tests {
         assert_eq!(waiting["selection"], selection);
         assert_eq!(waiting["binding"]["run_id"], run_id);
         assert!(runs.run(run_id).is_err());
+        let selection_sha256 = crate::hex::lower_hex(&Sha256::digest(selection.as_bytes()));
+        let admission_request = |capability: &str, digest: &str| {
+            json!({"v":1,"type":"admit_prepared",
+            "capability":capability,"registration_id":registration["registration_id"],
+            "revision":registration["revision"],"selection_sha256":digest})
+        };
+        assert_eq!(
+            exchange(&path, admission_request("wrong", &selection_sha256)).await["code"],
+            "unauthenticated"
+        );
+        assert_eq!(
+            exchange(&path, admission_request(&token, &"00".repeat(32))).await["code"],
+            "malformed"
+        );
+        assert!(runs.run(run_id).is_err());
+        let admitted = exchange(&path, admission_request(&token, &selection_sha256)).await;
+        assert_eq!(admitted["type"], "prepared_admitted");
+        assert_eq!(admitted["run_id"], run_id);
+        assert!(uuid::Uuid::parse_str(admitted["token"].as_str().unwrap()).is_ok());
+        let bound = runs.run(run_id).unwrap();
+        assert_eq!(bound.state, "admitted");
+        assert!(bound.session_id.is_none());
+        assert_eq!(bound.phone_binding.unwrap().agents, vec!["codex"]);
+        assert_eq!(
+            exchange(&path, waiting_request(&token, 1)).await["code"],
+            "stale_subject"
+        );
         let removed = exchange(&path, json!({"v":1,"type":"unpublish_prepared","capability":token,
             "registration_id":registration["registration_id"],"expected_revision":registration["revision"]})).await;
         assert_eq!(removed["type"], "prepared_unpublished");

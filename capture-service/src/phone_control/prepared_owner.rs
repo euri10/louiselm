@@ -6,16 +6,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::{
-    prepared_selection::{SelectionError, read_selection},
+    prepared_selection::{SelectionError, parse_saved, read_selection},
     source::{PhoneSourceError, PhoneSourceStore, require_installed_skills},
     source_checkout::{CheckoutProof, verify_checkout},
 };
 use crate::{
     PreparedRunError, PreparedRunRegistration, PreparedRunRevision, PreparedRunStore,
-    PreparedRunSummary, RunProjectBinding, RunStore, RunStoreError,
+    PreparedRunSummary, RunAdmission, RunProjectBinding, RunStore, RunStoreError,
 };
 
 #[derive(Debug, Error)]
@@ -40,6 +41,13 @@ pub(super) struct Publication<'a> {
     pub(super) checkout_id: &'a str,
     pub(super) selection: &'a Path,
     pub(super) previous: Option<(&'a str, u64)>,
+}
+
+pub(super) struct PreparedAdmission<'a> {
+    pub(super) registration_id: &'a str,
+    pub(super) revision: u64,
+    pub(super) selection_sha256: &'a str,
+    pub(super) token: &'a str,
 }
 
 /// Local owner operations share the service's actual Run ledger and state root.
@@ -100,6 +108,21 @@ impl PreparedOwner {
     pub(super) fn unpublish(&self, id: &str, revision: u64) -> Result<(), OwnerPreparedError> {
         // Removal must remain possible when the optional integration is absent.
         Ok(self.store()?.unpublish(id, revision)?)
+    }
+
+    pub(super) fn admit(
+        &self,
+        request: &PreparedAdmission<'_>,
+    ) -> Result<String, OwnerPreparedError> {
+        (self.integration)()?;
+        let sources = PhoneSourceStore::open(self.root.join("run-sources"))?;
+        admit_with(
+            &sources,
+            &self.store()?,
+            &self.runs,
+            request,
+            verify_checkout,
+        )
     }
 
     /// The caller holds current authority and pairing across this callback.
@@ -176,6 +199,52 @@ pub(super) fn publish(
 ) -> Result<PreparedRunSummary, OwnerPreparedError> {
     require_installed_skills()?;
     publish_with(sources, prepared, runs, request, verify_checkout)
+}
+
+pub(super) fn admit_with(
+    sources: &PhoneSourceStore,
+    prepared: &PreparedRunStore,
+    runs: &RunStore,
+    request: &PreparedAdmission<'_>,
+    verify: impl FnOnce(&CheckoutProof) -> Result<(), PhoneSourceError>,
+) -> Result<String, OwnerPreparedError> {
+    let candidate = prepared.read(request.registration_id, request.revision)?;
+    if crate::hex::lower_hex(&Sha256::digest(candidate.selection.as_bytes()))
+        != request.selection_sha256
+    {
+        return Err(OwnerPreparedError::Invalid("selection digest differs"));
+    }
+    let selection = parse_saved(&candidate, fs::metadata(&sources.root)?.uid())?;
+    let binding = candidate.binding.clone();
+    let admission = RunAdmission {
+        id: binding.run_id.clone(),
+        generated_work_ceiling: u64::try_from(selection.bead_count())
+            .map_err(|_| OwnerPreparedError::Invalid("too many Beads"))?,
+        park_ttl_ms: 3_600_000,
+    };
+    sources.with_current_checkout_by(
+        &binding.run_id,
+        &binding.source_id,
+        &binding.checkout_id,
+        verify,
+        |source, checkout| {
+            if source.project_id != binding.project_id
+                || !selection.matches_checkout(&checkout.checkout.path, &checkout.head)
+            {
+                return Err(OwnerPreparedError::Invalid("selection checkout differs"));
+            }
+            // Hold source, Run, then publication locks through the admission write.
+            runs.admit_phone_bound_fenced(&admission, request.token, &binding, |commit| {
+                prepared.with_published(request.registration_id, request.revision, |saved| {
+                    if saved != &candidate {
+                        return Err(OwnerPreparedError::Invalid("prepared revision changed"));
+                    }
+                    commit().map_err(OwnerPreparedError::from)
+                })?
+            })?;
+            Ok(binding.run_id.clone())
+        },
+    )?
 }
 
 pub(super) fn publish_with(

@@ -6,19 +6,192 @@
     reason = "test fixtures abort on setup or assertion failure"
 )]
 
+use sha2::{Digest, Sha256};
 use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::Path,
 };
 
 use super::{
-    prepared_owner::{PreparedOwner, Publication, publish_with},
+    prepared_owner::{PreparedAdmission, PreparedOwner, Publication, admit_with, publish_with},
     prepared_selection::project_detail,
     source_checkout_tests::{materialize, setup},
 };
 use crate::{PreparedRunStore, RunAdmission, RunStore};
 
 const RUN: &str = "11111111-1111-4111-8111-111111111111";
+
+fn admission<'a>(id: &'a str, revision: u64, digest: &'a str) -> PreparedAdmission<'a> {
+    PreparedAdmission {
+        registration_id: id,
+        revision,
+        selection_sha256: digest,
+        token: "generate-token-1234",
+    }
+}
+
+#[test]
+fn explicit_owner_admission_binds_exact_published_revision_before_attachment() {
+    let (root, sources, source_id) = setup();
+    let checkout = sources
+        .prepare_checkout_with(RUN, &source_id, &root.path().join("checkout"), materialize)
+        .unwrap();
+    let prepared = PreparedRunStore::open(root.path().join("prepared")).unwrap();
+    let runs = RunStore::new(root.path().join("runs")).unwrap();
+    let file = root.path().join("selection.json");
+    let bytes = selection(root.path(), &checkout.head, "private");
+    let digest = crate::hex::lower_hex(&Sha256::digest(bytes.as_bytes()));
+    private_file(&file, &bytes);
+    let publication = Publication {
+        run_id: RUN,
+        source_id: &source_id,
+        checkout_id: &checkout.checkout_id,
+        selection: &file,
+        previous: None,
+    };
+    let first = publish_with(&sources, &prepared, &runs, &publication, |_| Ok(())).unwrap();
+    assert!(
+        admit_with(
+            &sources,
+            &prepared,
+            &runs,
+            &admission(&first.id, first.revision + 1, &digest),
+            |_| Ok(())
+        )
+        .is_err()
+    );
+    assert!(runs.run(RUN).is_err());
+    assert!(
+        admit_with(
+            &sources,
+            &prepared,
+            &runs,
+            &admission(&first.id, first.revision, &"00".repeat(32)),
+            |_| Ok(())
+        )
+        .is_err()
+    );
+    assert!(
+        admit_with(
+            &sources,
+            &prepared,
+            &runs,
+            &admission(&first.id, first.revision, &digest),
+            |_| Err(super::source::PhoneSourceError::Conflict)
+        )
+        .is_err()
+    );
+    assert!(runs.run(RUN).is_err());
+    std::fs::remove_file(&file).unwrap();
+    admit_with(
+        &sources,
+        &prepared,
+        &runs,
+        &admission(&first.id, first.revision, &digest),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let run = runs.run(RUN).unwrap();
+    assert_eq!(run.state, "admitted");
+    assert!(run.session_id.is_none());
+    assert_eq!(run.generated_work.ceiling, 3);
+    let binding = run.phone_binding.unwrap();
+    assert_eq!(binding.run_id, RUN);
+    assert_eq!(binding.source_id, source_id);
+    assert_eq!(binding.checkout_id, checkout.checkout_id);
+    assert_eq!(binding.agents, vec!["codex"]);
+    assert!(
+        admit_with(
+            &sources,
+            &prepared,
+            &runs,
+            &admission(&first.id, first.revision, &digest),
+            |_| Ok(())
+        )
+        .is_err()
+    );
+    prepared.unpublish(&first.id, first.revision).unwrap();
+    assert!(runs.run(RUN).unwrap().phone_binding.is_some());
+}
+
+#[test]
+fn unpublished_revision_cannot_be_admitted_or_rebound() {
+    let (root, sources, source_id) = setup();
+    let checkout = sources
+        .prepare_checkout_with(RUN, &source_id, &root.path().join("checkout"), materialize)
+        .unwrap();
+    let prepared = PreparedRunStore::open(root.path().join("prepared")).unwrap();
+    let runs = RunStore::new(root.path().join("runs")).unwrap();
+    let file = root.path().join("selection.json");
+    let bytes = selection(root.path(), &checkout.head, "private");
+    let digest = crate::hex::lower_hex(&Sha256::digest(bytes.as_bytes()));
+    private_file(&file, &bytes);
+    let publication = Publication {
+        run_id: RUN,
+        source_id: &source_id,
+        checkout_id: &checkout.checkout_id,
+        selection: &file,
+        previous: None,
+    };
+    let saved = publish_with(&sources, &prepared, &runs, &publication, |_| Ok(())).unwrap();
+    prepared.unpublish(&saved.id, saved.revision).unwrap();
+    assert!(
+        admit_with(
+            &sources,
+            &prepared,
+            &runs,
+            &admission(&saved.id, saved.revision, &digest),
+            |_| Ok(())
+        )
+        .is_err()
+    );
+    assert!(runs.run(RUN).is_err());
+}
+
+#[test]
+fn unpublish_winning_during_owner_admission_prevents_the_binding() {
+    let (root, sources, source_id) = setup();
+    let checkout = sources
+        .prepare_checkout_with(RUN, &source_id, &root.path().join("checkout"), materialize)
+        .unwrap();
+    let prepared = PreparedRunStore::open(root.path().join("prepared")).unwrap();
+    let runs = RunStore::new(root.path().join("runs")).unwrap();
+    let file = root.path().join("selection.json");
+    let bytes = selection(root.path(), &checkout.head, "private");
+    let digest = crate::hex::lower_hex(&Sha256::digest(bytes.as_bytes()));
+    private_file(&file, &bytes);
+    let publication = Publication {
+        run_id: RUN,
+        source_id: &source_id,
+        checkout_id: &checkout.checkout_id,
+        selection: &file,
+        previous: None,
+    };
+    let saved = publish_with(&sources, &prepared, &runs, &publication, |_| Ok(())).unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
+    let worker_prepared = prepared.clone();
+    let worker_runs = runs.clone();
+    let worker_id = saved.id.clone();
+    let worker = std::thread::spawn(move || {
+        admit_with(
+            &sources,
+            &worker_prepared,
+            &worker_runs,
+            &admission(&worker_id, saved.revision, &digest),
+            |_| {
+                entered_tx.send(()).unwrap();
+                proceed_rx.recv().unwrap();
+                Ok(())
+            },
+        )
+    });
+    entered_rx.recv().unwrap();
+    prepared.unpublish(&saved.id, saved.revision).unwrap();
+    proceed_tx.send(()).unwrap();
+    assert!(worker.join().unwrap().is_err());
+    assert!(runs.run(RUN).is_err());
+}
 
 pub(super) fn selection(root: &Path, head: &str, prompt: &str) -> String {
     let digest = format!("sha256:{}", "01".repeat(32));

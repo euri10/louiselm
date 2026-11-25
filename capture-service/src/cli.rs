@@ -255,7 +255,10 @@ async fn phone_control_admin_stream(
         PhoneControl::FreezeRunSource { .. } | PhoneControl::PrepareRunCheckout { .. }
     ) {
         std::time::Duration::from_secs(195)
-    } else if matches!(&command, PhoneControl::PublishPrepared { .. }) {
+    } else if matches!(
+        &command,
+        PhoneControl::PublishPrepared { .. } | PhoneControl::AdmitPrepared { .. }
+    ) {
         std::time::Duration::from_secs(45)
     } else {
         std::time::Duration::from_secs(5)
@@ -287,6 +290,7 @@ fn phone_control_admin_request(
         | PhoneControl::ListPrepared
         | PhoneControl::InspectPrepared { .. }
         | PhoneControl::OpenPrepared { .. }
+        | PhoneControl::AdmitPrepared { .. }
         | PhoneControl::UnpublishPrepared { .. }) => {
             return phone_control_prepared_request(prepared, capability);
         }
@@ -395,6 +399,14 @@ fn phone_control_prepared_request(
         } => (
             serde_json::json!({"v":1,"type":"open_prepared","capability":capability,"registration_id":registration_id,"revision":revision}),
             "prepared_waiting",
+        ),
+        PhoneControl::AdmitPrepared {
+            registration_id,
+            revision,
+            selection_sha256,
+        } => (
+            serde_json::json!({"v":1,"type":"admit_prepared","capability":capability,"registration_id":registration_id,"revision":revision,"selection_sha256":selection_sha256}),
+            "prepared_admitted",
         ),
         PhoneControl::UnpublishPrepared {
             registration_id,

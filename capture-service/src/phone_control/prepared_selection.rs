@@ -172,16 +172,7 @@ pub(super) fn project_detail(
     saved: &PreparedRunRevision,
     owner: u32,
 ) -> Result<serde_json::Value, SelectionError> {
-    if saved.selection.len() as u64 > MAX_SELECTION {
-        return Err(SelectionError::Invalid("selection is too large"));
-    }
-    let selection: Selection = serde_json::from_str(&saved.selection)?;
-    validate_selection(&selection, owner)?;
-    if selection.envelope.run_id != saved.binding.run_id
-        || saved.binding.agents.as_slice() != [selection.manifest.agent.id.as_str()]
-    {
-        return Err(SelectionError::Invalid("selection binding differs"));
-    }
+    let selection = parse_saved(saved, owner)?;
     let skill_requests = selection.envelope.skill_requests.as_ref().map_or_else(
         || serde_json::json!({"enabled":false,"agents":[],"allow_run":false,"allow_supply":false}),
         |scope| serde_json::json!({"enabled":true,"agents":scope.agents,"allow_run":scope.allow_run,"allow_supply":scope.allow_supply}),
@@ -201,6 +192,23 @@ pub(super) fn project_detail(
     }))
 }
 
+pub(super) fn parse_saved(
+    saved: &PreparedRunRevision,
+    owner: u32,
+) -> Result<Selection, SelectionError> {
+    if saved.selection.len() as u64 > MAX_SELECTION {
+        return Err(SelectionError::Invalid("selection is too large"));
+    }
+    let selection: Selection = serde_json::from_str(&saved.selection)?;
+    validate_selection(&selection, owner)?;
+    if selection.envelope.run_id != saved.binding.run_id
+        || saved.binding.agents.as_slice() != [selection.manifest.agent.id.as_str()]
+    {
+        return Err(SelectionError::Invalid("selection binding differs"));
+    }
+    Ok(selection)
+}
+
 impl Selection {
     pub(super) fn run_id(&self) -> &str {
         &self.envelope.run_id
@@ -212,6 +220,10 @@ impl Selection {
 
     pub(super) fn agent_id(&self) -> &str {
         &self.manifest.agent.id
+    }
+
+    pub(super) fn bead_count(&self) -> usize {
+        self.beads.len()
     }
 }
 

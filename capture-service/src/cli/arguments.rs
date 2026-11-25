@@ -113,6 +113,15 @@ pub(super) enum PhoneControl {
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         revision: u64,
     },
+    /// Record an exact owner's reviewed binding; this does not authorize or start execution.
+    AdmitPrepared {
+        #[arg(long)]
+        registration_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        revision: u64,
+        #[arg(long)]
+        selection_sha256: String,
+    },
     /// Remove one exact revision from phone discovery without deleting it.
     UnpublishPrepared {
         #[arg(long)]

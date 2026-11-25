@@ -420,48 +420,115 @@ impl RunStore {
     ) -> Result<(), RunStoreError> {
         validate_admission(&admission)?;
         validate_token(token)?;
+        self.locked(|| self.admit_locked(admission, token, phone_binding))
+    }
+
+    fn admit_locked(
+        &self,
+        admission: RunAdmission,
+        token: &str,
+        phone_binding: Option<RunProjectBinding>,
+    ) -> Result<(), RunStoreError> {
+        self.require_unambiguous_id(&admission.id)?;
+        let path = self.path(&admission.id);
+        let mut run = Run {
+            schema_version: 4,
+            revision: 1,
+            id: admission.id,
+            session_id: None,
+            agent: None,
+            acp_session_id: None,
+            working_dir: None,
+            phone_binding,
+            phone_binding_sha256: None,
+            load_session: None,
+            state: "admitted".to_owned(),
+            park_ttl_ms: admission.park_ttl_ms,
+            parked_at_ms: None,
+            park_expires_at_ms: 0,
+            triggering_mutation_id: None,
+            resume_attempt: None,
+            generated_work: GeneratedWorkBudget {
+                ceiling: admission.generated_work_ceiling,
+                consumed: 0,
+                reserved: 0,
+                pending: Vec::new(),
+                outputs: Vec::new(),
+            },
+            generate_token_sha256: token_sha256(token),
+            cleanup: Vec::new(),
+        };
+        seal_phone_run(&mut run)?;
+        if path.exists() {
+            return if self.run(&run.id)? == run {
+                Ok(())
+            } else {
+                Err(RunStoreError::Invalid(
+                    "Run UUID conflicts with existing record".to_owned(),
+                ))
+            };
+        }
+        write_atomic(&path, &run)
+    }
+
+    /// Admit only while a trusted owner holds its exact revision fence.
+    ///
+    /// The owner supplies the verified binding and invokes `commit` once from
+    /// inside its registration lock. The Run lock is held first. Neither this
+    /// operation nor the fence authorizes execution or grants phone access.
+    pub(crate) fn admit_phone_bound_fenced<E>(
+        &self,
+        admission: &RunAdmission,
+        token: &str,
+        binding: &RunProjectBinding,
+        fence: impl FnOnce(&mut dyn FnMut() -> Result<(), RunStoreError>) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<RunStoreError>,
+    {
+        validate_admission(admission).map_err(E::from)?;
+        validate_token(token).map_err(E::from)?;
+        validate_binding(binding).map_err(|_| {
+            E::from(RunStoreError::Invalid(
+                "invalid Run project binding".to_owned(),
+            ))
+        })?;
+        if binding.run_id != admission.id {
+            return Err(E::from(RunStoreError::Invalid(
+                "Run project binding mismatch".to_owned(),
+            )));
+        }
         self.locked(|| {
             self.require_unambiguous_id(&admission.id)?;
-            let path = self.path(&admission.id);
-            let mut run = Run {
-                schema_version: 4,
-                revision: 1,
-                id: admission.id,
-                session_id: None,
-                agent: None,
-                acp_session_id: None,
-                working_dir: None,
-                phone_binding,
-                phone_binding_sha256: None,
-                load_session: None,
-                state: "admitted".to_owned(),
-                park_ttl_ms: admission.park_ttl_ms,
-                parked_at_ms: None,
-                park_expires_at_ms: 0,
-                triggering_mutation_id: None,
-                resume_attempt: None,
-                generated_work: GeneratedWorkBudget {
-                    ceiling: admission.generated_work_ceiling,
-                    consumed: 0,
-                    reserved: 0,
-                    pending: Vec::new(),
-                    outputs: Vec::new(),
-                },
-                generate_token_sha256: token_sha256(token),
-                cleanup: Vec::new(),
-            };
-            seal_phone_run(&mut run)?;
-            if path.exists() {
-                return if self.run(&run.id)? == run {
-                    Ok(())
-                } else {
-                    Err(RunStoreError::Invalid(
-                        "Run UUID conflicts with existing record".to_owned(),
-                    ))
-                };
+            if self.find_run(&admission.id)?.is_some() {
+                return Err(RunStoreError::Invalid(
+                    "Run UUID is already used".to_owned(),
+                ));
             }
-            write_atomic(&path, &run)
+            let mut attempted = false;
+            let mut committed = false;
+            let result = {
+                let mut commit = || {
+                    if attempted {
+                        return Err(RunStoreError::Invalid(
+                            "Run admission was already attempted".to_owned(),
+                        ));
+                    }
+                    attempted = true;
+                    self.admit_locked((*admission).clone(), token, Some((*binding).clone()))?;
+                    committed = true;
+                    Ok(())
+                };
+                fence(&mut commit)
+            };
+            if result.is_ok() && !committed {
+                return Err(RunStoreError::Invalid(
+                    "Run admission fence did not commit".to_owned(),
+                ));
+            }
+            Ok(result)
         })
+        .map_err(E::from)?
     }
 
     /// Attach the initialized ACP Session before the Run can generate work.

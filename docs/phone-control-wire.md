@@ -167,11 +167,20 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   operator to construct a waiting controller; it does not start a Run, register
   a live controller, approve access, or guarantee the checkout is still clean.
   Any later Start must independently recheck the selection and native authority.
+- `{v:1,type:"admit_prepared",capability:string,registration_id:hex16,revision:integer,selection_sha256:hex32}`
+  returns `{v:1,type:"prepared_admitted",registration_id:hex16,revision:integer,run_id:uuid,token:string}`
+  only for the exact current publication and selection bytes after rechecking
+  the source and clean checkout. It durably binds that unused Run UUID to the
+  original project, source, checkout and configured Agent before attachment,
+  while serialized with unpublication. The local-only token is sensitive. This
+  records generated-work accounting, not broker approval, execution, a Session,
+  a phone grant, or a replacement for the native rehearsal and Start checks.
+  An uncertain reply requires inspecting the original Run, never a fresh retry.
 - `{v:1,type:"unpublish_prepared",capability:string,registration_id:hex16,expected_revision:integer}`
   returns `{v:1,type:"prepared_unpublished",registration_id:hex16,revision:integer}`
   only for the current published revision. It retains all private revisions and
   does not cancel an admitted Run. These owner operations require Run support;
-  publishing, listing, inspection and opening also return `unsupported` if the optional
+  publishing, listing, inspection, opening and admission also return `unsupported` if the optional
   skills integration is absent. None opens a controller or changes an Attention.
 - `{v:1,type:"register_root",capability:string,path:string}` returns
   `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a
