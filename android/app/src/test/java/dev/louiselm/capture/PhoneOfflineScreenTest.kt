@@ -40,6 +40,7 @@ private object OfflineScreenFixture {
     val target = PhoneControlTarget("11".repeat(16), "22".repeat(16))
     val material = ByteArray(32) { 7 }
     var authenticate: (() -> Unit)? = null
+    var pairingUnavailable = false
 }
 
 @Implements(PhoneControlClient::class, isInAndroidSdk = false)
@@ -51,7 +52,10 @@ class OfflineScreenClientFixture {
 @Implements(PairingStore::class, isInAndroidSdk = false)
 class OfflineScreenPairingFixture {
     @Implementation(methodName = "load")
-    internal fun load() = PairingConfig("https://example.invalid", OfflineScreenFixture.receiver, "device", "credential")
+    internal fun load(): PairingConfig {
+        if (OfflineScreenFixture.pairingUnavailable) throw SecurityException("fixture")
+        return PairingConfig("https://example.invalid", OfflineScreenFixture.receiver, "device", "credential")
+    }
 }
 
 @Implements(PhoneOfflineUnlockStore::class, isInAndroidSdk = false)
@@ -109,6 +113,7 @@ class PhoneOfflineScreenTest {
 
     @Before
     fun setup() {
+        OfflineScreenFixture.pairingUnavailable = false
         val app = RuntimeEnvironment.getApplication()
         shadowOf(app).grantPermissions("${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
         shadowOf(app.getSystemService(KeyguardManager::class.java)).setIsDeviceLocked(false)
@@ -207,5 +212,12 @@ class PhoneOfflineScreenTest {
         drain()
         assertFalse(contains("protected offline text"))
         assertTrue(button(R.string.phone_offline_unlock).isShown)
+    }
+
+    @Test
+    fun offlineReadingDoesNotRequireTheCapturePairingKey() {
+        OfflineScreenFixture.pairingUnavailable = true
+        unlockAndOpen()
+        assertTrue(contains("protected offline text"))
     }
 }

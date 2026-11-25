@@ -79,7 +79,7 @@ internal class PhoneOfflineStore(private val root: File) {
             }
             return locked {
                 if (!mayCommit()) return@locked PhoneOfflineSave.CANCELLED
-                val listing = readListing(directory, source.receiver, key)
+                val listing = readAll(key)
                 if (listing.damaged.isNotEmpty()) return@locked PhoneOfflineSave.DAMAGED
                 val old = listing.copies.firstOrNull { copyId(it.source) == id }
                 if (old?.pinned == true && (!pin || incomplete && !old.incomplete)) return@locked PhoneOfflineSave.KEEP_EXISTING
@@ -102,8 +102,9 @@ internal class PhoneOfflineStore(private val root: File) {
                         if (old != null) deleteFile(dataFile(directory, id, old.version))
                         for (remove in decision.remove) {
                             val victim = listing.copies.first { copyId(it.source) == remove }
-                            deleteFile(metadataFile(directory, remove))
-                            deleteFile(dataFile(directory, remove, victim.version))
+                            val victimDirectory = directory(victim.source.receiver)
+                            deleteFile(metadataFile(victimDirectory, remove))
+                            deleteFile(dataFile(victimDirectory, remove, victim.version))
                         }
                         PhoneOfflineSave.SAVED
                     }
@@ -120,11 +121,20 @@ internal class PhoneOfflineStore(private val root: File) {
         readListing(directory(receiver), receiver, key)
     }
 
+    /** The encrypted metadata supplies source identity without opening capture credentials. */
+    fun listAll(key: SecretKey): PhoneOfflineListing = locked { readAll(key) }
+
     /** Apply expiry and an adjusted budget without ever selecting pins for removal. */
     fun maintain(receiver: String, budget: Long, nowMs: Long, key: SecretKey): PhoneOfflineSave = locked {
-        val directory = directory(receiver)
-        val listing = readListing(directory, receiver, key)
-        if (listing.damaged.isNotEmpty()) return@locked PhoneOfflineSave.DAMAGED
+        maintainListing(readListing(directory(receiver), receiver, key), budget, nowMs)
+    }
+
+    fun maintainAll(budget: Long, nowMs: Long, key: SecretKey): PhoneOfflineSave = locked {
+        maintainListing(readAll(key), budget, nowMs)
+    }
+
+    private fun maintainListing(listing: PhoneOfflineListing, budget: Long, nowMs: Long): PhoneOfflineSave {
+        if (listing.damaged.isNotEmpty()) return PhoneOfflineSave.DAMAGED
         val usage = listing.copies.map { PhoneOfflineUsage(copyId(it.source), it.bytes, it.openedAtMs, it.pinned) }
         val decision = planPhoneOfflineRetention(usage, null, budget, nowMs)
         val remove = when (decision) {
@@ -134,10 +144,11 @@ internal class PhoneOfflineStore(private val root: File) {
         }
         for (id in remove) {
             val victim = listing.copies.first { copyId(it.source) == id }
-            deleteFile(metadataFile(directory, id))
-            deleteFile(dataFile(directory, id, victim.version))
+            val victimDirectory = directory(victim.source.receiver)
+            deleteFile(metadataFile(victimDirectory, id))
+            deleteFile(dataFile(victimDirectory, id, victim.version))
         }
-        when (decision) {
+        return when (decision) {
             is PhoneOfflinePlan.Accept -> PhoneOfflineSave.SAVED
             PhoneOfflinePlan.Refuse.BYTE_LIMIT -> PhoneOfflineSave.BYTE_LIMIT
             PhoneOfflinePlan.Refuse.SESSION_LIMIT -> PhoneOfflineSave.SESSION_LIMIT
@@ -218,7 +229,21 @@ internal class PhoneOfflineStore(private val root: File) {
         writeMetadata(directory, id, update(current), current.bytes - META_BYTES, key)
     }
 
-    private fun readListing(directory: File, receiver: String, key: SecretKey): PhoneOfflineListing {
+    private fun readAll(key: SecretKey): PhoneOfflineListing {
+        val directories = root.listFiles() ?: if (!root.exists()) return PhoneOfflineListing(emptyList(), emptyList())
+            else throw IOException("downloads unavailable")
+        val copies = mutableListOf<PhoneOfflineCopy>()
+        val damaged = mutableListOf<String>()
+        for (directory in directories.filter { it.name.matches(DIRECTORY_NAME) }) {
+            if (Files.isSymbolicLink(directory.toPath()) || !directory.isDirectory) throw IOException("invalid download path")
+            val listing = readListing(directory, null, key)
+            copies.addAll(listing.copies)
+            damaged.addAll(listing.damaged)
+        }
+        return PhoneOfflineListing(copies.sortedByDescending { it.openedAtMs }, damaged)
+    }
+
+    private fun readListing(directory: File, receiver: String?, key: SecretKey): PhoneOfflineListing {
         if (!directory.exists()) return PhoneOfflineListing(emptyList(), emptyList())
         val copies = mutableListOf<PhoneOfflineCopy>()
         val damaged = mutableListOf<String>()
@@ -226,7 +251,9 @@ internal class PhoneOfflineStore(private val root: File) {
         for (file in files.filter { it.name.matches(METADATA_NAME) }) {
             val id = file.name.removeSuffix(".meta")
             try {
-                copies.add(readMetadata(file, id, receiver, key))
+                val copy = readMetadata(file, id, receiver, key)
+                require(directory.name == this.directory(copy.source.receiver).name)
+                copies.add(copy)
             } catch (_: AEADBadTagException) {
                 damaged.add(id)
             } catch (_: IOException) {
@@ -244,7 +271,7 @@ internal class PhoneOfflineStore(private val root: File) {
         return PhoneOfflineListing(copies.sortedByDescending { it.openedAtMs }, damaged)
     }
 
-    private fun readMetadata(file: File, id: String, receiver: String, key: SecretKey): PhoneOfflineCopy {
+    private fun readMetadata(file: File, id: String, receiver: String?, key: SecretKey): PhoneOfflineCopy {
         if (Files.isSymbolicLink(file.toPath())) throw IOException("invalid download path")
         if (file.length() != META_BYTES.toLong()) throw IOException("invalid download metadata")
         val encrypted = ByteArray(META_BYTES)
@@ -271,7 +298,7 @@ internal class PhoneOfflineStore(private val root: File) {
         val source = PhoneOfflineSource(text("receiver"), PhoneControlTarget(text("controller"), text("subject")),
             text("name"), text("agent"), text("project"))
         validateSource(source)
-        require(source.receiver == receiver && copyId(source) == id)
+        require((receiver == null || source.receiver == receiver) && copyId(source) == id)
         val opened = number("opened")
         val refreshed = number("refreshed")
         val pages = number("pages")
@@ -371,5 +398,6 @@ internal class PhoneOfflineStore(private val root: File) {
         const val MAX_PAGES = 1_000_000
         val METADATA_NAME = Regex("[0-9a-f]{64}\\.meta")
         val DATA_NAME = Regex("[0-9a-f]{64}\\.[0-9a-f]{32}\\.data")
+        val DIRECTORY_NAME = Regex("[0-9a-f]{64}")
     }
 }

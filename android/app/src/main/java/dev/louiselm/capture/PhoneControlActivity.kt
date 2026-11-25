@@ -43,6 +43,7 @@ private data class PendingPreparation(val token: Long, val value: PreparedPhoneC
 private data class PendingPeriod(val token: Long, val value: PhoneControlPeriod)
 private data class PendingOfflinePreparation(val token: Long, val value: PreparedPhoneOfflineUnlock)
 private data class PendingOfflinePeriod(val token: Long, val value: PhoneOfflinePeriod)
+private data class PhoneTargetRead(val refresh: PhoneSessionRefresh, val pages: List<PhoneControlReply.SessionPage>, val saveMessage: Int?)
 
 /** Owns the temporary working key and all callbacks that can expose the workspace. */
 class PhoneControlActivity : Activity() {
@@ -87,6 +88,7 @@ class PhoneControlActivity : Activity() {
     private var offlinePageIndex = 0
     private var selectedSource: PhoneOfflineSource? = null
     private var openedPages = emptyList<PhoneControlReply.SessionPage>()
+    private var sessionOpenedAtMs: Long? = null
     private var preparedUnlock: PreparedPhoneControlUnlock? = null
     private var cancellation: CancellationSignal? = null
     private var pendingNetworkAction: (() -> Unit)? = null
@@ -253,7 +255,7 @@ class PhoneControlActivity : Activity() {
         add(unlockButton)
         offlineUnlockButton = Button(this).apply {
             text = getString(R.string.phone_offline_unlock)
-            setOnClickListener { unlockOffline { showOfflineCopies() } }
+            setOnClickListener { unlockOffline { unlocked -> if (unlocked) showOfflineCopies() } }
         }
         add(offlineUnlockButton)
         lockButton = Button(this).apply { text = getString(R.string.phone_lock); setOnClickListener { lockWorkspace() } }
@@ -328,8 +330,8 @@ class PhoneControlActivity : Activity() {
             message != null -> getString(message)
             busy -> getString(R.string.phone_busy)
             period?.isActive(SystemClock.elapsedRealtime()) == true -> getString(R.string.phone_unlocked)
-            offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true -> getString(R.string.phone_offline_unlocked)
             currentStatus is PhoneControlStatus.Pending -> getString(R.string.phone_pending, (currentStatus as PhoneControlStatus.Pending).value.matchingCode)
+            offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true -> getString(R.string.phone_offline_unlocked)
             currentStatus is PhoneControlStatus.Granted -> getString(R.string.phone_locked)
             else -> getString(R.string.phone_disabled)
         }
@@ -373,7 +375,7 @@ class PhoneControlActivity : Activity() {
         unlockButton.isEnabled = !busy
     }
 
-    private fun unlockOffline(after: () -> Unit) {
+    private fun unlockOffline(after: (Boolean) -> Unit) {
         val token = generation.incrementAndGet()
         busy = true
         render()
@@ -394,6 +396,7 @@ class PhoneControlActivity : Activity() {
                 if (result is PhoneControlResult.Failure || prepared == null) {
                     busy = false
                     render(R.string.phone_offline_failed)
+                    if (foreground) after(false)
                     return@runOnUiThread
                 }
                 preparedOfflineUnlock = prepared
@@ -406,6 +409,7 @@ class PhoneControlActivity : Activity() {
                             preparedOfflineUnlock = null
                             busy = false
                             render(R.string.phone_offline_failed)
+                            if (foreground) after(false)
                         } else finishOfflineUnlock(prepared, cipher, token, after)
                     }, {
                         if (!active(token)) return@start
@@ -414,23 +418,26 @@ class PhoneControlActivity : Activity() {
                         preparedOfflineUnlock = null
                         busy = false
                         render(R.string.phone_offline_not_saved)
+                        if (foreground) after(false)
                     })
                 } catch (_: IllegalArgumentException) {
                     prepared.discard()
                     preparedOfflineUnlock = null
                     busy = false
                     render(R.string.phone_offline_failed)
+                    if (foreground) after(false)
                 } catch (_: SecurityException) {
                     prepared.discard()
                     preparedOfflineUnlock = null
                     busy = false
                     render(R.string.phone_offline_failed)
+                    if (foreground) after(false)
                 }
             }
         }
     }
 
-    private fun finishOfflineUnlock(prepared: PreparedPhoneOfflineUnlock, cipher: javax.crypto.Cipher, token: Long, after: () -> Unit) {
+    private fun finishOfflineUnlock(prepared: PreparedPhoneOfflineUnlock, cipher: javax.crypto.Cipher, token: Long, after: (Boolean) -> Unit) {
         networkExecutor.execute {
             val result = offlineResult {
                 if (!active(token)) PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
@@ -452,13 +459,14 @@ class PhoneControlActivity : Activity() {
                 busy = false
                 if (result is PhoneControlResult.Failure || unlocked == null) {
                     render(R.string.phone_offline_failed)
+                    if (foreground) after(false)
                     return@runOnUiThread
                 }
                 offlinePeriod?.lock()
                 offlinePeriod = unlocked
                 scheduleOfflineExpiry()
                 render()
-                if (foreground) after()
+                if (foreground) after(true)
             }
         }
     }
@@ -470,11 +478,9 @@ class PhoneControlActivity : Activity() {
         handler.removeCallbacks(refreshPoll)
         task({ mayContinue -> offlineResult {
             val key = current.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
-            val receiver = PairingStore(applicationContext).load()?.receiverIdentitySha256?.lowercase()
-                ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
             if (!foreground || !mayContinue()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
-            val maintenance = offlineStore.maintain(receiver, offlineBudget(), System.currentTimeMillis(), key)
-            val listing = offlineStore.list(receiver, key)
+            val maintenance = offlineStore.maintainAll(offlineBudget(), System.currentTimeMillis(), key)
+            val listing = offlineStore.listAll(key)
             PhoneControlResult.Value(maintenance to listing)
         } }, { if (foreground) render(R.string.phone_offline_failed) }) { result, _ ->
             busy = false
@@ -572,10 +578,8 @@ class PhoneControlActivity : Activity() {
         val current = offlinePeriod ?: return
         task({ mayContinue -> offlineResult {
             val key = current.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
-            val receiver = PairingStore(applicationContext).load()?.receiverIdentitySha256?.lowercase()
-                ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
             if (!foreground || !mayContinue()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
-            val result = offlineStore.maintain(receiver, budget, System.currentTimeMillis(), key)
+            val result = offlineStore.maintainAll(budget, System.currentTimeMillis(), key)
             if (result == PhoneOfflineSave.SAVED &&
                 !getSharedPreferences("phone-offline-settings-v1", MODE_PRIVATE).edit().putLong("budget", budget).commit()) {
                 throw IOException("offline limit could not be stored")
@@ -735,8 +739,12 @@ class PhoneControlActivity : Activity() {
                         period = takePeriod(token) ?: return@runOnUiThread
                         scheduleExpiry()
                         render()
-                        if (target != null) withNetwork { readTarget() }
-                        else if (!attentionNavigation) withNetwork { readSessions() }
+                        val continueOnline = {
+                            if (target != null) withNetwork { readTarget() }
+                            else if (!attentionNavigation) withNetwork { readSessions() }
+                        }
+                        if (offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true) continueOnline()
+                        else unlockOffline { continueOnline() }
                     }
                     is PhoneControlResult.Failure -> showFailure(result.outcome)
                 }
@@ -788,6 +796,9 @@ class PhoneControlActivity : Activity() {
         showingActionHistory = false
         actionHistoryPage = null
         target = null
+        selectedSource = null
+        openedPages = emptyList()
+        sessionOpenedAtMs = null
         sessionPage = null
         newerOmitted = false
         historyChanged = false
@@ -881,6 +892,10 @@ class PhoneControlActivity : Activity() {
                         if (row.summary.truncated) getString(R.string.phone_truncated) else "")
                     setOnClickListener {
                         target = row.target
+                        selectedSource = PhoneOfflineSource(current.grant.receiverIdentity, row.target,
+                            row.summary.name, row.summary.agent, row.summary.project)
+                        openedPages = emptyList()
+                        sessionOpenedAtMs = null
                         sessionPage = null
                         newerOmitted = false
                         historyChanged = false
@@ -895,6 +910,12 @@ class PhoneControlActivity : Activity() {
     private fun readTarget(older: Boolean = false, interaction: Boolean = true) {
         val current = period ?: return
         val requested = target ?: return
+        val local = offlinePeriod
+        val storedSource = selectedSource?.takeIf { it.target == requested && it.receiver == current.grant.receiverIdentity }
+            ?: PhoneOfflineSource(current.grant.receiverIdentity, requested, getString(R.string.phone_open_session), "", "")
+        if (interaction && !older) sessionOpenedAtMs = System.currentTimeMillis()
+        val openedAt = sessionOpenedAtMs
+        val priorPages = openedPages
         val previous = sessionPage
         val before = if (older) previous?.nextBefore ?: 0 else 0
         val rebuild = !older && !interaction && !historyChanged
@@ -915,11 +936,39 @@ class PhoneControlActivity : Activity() {
                 }
             when (val first = read(before, if (older) previous?.revision ?: 0 else 0, 50, interaction)) {
                 is PhoneControlResult.Failure -> first
-                is PhoneControlResult.Value -> if (rebuild) {
-                    reconcilePhoneSessionPages(first.value, previous, HISTORY_WINDOW,
+                is PhoneControlResult.Value -> {
+                    val refresh = if (rebuild) reconcilePhoneSessionPages(first.value, previous, HISTORY_WINDOW,
                         { cursor, revision, limit -> read(cursor, revision, limit, false) },
                         { read(0, 0, 50, false) })
-                } else PhoneControlResult.Value(PhoneSessionRefresh(first.value, !interaction && hadGap))
+                    else PhoneControlResult.Value(PhoneSessionRefresh(first.value, !interaction && hadGap))
+                    when (refresh) {
+                        is PhoneControlResult.Failure -> refresh
+                        is PhoneControlResult.Value -> {
+                            val pages = if (!interaction) priorPages else if (older) (priorPages + first.value).take(HISTORY_WINDOW / 50)
+                                else listOf(first.value)
+                            var message: Int? = null
+                            if (interaction && (!older || priorPages.isNotEmpty())) {
+                                if (local == null || openedAt == null) message = R.string.phone_offline_not_saved
+                                else {
+                                    val save = offlineResult {
+                                        val key = local.key(SystemClock.elapsedRealtime())
+                                            ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                                        PhoneControlResult.Value(offlineStore.save(storedSource, pages.asSequence(), false, openedAt,
+                                            System.currentTimeMillis(), offlineBudget(), key) {
+                                            foreground && maySend() && pairing.binding() == binding &&
+                                                current.isActive(SystemClock.elapsedRealtime()) && local.isActive(SystemClock.elapsedRealtime())
+                                        })
+                                    }
+                                    message = when (save) {
+                                        is PhoneControlResult.Failure -> R.string.phone_offline_failed
+                                        is PhoneControlResult.Value -> if (save.value == PhoneOfflineSave.KEEP_EXISTING) null else offlineSaveMessage(save.value)
+                                    }
+                                }
+                            }
+                            PhoneControlResult.Value(PhoneTargetRead(refresh.value, pages, message))
+                        }
+                    }
+                }
             }
         }, { outcome ->
             if (!foreground) return@task
@@ -930,7 +979,7 @@ class PhoneControlActivity : Activity() {
                 showFailure(outcome)
                 if (outcome == PhoneControlOutcome.UNAVAILABLE) scheduleRefresh()
             }
-        }) { refresh, _ ->
+        }) { result, _ ->
             busy = false
             if (!foreground) return@task
             if (pairing.binding() != binding) {
@@ -943,6 +992,7 @@ class PhoneControlActivity : Activity() {
                 lockWorkspace()
                 return@task
             }
+            val refresh = result.refresh
             val page = refresh.page
             val unchanged = !older && !interaction && !refresh.missingOlder && previous != null && page.revision == previous.revision
             if (older) {
@@ -967,8 +1017,9 @@ class PhoneControlActivity : Activity() {
                 sessionPage = page
                 newerOmitted = false
             }
+            if (interaction) openedPages = result.pages
             scheduleExpiry()
-            render()
+            render(result.saveMessage)
             conversation.visibility = View.VISIBLE
             if (!unchanged) displayPage(requireNotNull(sessionPage))
             scheduleRefresh()

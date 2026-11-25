@@ -11,9 +11,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
+import java.io.File
 import java.security.Signature
 import java.time.Duration
 import java.util.concurrent.ExecutorService
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,6 +40,7 @@ import org.robolectric.util.ReflectionHelpers
 private object PhoneScreenFixture {
     val grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), "22".repeat(32), "33".repeat(32))
     val key = phoneControlWorkingKey()
+    val offlineMaterial = ByteArray(32) { 7 }
     var status: PhoneControlStatus = PhoneControlStatus.Disabled
     var prompt: ((Signature?) -> Unit)? = null
     var error: ((Boolean) -> Unit)? = null
@@ -62,9 +66,11 @@ private object PhoneScreenFixture {
     var olderOutcome: PhoneControlOutcome? = null
     val readRequests = mutableListOf<Triple<Long, Long, Boolean>>()
     var pairingBinding: String? = "fixture"
+    var preUnlockOffline = true
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
+        preUnlockOffline = true
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; olderNextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
@@ -76,6 +82,9 @@ private object PhoneScreenFixture {
 class PhoneScreenPairingFixture {
     @Implementation
     fun binding(): String? = PhoneScreenFixture.pairingBinding
+
+    @Implementation(methodName = "load")
+    internal fun load() = PairingConfig("https://example.invalid", PhoneScreenFixture.grant.receiverIdentity, "device", "credential")
 }
 
 @Implements(PhoneControlClient::class, isInAndroidSdk = false)
@@ -184,8 +193,34 @@ class PhoneScreenAuthenticatorFixture {
     }
 }
 
+@Implements(PhoneOfflineUnlockStore::class, isInAndroidSdk = false)
+class PhoneScreenOfflineUnlockFixture {
+    @Implementation(methodName = "prepare")
+    internal fun prepare(): PreparedPhoneOfflineUnlock {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(PhoneScreenFixture.offlineMaterial, "AES"))
+        return PreparedPhoneOfflineUnlock(cipher, true, ByteArray(32))
+    }
+
+    @Implementation(methodName = "finish")
+    internal fun finish(prepared: PreparedPhoneOfflineUnlock, cipher: Cipher, startedAtMs: Long): PhoneOfflinePeriod {
+        check(prepared.operation === cipher)
+        return PhoneOfflinePeriod(PhoneScreenFixture.offlineMaterial, startedAtMs)
+    }
+}
+
+@Implements(PhoneOfflineAuthenticator::class, isInAndroidSdk = false)
+class PhoneScreenOfflineAuthenticatorFixture {
+    @Implementation(methodName = "start")
+    internal fun start(cipher: Cipher, success: (Cipher?) -> Unit, error: (Boolean) -> Unit): CancellationSignal {
+        success(cipher)
+        return CancellationSignal()
+    }
+}
+
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30, 34], shadows = [PhoneScreenClientFixture::class, PhoneScreenAuthenticatorFixture::class, PhoneScreenPairingFixture::class],
+@Config(sdk = [30, 34], shadows = [PhoneScreenClientFixture::class, PhoneScreenAuthenticatorFixture::class, PhoneScreenPairingFixture::class,
+    PhoneScreenOfflineUnlockFixture::class, PhoneScreenOfflineAuthenticatorFixture::class],
     instrumentedPackages = ["dev.louiselm.capture"])
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneControlActivityTest {
@@ -213,6 +248,10 @@ class PhoneControlActivityTest {
         ReflectionHelpers.setField(activity, "networkExecutor", executor)
         controller.setup()
         drain()
+        if (PhoneScreenFixture.preUnlockOffline) {
+            // The offline-unlock screen has its own lifecycle tests; keep these cases focused on online callbacks.
+            ReflectionHelpers.setField(activity, "offlinePeriod", PhoneOfflinePeriod(PhoneScreenFixture.offlineMaterial, SystemClock.elapsedRealtime()))
+        }
     }
 
     @After
@@ -370,6 +409,26 @@ class PhoneControlActivityTest {
         assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
         screenOff()
         assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun openingAnAuthorizedSessionAutomaticallySavesAnOfflineCopy() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.preUnlockOffline = false
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(8) { drain() }
+        val store = PhoneOfflineStore(File(activity.filesDir, "phone-offline-v1"))
+        val key = SecretKeySpec(PhoneScreenFixture.offlineMaterial, "AES")
+        val saved = store.list(PhoneScreenFixture.grant.receiverIdentity, key).copies.single()
+        assertEquals(PhoneControlTarget("aa".repeat(16), "bb".repeat(16)), saved.source.target)
+        assertEquals("private session text", (store.readPage(saved.source, 0, key).entries.single() as PhoneControlEntry.Message).text)
     }
 
     @Test
