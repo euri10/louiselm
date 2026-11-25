@@ -268,6 +268,14 @@ async fn phone_control_admin_exchange(
     let capability = tokio::fs::read_to_string(paths.operator_capability()).await?;
     let capability = capability.trim();
     let (request, expected) = match command {
+        PhoneControl::ProjectRoots { after } => (
+            serde_json::json!({"v":1,"type":"project_roots","capability":capability,"after":after}),
+            "project_roots",
+        ),
+        PhoneControl::RegisterProject { path, root_ids } => (
+            serde_json::json!({"v":1,"type":"register_project","capability":capability,"path":path,"root_ids":root_ids}),
+            "project_registered",
+        ),
         PhoneControl::Start { device_id } => (
             serde_json::json!({"v":1,"type":"start","capability":capability,"device_id":device_id}),
             "enrollment_started",
@@ -288,12 +296,14 @@ async fn phone_control_admin_exchange(
             enrollment_id,
             enrolled_key,
             projects,
+            project_root_ids,
             agents,
             groups,
         } => (
-            serde_json::json!({"v":1,"type":"approve","capability":capability,"device_id":device_id,
+            serde_json::json!({"v":2,"type":"approve","capability":capability,"device_id":device_id,
                 "enrollment_id":enrollment_id,"enrolled_key":enrolled_key,
-                "scope":{"projects":projects,"agents":agents,"groups":groups}}),
+                "scope":{"projects":projects,"agents":agents,"groups":groups},
+                "project_root_ids":project_root_ids}),
             "enrollment_approved",
         ),
         PhoneControl::Disable { device_id } => (
@@ -337,7 +347,14 @@ fn phone_control_admin_response(
     expected: &str,
 ) -> Result<serde_json::Value, CliError> {
     let response: serde_json::Value = serde_json::from_slice(reply)?;
-    if response.get("v") != Some(&serde_json::json!(1)) {
+    let expected_version = if response.get("type") == Some(&serde_json::json!("error")) {
+        1
+    } else if expected == "enrollment_approved" {
+        2
+    } else {
+        1
+    };
+    if response.get("v") != Some(&serde_json::json!(expected_version)) {
         return Err(CliError::Invalid(
             "phone-control response is invalid".into(),
         ));

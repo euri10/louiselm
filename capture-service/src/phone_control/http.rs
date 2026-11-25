@@ -1020,6 +1020,7 @@ mod tests {
                     agents: vec!["codex".into()],
                     groups,
                 },
+                &[],
                 now,
             )
             .unwrap();
@@ -1412,6 +1413,7 @@ mod tests {
                     agents: vec!["codex".into()],
                     groups: vec!["read".into()],
                 },
+                &[],
                 now,
             )
             .unwrap();

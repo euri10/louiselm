@@ -11,6 +11,7 @@ use std::{
 
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use super::{
@@ -19,7 +20,10 @@ use super::{
     validate_list, validate_proof_shape, validate_request_shape, verify_phone_control_frame,
     verify_proof,
 };
-use crate::{PairingRegistry, hex::lower_hex, permissions::set_private_permissions};
+use crate::{
+    PairingRegistry, PhoneProjectError, PhoneProjectRootPage, PhoneProjectStore, hex::lower_hex,
+    permissions::set_private_permissions,
+};
 
 const OFFER_LIFETIME: Duration = Duration::from_secs(120);
 const IDLE_LIFETIME: Duration = Duration::from_secs(300);
@@ -71,6 +75,26 @@ pub(super) struct StoredGrant {
     pub(super) enrolled_key: String,
     pub(super) receiver_identity: String,
     pub(super) scope: Scope,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) project_root_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_roots_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grant_scope_sha256: Option<String>,
+    #[serde(skip)]
+    project_scope_valid: bool,
+}
+
+impl StoredGrant {
+    pub(super) fn project_roots(&self) -> Result<Option<&[String]>, Refusal> {
+        if !self.project_scope_valid {
+            return Err(Refusal::Unavailable);
+        }
+        Ok(self
+            .project_roots_sha256
+            .as_ref()
+            .map(|_| self.project_root_ids.as_slice()))
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -165,10 +189,27 @@ struct State {
 pub(super) struct Authority {
     path: PathBuf,
     receiver_identity: String,
+    projects: Result<PhoneProjectStore, PhoneProjectError>,
     state: Mutex<State>,
 }
 
 impl Authority {
+    pub(super) fn project_roots(&self, after: &str) -> Result<PhoneProjectRootPage, Refusal> {
+        self.projects
+            .as_ref()
+            .map_err(|_| Refusal::Unavailable)?
+            .roots_after(after)
+            .map_err(|error| project_refusal(&error))
+    }
+
+    pub(super) fn register_project(&self, path: &str, roots: &[String]) -> Result<String, Refusal> {
+        self.projects
+            .as_ref()
+            .map_err(|_| Refusal::Unavailable)?
+            .register_project(Path::new(path), roots)
+            .map_err(|error| project_refusal(&error))
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, State>, Refusal> {
         let state = self.state.lock().map_err(|_| Refusal::Unavailable)?;
         if state.failed {
@@ -209,7 +250,7 @@ impl Authority {
             if bytes.len() as u64 > MAX_STORED_BYTES {
                 return Err(Refusal::Unavailable);
             }
-            let stored: StoredState =
+            let mut stored: StoredState =
                 serde_json::from_slice(&bytes).map_err(|_| Refusal::Unavailable)?;
             if stored
                 .revisions
@@ -218,7 +259,7 @@ impl Authority {
             {
                 return Err(Refusal::Unavailable);
             }
-            for (device, grant) in &stored.grants {
+            for (device, grant) in &mut stored.grants {
                 if device != &grant.device_id
                     || fixed::<16>(&grant.enrollment_id).is_err()
                     || fixed::<16>(&grant.grant_id).is_err()
@@ -231,6 +272,14 @@ impl Authority {
                 {
                     return Err(Refusal::Unavailable);
                 }
+                if let Some(seal) = &grant.grant_scope_sha256 {
+                    if grant_scope_hash(grant).map_err(|_| Refusal::Unavailable)? != *seal {
+                        return Err(Refusal::Unavailable);
+                    }
+                } else if grant.project_roots_sha256.is_some() {
+                    return Err(Refusal::Unavailable);
+                }
+                grant.project_scope_valid = project_scope_valid(grant);
             }
             stored
         } else {
@@ -239,6 +288,7 @@ impl Authority {
         Ok(Self {
             path: path.to_owned(),
             receiver_identity: receiver_identity.to_owned(),
+            projects: PhoneProjectStore::open(parent.join("project-identities")),
             state: Mutex::new(State {
                 grants: stored.grants,
                 revisions: stored.revisions,
@@ -320,10 +370,17 @@ impl Authority {
         enrollment_id: &str,
         enrolled_key: &str,
         mut scope: Scope,
+        selected_roots: &[String],
         now: Instant,
     ) -> Result<StoredGrant, Refusal> {
         let started = Instant::now();
         validate_scope(&scope)?;
+        if (!selected_roots.is_empty() && selected_roots.len() != scope.projects.len())
+            || selected_roots.iter().any(|id| fixed::<16>(id).is_err())
+            || selected_roots.iter().collect::<BTreeSet<_>>().len() != selected_roots.len()
+        {
+            return Err(Refusal::Malformed);
+        }
         for project in &mut scope.projects {
             let path = fs::canonicalize(&*project).map_err(|_| Refusal::Unavailable)?;
             if !path.is_dir() {
@@ -356,7 +413,29 @@ impl Authority {
         if revision > MAX_INTEGER {
             return Err(Refusal::Unavailable);
         }
-        let grant = StoredGrant {
+        let projects = self.projects.as_ref().map_err(|_| Refusal::Unavailable)?;
+        let project_root_ids = if selected_roots.is_empty() {
+            scope
+                .projects
+                .iter()
+                .map(|project| {
+                    projects
+                        .register_root(Path::new(project))
+                        .map_err(|_| Refusal::Unavailable)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            for (id, project) in selected_roots.iter().zip(&scope.projects) {
+                let current = projects
+                    .check_current_root(id)
+                    .map_err(|_| Refusal::Unavailable)?;
+                if current != Path::new(project) {
+                    return Err(Refusal::OutOfScope);
+                }
+            }
+            selected_roots.to_vec()
+        };
+        let mut grant = StoredGrant {
             device_id: device.to_owned(),
             enrollment_id: enrollment_id.to_owned(),
             grant_id: random_hex(16)?,
@@ -364,7 +443,15 @@ impl Authority {
             enrolled_key: enrolled_key.to_owned(),
             receiver_identity: self.receiver_identity.clone(),
             scope,
+            project_root_ids,
+            project_roots_sha256: None,
+            grant_scope_sha256: None,
+            project_scope_valid: true,
         };
+        grant.grant_scope_sha256 =
+            Some(grant_scope_hash(&grant).map_err(|_| Refusal::Unavailable)?);
+        grant.project_roots_sha256 =
+            Some(project_scope_hash(&grant).map_err(|_| Refusal::Unavailable)?);
         let mut grants = state.grants.clone();
         grants.insert(device.to_owned(), grant.clone());
         let mut revisions = state.revisions.clone();
@@ -864,6 +951,51 @@ fn random_code() -> Result<String, Refusal> {
     }
 }
 
+fn project_refusal(error: &PhoneProjectError) -> Refusal {
+    match error {
+        PhoneProjectError::Invalid("project is outside approved root") => Refusal::OutOfScope,
+        PhoneProjectError::Invalid(
+            "invalid root cursor"
+            | "invalid approved roots"
+            | "directory path must be absolute"
+            | "directory path is invalid",
+        ) => Refusal::Malformed,
+        _ => Refusal::Unavailable,
+    }
+}
+
+fn grant_scope_hash(grant: &StoredGrant) -> Result<String, serde_json::Error> {
+    let bytes = serde_json::to_vec(&(
+        &grant.device_id,
+        &grant.enrollment_id,
+        &grant.grant_id,
+        grant.grant_revision,
+        &grant.enrolled_key,
+        &grant.receiver_identity,
+        &grant.scope,
+    ))?;
+    Ok(lower_hex(&Sha256::digest(bytes)))
+}
+
+fn project_scope_hash(grant: &StoredGrant) -> Result<String, serde_json::Error> {
+    let bytes = serde_json::to_vec(&(&grant.device_id, &grant.grant_id, &grant.project_root_ids))?;
+    Ok(lower_hex(&Sha256::digest(bytes)))
+}
+
+fn project_scope_valid(grant: &StoredGrant) -> bool {
+    let Some(seal) = &grant.project_roots_sha256 else {
+        return grant.project_root_ids.is_empty();
+    };
+    grant.project_root_ids.len() == grant.scope.projects.len()
+        && grant
+            .project_root_ids
+            .iter()
+            .all(|id| fixed::<16>(id).is_ok())
+        && grant.project_root_ids.iter().collect::<BTreeSet<_>>().len()
+            == grant.project_root_ids.len()
+        && project_scope_hash(grant).is_ok_and(|actual| &actual == seal)
+}
+
 fn validate_scope(scope: &Scope) -> Result<(), Refusal> {
     for values in [&scope.projects, &scope.agents, &scope.groups] {
         validate_list(values).map_err(|_| Refusal::Malformed)?;
@@ -1106,9 +1238,178 @@ mod tests {
                     agents: vec!["codex".into()],
                     groups: vec!["read".into()],
                 },
+                &[],
                 now,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn new_grant_retains_private_root_identity_across_restart() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("grants");
+        let receiver = "01".repeat(32);
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let grant = approved(&authority, temporary.path(), Instant::now());
+        assert_eq!(grant.project_root_ids.len(), 1);
+        assert_eq!(grant.project_root_ids[0].len(), 32);
+        drop(authority);
+
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let state = authority.lock().unwrap();
+        let restored = state.grants.get("phone").unwrap();
+        assert_eq!(restored.project_root_ids, grant.project_root_ids);
+        assert_eq!(restored.scope.projects, grant.scope.projects);
+    }
+
+    #[test]
+    fn second_phone_can_explicitly_select_an_existing_current_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+        let authority =
+            Authority::open(&temporary.path().join("grants"), &"01".repeat(32)).unwrap();
+        let first = approved(&authority, temporary.path(), now);
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let key = fixture["keys"]["enrolled"]["sec1"].as_str().unwrap();
+        let offer = authority.start("second", now, 1_000).unwrap();
+        authority
+            .submit(
+                "second",
+                &offer.enrollment_id,
+                &offer.matching_code,
+                key,
+                now,
+            )
+            .unwrap();
+        let scope = Scope {
+            projects: first.scope.projects.clone(),
+            agents: vec!["codex".into()],
+            groups: vec!["read".into()],
+        };
+        let foreign = temporary.path().join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let mut wrong_scope = scope.clone();
+        wrong_scope.projects = vec![foreign.to_str().unwrap().into()];
+        assert_eq!(
+            authority.approve(
+                "second",
+                &offer.enrollment_id,
+                key,
+                wrong_scope,
+                &first.project_root_ids,
+                now
+            ),
+            Err(Refusal::OutOfScope)
+        );
+        let second = authority
+            .approve(
+                "second",
+                &offer.enrollment_id,
+                key,
+                scope,
+                &first.project_root_ids,
+                now,
+            )
+            .unwrap();
+        assert_eq!(second.project_root_ids, first.project_root_ids);
+    }
+
+    #[test]
+    fn unavailable_project_identity_store_does_not_disable_session_reads() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("grants");
+        let receiver = "01".repeat(32);
+        let now = Instant::now();
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let grant = approved(&authority, temporary.path(), now);
+        drop(authority);
+        std::fs::remove_file(temporary.path().join("project-identities/projects.json")).unwrap();
+
+        let authority = Authority::open(&path, &receiver).unwrap();
+        assert!(authority.projects.is_err());
+        let lease = unlocked(&authority, &grant, now);
+        let request = signed_request(&grant, &lease, 0, 1234);
+        let permit = authority.begin_read("phone", &request, now).unwrap();
+        assert_eq!(permit.grant_id, grant.grant_id);
+    }
+
+    #[test]
+    fn legacy_path_only_grant_does_not_acquire_a_project_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("grants");
+        let receiver = "01".repeat(32);
+        let authority = Authority::open(&path, &receiver).unwrap();
+        approved(&authority, temporary.path(), Instant::now());
+        drop(authority);
+        let mut persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        persisted["grants"]["phone"]
+            .as_object_mut()
+            .unwrap()
+            .remove("project_root_ids");
+        persisted["grants"]["phone"]
+            .as_object_mut()
+            .unwrap()
+            .remove("project_roots_sha256");
+        persisted["grants"]["phone"]
+            .as_object_mut()
+            .unwrap()
+            .remove("grant_scope_sha256");
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let state = authority.lock().unwrap();
+        assert_eq!(state.grants["phone"].project_roots(), Ok(None));
+    }
+
+    #[test]
+    fn corrupted_grant_root_identity_is_not_accepted() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("grants");
+        let receiver = "01".repeat(32);
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let grant = approved(&authority, temporary.path(), Instant::now());
+        let foreign = temporary.path().join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let foreign_id = authority
+            .projects
+            .as_ref()
+            .unwrap()
+            .register_root(&foreign)
+            .unwrap();
+        drop(authority);
+        let mut persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        persisted["grants"]["phone"]["project_root_ids"][0] = foreign_id.clone().into();
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let state = authority.lock().unwrap();
+        assert_eq!(
+            state.grants["phone"].project_roots(),
+            Err(Refusal::Unavailable)
+        );
+        drop(state);
+        let now = Instant::now();
+        let lease = unlocked(&authority, &grant, now);
+        let request = signed_request(&grant, &lease, 0, 5678);
+        let permit = authority.begin_read("phone", &request, now).unwrap();
+        assert_eq!(permit.grant_id, grant.grant_id);
+    }
+
+    #[test]
+    fn corrupted_base_grant_scope_is_not_used_for_session_access() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("grants");
+        let receiver = "01".repeat(32);
+        let authority = Authority::open(&path, &receiver).unwrap();
+        approved(&authority, temporary.path(), Instant::now());
+        drop(authority);
+        let mut persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        persisted["grants"]["phone"]["scope"]["agents"] = serde_json::json!(["codex", "foreign"]);
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        assert!(matches!(
+            Authority::open(&path, &receiver),
+            Err(Refusal::Unavailable)
+        ));
     }
 
     #[test]
@@ -1195,7 +1496,7 @@ mod tests {
             groups: vec!["read".into()],
         };
         let grant = authority
-            .approve("phone", &offer.enrollment_id, key, scope, now)
+            .approve("phone", &offer.enrollment_id, key, scope, &[], now)
             .unwrap();
         assert_ne!(grant.grant_revision, 0);
         assert!(
@@ -1530,6 +1831,7 @@ mod tests {
                         "saved_results".into(),
                     ],
                 },
+                &[],
                 now,
             )
             .unwrap();

@@ -585,6 +585,17 @@ impl AdminSocket {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum AdminRequest {
+    ProjectRoots {
+        v: u64,
+        capability: String,
+        after: String,
+    },
+    RegisterProject {
+        v: u64,
+        capability: String,
+        path: String,
+        root_ids: Vec<String>,
+    },
     Start {
         v: u64,
         capability: String,
@@ -602,6 +613,7 @@ enum AdminRequest {
         enrollment_id: String,
         enrolled_key: String,
         scope: Scope,
+        project_root_ids: Vec<String>,
     },
     Cancel {
         v: u64,
@@ -622,8 +634,18 @@ enum AdminRequest {
 }
 
 impl AdminRequest {
-    fn common(&self) -> (u64, &str, &str) {
+    fn version(&self) -> u64 {
+        if matches!(self, Self::Approve { .. }) {
+            2
+        } else {
+            1
+        }
+    }
+
+    fn common(&self) -> (u64, &str, Option<&str>) {
         match self {
+            Self::ProjectRoots { v, capability, .. }
+            | Self::RegisterProject { v, capability, .. } => (*v, capability, None),
             Self::Start {
                 v,
                 capability,
@@ -655,7 +677,7 @@ impl AdminRequest {
                 v,
                 capability,
                 device_id,
-            } => (*v, capability, device_id),
+            } => (*v, capability, Some(device_id)),
         }
     }
 }
@@ -706,11 +728,13 @@ async fn serve_admin(
             let (version, token, device) = request.common();
             if version > MAX_INTEGER || !valid_string(token) {
                 Err(Refusal::Malformed)
-            } else if version != 1 {
+            } else if version != request.version() {
                 Err(Refusal::Unsupported)
             } else if !verify_capability(hash, token) {
                 Err(Refusal::Unauthenticated)
-            } else if !uuid::Uuid::parse_str(device).is_ok_and(|id| id.to_string() == device) {
+            } else if device.is_some_and(|device| {
+                !uuid::Uuid::parse_str(device).is_ok_and(|id| id.to_string() == device)
+            }) {
                 Err(Refusal::Malformed)
             } else {
                 tokio::task::spawn_blocking(move || process_admin(&authority, &pairing, request))
@@ -732,16 +756,27 @@ fn process_admin(
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
     let (_, _, device) = request.common();
-    if !pairing
-        .status()
-        .map_err(|_| Refusal::Unavailable)?
-        .devices
-        .iter()
-        .any(|status| status.device_id == device)
+    if let Some(device) = device
+        && !pairing
+            .status()
+            .map_err(|_| Refusal::Unavailable)?
+            .devices
+            .iter()
+            .any(|status| status.device_id == device)
     {
         return Err(Refusal::Unauthenticated);
     }
     match request {
+        AdminRequest::ProjectRoots { after, .. } => {
+            let page = authority.project_roots(&after)?;
+            Ok(
+                json!({"v":1,"type":"project_roots","roots":page.roots,"next_after":page.next_after.unwrap_or_default()}),
+            )
+        }
+        AdminRequest::RegisterProject { path, root_ids, .. } => {
+            let id = authority.register_project(&path, &root_ids)?;
+            Ok(json!({"v":1,"type":"project_registered","project_id":id}))
+        }
         AdminRequest::Start { device_id, .. } => {
             let offer = authority.start(&device_id, Instant::now(), now_ms())?;
             Ok(
@@ -766,6 +801,7 @@ fn process_admin(
             enrollment_id,
             enrolled_key,
             scope,
+            project_root_ids,
             ..
         } => {
             let grant = authority.approve(
@@ -773,11 +809,14 @@ fn process_admin(
                 &enrollment_id,
                 &enrolled_key,
                 scope,
+                &project_root_ids,
                 Instant::now(),
             )?;
+            let project_root_ids = grant.project_roots()?.ok_or(Refusal::Unavailable)?;
             Ok(
-                json!({"v":1,"type":"enrollment_approved","device_id":device_id,
-                "grant_id":grant.grant_id,"grant_revision":grant.grant_revision}),
+                json!({"v":2,"type":"enrollment_approved","device_id":device_id,
+                "grant_id":grant.grant_id,"grant_revision":grant.grant_revision,
+                "project_root_ids":project_root_ids}),
             )
         }
         AdminRequest::Disable { device_id, .. } => {
@@ -832,6 +871,49 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
 
+    async fn assert_project_admin(
+        path: &std::path::Path,
+        project: &std::path::Path,
+        token: &str,
+        approved: &Value,
+    ) {
+        let denied = exchange(
+            path,
+            json!({"v":1,"type":"project_roots","capability":"wrong","after":""}),
+        )
+        .await;
+        assert_eq!(denied["code"], "unauthenticated");
+        let roots = exchange(
+            path,
+            json!({"v":1,"type":"project_roots","capability":token,"after":""}),
+        )
+        .await;
+        assert_eq!(roots["type"], "project_roots");
+        assert_eq!(roots["roots"][0]["id"], approved["project_root_ids"][0]);
+        let malformed = exchange(
+            path,
+            json!({"v":1,"type":"project_roots","capability":token,"after":"bad"}),
+        )
+        .await;
+        assert_eq!(malformed["code"], "malformed");
+        let foreign = tempfile::tempdir().unwrap();
+        let denied = exchange(
+            path,
+            json!({"v":1,"type":"register_project","capability":token,
+            "path":foreign.path().to_str().unwrap(),"root_ids":[roots["roots"][0]["id"]]}),
+        )
+        .await;
+        assert_eq!(denied["code"], "out_of_scope");
+        let registered = exchange(
+            path,
+            json!({"v":1,"type":"register_project","capability":token,
+            "path":project.to_str().unwrap(),"root_ids":[roots["roots"][0]["id"]]}),
+        )
+        .await;
+        assert_eq!(registered["type"], "project_registered");
+        assert_eq!(registered["project_id"].as_str().unwrap().len(), 32);
+    }
+
     #[tokio::test]
     async fn operator_socket_requires_capability_and_forget_revokes_both() {
         let root = tempfile::tempdir().unwrap();
@@ -877,10 +959,16 @@ mod tests {
                 Instant::now(),
             )
             .unwrap();
-        let approved = exchange(&path, json!({"v":1,"type":"approve","capability":token,
+        let old_approval = exchange(&path, json!({"v":1,"type":"approve","capability":token,
             "device_id":phone.device_id,"enrollment_id":started["enrollment_id"],"enrolled_key":key,
-            "scope":{"projects":[root.path().to_str().unwrap()],"agents":["codex"],"groups":["read"]}})).await;
+            "scope":{"projects":[root.path().to_str().unwrap()],"agents":["codex"],"groups":["read"]},"project_root_ids":[]})).await;
+        assert_eq!(old_approval["code"], "unsupported");
+        let approved = exchange(&path, json!({"v":2,"type":"approve","capability":token,
+            "device_id":phone.device_id,"enrollment_id":started["enrollment_id"],"enrolled_key":key,
+            "scope":{"projects":[root.path().to_str().unwrap()],"agents":["codex"],"groups":["read"]},"project_root_ids":[]})).await;
         assert_eq!(approved["type"], "enrollment_approved");
+        assert_eq!(approved["v"], 2);
+        assert_project_admin(&path, root.path(), &token, &approved).await;
         let disabled = exchange(
             &path,
             json!({"v":1,"type":"disable","capability":token,"device_id":phone.device_id}),

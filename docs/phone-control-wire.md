@@ -14,7 +14,7 @@ same-user software or a compromised phone.
 All network traffic uses the existing paired-device bearer and receiver-key-pinned
 HTTPS. A bearer is necessary but insufficient for protected access. All messages
 below are UTF-8 JSON objects, including nested objects. `v` is integer `1`
-except for the version-2 Session page below; `type` is the exact string shown.
+except for the version-2 Session page and local approval below; `type` is the exact string shown.
 Objects have exactly the listed fields; no
 duplicates, unknown fields, implicit defaults, coercions, nulls, or trailing
 values are accepted. Unknown versions, message types, action values or enum
@@ -90,6 +90,33 @@ names are chosen locally; no phone-supplied cwd, executable, environment or
 role is a scope grant. A revision change invalidates old proofs and periods.
 Re-enabling requires fresh local approval. Disable workspace keeps capture;
 Forget phone revokes both.
+
+### Local project administration
+
+These messages use the authenticated desktop-only administration socket and
+the existing operator capability. They are not phone endpoints and grant no
+Run execution authority. Root and project IDs are private `hex16` identities.
+
+- `{v:1,type:"project_roots",capability:string,after:hex16-or-empty-string}`
+  returns `{v:1,type:"project_roots",roots:[{id:hex16,path:string}],next_after:hex16-or-empty-string}`.
+  Roots are sorted by ID, at most four per page; the cursor is the last ID
+  returned when more remain. Paths are local operator metadata, never phone
+  list or push content. A listed root may be historical.
+- `{v:1,type:"register_project",capability:string,path:string,root_ids:[hex16]}`
+  returns `{v:1,type:"project_registered",project_id:hex16}`. The operator
+  explicitly selects the project and one or more current roots; each root must
+  still be the recorded directory and contain the selected project. This
+  records identity relationships only; source/checkout binding and current
+  phone authorization remain independent requirements.
+- Local enrollment approval is version 2:
+  `{v:2,type:"approve",capability:string,device_id:string,enrollment_id:hex16,enrolled_key:hex65,scope:Scope,project_root_ids:[hex16]}`.
+  `Scope` is exactly `{projects:[string],agents:[string],groups:[string]}`.
+  Empty `project_root_ids` creates a fresh identity for each selected project
+  root. Otherwise it has one existing root ID per project in the same order;
+  each recorded root must still match the selected directory. Success is
+  `{v:2,type:"enrollment_approved",device_id:string,grant_id:hex16,grant_revision:integer,project_root_ids:[hex16]}`.
+  Local errors use the version-1 closed error object below. Legacy path-only
+  grants do not gain Run scope by being loaded or matched by path.
 
 A challenge is 32 fresh random bytes plus a fresh challenge ID, bound to the
 paired device, grant revision and receiver identity; it expires after 120

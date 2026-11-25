@@ -26,6 +26,10 @@ fn retained_parent_scope_survives_project_deletion_and_requires_every_agent() {
     std::fs::create_dir_all(&project).unwrap();
     let store = PhoneProjectStore::open(base.path().join("owner-state")).unwrap();
     let root_id = store.register_root(&parent).unwrap();
+    assert_eq!(
+        store.check_current_root(&root_id).unwrap(),
+        std::fs::canonicalize(&parent).unwrap()
+    );
     let project_id = store
         .register_project(&project, std::slice::from_ref(&root_id))
         .unwrap();
@@ -100,6 +104,10 @@ fn a_foreign_or_replaced_parent_cannot_gain_a_relationship() {
     std::fs::rename(&parent, base.path().join("old-root")).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     assert!(matches!(
+        store.check_current_root(&root_id),
+        Err(PhoneProjectError::Invalid("approved root identity changed"))
+    ));
+    assert!(matches!(
         store.register_project(&project, &[root_id]),
         Err(PhoneProjectError::Invalid("approved root identity changed"))
     ));
@@ -123,5 +131,28 @@ fn syntactically_valid_project_identity_corruption_is_refused() {
     assert!(matches!(
         PhoneProjectStore::open(&path),
         Err(PhoneProjectError::Invalid("store integrity check failed"))
+    ));
+}
+
+#[test]
+fn local_root_listing_is_bounded_and_cursor_advances() {
+    let base = tempfile::tempdir().unwrap();
+    let parent = base.path().join("approved");
+    std::fs::create_dir(&parent).unwrap();
+    let store = PhoneProjectStore::open(base.path().join("owner-state")).unwrap();
+    for _ in 0..5 {
+        store.register_root(&parent).unwrap();
+    }
+    let first = store.roots_after("").unwrap();
+    assert_eq!(first.roots.len(), 4);
+    let next = first.next_after.unwrap();
+    assert_eq!(next, first.roots.last().unwrap().id);
+    let second = store.roots_after(&next).unwrap();
+    assert_eq!(second.roots.len(), 1);
+    assert!(second.roots[0].id > next);
+    assert_eq!(second.next_after, None);
+    assert!(matches!(
+        store.roots_after("invalid"),
+        Err(PhoneProjectError::Invalid("invalid root cursor"))
     ));
 }

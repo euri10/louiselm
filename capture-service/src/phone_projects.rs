@@ -41,6 +41,24 @@ pub enum PhoneProjectError {
     Json(#[from] serde_json::Error),
 }
 
+/// One retained root identity and its local operator path.
+#[derive(Serialize)]
+pub struct PhoneProjectRoot {
+    /// Private opaque root identity.
+    pub id: String,
+    /// Recorded local path; it may no longer name this root.
+    pub path: String,
+}
+
+/// A bounded page of owner-local root identities.
+#[derive(Serialize)]
+pub struct PhoneProjectRootPage {
+    /// Roots sorted by identity.
+    pub roots: Vec<PhoneProjectRoot>,
+    /// Exclusive cursor when another page exists.
+    pub next_after: Option<String>,
+}
+
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Directory {
@@ -150,6 +168,62 @@ impl PhoneProjectStore {
             state.roots.sort_by(|left, right| left.id.cmp(&right.id));
             self.write(&state)?;
             Ok(id)
+        })
+    }
+
+    /// Resolve an explicitly selected root only while its directory identity matches.
+    /// This local owner operation does not itself approve a phone grant.
+    ///
+    /// # Errors
+    /// Refuses unknown, replaced or unavailable roots and private storage errors.
+    pub fn check_current_root(&self, id: &str) -> Result<PathBuf, PhoneProjectError> {
+        self.locked(|| {
+            let state = self.load()?;
+            let root = state
+                .roots
+                .iter()
+                .find(|root| root.id == id)
+                .ok_or(PhoneProjectError::Invalid("approved root is unavailable"))?;
+            if directory(Path::new(&root.directory.path))? != root.directory {
+                return Err(PhoneProjectError::Invalid("approved root identity changed"));
+            }
+            Ok(PathBuf::from(&root.directory.path))
+        })
+    }
+
+    /// List up to four retained roots for the local desktop operator.
+    /// The returned paths may be historical; selecting a root for a grant still
+    /// requires [`Self::check_current_root`]. An empty cursor starts at the beginning.
+    ///
+    /// # Errors
+    /// Refuses malformed cursors and private storage errors.
+    pub fn roots_after(&self, after: &str) -> Result<PhoneProjectRootPage, PhoneProjectError> {
+        if !after.is_empty() && !valid_id(after) {
+            return Err(PhoneProjectError::Invalid("invalid root cursor"));
+        }
+        self.locked(|| {
+            let state = self.load()?;
+            let mut roots = state
+                .roots
+                .into_iter()
+                .filter(|root| root.id.as_str() > after);
+            let page = roots
+                .by_ref()
+                .take(4)
+                .map(|root| PhoneProjectRoot {
+                    id: root.id,
+                    path: root.directory.path,
+                })
+                .collect::<Vec<_>>();
+            let next = if roots.next().is_some() {
+                page.last().map(|root| root.id.clone())
+            } else {
+                None
+            };
+            Ok(PhoneProjectRootPage {
+                roots: page,
+                next_after: next,
+            })
         })
     }
 

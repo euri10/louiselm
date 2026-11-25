@@ -82,6 +82,18 @@ pub(super) enum PhoneControl {
     Verify,
     /// Persist an exact native-owner action reservation or outcome.
     OwnerJournal,
+    /// List retained private root identities for desktop approval.
+    ProjectRoots {
+        #[arg(long, default_value = "")]
+        after: String,
+    },
+    /// Record a selected project and its verified parent roots.
+    RegisterProject {
+        #[arg(long)]
+        path: String,
+        #[arg(long = "root-id", required = true)]
+        root_ids: Vec<String>,
+    },
     /// Start an enrollment for an already paired device.
     Start {
         #[arg(long)]
@@ -109,6 +121,9 @@ pub(super) enum PhoneControl {
         enrolled_key: String,
         #[arg(long = "project")]
         projects: Vec<String>,
+        /// Reuse the exact root identities in the same order as --project.
+        #[arg(long = "project-root-id")]
+        project_root_ids: Vec<String>,
         #[arg(long = "agent")]
         agents: Vec<String>,
         #[arg(long = "group", value_parser = ["read", "operate_sessions", "control_runs", "saved_results"])]

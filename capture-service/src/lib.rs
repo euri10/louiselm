@@ -51,7 +51,9 @@ pub use phone_control::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
     ActionReservation, PhoneControlError, verify_phone_control_frame,
 };
-pub use phone_projects::{PhoneProjectError, PhoneProjectStore};
+pub use phone_projects::{
+    PhoneProjectError, PhoneProjectRoot, PhoneProjectRootPage, PhoneProjectStore,
+};
 pub use prepared_runs::{
     PreparedRunError, PreparedRunRegistration, PreparedRunRevision, PreparedRunStore,
     PreparedRunSummary, RunProjectBinding,

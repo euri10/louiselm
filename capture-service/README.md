@@ -79,6 +79,8 @@ phone-control start --device-id DEVICE_UUID
 phone-control inspect --device-id DEVICE_UUID
 phone-control cancel --device-id DEVICE_UUID --enrollment-id HEX16
 phone-control approve --device-id DEVICE_UUID --enrollment-id HEX16 --enrolled-key HEX65 --project /absolute/project --agent AGENT --group read
+phone-control project-roots [--after HEX16]
+phone-control register-project --path /absolute/project --root-id HEX16
 phone-control disable --device-id DEVICE_UUID
 phone-control forget --device-id DEVICE_UUID
 ```
@@ -90,7 +92,13 @@ device, compare the eight-digit code with the phone, inspect the submitted
 public key, then approve that exact key and the intended project roots, Agent
 names and permission groups. Repeat `--project`, `--agent` and `--group` as
 needed; groups are `read`, `operate_sessions`, `control_runs` and
-`saved_results`. `disable` revokes workspace access while retaining capture;
+`saved_results`. Approval returns private root IDs. To give another phone an
+existing root identity, repeat `--project-root-id` in the same order as
+`--project`; the recorded directories must still match. `project-roots` pages
+the local identities, and `register-project` explicitly records a project under
+selected roots. These identity records alone do not make Runs phone-readable;
+source/checkout binding and protected Run reads remain separate work.
+`disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver
 and opt in with `phone_control = { enabled = true }`. With Attention enabled,
