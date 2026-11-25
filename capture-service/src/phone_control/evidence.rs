@@ -163,29 +163,51 @@ impl ActionEvidenceStore {
     /// Returns [`ActionEvidenceError::Unavailable`] if storage cannot be
     /// initialized, locked, verified, or durably synchronized.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
-        let directory = directory.as_ref();
+        Self::open_inner(directory.as_ref(), true)
+    }
+
+    pub(super) fn open_existing(directory: &Path) -> Result<Self, ActionEvidenceError> {
+        Self::open_inner(directory, false)
+    }
+
+    fn open_inner(directory: &Path, initialize: bool) -> Result<Self, ActionEvidenceError> {
         let parent = directory.parent().ok_or(ActionEvidenceError::Unavailable)?;
-        fs::create_dir_all(parent).map_err(unavailable)?;
-        set_private_permissions(parent, true).map_err(unavailable)?;
+        if initialize {
+            fs::create_dir_all(parent).map_err(unavailable)?;
+            set_private_permissions(parent, true).map_err(unavailable)?;
+        }
         let lock_path = directory.with_extension("lock");
-        let (file, created) = match OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-        {
-            Ok(file) => (file, true),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (
+        let (file, created) = if initialize {
+            match OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+            {
+                Ok(file) => (file, true),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&lock_path)
+                        .map_err(unavailable)?,
+                    false,
+                ),
+                Err(error) => return Err(unavailable(error)),
+            }
+        } else {
+            (
                 OpenOptions::new()
                     .read(true)
                     .write(true)
                     .open(&lock_path)
                     .map_err(unavailable)?,
                 false,
-            ),
-            Err(error) => return Err(unavailable(error)),
+            )
         };
-        set_private_permissions(&lock_path, false).map_err(unavailable)?;
+        if initialize {
+            set_private_permissions(&lock_path, false).map_err(unavailable)?;
+        }
         file.try_lock_exclusive().map_err(unavailable)?;
         let lock = StoreLock(file);
         let exists = directory.try_exists().map_err(unavailable)?;
@@ -431,13 +453,13 @@ impl ActionEvidenceStore {
     }
 }
 
-fn same_identity(left: &ActionIdentity, right: &ActionIdentity) -> bool {
+pub(super) fn same_identity(left: &ActionIdentity, right: &ActionIdentity) -> bool {
     let mut right = right.clone();
     right.recorded_at_ms = left.recorded_at_ms;
     left == &right
 }
 
-fn validate_identity(value: &ActionIdentity) -> Result<(), ActionEvidenceError> {
+pub(super) fn validate_identity(value: &ActionIdentity) -> Result<(), ActionEvidenceError> {
     for id in [
         &value.operation_id,
         &value.controller_id,

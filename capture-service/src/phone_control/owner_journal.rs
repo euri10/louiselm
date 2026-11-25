@@ -1,4 +1,9 @@
 //! Durable native-owner admission and no-effect fences.
+//!
+//! `inspect` reads the outcome for an exact identity without creating a store
+//! or reserving an absent operation. `begin` only reserves: it is not Session
+//! admission. A report of `fenced_no_effect` requires the living owner to have
+//! independently proved no effect and excluded any outstanding native gate.
 
 use std::path::Path;
 
@@ -7,6 +12,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::hex::lower_hex;
+use crate::phone_control::evidence::{same_identity, validate_identity};
 use crate::phone_control::{
     ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome, ActionReservation,
     MAX_FRAME, MAX_INTEGER,
@@ -44,6 +50,10 @@ enum Command {
         v: u8,
         identity: ActionIdentity,
     },
+    Inspect {
+        v: u8,
+        identity: ActionIdentity,
+    },
     Fence {
         v: u8,
         identity: ActionIdentity,
@@ -66,17 +76,30 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
         let command: Command =
             serde_json::from_slice(line).map_err(|_| ActionEvidenceError::Malformed)?;
         let version = match &command {
-            Command::Begin { v, .. } | Command::Fence { v, .. } | Command::Report { v, .. } => *v,
+            Command::Begin { v, .. }
+            | Command::Inspect { v, .. }
+            | Command::Fence { v, .. }
+            | Command::Report { v, .. } => *v,
         };
         if version != 1 {
             return Err(ActionEvidenceError::Malformed);
         }
-        let journal = OwnerJournal::open(path)?;
+        let journal = match &command {
+            Command::Inspect { identity, .. } => {
+                validate_identity(identity)?;
+                OwnerJournal::open_existing(path)?
+            }
+            _ => OwnerJournal::open(path)?,
+        };
         match command {
             Command::Begin { identity, .. } => match journal.begin(&identity)? {
                 Begin::New => Ok(json!({"v":1,"type":"begun"})),
                 Begin::Existing(outcome) => Ok(json!({"v":1,"type":"existing","outcome":outcome})),
             },
+            Command::Inspect { identity, .. } => {
+                let outcome = journal.inspect(&identity)?;
+                Ok(json!({"v":1,"type":"existing","outcome":outcome}))
+            }
             Command::Fence {
                 identity, at_ms, ..
             } => match journal.fence(&identity, at_ms)? {
@@ -109,6 +132,21 @@ impl OwnerJournal {
         Ok(Self {
             store: ActionEvidenceStore::open(path)?,
         })
+    }
+
+    fn open_existing(path: &Path) -> Result<Self, ActionEvidenceError> {
+        Ok(Self {
+            store: ActionEvidenceStore::open_existing(path)?,
+        })
+    }
+
+    fn inspect(&self, identity: &ActionIdentity) -> Result<ActionOutcome, ActionEvidenceError> {
+        validate_identity(identity)?;
+        let record = self.store.lookup(&identity.operation_id)?;
+        if !same_identity(&record.identity, identity) {
+            return Err(ActionEvidenceError::Conflict);
+        }
+        Ok(record.outcome)
     }
 
     pub(super) fn begin(&self, identity: &ActionIdentity) -> Result<Begin, ActionEvidenceError> {

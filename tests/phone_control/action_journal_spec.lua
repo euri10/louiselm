@@ -45,12 +45,16 @@ T["the asynchronous native journal retains a fence and rejects a late begin"] = 
     end))
     return result
   end
+  MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }).code, "unavailable")
   local fenced = call({ v = 1, type = "fence", identity = identity, at_ms = 2000 })
   MiniTest.expect.equality(fenced.type, "fenced")
+  local inspected = call({ v = 1, type = "inspect", identity = identity })
+  MiniTest.expect.equality(inspected.outcome.fenced_no_effect.evidence, fenced.evidence)
   local late = call({ v = 1, type = "begin", identity = identity })
   MiniTest.expect.equality(late.type, "existing")
   MiniTest.expect.equality(late.outcome.fenced_no_effect.evidence, fenced.evidence)
   identity.payload_hash = string.rep("08", 32)
+  MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }).code, "conflict")
   MiniTest.expect.equality(call({ v = 1, type = "begin", identity = identity }).code, "conflict")
 end
 

@@ -33,37 +33,70 @@ fn identity(project: &std::path::Path, id: u8) -> ActionIdentity {
     }
 }
 
+fn invoke(root: &std::path::Path, message: serde_json::Value) -> serde_json::Value {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
+        .args(["phone-control", "owner-journal"])
+        .env_clear()
+        .env("LOUISELM_CAPTURE_CONFIG_DIR", root)
+        .env("LOUISELM_CAPTURE_DATA_DIR", root)
+        .env("LOUISELM_CAPTURE_STATE_DIR", root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(message.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 #[test]
 fn local_owner_command_persists_a_fence_across_processes() {
     let temp = tempfile::tempdir().unwrap();
     let request = identity(temp.path(), 5);
-    let invoke = |message: serde_json::Value| {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
-            .args(["phone-control", "owner-journal"])
-            .env_clear()
-            .env("LOUISELM_CAPTURE_CONFIG_DIR", temp.path())
-            .env("LOUISELM_CAPTURE_DATA_DIR", temp.path())
-            .env("LOUISELM_CAPTURE_STATE_DIR", temp.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(message.to_string().as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(output.status.success());
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
-    };
-    let fenced = invoke(serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000}));
+    let fenced = invoke(
+        temp.path(),
+        serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000}),
+    );
     assert_eq!(fenced["type"], "fenced");
-    let late = invoke(serde_json::json!({"v":1,"type":"begin","identity":request}));
+    let late = invoke(
+        temp.path(),
+        serde_json::json!({"v":1,"type":"begin","identity":request}),
+    );
     assert_eq!(late["type"], "existing");
     assert_eq!(
         late["outcome"]["fenced_no_effect"]["evidence"],
         fenced["evidence"]
     );
+}
+
+#[test]
+fn inspection_preserves_missing_and_owner_proved_outcomes_across_processes() {
+    let temp = tempfile::tempdir().unwrap();
+    let request = identity(temp.path(), 6);
+    let inspect = |request: &ActionIdentity| {
+        invoke(
+            temp.path(),
+            serde_json::json!({"v":1,"type":"inspect","identity":request}),
+        )
+    };
+    assert_eq!(inspect(&request)["code"], "unavailable");
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    assert_eq!(invoke(temp.path(), begin.clone())["type"], "begun");
+    assert_eq!(inspect(&request)["outcome"], "unknown");
+
+    let mut altered = request.clone();
+    altered.controller_id = "0a".repeat(16);
+    assert_eq!(inspect(&altered)["code"], "conflict");
+    let fence = serde_json::json!({"fenced_no_effect":{"evidence":"0b".repeat(32)}});
+    let report =
+        serde_json::json!({"v":1,"type":"report","identity":request,"outcome":fence,"at_ms":2000});
+    assert_eq!(invoke(temp.path(), report)["type"], "recorded");
+    assert_eq!(inspect(&request)["outcome"], fence);
+    assert_eq!(invoke(temp.path(), begin)["outcome"], fence);
 }

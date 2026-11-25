@@ -88,6 +88,39 @@ fn malformed_fence_times_do_not_reserve_an_operation() {
 }
 
 #[test]
+fn inspect_is_exact_and_never_reserves_missing_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("owner");
+    let request = identity(temp.path(), 9);
+    let inspect = |request: &ActionIdentity| {
+        let message = serde_json::json!({"v":1,"type":"inspect","identity":request});
+        handle(&path, message.to_string().as_bytes())
+    };
+
+    assert_eq!(inspect(&request)["code"], "unavailable");
+    assert!(!path.exists());
+    assert!(!path.with_extension("lock").exists());
+
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    assert_eq!(handle(&path, begin.to_string().as_bytes())["type"], "begun");
+    assert_eq!(inspect(&request)["outcome"], "unknown");
+
+    let mut changed = request.clone();
+    changed.payload_hash = "0a".repeat(32);
+    assert_eq!(inspect(&changed)["code"], "conflict");
+    let missing = identity(temp.path(), 10);
+    assert_eq!(inspect(&missing)["code"], "unavailable");
+    let begin_missing = serde_json::json!({"v":1,"type":"begin","identity":missing});
+    assert_eq!(
+        handle(&path, begin_missing.to_string().as_bytes())["type"],
+        "begun"
+    );
+
+    fs::remove_file(path.join("actions.json")).unwrap();
+    assert_eq!(inspect(&request)["code"], "unavailable");
+}
+
+#[test]
 fn only_native_owner_outcomes_for_the_exact_identity_are_retained() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("owner");
