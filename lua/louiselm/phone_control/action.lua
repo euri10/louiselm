@@ -73,15 +73,23 @@ function Action:send(identity, text, callback)
   end
   self.pending = true
   local finished, began, authorized = false, false, false
+  local reserved, detached, transitioning, reporting = false, false, false, false
+  local detach_callback
   local function finish(result)
     if finished or self.disposed then
       return
     end
     finished = true
     self.pending = false
-    callback(result)
+    self.detach_action = nil
+    if detached then
+      detach_callback(result)
+    else
+      callback(result)
+    end
   end
-  local function report(state, code, turn_id)
+  local function report(state, code, turn_id, cannot_confirm)
+    reporting = true
     local evidence =
       nvim.fn.sha256("louiselm-phone-owner-" .. state .. "-v1:" .. identity.operation_id .. ":" .. (turn_id or code))
     self.journal:run({
@@ -92,6 +100,15 @@ function Action:send(identity, text, callback)
       at_ms = os.time() * 1000,
     }, function(result)
       if result.type ~= "recorded" then
+        if detached and state == "fenced_no_effect" and not self.disposed then
+          reporting = false
+          local done = detach_callback
+          detach_callback = nil
+          done(failure("unavailable"))
+        else
+          finish(failure("unavailable"))
+        end
+      elseif cannot_confirm then
         finish(failure("unavailable"))
       else
         finish({
@@ -105,6 +122,25 @@ function Action:send(identity, text, callback)
       end
     end)
   end
+  self.detach_action = function(done)
+    if detached then
+      if detach_callback == nil and reserved and not transitioning and not reporting then
+        detach_callback = done
+        report("fenced_no_effect", "unavailable")
+      else
+        nvim.schedule(function()
+          done(failure("unavailable"))
+        end)
+      end
+      return
+    end
+    detached, detach_callback = true, done
+    if reserved and not transitioning and not reporting then
+      report("fenced_no_effect", "unavailable")
+    elseif began and not reserved and not reporting then
+      finish(failure("unavailable"))
+    end
+  end
   self.journal:run({ v = 1, type = "begin", identity = identity }, function(result)
     if began or self.disposed then
       return
@@ -117,8 +153,13 @@ function Action:send(identity, text, callback)
       finish(failure(result.code or "unavailable"))
       return
     end
+    reserved = true
+    if detached then
+      report("fenced_no_effect", "unavailable")
+      return
+    end
     self.authorize(function(permit)
-      if authorized or self.disposed then
+      if authorized or self.disposed or detached then
         release(self, permit)
         return
       end
@@ -146,6 +187,10 @@ function Action:send(identity, text, callback)
       elseif state.status ~= "ready" then
         code = "busy"
       end
+      if detached or finished then
+        release(self, permit)
+        return
+      end
       if code ~= nil then
         if release(self, permit) then
           report("fenced_no_effect", code)
@@ -154,17 +199,32 @@ function Action:send(identity, text, callback)
         end
         return
       end
+      transitioning = true
       local turn_id, prompt_error = self.session:prompt(text, nil, nil, text)
-      if not release(self, permit) then
+      transitioning = false
+      local released = release(self, permit)
+      if turn_id == nil and not released then
         finish(failure("unavailable"))
       elseif turn_id == nil then
         self.last_error = prompt_error
         report("fenced_no_effect", "unavailable")
       else
-        report("accepted", "", turn_id)
+        report("accepted", "", turn_id, not released)
       end
     end)
   end)
+end
+
+---Fence an unadmitted action after its controller connection is lost.
+---@param callback fun(result: table) Called after durable owner evidence or an unavailable refusal.
+function Action:detach(callback)
+  if self.detach_action ~= nil then
+    self.detach_action(callback)
+  else
+    nvim.schedule(function()
+      callback(failure("unavailable"))
+    end)
+  end
 end
 
 ---Suppress pending replies without cancelling already admitted Session work.
