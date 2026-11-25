@@ -163,6 +163,11 @@ pub async fn run() -> Result<(), CliError> {
         } => tokio::task::spawn_blocking(move || verify_phone_control(&paths))
             .await
             .map_err(std::io::Error::other)?,
+        Command::PhoneControl { command } => {
+            let response = phone_control_admin(&paths, command).await?;
+            println!("{}", serde_json::to_string(&response)?);
+            Ok(())
+        }
         Command::Retry { id } => retry(&Store::new(paths.captures())?, &id),
         Command::TranscribeOnce => tokio::task::spawn_blocking(move || {
             // Keep the blocking HTTP client's construction, work, and drop off
@@ -176,7 +181,7 @@ pub async fn run() -> Result<(), CliError> {
             configure_network(&paths, &profile, bind, &url)
         }
         Command::Pair { svg } => pair(&paths, svg.as_deref()),
-        Command::RevokeDevice { id } => revoke_device(&paths, &id),
+        Command::RevokeDevice { id } => revoke_device(&paths, &id).await,
         Command::RetryNotifications => {
             PairingRegistry::open(paths.pairing())?.retry_notifications()?;
             Ok(())
@@ -207,6 +212,146 @@ fn verify_phone_control(paths: &Paths) -> Result<(), CliError> {
         Err(code) => println!("{{\"v\":1,\"type\":\"error\",\"code\":\"{code}\"}}"),
     }
     Ok(())
+}
+
+async fn phone_control_admin(
+    paths: &Paths,
+    command: PhoneControl,
+) -> Result<serde_json::Value, CliError> {
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::UnixStream::connect(paths.phone_control_admin_socket()),
+    )
+    .await
+    .map_err(|_| CliError::Invalid("phone-control administration timed out".into()))??;
+    phone_control_admin_stream(paths, command, stream).await
+}
+
+async fn phone_control_admin_stream(
+    paths: &Paths,
+    command: PhoneControl,
+    stream: tokio::net::UnixStream,
+) -> Result<serde_json::Value, CliError> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        phone_control_admin_exchange(paths, command, stream),
+    )
+    .await
+    .map_err(|_| CliError::Invalid("phone-control administration timed out".into()))?
+}
+
+async fn phone_control_admin_exchange(
+    paths: &Paths,
+    command: PhoneControl,
+    mut stream: tokio::net::UnixStream,
+) -> Result<serde_json::Value, CliError> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let capability = tokio::fs::read_to_string(paths.operator_capability()).await?;
+    let capability = capability.trim();
+    let (request, expected) = match command {
+        PhoneControl::Start { device_id } => (
+            serde_json::json!({"v":1,"type":"start","capability":capability,"device_id":device_id}),
+            "enrollment_started",
+        ),
+        PhoneControl::Inspect { device_id } => (
+            serde_json::json!({"v":1,"type":"inspect","capability":capability,"device_id":device_id}),
+            "enrollment_inspection",
+        ),
+        PhoneControl::Cancel {
+            device_id,
+            enrollment_id,
+        } => (
+            serde_json::json!({"v":1,"type":"cancel","capability":capability,"device_id":device_id,"enrollment_id":enrollment_id}),
+            "enrollment_cancelled",
+        ),
+        PhoneControl::Approve {
+            device_id,
+            enrollment_id,
+            enrolled_key,
+            projects,
+            agents,
+            groups,
+        } => (
+            serde_json::json!({"v":1,"type":"approve","capability":capability,"device_id":device_id,
+                "enrollment_id":enrollment_id,"enrolled_key":enrolled_key,
+                "scope":{"projects":projects,"agents":agents,"groups":groups}}),
+            "enrollment_approved",
+        ),
+        PhoneControl::Disable { device_id } => (
+            serde_json::json!({"v":1,"type":"disable","capability":capability,"device_id":device_id}),
+            "disabled",
+        ),
+        PhoneControl::Forget { device_id } => (
+            serde_json::json!({"v":1,"type":"forget","capability":capability,"device_id":device_id}),
+            "forgotten",
+        ),
+        PhoneControl::Verify => {
+            return Err(CliError::Invalid(
+                "expected an administration command".into(),
+            ));
+        }
+    };
+    let bytes = serde_json::to_vec(&request)?;
+    if bytes.len() >= crate::phone_control::MAX_FRAME {
+        return Err(CliError::Invalid(
+            "phone-control request is too large".into(),
+        ));
+    }
+    stream.write_all(&bytes).await?;
+    stream.write_all(b"\n").await?;
+    let mut reader =
+        BufReader::new(stream.take(
+            u64::try_from(crate::phone_control::MAX_FRAME + 1).map_err(std::io::Error::other)?,
+        ));
+    let mut reply = Vec::new();
+    reader.read_until(b'\n', &mut reply).await?;
+    if reply.len() > crate::phone_control::MAX_FRAME || reply.last() != Some(&b'\n') {
+        return Err(CliError::Invalid(
+            "phone-control response is invalid".into(),
+        ));
+    }
+    phone_control_admin_response(&reply, expected)
+}
+
+fn phone_control_admin_response(
+    reply: &[u8],
+    expected: &str,
+) -> Result<serde_json::Value, CliError> {
+    let response: serde_json::Value = serde_json::from_slice(reply)?;
+    if response.get("v") != Some(&serde_json::json!(1)) {
+        return Err(CliError::Invalid(
+            "phone-control response is invalid".into(),
+        ));
+    }
+    match response.get("type").and_then(serde_json::Value::as_str) {
+        Some(kind) if kind == expected => Ok(response),
+        Some("error") => {
+            let code = response
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                .filter(|code| {
+                    matches!(
+                        *code,
+                        "unauthenticated"
+                            | "expired"
+                            | "revoked"
+                            | "out_of_scope"
+                            | "stale_subject"
+                            | "unavailable"
+                            | "malformed"
+                            | "unsupported"
+                    )
+                })
+                .unwrap_or("unavailable");
+            Err(CliError::Invalid(format!(
+                "phone-control request refused: {code}"
+            )))
+        }
+        _ => Err(CliError::Invalid(
+            "phone-control response is invalid".into(),
+        )),
+    }
 }
 
 fn attention_store(paths: &Paths) -> Result<AttentionStore, CliError> {
@@ -587,8 +732,38 @@ fn write_pairing_svg(path: &Path, contents: &[u8]) -> Result<(), std::io::Error>
     result
 }
 
-fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
-    PairingRegistry::open(paths.pairing())?.revoke(id)?;
+async fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
+    let connection = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::UnixStream::connect(paths.phone_control_admin_socket()),
+    )
+    .await
+    .map_err(|_| CliError::Invalid("phone-control administration timed out".into()))?;
+    match connection {
+        Ok(stream) => {
+            phone_control_admin_stream(
+                paths,
+                PhoneControl::Forget {
+                    device_id: id.to_owned(),
+                },
+                stream,
+            )
+            .await?;
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            let path = paths.pairing();
+            let device = id.to_owned();
+            tokio::task::spawn_blocking(move || PairingRegistry::open(path)?.revoke(&device))
+                .await
+                .map_err(std::io::Error::other)??;
+        }
+        Err(error) => return Err(error.into()),
+    }
     println!("{id}");
     Ok(())
 }
@@ -680,6 +855,20 @@ impl Paths {
     fn attention_socket(&self) -> PathBuf {
         self.state.join("louiselm/workflow/attention.sock")
     }
+
+    fn phone_control_store(&self) -> PathBuf {
+        self.state
+            .join("louiselm/capture/phone-control/grants.json")
+    }
+
+    fn phone_control_socket(&self) -> PathBuf {
+        self.state.join("louiselm/workflow/phone-control.sock")
+    }
+
+    fn phone_control_admin_socket(&self) -> PathBuf {
+        self.state
+            .join("louiselm/workflow/phone-control-admin.sock")
+    }
 }
 
 fn configured_root(
@@ -709,6 +898,91 @@ fn configured_root(
 mod tests {
     use super::*;
     use crate::Transcriber;
+
+    #[tokio::test]
+    async fn phone_control_admin_uses_the_authenticated_local_socket() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let root = tempfile::tempdir().expect("temporary state");
+        let paths = Paths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            state: root.path().join("state"),
+        };
+        let socket = paths.phone_control_admin_socket();
+        std::fs::create_dir_all(socket.parent().expect("socket parent")).expect("socket parent");
+        std::fs::write(
+            paths.operator_capability(),
+            "11111111-1111-4111-8111-111111111111",
+        )
+        .expect("capability");
+        let listener = tokio::net::UnixListener::bind(socket).expect("listener");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("connection");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("request");
+            let request: serde_json::Value = serde_json::from_str(&line).expect("JSON request");
+            assert_eq!(
+                request["capability"],
+                "11111111-1111-4111-8111-111111111111"
+            );
+            assert_eq!(request["type"], "start");
+            assert_eq!(request["device_id"], "22222222-2222-4222-8222-222222222222");
+            reader
+                .get_mut()
+                .write_all(b"{\"v\":1,\"type\":\"enrollment_started\"}\n")
+                .await
+                .expect("response");
+        });
+        let response = phone_control_admin(
+            &paths,
+            PhoneControl::Start {
+                device_id: "22222222-2222-4222-8222-222222222222".into(),
+            },
+        )
+        .await
+        .expect("admin response");
+        assert_eq!(response["type"], "enrollment_started");
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn revoke_device_uses_the_live_phone_authority_to_revoke_both() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let root = tempfile::tempdir().expect("temporary state");
+        let paths = Paths {
+            config: root.path().join("config"),
+            data: root.path().join("data"),
+            state: root.path().join("state"),
+        };
+        let socket = paths.phone_control_admin_socket();
+        std::fs::create_dir_all(socket.parent().expect("socket parent")).expect("socket parent");
+        std::fs::write(
+            paths.operator_capability(),
+            "11111111-1111-4111-8111-111111111111",
+        )
+        .expect("capability");
+        let listener = tokio::net::UnixListener::bind(socket).expect("listener");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("connection");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("request");
+            let request: serde_json::Value = serde_json::from_str(&line).expect("JSON request");
+            assert_eq!(request["type"], "forget");
+            reader
+                .get_mut()
+                .write_all(b"{\"v\":1,\"type\":\"forgotten\"}\n")
+                .await
+                .expect("response");
+        });
+        revoke_device(&paths, "22222222-2222-4222-8222-222222222222")
+            .await
+            .expect("revoke");
+        server.await.expect("server");
+    }
 
     #[test]
     fn transcription_defaults_to_the_file_model() {

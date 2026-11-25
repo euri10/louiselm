@@ -80,6 +80,48 @@ pub(super) enum Command {
 pub(super) enum PhoneControl {
     /// Read and authenticate one controller frame from standard input.
     Verify,
+    /// Start an enrollment for an already paired device.
+    Start {
+        #[arg(long)]
+        device_id: String,
+    },
+    /// Inspect the current matching code and submitted phone key.
+    Inspect {
+        #[arg(long)]
+        device_id: String,
+    },
+    /// Cancel an exact pending enrollment.
+    Cancel {
+        #[arg(long)]
+        device_id: String,
+        #[arg(long)]
+        enrollment_id: String,
+    },
+    /// Approve the exact submitted key and local workspace scope.
+    Approve {
+        #[arg(long)]
+        device_id: String,
+        #[arg(long)]
+        enrollment_id: String,
+        #[arg(long)]
+        enrolled_key: String,
+        #[arg(long = "project")]
+        projects: Vec<String>,
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+        #[arg(long = "group", value_parser = ["read", "operate_sessions", "control_runs", "saved_results"])]
+        groups: Vec<String>,
+    },
+    /// Disable workspace access while retaining capture pairing.
+    Disable {
+        #[arg(long)]
+        device_id: String,
+    },
+    /// Revoke both workspace access and capture pairing.
+    Forget {
+        #[arg(long)]
+        device_id: String,
+    },
 }
 
 fn transcription_help() -> String {

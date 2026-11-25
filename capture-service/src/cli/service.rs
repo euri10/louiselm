@@ -23,7 +23,7 @@ use crate::{
 #[derive(Clone, Copy)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "These are five independent operator opt-ins, not mutually exclusive states."
+    reason = "These are independent operator opt-ins, not mutually exclusive states."
 )]
 struct Features {
     attention: bool,
@@ -31,6 +31,7 @@ struct Features {
     receiver: bool,
     transcription: bool,
     push: bool,
+    phone_control: bool,
 }
 
 fn enabled(name: &str) -> Result<bool, CliError> {
@@ -50,6 +51,7 @@ impl Features {
             receiver: enabled("LOUISELM_RECEIVER_ENABLED")?,
             transcription: enabled("LOUISELM_TRANSCRIPTION_ENABLED")?,
             push: enabled("LOUISELM_PUSH_ENABLED")?,
+            phone_control: enabled("LOUISELM_PHONE_CONTROL_ENABLED")?,
         };
         if !(features.attention
             || features.runs
@@ -62,6 +64,11 @@ impl Features {
         if features.push && !features.attention {
             return Err(CliError::Invalid(
                 "push requires explicit LOUISELM_ATTENTION_ENABLED=true".into(),
+            ));
+        }
+        if features.phone_control && !features.receiver {
+            return Err(CliError::Invalid(
+                "phone control requires explicit LOUISELM_RECEIVER_ENABLED=true".into(),
             ));
         }
         if features.transcription {
@@ -82,6 +89,7 @@ struct Prepared {
     cleanup: Option<BeadsCleanup>,
     receiver: Option<(Receiver, NetworkProfile, TlsIdentity)>,
     pairing: Option<Arc<PairingRegistry>>,
+    phone_control: Option<crate::phone_control::Service>,
 }
 
 fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
@@ -110,6 +118,7 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
     let pairing = (features.receiver || features.push)
         .then(|| PairingRegistry::open(paths.pairing()).map(Arc::new))
         .transpose()?;
+    let mut phone_control = None;
     let receiver = if features.receiver {
         let identity = TlsIdentity::load_or_create(paths.tls())?;
         let network = NetworkProfile::load_or_default(&paths.network())?;
@@ -131,6 +140,18 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 identity.public_key_sha256(),
             )?,
         };
+        let receiver = if features.phone_control {
+            let service = crate::phone_control::Service::open(
+                &paths.phone_control_store(),
+                identity.public_key_sha256(),
+                pairing.clone(),
+            )?;
+            let receiver = receiver.with_phone_control(service.router());
+            phone_control = Some(service);
+            receiver
+        } else {
+            receiver
+        };
         Some((receiver, network, identity))
     } else {
         None
@@ -143,6 +164,7 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
         cleanup,
         receiver,
         pairing,
+        phone_control,
     })
 }
 
@@ -240,6 +262,16 @@ async fn serve_prepared(
             let socket = BrokerAttentionSocket::bind(config, attention.clone()).await?;
             servers.spawn(async move { socket.serve().await.map_err(CliError::from) });
         }
+    }
+    if let Some(control) = prepared.phone_control {
+        let sockets = control
+            .bind(
+                &prepared.paths.phone_control_admin_socket(),
+                &prepared.paths.phone_control_socket(),
+                &prepared.paths.operator_capability(),
+            )
+            .await?;
+        servers.spawn(async move { sockets.serve().await.map_err(CliError::from) });
     }
     if let Some((receiver, network, identity)) = prepared.receiver {
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(

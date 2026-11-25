@@ -13,13 +13,14 @@ Configure the installed user service through `~/.config/louiselm/capture.env`:
 LOUISELM_ATTENTION_ENABLED=true
 LOUISELM_RUNS_ENABLED=false
 LOUISELM_RECEIVER_ENABLED=false
+LOUISELM_PHONE_CONTROL_ENABLED=false
 LOUISELM_TRANSCRIPTION_ENABLED=false
 LOUISELM_PUSH_ENABLED=false
 ```
 
 This Attention-only example creates its local store and authenticated socket,
 without recording storage, Run storage, TLS, pairing, transcription or push.
-All five choices default to false. With none enabled, `serve` refuses startup
+All choices default to false. With none enabled, `serve` refuses startup
 before creating state. An installed tool, network profile or credential never
 enables a capability. Invalid switch values are errors.
 
@@ -74,7 +75,26 @@ run list
 run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS
 attention list
 attention status
+phone-control start --device-id DEVICE_UUID
+phone-control inspect --device-id DEVICE_UUID
+phone-control cancel --device-id DEVICE_UUID --enrollment-id HEX16
+phone-control approve --device-id DEVICE_UUID --enrollment-id HEX16 --enrolled-key HEX65 --project /absolute/project --agent AGENT --group read
+phone-control disable --device-id DEVICE_UUID
+phone-control forget --device-id DEVICE_UUID
 ```
+
+Phone control also requires `LOUISELM_PHONE_CONTROL_ENABLED=true` and the
+receiver opt-in. Its routes and local sockets are absent when unset. Pairing a
+device only enables capture: on the computer, start enrollment for that paired
+device, compare the eight-digit code with the phone, inspect the submitted
+public key, then approve that exact key and the intended project roots, Agent
+names and permission groups. Repeat `--project`, `--agent` and `--group` as
+needed; groups are `read`, `operate_sessions`, `control_runs` and
+`saved_results`. `disable` revokes workspace access while retaining capture;
+`forget` revokes both. Re-enabling needs a new enrollment and approval. The
+Neovim controller must use the same capture state directory as the receiver.
+The first Session read remains unavailable until the separate controller
+integration is wired; enrollment and unlock do not grant Session admission.
 
 When explicitly enabled, the receiver binds TLS on `127.0.0.1:7391` unless
 configured otherwise, and `pair` refuses while

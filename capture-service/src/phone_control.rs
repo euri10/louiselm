@@ -1,11 +1,80 @@
 //! Authentication of the frozen phone-control controller frame.
 
-use std::collections::HashSet;
+mod authority;
+mod http;
+mod socket;
+
+use std::{collections::HashSet, io, path::Path, sync::Arc};
 
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1, ParsedPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use crate::PairingRegistry;
+
+pub(crate) struct Service {
+    authority: Arc<authority::Authority>,
+    pairing: Arc<PairingRegistry>,
+    controllers: Arc<socket::ControllerRegistry>,
+}
+
+impl Service {
+    pub(crate) fn open(
+        path: &Path,
+        receiver: &str,
+        pairing: Arc<PairingRegistry>,
+    ) -> Result<Self, io::Error> {
+        let authority = authority::Authority::open(path, receiver)
+            .map_err(|_| io::Error::other("phone-control authority is unavailable"))?;
+        Ok(Self {
+            authority: Arc::new(authority),
+            pairing,
+            controllers: Arc::default(),
+        })
+    }
+
+    pub(crate) fn router(&self) -> axum::Router {
+        http::router(
+            self.authority.clone(),
+            self.pairing.clone(),
+            self.controllers.clone(),
+        )
+    }
+
+    pub(crate) async fn bind(
+        &self,
+        admin_path: &Path,
+        controller_path: &Path,
+        capability: &Path,
+    ) -> io::Result<Sockets> {
+        let admin = socket::AdminSocket::bind(
+            admin_path,
+            capability,
+            self.authority.clone(),
+            self.pairing.clone(),
+        )
+        .await?;
+        let controller =
+            socket::ControllerSocket::bind(controller_path, capability, self.controllers.clone())
+                .await?;
+        Ok(Sockets { admin, controller })
+    }
+}
+
+pub(crate) struct Sockets {
+    admin: socket::AdminSocket,
+    controller: socket::ControllerSocket,
+}
+
+impl Sockets {
+    pub(crate) async fn serve(self) -> io::Result<()> {
+        tokio::select! {
+            result = self.admin.serve() => result,
+            result = self.controller.serve() => result,
+        }
+    }
+}
 
 pub(crate) const MAX_FRAME: usize = 262_144;
 const MAX_INTEGER: u64 = 9_007_199_254_740_991;
@@ -33,7 +102,7 @@ pub enum PhoneControlError {
     Unavailable,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Frame {
     v: u64,
@@ -46,7 +115,7 @@ struct Frame {
     request: Request,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GrantRecord {
     grant_id: String,
@@ -57,7 +126,7 @@ struct GrantRecord {
     groups: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PeriodRecord {
     period_id: String,
@@ -66,7 +135,7 @@ struct PeriodRecord {
     absolute_expires_at_ms: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Proof {
     grant_id: String,
@@ -79,7 +148,7 @@ struct Proof {
     signature: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
     grant_id: String,
@@ -121,11 +190,13 @@ pub fn verify_phone_control_frame(
     // the closed struct below still rejects duplicate fields at every level.
     let header: serde_json::Value = serde_json::from_slice(input).map_err(|_| Malformed)?;
     match header.get("v").and_then(serde_json::Value::as_u64) {
+        Some(version) if version > MAX_INTEGER => return Err(Malformed),
         Some(1) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
     }
     match header.get("type").and_then(serde_json::Value::as_str) {
+        Some(kind) if !valid_string(kind) => return Err(Malformed),
         Some("read_session") => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
@@ -143,13 +214,10 @@ impl Frame {
         let grant = &self.grant;
         let proof = &self.proof;
         let request = &self.request;
+        validate_proof_shape(proof)?;
+        validate_request_shape(request)?;
         for number in [
             grant.grant_revision,
-            proof.grant_revision,
-            request.grant_revision,
-            request.expected_revision,
-            request.action,
-            request.interaction,
             self.period.idle_expires_at_ms,
             self.period.absolute_expires_at_ms,
         ] {
@@ -159,9 +227,6 @@ impl Frame {
         }
         if grant.grant_revision == 0 {
             return Err(Malformed);
-        }
-        if request.action != 1 || request.interaction > 1 {
-            return Err(Unsupported);
         }
         validate_list(&grant.projects)?;
         validate_list(&grant.agents)?;
@@ -176,12 +241,10 @@ impl Frame {
         }
         let grant_id = fixed::<16>(&grant.grant_id)?;
         let enrolled_key = key(&grant.enrolled_key)?;
-        let enrolled_key_hash = fixed::<32>(&proof.enrolled_key_hash)?;
         let expected_receiver = fixed::<32>(receiver_identity)?;
         let proof_receiver = fixed::<32>(&proof.receiver_identity)?;
         let request_receiver = fixed::<32>(&request.receiver_identity)?;
         let challenge_id = fixed::<16>(&proof.challenge_id)?;
-        let challenge = fixed::<32>(&proof.challenge)?;
         let working_key = key(&proof.working_key)?;
         let period_id = fixed::<16>(&self.period.period_id)?;
         let controller_id = fixed::<16>(&self.controller_id)?;
@@ -189,18 +252,11 @@ impl Frame {
         let payload_hash = fixed::<32>(&request.payload_hash)?;
         let operation_id = fixed::<16>(&request.operation_id)?;
         let payload = fixed::<10>(&request.payload)?;
-        let before = u64::from_be_bytes(payload[..8].try_into().map_err(|_| Malformed)?);
-        let limit = u16::from_be_bytes(payload[8..].try_into().map_err(|_| Malformed)?);
-        if before > MAX_INTEGER || !(1..=50).contains(&limit) {
-            return Err(Malformed);
-        }
-        let proof_signature = signature(&proof.signature)?;
         let request_signature = signature(&request.signature)?;
         if grant_id != fixed::<16>(&proof.grant_id)?
             || grant_id != fixed::<16>(&request.grant_id)?
             || grant.grant_revision != proof.grant_revision
             || grant.grant_revision != request.grant_revision
-            || enrolled_key_hash.as_slice() != Sha256::digest(enrolled_key).as_slice()
             || expected_receiver != proof_receiver
             || expected_receiver != request_receiver
             || challenge_id != fixed::<16>(&self.period.challenge_id)?
@@ -210,15 +266,7 @@ impl Frame {
         {
             return Err(Unauthenticated);
         }
-        let mut proof_bytes = prefix(1);
-        proof_bytes.extend(grant_id);
-        proof_bytes.extend(proof.grant_revision.to_be_bytes());
-        proof_bytes.extend(enrolled_key_hash);
-        proof_bytes.extend(proof_receiver);
-        proof_bytes.extend(challenge_id);
-        proof_bytes.extend(challenge);
-        proof_bytes.extend(working_key);
-        check_signature(&enrolled_key, &proof_bytes, &proof_signature)?;
+        verify_proof(proof, &enrolled_key)?;
 
         let mut request_bytes = prefix(2);
         request_bytes.extend(grant_id);
@@ -236,10 +284,81 @@ impl Frame {
     }
 }
 
+fn validate_proof_shape(proof: &Proof) -> Result<(), PhoneControlError> {
+    if proof.grant_revision == 0 || proof.grant_revision > MAX_INTEGER {
+        return Err(PhoneControlError::Malformed);
+    }
+    fixed::<16>(&proof.grant_id)?;
+    fixed::<32>(&proof.enrolled_key_hash)?;
+    fixed::<32>(&proof.receiver_identity)?;
+    fixed::<16>(&proof.challenge_id)?;
+    fixed::<32>(&proof.challenge)?;
+    key(&proof.working_key)?;
+    signature(&proof.signature)?;
+    Ok(())
+}
+
+fn validate_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+    if request.grant_revision == 0
+        || request.grant_revision > MAX_INTEGER
+        || request.expected_revision > MAX_INTEGER
+        || request.action > MAX_INTEGER
+        || request.interaction > MAX_INTEGER
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    if request.action != 1 || request.interaction > 1 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    fixed::<16>(&request.grant_id)?;
+    fixed::<16>(&request.period_id)?;
+    fixed::<32>(&request.receiver_identity)?;
+    fixed::<16>(&request.controller_id)?;
+    fixed::<16>(&request.subject_id)?;
+    fixed::<32>(&request.payload_hash)?;
+    fixed::<16>(&request.operation_id)?;
+    let payload = fixed::<10>(&request.payload)?;
+    let before = u64::from_be_bytes(
+        payload[..8]
+            .try_into()
+            .map_err(|_| PhoneControlError::Malformed)?,
+    );
+    let limit = u16::from_be_bytes(
+        payload[8..]
+            .try_into()
+            .map_err(|_| PhoneControlError::Malformed)?,
+    );
+    if before > MAX_INTEGER || !(1..=50).contains(&limit) {
+        return Err(PhoneControlError::Malformed);
+    }
+    signature(&request.signature)?;
+    Ok(())
+}
+
+fn verify_proof(proof: &Proof, enrolled_key: &[u8; 65]) -> Result<(), PhoneControlError> {
+    let enrolled_hash = fixed::<32>(&proof.enrolled_key_hash)?;
+    if enrolled_hash.as_slice() != Sha256::digest(enrolled_key).as_slice() {
+        return Err(PhoneControlError::Unauthenticated);
+    }
+    let mut bytes = prefix(1);
+    bytes.extend(fixed::<16>(&proof.grant_id)?);
+    bytes.extend(proof.grant_revision.to_be_bytes());
+    bytes.extend(enrolled_hash);
+    bytes.extend(fixed::<32>(&proof.receiver_identity)?);
+    bytes.extend(fixed::<16>(&proof.challenge_id)?);
+    bytes.extend(fixed::<32>(&proof.challenge)?);
+    bytes.extend(key(&proof.working_key)?);
+    check_signature(enrolled_key, &bytes, &signature(&proof.signature)?)
+}
+
 fn prefix(kind: u8) -> Vec<u8> {
     let mut bytes = DOMAIN.to_vec();
     bytes.extend([1, kind]);
     bytes
+}
+
+fn valid_string(value: &str) -> bool {
+    value.len() <= 8192 && !value.contains('\0')
 }
 
 fn validate_list(values: &[String]) -> Result<(), PhoneControlError> {
@@ -247,7 +366,7 @@ fn validate_list(values: &[String]) -> Result<(), PhoneControlError> {
     if values.len() > 50
         || values
             .iter()
-            .any(|value| value.len() > 8192 || value.contains('\0') || !unique.insert(value))
+            .any(|value| !valid_string(value) || !unique.insert(value))
     {
         return Err(PhoneControlError::Malformed);
     }

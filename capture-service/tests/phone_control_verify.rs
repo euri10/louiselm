@@ -64,6 +64,13 @@ fn verify(frame: &Value, receiver: &str) -> Result<(), PhoneControlError> {
 fn authenticates_fixture_and_rejects_altered_bindings() {
     let (good, receiver) = frame();
     assert_eq!(verify(&good, &receiver), Ok(()));
+    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+    let mut wrong_key = good.clone();
+    wrong_key["grant"]["enrolled_key"] = fixture["keys"]["wrong"]["sec1"].clone();
+    assert_eq!(
+        verify(&wrong_key, &receiver),
+        Err(PhoneControlError::Unauthenticated)
+    );
     let cases = [
         (
             "/request/payload",
@@ -232,6 +239,16 @@ fn refuses_ambiguous_or_unsupported_wire_values() {
             PhoneControlError::Malformed,
         ),
         ("/v", json!(2), PhoneControlError::Unsupported),
+        (
+            "/v",
+            json!(9_007_199_254_740_992_u64),
+            PhoneControlError::Malformed,
+        ),
+        (
+            "/type",
+            json!("x".repeat(8193)),
+            PhoneControlError::Malformed,
+        ),
     ] {
         let mut bad = good.clone();
         *bad.pointer_mut(path).unwrap() = value;
@@ -248,4 +265,24 @@ fn refuses_ambiguous_or_unsupported_wire_values() {
         verify_phone_control_frame(duplicate.as_bytes(), &receiver),
         Err(PhoneControlError::Malformed)
     );
+}
+
+#[test]
+fn signatures_require_minimal_der_and_valid_positive_scalars() {
+    let (good, receiver) = frame();
+    for signature in [
+        "3006020100020101",   // zero scalar
+        "3006020180020101",   // negative scalar
+        "300702020001020101", // unnecessary leading zero
+        "300602010102010100", // trailing byte
+        "ff",                 // not DER
+    ] {
+        let mut bad = good.clone();
+        bad["request"]["signature"] = json!(signature);
+        assert_eq!(
+            verify(&bad, &receiver),
+            Err(PhoneControlError::Malformed),
+            "{signature}"
+        );
+    }
 }

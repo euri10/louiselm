@@ -38,6 +38,7 @@ struct ReceiverState {
 /// Authenticated HTTP boundary for pairing devices and ingesting recordings.
 pub struct Receiver {
     state: ReceiverState,
+    phone_control: Option<Router>,
 }
 
 impl Receiver {
@@ -103,7 +104,13 @@ impl Receiver {
                 uploads: uploads.as_ref().to_path_buf(),
                 receiver_identity_sha256: receiver_identity_sha256.to_ascii_lowercase(),
             },
+            phone_control: None,
         })
+    }
+
+    pub(crate) fn with_phone_control(mut self, router: Router) -> Self {
+        self.phone_control = Some(router);
+        self
     }
 
     /// Build the receiver routes without binding a socket.
@@ -121,9 +128,14 @@ impl Receiver {
         };
         // Apply to every route, including optional registration. Streamed audio
         // consumes Body directly and applies its own 20 MiB limit.
-        router
+        let router = router
             .layer(DefaultBodyLimit::max(8 * 1024))
-            .with_state(self.state.clone())
+            .with_state(self.state.clone());
+        if let Some(phone_control) = &self.phone_control {
+            router.merge(phone_control.clone())
+        } else {
+            router
+        }
     }
 }
 
