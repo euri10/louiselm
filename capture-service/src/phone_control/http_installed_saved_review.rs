@@ -283,6 +283,21 @@ async fn review(root: &Path) {
         request(&client, &url, &phone.credential, &wrong).await["code"],
         "unavailable"
     );
+    let wrong_run = "55555555555545558555555555555555";
+    let wrong = signed_run(
+        &fixture,
+        &grant,
+        &period,
+        80,
+        wrong_run,
+        &payload(&result_id, None, None),
+        0,
+        18,
+    );
+    assert_eq!(
+        request(&client, &url, &phone.credential, &wrong).await["code"],
+        "unavailable"
+    );
     let checkout = root.join("checkout");
     let original = root.join("original-checkout");
     std::fs::rename(&checkout, &original).unwrap();

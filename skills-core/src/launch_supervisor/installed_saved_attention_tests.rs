@@ -2,7 +2,35 @@
 use super::*;
 use crate::broker::attention::{AttentionReason, AttentionSubject, Projection, ProjectionChange};
 
-pub(super) fn assert_saved_pending(run_id: &str) {
+pub(super) fn wait_saved_pending(run_id: &str) -> Projection {
+    let entries = Path::new(STATE).join("authorizations/attention-outbox/entries");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let published = fs::read_dir(&entries).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                fs::read(entry.path())
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Projection>(&bytes).ok())
+                    .is_some_and(|projection| {
+                        matches!(projection.change,
+                        ProjectionChange::Upsert(condition)
+                            if condition.subject == AttentionSubject::Run(run_id.into())
+                                && matches!(condition.reason, AttentionReason::PromotionPending(_)))
+                    })
+            })
+        });
+        if published {
+            return assert_saved_pending(run_id);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "saved Attention was not published"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+pub(super) fn assert_saved_pending(run_id: &str) -> Projection {
     let state = Path::new(STATE).join("authorizations");
     let projections: Vec<Projection> = fs::read_dir(state.join("attention-outbox/entries"))
         .unwrap()
@@ -15,16 +43,19 @@ pub(super) fn assert_saved_pending(run_id: &str) {
                 if condition.subject == AttentionSubject::Run(run_id.into())
                     && matches!(condition.reason, AttentionReason::PromotionPending(_)) =>
             {
-                Some(condition)
+                Some((projection, condition))
             }
             _ => None,
         })
         .collect();
     assert_eq!(pending.len(), 1);
-    let condition = pending[0];
+    let (publication, condition) = pending[0];
     assert!(!projections.iter().any(
         |projection| matches!(&projection.change, ProjectionChange::Clear(key) if key == condition)
     ));
+    assert!(!projections.iter().any(|projection| matches!(
+        &projection.change, ProjectionChange::ClearSubject(subject) if subject == &condition.subject
+    )));
     let AttentionReason::PromotionPending(result_id) = &condition.reason else {
         unreachable!()
     };
@@ -33,6 +64,7 @@ pub(super) fn assert_saved_pending(run_id: &str) {
     assert!(!saved.join("accepted.json").exists());
     assert!(!saved.join("discarded.json").exists());
     eprintln!("SAVED_REVIEW_PROMOTION_PENDING_UNCHANGED");
+    publication.clone()
 }
 
 pub(super) fn assert_saved_decision(run_id: &str) {

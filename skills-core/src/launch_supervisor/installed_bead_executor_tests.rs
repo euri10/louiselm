@@ -575,8 +575,14 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     }
     assert!(broker_group.0.processes().unwrap().contains(&daemon.0.id()));
     let hold_injector = (index >= 6).then(|| inject_provider_hold(&state, index, now));
-    let saved_cleanup = (index == 4)
-        .then(|| expire_saved_result_sessions(&state, (config.broker_uid, config.broker_gid), now));
+    let saved_cleanup = (index == 4).then(|| {
+        expire_saved_result_sessions(
+            &state,
+            (config.broker_uid, config.broker_gid),
+            now,
+            saved_review,
+        )
+    });
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit stable Neovim executable");
     let groups = if index == 5 {
@@ -691,9 +697,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         }
         command.status().unwrap()
     };
-    if let Some(cleanup) = saved_cleanup {
-        cleanup.join().unwrap();
-    }
+    let pending_before = saved_cleanup.and_then(|cleanup| cleanup.join().unwrap());
     if let Some(injector) = hold_injector {
         injector.join().unwrap();
         let store = crate::broker::AuthorizationStore::open(
@@ -769,7 +773,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         saved_attention::assert_saved_decision("44444444-4444-4444-8444-444444444444");
     }
     if saved_review {
-        saved_attention::assert_saved_pending("44444444-4444-4444-8444-444444444444");
+        let pending_after =
+            saved_attention::assert_saved_pending("44444444-4444-4444-8444-444444444444");
+        assert_eq!(Some(pending_after), pending_before);
         assert_eq!(fs::read_dir(&journal).unwrap().count(), 0);
     }
     if (2..=3).contains(&index) && std::env::var_os("LOUISELM_TEST_BR").is_some() {
@@ -914,7 +920,8 @@ fn expire_saved_result_sessions(
     operator: &Path,
     owner: (u32, u32),
     now: u64,
-) -> thread::JoinHandle<()> {
+    saved_review: bool,
+) -> thread::JoinHandle<Option<crate::broker::attention::Projection>> {
     let ready = operator.join("saved-ready");
     let cleaned = operator.join("saved-cleaned");
     thread::spawn(move || {
@@ -955,8 +962,11 @@ fn expire_saved_result_sessions(
                     .exists()
             );
         }
+        let pending = saved_review
+            .then(|| saved_attention::wait_saved_pending("44444444-4444-4444-8444-444444444444"));
         fs::write(cleaned, b"").unwrap();
         println!("SAVED_RESULT_EXPIRED_SESSION_STORAGE_REMOVED");
+        pending
     })
 }
 
