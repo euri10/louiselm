@@ -79,6 +79,21 @@ T["pages the exact Session transcript beyond the phone cache"] = function()
   MiniTest.expect.equality(page.entries[1].text, "prompt 1continued 1")
   MiniTest.expect.equality(page.entries[1].seq, 1)
 
+  local overlap_page, overlap_error
+  session:read_history({ subject = subject, before = 2, limit = 1, revision = revision }, function(result, err)
+    overlap_page, overlap_error = result, err
+  end)
+  session.emitter:emit({
+    type = "chunk",
+    session_id = session:inspect().id,
+    data = { content = { type = "text", text = "concurrent output" } },
+  })
+  assert(nvim.wait(6000, function()
+    return overlap_error ~= nil
+  end))
+  MiniTest.expect.equality(overlap_page, nil)
+  MiniTest.expect.equality(overlap_error, "stale_subject")
+
   local done = false
   assert(session:prompt("new live instruction", function(_, err)
     assert(err == nil, err)
