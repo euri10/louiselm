@@ -322,7 +322,7 @@ internal object PinnedHttps {
     private const val READ_TIMEOUT_MS = 180_000
     private const val MAX_RESPONSE_BYTES = 64 * 1024
     private const val PHONE_CONTROL_MAX_RESPONSE = 256 * 1024
-    private val PHONE_CONTROL_ENDPOINTS = setOf("enrollment/offer", "enrollment/submit", "enrollment/status", "challenge", "unlock")
+    private val PHONE_CONTROL_ENDPOINTS = setOf("enrollment/offer", "enrollment/submit", "enrollment/status", "challenge", "unlock", "request")
 }
 
 internal fun matchesReceiverIdentity(expectedSha256: ByteArray, publicKeyEncoded: ByteArray): Boolean =

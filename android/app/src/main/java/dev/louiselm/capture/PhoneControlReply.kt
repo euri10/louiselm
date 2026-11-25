@@ -19,9 +19,103 @@ internal sealed class PhoneControlReply {
     data class Granted(val enrollmentId: String, val grantId: String, val revision: Long, val keyHash: String, val receiverIdentity: String) : PhoneControlReply()
     data class Challenge(val grantId: String, val revision: Long, val receiverIdentity: String, val challengeId: String, val challenge: String, val expiresAtMs: Long) : PhoneControlReply()
     data class Unlocked(val grantId: String, val revision: Long, val periodId: String, val idleExpiresAtMs: Long, val absoluteExpiresAtMs: Long) : PhoneControlReply()
+    data class SessionPage(
+        val controllerId: String, val subjectId: String, val operationId: String,
+        val revision: Long, val status: String, val entries: List<PhoneControlEntry>,
+        val nextBefore: Long, val complete: Boolean,
+    ) : PhoneControlReply()
+}
+
+internal data class PhoneControlOption(val label: String, val description: String, val preview: String)
+
+internal sealed class PhoneControlEntry(open val seq: Long, open val truncated: Boolean) {
+    data class Message(override val seq: Long, val role: String, val text: String, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
+    data class Tool(override val seq: Long, val id: String, val title: String, val status: String, val content: String, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
+    data class Question(override val seq: Long, val requestId: String, val question: String, val options: List<PhoneControlOption>, val multiSelect: Boolean, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
+    data class Plan(override val seq: Long, val requestId: String, val text: String, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
 }
 
 private class UnsupportedReply : Exception()
+
+private fun readWireValue(reader: JsonReader, depth: Int): Any {
+    require(depth <= 5) { "nested wire value" }
+    return when (reader.peek()) {
+        JsonToken.BEGIN_OBJECT -> {
+            val fields = mutableMapOf<String, Any>()
+            reader.beginObject()
+            while (reader.hasNext()) {
+                val name = reader.nextName()
+                require(name !in fields && fields.size < 32) { "duplicate or excessive fields" }
+                fields[name] = readWireValue(reader, depth + 1)
+            }
+            reader.endObject()
+            fields
+        }
+        JsonToken.BEGIN_ARRAY -> {
+            val values = mutableListOf<Any>()
+            reader.beginArray()
+            while (reader.hasNext()) {
+                require(values.size < 50) { "excessive array" }
+                values.add(readWireValue(reader, depth + 1))
+            }
+            reader.endArray()
+            values
+        }
+        JsonToken.STRING -> reader.nextString().also { require(validWireString(it)) }
+        JsonToken.NUMBER -> reader.nextString().also {
+            require(it.matches(Regex("0|[1-9][0-9]*"))) { "invalid integer" }
+        }.toLong().also { require(it <= 9_007_199_254_740_991L) }
+        JsonToken.BOOLEAN -> reader.nextBoolean()
+        else -> throw IllegalArgumentException("invalid field")
+    }
+}
+
+private fun Any.wireObject(): Map<String, Any> {
+    require(this is Map<*, *> && keys.all { it is String } && values.all { it != null })
+    @Suppress("UNCHECKED_CAST") // readWireValue constructs only string-keyed maps with non-null values.
+    return this as Map<String, Any>
+}
+
+private fun Map<String, Any>.wireString(name: String): String = this[name] as? String ?: throw IllegalArgumentException("invalid $name")
+private fun Map<String, Any>.wireNumber(name: String): Long = this[name] as? Long ?: throw IllegalArgumentException("invalid $name")
+private fun Map<String, Any>.wireBoolean(name: String): Boolean = this[name] as? Boolean ?: throw IllegalArgumentException("invalid $name")
+private fun Map<String, Any>.wireArray(name: String): List<*> = this[name] as? List<*> ?: throw IllegalArgumentException("invalid $name")
+private fun Map<String, Any>.wireKeys(vararg names: String) = require(keys == names.toSet()) { "invalid fields" }
+
+private fun parseEntry(value: Any): PhoneControlEntry {
+    val entry = value.wireObject()
+    val seq = entry.wireNumber("seq")
+    require(seq > 0)
+    val truncated = entry.wireBoolean("truncated")
+    return when (entry.wireString("kind")) {
+        "message" -> {
+            entry.wireKeys("kind", "seq", "role", "text", "truncated")
+            val role = entry.wireString("role")
+            if (role !in setOf("user", "assistant")) throw UnsupportedReply()
+            PhoneControlEntry.Message(seq, role, entry.wireString("text"), truncated)
+        }
+        "tool" -> {
+            entry.wireKeys("kind", "seq", "id", "title", "status", "content", "truncated")
+            val status = entry.wireString("status")
+            if (status !in setOf("pending", "in_progress", "completed", "failed", "unknown")) throw UnsupportedReply()
+            PhoneControlEntry.Tool(seq, entry.wireString("id"), entry.wireString("title"), status, entry.wireString("content"), truncated)
+        }
+        "question" -> {
+            entry.wireKeys("kind", "seq", "request_id", "question", "options", "multi_select", "truncated")
+            val options = entry.wireArray("options").map { item ->
+                val option = requireNotNull(item).wireObject()
+                option.wireKeys("label", "description", "preview")
+                PhoneControlOption(option.wireString("label"), option.wireString("description"), option.wireString("preview"))
+            }
+            PhoneControlEntry.Question(seq, entry.wireString("request_id"), entry.wireString("question"), options, entry.wireBoolean("multi_select"), truncated)
+        }
+        "plan" -> {
+            entry.wireKeys("kind", "seq", "request_id", "text", "truncated")
+            PhoneControlEntry.Plan(seq, entry.wireString("request_id"), entry.wireString("text"), truncated)
+        }
+        else -> throw UnsupportedReply()
+    }
+}
 
 internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
     if (bytes.size > 262_144) return PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED)
@@ -29,24 +123,11 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
         val decoder = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT)
         val text = decoder.decode(ByteBuffer.wrap(bytes)).toString()
-        val fields = mutableMapOf<String, Any>()
-        JsonReader(StringReader(text)).use { reader ->
+        val fields = JsonReader(StringReader(text)).use { reader ->
             reader.isLenient = false
-            reader.beginObject()
-            while (reader.hasNext()) {
-                val name = reader.nextName()
-                require(name !in fields) { "duplicate field" }
-                val value: Any = when (reader.peek()) {
-                    JsonToken.STRING -> reader.nextString().also { require(validWireString(it)) }
-                    JsonToken.NUMBER -> reader.nextString().also {
-                        require(it.matches(Regex("0|[1-9][0-9]*"))) { "invalid integer" }
-                    }.toLong().also { require(it <= 9_007_199_254_740_991L) }
-                    else -> throw IllegalArgumentException("invalid field")
-                }
-                fields[name] = value
-            }
-            reader.endObject()
+            val value = readWireValue(reader, 0).wireObject()
             require(reader.peek() == JsonToken.END_DOCUMENT) { "trailing value" }
+            value
         }
         fun string(name: String): String = fields[name] as? String ?: throw IllegalArgumentException("invalid $name")
         fun number(name: String): Long = fields[name] as? Long ?: throw IllegalArgumentException("invalid $name")
@@ -92,6 +173,19 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 val absolute = number("absolute_expires_at_ms")
                 require(idle <= absolute)
                 PhoneControlReply.Unlocked(hex("grant_id", 16), revision, hex("period_id", 16), idle, absolute)
+            }
+            "session_page" -> {
+                keys("controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete")
+                val revision = number("revision")
+                require(revision > 0)
+                val status = string("status")
+                if (status !in setOf("starting", "ready", "admitting", "configuring", "preparing", "prompting", "running", "waiting_permission", "cancelling", "error")) throw UnsupportedReply()
+                val entries = fields.wireArray("entries").map { parseEntry(requireNotNull(it)) }
+                require(entries.zipWithNext().all { (left, right) -> left.seq < right.seq })
+                val nextBefore = number("next_before")
+                require(nextBefore == 0L || entries.isNotEmpty() && nextBefore <= entries.first().seq)
+                PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
+                    status, entries, nextBefore, fields.wireBoolean("complete"))
             }
             else -> throw UnsupportedReply()
         }

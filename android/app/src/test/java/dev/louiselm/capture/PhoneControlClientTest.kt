@@ -60,6 +60,51 @@ class PhoneControlPairingFixture {
 @Config(sdk = [34], shadows = [PhoneControlPairingFixture::class], instrumentedPackages = ["dev.louiselm.capture"])
 class PhoneControlClientTest {
     @Test
+    fun signedReadTargetsExactSessionAndRejectsLateOrMismatchedReplies() {
+        val context = RuntimeEnvironment.getApplication()
+        context.getSharedPreferences("phone-control-v1", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("control-pairing-fixture", Context.MODE_PRIVATE).edit().clear().commit()
+        val enrolled = phoneControlWorkingKey()
+        val working = phoneControlWorkingKey()
+        val keys = object : PhoneControlKeyAccess {
+            override fun enrollmentPublicKey() = phoneControlPublicKey(enrolled.public)
+            override fun publicKey() = phoneControlPublicKey(enrolled.public)
+            override fun signingOperation() = Signature.getInstance("SHA256withECDSA").apply { initSign(enrolled.private) }
+        }
+        val config = PairingStore(context).load()!!
+        val grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), phoneControlPairingBinding(config),
+            phoneControlHex(MessageDigest.getInstance("SHA-256").digest(keys.publicKey())))
+        PhoneControlStore(context).saveGrant(grant)
+        val period = PhoneControlPeriod(grant, "22".repeat(16), working.private, 0)
+        var mismatched = false
+        var mayDeliver = true
+        val transport: PhoneControlTransport = { _, path, body, _ ->
+            assertEquals("request", path)
+            val wire = body.getJSONObject("request")
+            val request = PhoneControlRequest(grant.grantId, grant.revision, period.periodId, grant.receiverIdentity,
+                wire.getString("controller_id"), wire.getString("subject_id"), phoneControlHex(wire.getString("payload")),
+                wire.getString("operation_id"), wire.getLong("expected_revision"), wire.getInt("interaction") == 1)
+            assertTrue(Signature.getInstance("SHA256withECDSA").run {
+                initVerify(working.public)
+                update(request.transcript())
+                verify(phoneControlHex(wire.getString("signature")))
+            })
+            PhoneControlReply.SessionPage(request.controllerId, if (mismatched) "44".repeat(16) else request.subjectId,
+                request.operationId, 1, "ready", emptyList(), 0, true)
+        }
+        val client = PhoneControlClient(context, keys, transport)
+        val target = PhoneControlTarget("33".repeat(16), "44".repeat(16))
+        assertTrue(client.readSession(period, target, 1) { mayDeliver } is PhoneControlResult.Value)
+        mismatched = true
+        val other = PhoneControlTarget(target.controllerId, "55".repeat(16))
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED), client.readSession(period, other, 2) { mayDeliver })
+        mayDeliver = false
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE), client.readSession(period, target, 3) { mayDeliver })
+        period.lock()
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED), client.readSession(period, target, 4) { true })
+    }
+
+    @Test
     fun enrollmentAndUnlockBindTheReceiverPairingAndBothKeys() {
         val fixture = JSONObject(requireNotNull(javaClass.getResourceAsStream("/phone-control-v1.json"))
             .bufferedReader().use { it.readText() }).getJSONObject("keys").getJSONObject("enrolled")

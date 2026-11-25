@@ -1,18 +1,27 @@
 package dev.louiselm.capture
 
 import android.content.Context
+import android.os.SystemClock
 import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyPair
 import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.ProviderException
+import java.security.SecureRandom
 import java.security.Signature
 import org.json.JSONException
 import org.json.JSONObject
 
 internal typealias PhoneControlTransport = (PairingConfig, String, JSONObject, () -> Boolean) -> PhoneControlReply
 private class LocalControlRevoked : Exception()
+
+internal data class PhoneControlTarget(val controllerId: String, val subjectId: String) {
+    init {
+        phoneControlHex(controllerId, 16)
+        phoneControlHex(subjectId, 16)
+    }
+}
 
 internal sealed class PhoneControlResult<out T> {
     data class Value<T>(val value: T) : PhoneControlResult<T>()
@@ -156,6 +165,33 @@ internal class PhoneControlClient(
         if (!maySend()) return@guarded unavailable()
         val workingKey = prepared.takeWorkingKey() ?: return@guarded unavailable()
         PhoneControlResult.Value(PhoneControlPeriod(prepared.grant, reply.periodId, workingKey, startedAtMs))
+    }
+
+    /** Read only the exact current incarnation; callbacks cannot extend a locked or replaced period. */
+    fun readSession(
+        period: PhoneControlPeriod,
+        target: PhoneControlTarget,
+        nowMs: Long,
+        maySend: () -> Boolean,
+    ): PhoneControlResult<PhoneControlReply.SessionPage> = guarded {
+        if (!period.isActive(nowMs)) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend()) return@guarded unavailable()
+        val config = pairingStore.load() ?: return@guarded unavailable()
+        if (currentGrant(config) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
+            period.grant.receiverIdentity, target.controllerId, target.subjectId, phoneControlReadPayload(0, 50),
+            operationId, 0, true)
+        val signature = period.sign(request, nowMs) ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
+        val currentConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (currentGrant(currentConfig) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (reply !is PhoneControlReply.SessionPage) return@guarded refusal(reply)
+        if (reply.controllerId != target.controllerId || reply.subjectId != target.subjectId || reply.operationId != operationId) {
+            return@guarded malformed()
+        }
+        PhoneControlResult.Value(reply)
     }
 
     private fun currentGrant(config: PairingConfig): PhoneControlGrant? {
