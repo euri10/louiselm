@@ -596,6 +596,25 @@ enum AdminRequest {
         path: String,
         root_ids: Vec<String>,
     },
+    RegisterRoot {
+        v: u64,
+        capability: String,
+        path: String,
+    },
+    InspectGrant {
+        v: u64,
+        capability: String,
+        device_id: String,
+    },
+    ConfirmLegacyProject {
+        v: u64,
+        capability: String,
+        device_id: String,
+        grant_id: String,
+        grant_revision: u64,
+        scope_digest: String,
+        project_id: String,
+    },
     Start {
         v: u64,
         capability: String,
@@ -645,7 +664,8 @@ impl AdminRequest {
     fn common(&self) -> (u64, &str, Option<&str>) {
         match self {
             Self::ProjectRoots { v, capability, .. }
-            | Self::RegisterProject { v, capability, .. } => (*v, capability, None),
+            | Self::RegisterProject { v, capability, .. }
+            | Self::RegisterRoot { v, capability, .. } => (*v, capability, None),
             Self::Start {
                 v,
                 capability,
@@ -655,6 +675,17 @@ impl AdminRequest {
                 v,
                 capability,
                 device_id,
+            }
+            | Self::InspectGrant {
+                v,
+                capability,
+                device_id,
+            }
+            | Self::ConfirmLegacyProject {
+                v,
+                capability,
+                device_id,
+                ..
             }
             | Self::Approve {
                 v,
@@ -767,15 +798,12 @@ fn process_admin(
         return Err(Refusal::Unauthenticated);
     }
     match request {
-        AdminRequest::ProjectRoots { after, .. } => {
-            let page = authority.project_roots(&after)?;
-            Ok(
-                json!({"v":1,"type":"project_roots","roots":page.roots,"next_after":page.next_after.unwrap_or_default()}),
-            )
-        }
-        AdminRequest::RegisterProject { path, root_ids, .. } => {
-            let id = authority.register_project(&path, &root_ids)?;
-            Ok(json!({"v":1,"type":"project_registered","project_id":id}))
+        request @ (AdminRequest::ProjectRoots { .. }
+        | AdminRequest::RegisterProject { .. }
+        | AdminRequest::RegisterRoot { .. }
+        | AdminRequest::InspectGrant { .. }
+        | AdminRequest::ConfirmLegacyProject { .. }) => {
+            process_project_admin(authority, pairing, request)
         }
         AdminRequest::Start { device_id, .. } => {
             let offer = authority.start(&device_id, Instant::now(), now_ms())?;
@@ -840,6 +868,58 @@ fn process_admin(
     }
 }
 
+fn process_project_admin(
+    authority: &Authority,
+    pairing: &PairingRegistry,
+    request: AdminRequest,
+) -> Result<Value, Refusal> {
+    match request {
+        AdminRequest::ProjectRoots { after, .. } => {
+            let page = authority.project_roots(&after)?;
+            Ok(
+                json!({"v":1,"type":"project_roots","roots":page.roots,"next_after":page.next_after.unwrap_or_default()}),
+            )
+        }
+        AdminRequest::RegisterProject { path, root_ids, .. } => {
+            let id = authority.register_project(&path, &root_ids)?;
+            Ok(json!({"v":1,"type":"project_registered","project_id":id}))
+        }
+        AdminRequest::RegisterRoot { path, .. } => {
+            let id = authority.register_root(&path)?;
+            Ok(json!({"v":1,"type":"root_registered","root_id":id}))
+        }
+        AdminRequest::InspectGrant { device_id, .. } => {
+            let review = authority.inspect_grant(pairing, &device_id)?;
+            Ok(
+                json!({"v":1,"type":"grant_inspection","device_id":device_id,
+                "grant_id":review.grant_id,"grant_revision":review.grant_revision,
+                "scope":review.scope,"scope_digest":review.scope_digest}),
+            )
+        }
+        AdminRequest::ConfirmLegacyProject {
+            device_id,
+            grant_id,
+            grant_revision,
+            scope_digest,
+            project_id,
+            ..
+        } => {
+            authority.confirm_legacy_project(
+                pairing,
+                &device_id,
+                &grant_id,
+                grant_revision,
+                &scope_digest,
+                &project_id,
+            )?;
+            Ok(
+                json!({"v":1,"type":"legacy_project_confirmed","device_id":device_id,"project_id":project_id}),
+            )
+        }
+        _ => Err(Refusal::Malformed),
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -875,6 +955,7 @@ mod tests {
         path: &std::path::Path,
         project: &std::path::Path,
         token: &str,
+        device: &str,
         approved: &Value,
     ) {
         let denied = exchange(
@@ -904,6 +985,14 @@ mod tests {
         )
         .await;
         assert_eq!(denied["code"], "out_of_scope");
+        let added_root = exchange(
+            path,
+            json!({"v":1,"type":"register_root","capability":token,
+            "path":foreign.path().to_str().unwrap()}),
+        )
+        .await;
+        assert_eq!(added_root["type"], "root_registered");
+        assert_eq!(added_root["root_id"].as_str().unwrap().len(), 32);
         let registered = exchange(
             path,
             json!({"v":1,"type":"register_project","capability":token,
@@ -912,6 +1001,17 @@ mod tests {
         .await;
         assert_eq!(registered["type"], "project_registered");
         assert_eq!(registered["project_id"].as_str().unwrap().len(), 32);
+        let review = exchange(
+            path,
+            json!({"v":1,"type":"inspect_grant","capability":token,"device_id":device}),
+        )
+        .await;
+        assert_eq!(review["type"], "grant_inspection");
+        assert_eq!(review["grant_id"], approved["grant_id"]);
+        let confirm = exchange(path, json!({"v":1,"type":"confirm_legacy_project","capability":token,
+            "device_id":device,"grant_id":review["grant_id"],"grant_revision":review["grant_revision"],
+            "scope_digest":review["scope_digest"],"project_id":registered["project_id"]})).await;
+        assert_eq!(confirm["code"], "unsupported");
     }
 
     #[tokio::test]
@@ -968,7 +1068,7 @@ mod tests {
             "scope":{"projects":[root.path().to_str().unwrap()],"agents":["codex"],"groups":["read"]},"project_root_ids":[]})).await;
         assert_eq!(approved["type"], "enrollment_approved");
         assert_eq!(approved["v"], 2);
-        assert_project_admin(&path, root.path(), &token, &approved).await;
+        assert_project_admin(&path, root.path(), &token, &phone.device_id, &approved).await;
         let disabled = exchange(
             &path,
             json!({"v":1,"type":"disable","capability":token,"device_id":phone.device_id}),

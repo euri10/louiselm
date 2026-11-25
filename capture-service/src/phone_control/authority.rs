@@ -81,8 +81,14 @@ pub(super) struct StoredGrant {
     project_roots_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     grant_scope_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    confirmed_project_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_confirmations_sha256: Option<String>,
     #[serde(skip)]
     project_scope_valid: bool,
+    #[serde(skip)]
+    legacy_confirmations_valid: bool,
 }
 
 impl StoredGrant {
@@ -95,6 +101,21 @@ impl StoredGrant {
             .as_ref()
             .map(|_| self.project_root_ids.as_slice()))
     }
+
+    fn legacy_project_confirmed(&self, project_id: &str) -> Result<bool, Refusal> {
+        if self.project_roots()?.is_some() || !self.legacy_confirmations_valid {
+            return Err(Refusal::Unavailable);
+        }
+        Ok(self.confirmed_project_ids.iter().any(|id| id == project_id))
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct GrantInspection {
+    pub(super) grant_id: String,
+    pub(super) grant_revision: u64,
+    pub(super) scope: Scope,
+    pub(super) scope_digest: String,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -123,7 +144,7 @@ pub(super) enum EnrollmentStatus {
         offer: EnrollmentOffer,
         enrolled_key: Option<String>,
     },
-    Granted(StoredGrant),
+    Granted(Box<StoredGrant>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,6 +231,86 @@ impl Authority {
             .map_err(|error| project_refusal(&error))
     }
 
+    pub(super) fn register_root(&self, path: &str) -> Result<String, Refusal> {
+        self.projects
+            .as_ref()
+            .map_err(|_| Refusal::Unavailable)?
+            .register_root(Path::new(path))
+            .map_err(|error| project_refusal(&error))
+    }
+
+    pub(super) fn inspect_grant(
+        &self,
+        pairing: &PairingRegistry,
+        device: &str,
+    ) -> Result<GrantInspection, Refusal> {
+        let state = self.lock()?;
+        require_paired(pairing, device)?;
+        let grant = state.grants.get(device).ok_or(Refusal::Revoked)?;
+        Ok(GrantInspection {
+            grant_id: grant.grant_id.clone(),
+            grant_revision: grant.grant_revision,
+            scope: grant.scope.clone(),
+            scope_digest: grant_scope_hash(grant).map_err(|_| Refusal::Unavailable)?,
+        })
+    }
+
+    pub(super) fn confirm_legacy_project(
+        &self,
+        pairing: &PairingRegistry,
+        device: &str,
+        grant_id: &str,
+        grant_revision: u64,
+        scope_digest: &str,
+        project_id: &str,
+    ) -> Result<(), Refusal> {
+        fixed::<16>(grant_id).map_err(|_| Refusal::Malformed)?;
+        fixed::<16>(project_id).map_err(|_| Refusal::Malformed)?;
+        fixed::<32>(scope_digest).map_err(|_| Refusal::Malformed)?;
+        let mut state = self.lock()?;
+        require_paired(pairing, device)?;
+        let mut grants = state.grants.clone();
+        let grant = grants.get_mut(device).ok_or(Refusal::Revoked)?;
+        let current_digest = grant_scope_hash(grant).map_err(|_| Refusal::Unavailable)?;
+        if grant.grant_id != grant_id
+            || grant.grant_revision != grant_revision
+            || current_digest != scope_digest
+        {
+            return Err(Refusal::StaleSubject);
+        }
+        if grant.project_roots()?.is_some() {
+            return Err(Refusal::Unsupported);
+        }
+        if !grant.scope.groups.iter().any(|group| group == "read") {
+            return Err(Refusal::OutOfScope);
+        }
+        if grant.legacy_project_confirmed(project_id)? {
+            return Ok(());
+        }
+        let within_scope = self
+            .projects
+            .as_ref()
+            .map_err(|_| Refusal::Unavailable)?
+            .matches_current_parent(project_id, &grant.scope.projects)
+            .map_err(|_| Refusal::Unavailable)?;
+        if !within_scope {
+            return Err(Refusal::OutOfScope);
+        }
+        if grant.confirmed_project_ids.len() >= 50 {
+            return Err(Refusal::Unavailable);
+        }
+        grant.confirmed_project_ids.push(project_id.to_owned());
+        grant.confirmed_project_ids.sort();
+        grant.grant_scope_sha256 = Some(current_digest);
+        grant.legacy_confirmations_sha256 =
+            Some(legacy_confirmations_hash(grant).map_err(|_| Refusal::Unavailable)?);
+        grant.legacy_confirmations_valid = true;
+        let revisions = state.revisions.clone();
+        self.persist_or_seal(&mut state, &grants, &revisions)?;
+        state.grants = grants;
+        Ok(())
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, State>, Refusal> {
         let state = self.state.lock().map_err(|_| Refusal::Unavailable)?;
         if state.failed {
@@ -280,6 +381,7 @@ impl Authority {
                     return Err(Refusal::Unavailable);
                 }
                 grant.project_scope_valid = project_scope_valid(grant);
+                grant.legacy_confirmations_valid = legacy_confirmations_valid(grant);
             }
             stored
         } else {
@@ -446,7 +548,10 @@ impl Authority {
             project_root_ids,
             project_roots_sha256: None,
             grant_scope_sha256: None,
+            confirmed_project_ids: Vec::new(),
+            legacy_confirmations_sha256: None,
             project_scope_valid: true,
+            legacy_confirmations_valid: true,
         };
         grant.grant_scope_sha256 =
             Some(grant_scope_hash(&grant).map_err(|_| Refusal::Unavailable)?);
@@ -881,7 +986,7 @@ impl Authority {
             && enrollment_id == Some(grant.enrollment_id.as_str())
             && grant.receiver_identity == self.receiver_identity
         {
-            return Ok(EnrollmentStatus::Granted(grant.clone()));
+            return Ok(EnrollmentStatus::Granted(Box::new(grant.clone())));
         }
         Err(Refusal::Unauthenticated)
     }
@@ -951,6 +1056,20 @@ fn random_code() -> Result<String, Refusal> {
     }
 }
 
+fn require_paired(pairing: &PairingRegistry, device: &str) -> Result<(), Refusal> {
+    if pairing
+        .status()
+        .map_err(|_| Refusal::Unavailable)?
+        .devices
+        .iter()
+        .any(|entry| entry.device_id == device)
+    {
+        Ok(())
+    } else {
+        Err(Refusal::Revoked)
+    }
+}
+
 fn project_refusal(error: &PhoneProjectError) -> Refusal {
     match error {
         PhoneProjectError::Invalid("project is outside approved root") => Refusal::OutOfScope,
@@ -980,6 +1099,34 @@ fn grant_scope_hash(grant: &StoredGrant) -> Result<String, serde_json::Error> {
 fn project_scope_hash(grant: &StoredGrant) -> Result<String, serde_json::Error> {
     let bytes = serde_json::to_vec(&(&grant.device_id, &grant.grant_id, &grant.project_root_ids))?;
     Ok(lower_hex(&Sha256::digest(bytes)))
+}
+
+fn legacy_confirmations_hash(grant: &StoredGrant) -> Result<String, serde_json::Error> {
+    let bytes = serde_json::to_vec(&(
+        &grant.device_id,
+        &grant.grant_id,
+        grant.grant_revision,
+        &grant.grant_scope_sha256,
+        &grant.confirmed_project_ids,
+    ))?;
+    Ok(lower_hex(&Sha256::digest(bytes)))
+}
+
+fn legacy_confirmations_valid(grant: &StoredGrant) -> bool {
+    let Some(seal) = &grant.legacy_confirmations_sha256 else {
+        return grant.confirmed_project_ids.is_empty();
+    };
+    grant.grant_scope_sha256.is_some()
+        && grant.confirmed_project_ids.len() <= 50
+        && grant
+            .confirmed_project_ids
+            .iter()
+            .all(|id| fixed::<16>(id).is_ok())
+        && grant
+            .confirmed_project_ids
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+        && legacy_confirmations_hash(grant).is_ok_and(|actual| &actual == seal)
 }
 
 fn project_scope_valid(grant: &StoredGrant) -> bool {
@@ -1410,6 +1557,173 @@ mod tests {
             Authority::open(&path, &receiver),
             Err(Refusal::Unavailable)
         ));
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One legacy lifecycle proves per-phone confirmation, restart, revocation and corruption handling."
+    )]
+    fn legacy_project_confirmation_is_exact_per_phone_and_survives_restart() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("grants");
+        let receiver = "01".repeat(32);
+        let now = Instant::now();
+        let approved_root = temporary.path().join("approved");
+        std::fs::create_dir(&approved_root).unwrap();
+        let pairing = crate::PairingRegistry::open(temporary.path().join("pairing")).unwrap();
+        let offer = pairing
+            .issue("https://127.0.0.1:7391", &receiver, 1_000, 10_000)
+            .unwrap();
+        let phone = pairing.consume(&offer.token, "phone", 1_001).unwrap();
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let key = fixture["keys"]["enrolled"]["sec1"].as_str().unwrap();
+        let offer = authority.start(&phone.device_id, now, 1_000).unwrap();
+        authority
+            .submit(
+                &phone.device_id,
+                &offer.enrollment_id,
+                &offer.matching_code,
+                key,
+                now,
+            )
+            .unwrap();
+        let grant = authority
+            .approve(
+                &phone.device_id,
+                &offer.enrollment_id,
+                key,
+                Scope {
+                    projects: vec![approved_root.to_str().unwrap().into()],
+                    agents: vec!["codex".into()],
+                    groups: vec!["read".into()],
+                },
+                &[],
+                now,
+            )
+            .unwrap();
+        let original_project = approved_root.join("original-project");
+        std::fs::create_dir(&original_project).unwrap();
+        let project_id = authority
+            .projects
+            .as_ref()
+            .unwrap()
+            .register_project(&original_project, &grant.project_root_ids)
+            .unwrap();
+        let second_offer = pairing
+            .issue("https://127.0.0.1:7391", &receiver, 2_000, 10_000)
+            .unwrap();
+        let second_phone = pairing
+            .consume(&second_offer.token, "second", 2_001)
+            .unwrap();
+        let second_enrollment = authority
+            .start(&second_phone.device_id, now, 2_000)
+            .unwrap();
+        authority
+            .submit(
+                &second_phone.device_id,
+                &second_enrollment.enrollment_id,
+                &second_enrollment.matching_code,
+                key,
+                now,
+            )
+            .unwrap();
+        authority
+            .approve(
+                &second_phone.device_id,
+                &second_enrollment.enrollment_id,
+                key,
+                grant.scope.clone(),
+                &grant.project_root_ids,
+                now,
+            )
+            .unwrap();
+        std::fs::remove_dir(&original_project).unwrap();
+        drop(authority);
+        let mut persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for device in [&phone.device_id, &second_phone.device_id] {
+            let saved = persisted["grants"][device].as_object_mut().unwrap();
+            saved.remove("project_root_ids");
+            saved.remove("project_roots_sha256");
+            saved.remove("grant_scope_sha256");
+        }
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let review = authority.inspect_grant(&pairing, &phone.device_id).unwrap();
+        assert_eq!(review.grant_id, grant.grant_id);
+        assert_eq!(
+            authority.confirm_legacy_project(
+                &pairing,
+                &phone.device_id,
+                &grant.grant_id,
+                grant.grant_revision,
+                &"00".repeat(32),
+                &project_id
+            ),
+            Err(Refusal::StaleSubject)
+        );
+        authority
+            .confirm_legacy_project(
+                &pairing,
+                &phone.device_id,
+                &grant.grant_id,
+                grant.grant_revision,
+                &review.scope_digest,
+                &project_id,
+            )
+            .unwrap();
+        std::fs::rename(&approved_root, temporary.path().join("retired-root")).unwrap();
+        authority
+            .confirm_legacy_project(
+                &pairing,
+                &phone.device_id,
+                &grant.grant_id,
+                grant.grant_revision,
+                &review.scope_digest,
+                &project_id,
+            )
+            .unwrap();
+        drop(authority);
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let state = authority.lock().unwrap();
+        let restored = &state.grants[&phone.device_id];
+        assert_eq!(restored.legacy_project_confirmed(&project_id), Ok(true));
+        assert_eq!(
+            restored.legacy_project_confirmed(&"04".repeat(16)),
+            Ok(false)
+        );
+        assert_eq!(
+            state.grants[&second_phone.device_id].legacy_project_confirmed(&project_id),
+            Ok(false)
+        );
+        drop(state);
+        let second_review = authority
+            .inspect_grant(&pairing, &second_phone.device_id)
+            .unwrap();
+        authority.disable(&second_phone.device_id).unwrap();
+        assert_eq!(
+            authority.confirm_legacy_project(
+                &pairing,
+                &second_phone.device_id,
+                &second_review.grant_id,
+                second_review.grant_revision,
+                &second_review.scope_digest,
+                &project_id
+            ),
+            Err(Refusal::Revoked)
+        );
+        drop(authority);
+        let mut persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        persisted["grants"][&phone.device_id]["confirmed_project_ids"][0] = "04".repeat(16).into();
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let state = authority.lock().unwrap();
+        assert_eq!(
+            state.grants[&phone.device_id].legacy_project_confirmed(&project_id),
+            Err(Refusal::Unavailable)
+        );
     }
 
     #[test]

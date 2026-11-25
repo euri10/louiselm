@@ -94,6 +94,29 @@ pub(super) enum PhoneControl {
         #[arg(long = "root-id", required = true)]
         root_ids: Vec<String>,
     },
+    /// Record a locally selected root without granting a phone access.
+    RegisterRoot {
+        #[arg(long)]
+        path: String,
+    },
+    /// Inspect the exact current phone grant before legacy project confirmation.
+    InspectGrant {
+        #[arg(long)]
+        device_id: String,
+    },
+    /// Confirm one project for a reviewed legacy path-only grant.
+    ConfirmLegacyProject {
+        #[arg(long)]
+        device_id: String,
+        #[arg(long)]
+        grant_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        grant_revision: u64,
+        #[arg(long)]
+        scope_digest: String,
+        #[arg(long)]
+        project_id: String,
+    },
     /// Start an enrollment for an already paired device.
     Start {
         #[arg(long)]

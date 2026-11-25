@@ -108,6 +108,20 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   still be the recorded directory and contain the selected project. This
   records identity relationships only; source/checkout binding and current
   phone authorization remain independent requirements.
+- `{v:1,type:"register_root",capability:string,path:string}` returns
+  `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a
+  fresh local root identity without granting any phone access.
+- `{v:1,type:"inspect_grant",capability:string,device_id:string}` returns
+  `{v:1,type:"grant_inspection",device_id:string,grant_id:hex16,grant_revision:integer,scope:Scope,scope_digest:hex32}`.
+  The computer operator reviews the exact displayed paths, Agents and groups.
+- `{v:1,type:"confirm_legacy_project",capability:string,device_id:string,grant_id:hex16,grant_revision:integer,scope_digest:hex32,project_id:hex16}`
+  returns `{v:1,type:"legacy_project_confirmed",device_id:string,project_id:hex16}`.
+  It confirms one retained project for this exact legacy path-only grant after
+  the operator reviews the displayed scope. A changed grant, revision or scope
+  refuses the confirmation; a currently paired device and Read group are
+  required. A retained project-to-root relationship may be used after the
+  original project directory disappears, but a matching root must still be the
+  recorded current directory. Confirmation does not re-pair or grant an action.
 - Local enrollment approval is version 2:
   `{v:2,type:"approve",capability:string,device_id:string,enrollment_id:hex16,enrolled_key:hex65,scope:Scope,project_root_ids:[hex16]}`.
   `Scope` is exactly `{projects:[string],agents:[string],groups:[string]}`.

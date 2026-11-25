@@ -276,6 +276,26 @@ async fn phone_control_admin_exchange(
             serde_json::json!({"v":1,"type":"register_project","capability":capability,"path":path,"root_ids":root_ids}),
             "project_registered",
         ),
+        PhoneControl::RegisterRoot { path } => (
+            serde_json::json!({"v":1,"type":"register_root","capability":capability,"path":path}),
+            "root_registered",
+        ),
+        PhoneControl::InspectGrant { device_id } => (
+            serde_json::json!({"v":1,"type":"inspect_grant","capability":capability,"device_id":device_id}),
+            "grant_inspection",
+        ),
+        PhoneControl::ConfirmLegacyProject {
+            device_id,
+            grant_id,
+            grant_revision,
+            scope_digest,
+            project_id,
+        } => (
+            serde_json::json!({"v":1,"type":"confirm_legacy_project","capability":capability,
+                "device_id":device_id,"grant_id":grant_id,"grant_revision":grant_revision,
+                "scope_digest":scope_digest,"project_id":project_id}),
+            "legacy_project_confirmed",
+        ),
         PhoneControl::Start { device_id } => (
             serde_json::json!({"v":1,"type":"start","capability":capability,"device_id":device_id}),
             "enrollment_started",

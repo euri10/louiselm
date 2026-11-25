@@ -281,12 +281,12 @@ impl PhoneProjectStore {
         })
     }
 
-    /// Check that an owner-selected project still names the originally recorded directory.
+    /// Resolve an owner-selected project only while its recorded directory matches.
     /// A missing or changed directory does not erase historical relationships.
     ///
     /// # Errors
     /// Refuses unknown or changed identities and filesystem or stored-state errors.
-    pub fn check_current_project(&self, id: &str) -> Result<(), PhoneProjectError> {
+    pub fn check_current_project(&self, id: &str) -> Result<PathBuf, PhoneProjectError> {
         self.locked(|| {
             let state = self.load()?;
             let project = state
@@ -297,7 +297,42 @@ impl PhoneProjectStore {
             if directory(Path::new(&project.directory.path))? != project.directory {
                 return Err(PhoneProjectError::Invalid("project identity changed"));
             }
-            Ok(())
+            Ok(PathBuf::from(&project.directory.path))
+        })
+    }
+
+    /// Check retained project ancestry against current, explicitly approved root paths.
+    /// The project itself may have disappeared; each matching root must still
+    /// be the recorded directory. This does not authenticate a phone grant.
+    ///
+    /// # Errors
+    /// Refuses unknown projects, changed matching roots and storage errors.
+    pub fn matches_current_parent(
+        &self,
+        id: &str,
+        approved_paths: &[String],
+    ) -> Result<bool, PhoneProjectError> {
+        self.locked(|| {
+            let state = self.load()?;
+            let project = state
+                .projects
+                .iter()
+                .find(|project| project.id == id)
+                .ok_or(PhoneProjectError::Invalid("project is unavailable"))?;
+            for root_id in &project.roots {
+                let root = state
+                    .roots
+                    .iter()
+                    .find(|root| &root.id == root_id)
+                    .ok_or(PhoneProjectError::Invalid("approved root is unavailable"))?;
+                if approved_paths.contains(&root.directory.path) {
+                    if directory(Path::new(&root.directory.path))? != root.directory {
+                        return Err(PhoneProjectError::Invalid("approved root identity changed"));
+                    }
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         })
     }
 
