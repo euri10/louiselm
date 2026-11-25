@@ -585,6 +585,11 @@ impl AdminSocket {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum AdminRequest {
+    Projects {
+        v: u64,
+        capability: String,
+        after: String,
+    },
     ProjectRoots {
         v: u64,
         capability: String,
@@ -594,6 +599,12 @@ enum AdminRequest {
         v: u64,
         capability: String,
         path: String,
+        root_ids: Vec<String>,
+    },
+    LinkProjectRoots {
+        v: u64,
+        capability: String,
+        project_id: String,
         root_ids: Vec<String>,
     },
     RegisterRoot {
@@ -663,8 +674,10 @@ impl AdminRequest {
 
     fn common(&self) -> (u64, &str, Option<&str>) {
         match self {
-            Self::ProjectRoots { v, capability, .. }
+            Self::Projects { v, capability, .. }
+            | Self::ProjectRoots { v, capability, .. }
             | Self::RegisterProject { v, capability, .. }
+            | Self::LinkProjectRoots { v, capability, .. }
             | Self::RegisterRoot { v, capability, .. } => (*v, capability, None),
             Self::Start {
                 v,
@@ -798,8 +811,10 @@ fn process_admin(
         return Err(Refusal::Unauthenticated);
     }
     match request {
-        request @ (AdminRequest::ProjectRoots { .. }
+        request @ (AdminRequest::Projects { .. }
+        | AdminRequest::ProjectRoots { .. }
         | AdminRequest::RegisterProject { .. }
+        | AdminRequest::LinkProjectRoots { .. }
         | AdminRequest::RegisterRoot { .. }
         | AdminRequest::InspectGrant { .. }
         | AdminRequest::ConfirmLegacyProject { .. }) => {
@@ -874,6 +889,11 @@ fn process_project_admin(
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
     match request {
+        AdminRequest::Projects { after, .. } => {
+            let page = authority.projects(&after)?;
+            Ok(json!({"v":1,"type":"projects","projects":page.projects,
+                "next_after":page.next_after.unwrap_or_default()}))
+        }
         AdminRequest::ProjectRoots { after, .. } => {
             let page = authority.project_roots(&after)?;
             Ok(
@@ -883,6 +903,14 @@ fn process_project_admin(
         AdminRequest::RegisterProject { path, root_ids, .. } => {
             let id = authority.register_project(&path, &root_ids)?;
             Ok(json!({"v":1,"type":"project_registered","project_id":id}))
+        }
+        AdminRequest::LinkProjectRoots {
+            project_id,
+            root_ids,
+            ..
+        } => {
+            authority.link_project_roots(&project_id, &root_ids)?;
+            Ok(json!({"v":1,"type":"project_roots_linked","project_id":project_id}))
         }
         AdminRequest::RegisterRoot { path, .. } => {
             let id = authority.register_root(&path)?;
@@ -1001,6 +1029,44 @@ mod tests {
         .await;
         assert_eq!(registered["type"], "project_registered");
         assert_eq!(registered["project_id"].as_str().unwrap().len(), 32);
+        let denied = exchange(
+            path,
+            json!({"v":1,"type":"projects","capability":"wrong","after":""}),
+        )
+        .await;
+        assert_eq!(denied["code"], "unauthenticated");
+        let projects = exchange(
+            path,
+            json!({"v":1,"type":"projects","capability":token,"after":""}),
+        )
+        .await;
+        assert_eq!(projects["projects"][0]["id"], registered["project_id"]);
+        let malformed = exchange(
+            path,
+            json!({"v":1,"type":"projects","capability":token,"after":"bad"}),
+        )
+        .await;
+        assert_eq!(malformed["code"], "malformed");
+        let new_root = exchange(
+            path,
+            json!({"v":1,"type":"register_root","capability":token,
+                "path":project.to_str().unwrap()}),
+        )
+        .await;
+        let denied = exchange(
+            path,
+            json!({"v":1,"type":"link_project_roots","capability":"wrong",
+                "project_id":registered["project_id"],"root_ids":[new_root["root_id"]]}),
+        )
+        .await;
+        assert_eq!(denied["code"], "unauthenticated");
+        let linked = exchange(
+            path,
+            json!({"v":1,"type":"link_project_roots","capability":token,
+                "project_id":registered["project_id"],"root_ids":[new_root["root_id"]]}),
+        )
+        .await;
+        assert_eq!(linked["type"], "project_roots_linked");
         let review = exchange(
             path,
             json!({"v":1,"type":"inspect_grant","capability":token,"device_id":device}),

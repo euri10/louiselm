@@ -261,13 +261,15 @@ async fn phone_control_admin_stream(
 async fn phone_control_admin_exchange(
     paths: &Paths,
     command: PhoneControl,
-    mut stream: tokio::net::UnixStream,
+    stream: tokio::net::UnixStream,
 ) -> Result<serde_json::Value, CliError> {
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-
     let capability = tokio::fs::read_to_string(paths.operator_capability()).await?;
     let capability = capability.trim();
     let (request, expected) = match command {
+        PhoneControl::Projects { after } => (
+            serde_json::json!({"v":1,"type":"projects","capability":capability,"after":after}),
+            "projects",
+        ),
         PhoneControl::ProjectRoots { after } => (
             serde_json::json!({"v":1,"type":"project_roots","capability":capability,"after":after}),
             "project_roots",
@@ -275,6 +277,13 @@ async fn phone_control_admin_exchange(
         PhoneControl::RegisterProject { path, root_ids } => (
             serde_json::json!({"v":1,"type":"register_project","capability":capability,"path":path,"root_ids":root_ids}),
             "project_registered",
+        ),
+        PhoneControl::LinkProjectRoots {
+            project_id,
+            root_ids,
+        } => (
+            serde_json::json!({"v":1,"type":"link_project_roots","capability":capability,"project_id":project_id,"root_ids":root_ids}),
+            "project_roots_linked",
         ),
         PhoneControl::RegisterRoot { path } => (
             serde_json::json!({"v":1,"type":"register_root","capability":capability,"path":path}),
@@ -340,7 +349,17 @@ async fn phone_control_admin_exchange(
             ));
         }
     };
-    let bytes = serde_json::to_vec(&request)?;
+    phone_control_write_request(stream, &request, expected).await
+}
+
+async fn phone_control_write_request(
+    mut stream: tokio::net::UnixStream,
+    request: &serde_json::Value,
+    expected: &str,
+) -> Result<serde_json::Value, CliError> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let bytes = serde_json::to_vec(request)?;
     if bytes.len() >= crate::phone_control::MAX_FRAME {
         return Err(CliError::Invalid(
             "phone-control request is too large".into(),

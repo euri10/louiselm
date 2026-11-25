@@ -102,12 +102,22 @@ Run execution authority. Root and project IDs are private `hex16` identities.
   Roots are sorted by ID, at most four per page; the cursor is the last ID
   returned when more remain. Paths are local operator metadata, never phone
   list or push content. A listed root may be historical.
+- `{v:1,type:"projects",capability:string,after:hex16-or-empty-string}`
+  returns `{v:1,type:"projects",projects:[{id:hex16,path:string,root_ids:[hex16]}],next_after:hex16-or-empty-string}`.
+  Projects are sorted by ID, at most four per page; paths and root IDs are
+  private local operator metadata. Historical paths are not current identity proof.
 - `{v:1,type:"register_project",capability:string,path:string,root_ids:[hex16]}`
   returns `{v:1,type:"project_registered",project_id:hex16}`. The operator
   explicitly selects the project and one or more current roots; each root must
   still be the recorded directory and contain the selected project. This
   records identity relationships only; source/checkout binding and current
   phone authorization remain independent requirements.
+- `{v:1,type:"link_project_roots",capability:string,project_id:hex16,root_ids:[hex16]}`
+  returns `{v:1,type:"project_roots_linked",project_id:hex16}`. Each selected
+  root and the project must still be the recorded current directories, and the
+  root must contain the project. This explicit action can make the project's
+  historical Runs available under already-approved root scope; it does not add
+  an Agent, action permission or source/checkout proof.
 - `{v:1,type:"register_root",capability:string,path:string}` returns
   `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a
   fresh local root identity without granting any phone access.

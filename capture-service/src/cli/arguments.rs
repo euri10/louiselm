@@ -87,10 +87,22 @@ pub(super) enum PhoneControl {
         #[arg(long, default_value = "")]
         after: String,
     },
+    /// List retained private projects for desktop review.
+    Projects {
+        #[arg(long, default_value = "")]
+        after: String,
+    },
     /// Record a selected project and its verified parent roots.
     RegisterProject {
         #[arg(long)]
         path: String,
+        #[arg(long = "root-id", required = true)]
+        root_ids: Vec<String>,
+    },
+    /// Explicitly relate additional selected roots to an existing project.
+    LinkProjectRoots {
+        #[arg(long)]
+        project_id: String,
         #[arg(long = "root-id", required = true)]
         root_ids: Vec<String>,
     },

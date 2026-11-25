@@ -52,7 +52,8 @@ pub use phone_control::{
     ActionReservation, PhoneControlError, verify_phone_control_frame,
 };
 pub use phone_projects::{
-    PhoneProjectError, PhoneProjectRoot, PhoneProjectRootPage, PhoneProjectStore,
+    PhoneProjectError, PhoneProjectIdentity, PhoneProjectPage, PhoneProjectRoot,
+    PhoneProjectRootPage, PhoneProjectStore,
 };
 pub use prepared_runs::{
     PreparedRunError, PreparedRunRegistration, PreparedRunRevision, PreparedRunStore,

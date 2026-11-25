@@ -80,8 +80,10 @@ phone-control inspect --device-id DEVICE_UUID
 phone-control cancel --device-id DEVICE_UUID --enrollment-id HEX16
 phone-control approve --device-id DEVICE_UUID --enrollment-id HEX16 --enrolled-key HEX65 --project /absolute/project --agent AGENT --group read
 phone-control project-roots [--after HEX16]
+phone-control projects [--after HEX16]
 phone-control register-root --path /absolute/root
 phone-control register-project --path /absolute/project --root-id HEX16
+phone-control link-project-roots --project-id HEX16 --root-id HEX16
 phone-control inspect-grant --device-id DEVICE_UUID
 phone-control confirm-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16
 phone-control disable --device-id DEVICE_UUID
@@ -97,9 +99,13 @@ names and permission groups. Repeat `--project`, `--agent` and `--group` as
 needed; groups are `read`, `operate_sessions`, `control_runs` and
 `saved_results`. Approval returns private root IDs. To give another phone an
 existing root identity, repeat `--project-root-id` in the same order as
-`--project`; the recorded directories must still match. `project-roots` pages
-the local identities, `register-root` records an identity without granting
-access, and `register-project` explicitly records a project under selected roots.
+`--project`; the recorded directories must still match. `project-roots` and
+`projects` page local identities, `register-root` records an identity without
+granting access, and `register-project` explicitly records a project under
+selected roots. To relate a later-approved root to the same project, explicitly
+use `link-project-roots` while both directories still match their recorded
+identities. This can make that project's historical Runs visible to phones
+already granted the root; it grants no new Agents or action groups.
 For a legacy path-only grant, inspect and review its complete current scope on
 the computer, then confirm each exact project with that grant ID, revision and
 scope digest. These identity records alone do not make Runs phone-readable;

@@ -21,8 +21,8 @@ use super::{
     verify_proof,
 };
 use crate::{
-    PairingRegistry, PhoneProjectError, PhoneProjectRootPage, PhoneProjectStore, hex::lower_hex,
-    permissions::set_private_permissions,
+    PairingRegistry, PhoneProjectError, PhoneProjectPage, PhoneProjectRootPage, PhoneProjectStore,
+    hex::lower_hex, permissions::set_private_permissions,
 };
 
 const OFFER_LIFETIME: Duration = Duration::from_secs(120);
@@ -220,6 +220,26 @@ impl Authority {
             .as_ref()
             .map_err(|_| Refusal::Unavailable)?
             .roots_after(after)
+            .map_err(|error| project_refusal(&error))
+    }
+
+    pub(super) fn projects(&self, after: &str) -> Result<PhoneProjectPage, Refusal> {
+        self.projects
+            .as_ref()
+            .map_err(|_| Refusal::Unavailable)?
+            .projects_after(after)
+            .map_err(|error| project_refusal(&error))
+    }
+
+    pub(super) fn link_project_roots(
+        &self,
+        project_id: &str,
+        roots: &[String],
+    ) -> Result<(), Refusal> {
+        self.projects
+            .as_ref()
+            .map_err(|_| Refusal::Unavailable)?
+            .link_project_roots(project_id, roots)
             .map_err(|error| project_refusal(&error))
     }
 
@@ -1075,6 +1095,7 @@ fn project_refusal(error: &PhoneProjectError) -> Refusal {
         PhoneProjectError::Invalid("project is outside approved root") => Refusal::OutOfScope,
         PhoneProjectError::Invalid(
             "invalid root cursor"
+            | "invalid project cursor"
             | "invalid approved roots"
             | "directory path must be absolute"
             | "directory path is invalid",

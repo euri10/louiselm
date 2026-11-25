@@ -156,3 +156,106 @@ fn local_root_listing_is_bounded_and_cursor_advances() {
         Err(PhoneProjectError::Invalid("invalid root cursor"))
     ));
 }
+
+#[test]
+fn local_project_listing_survives_restart_and_paginates_without_rebinding() {
+    let base = tempfile::tempdir().unwrap();
+    let parent = base.path().join("approved");
+    std::fs::create_dir(&parent).unwrap();
+    let state = base.path().join("owner-state");
+    let store = PhoneProjectStore::open(&state).unwrap();
+    let root = store.register_root(&parent).unwrap();
+    let mut ids = Vec::new();
+    for number in 0..5 {
+        let project = parent.join(format!("project-{number}"));
+        std::fs::create_dir(&project).unwrap();
+        ids.push(
+            store
+                .register_project(&project, std::slice::from_ref(&root))
+                .unwrap(),
+        );
+    }
+    ids.sort();
+    drop(store);
+    let store = PhoneProjectStore::open(&state).unwrap();
+    let first = store.projects_after("").unwrap();
+    assert_eq!(first.projects.len(), 4);
+    assert_eq!(first.projects[0].id, ids[0]);
+    assert_eq!(first.projects[0].root_ids, vec![root]);
+    assert!(first.projects[0].path.starts_with(parent.to_str().unwrap()));
+    let cursor = first.next_after.unwrap();
+    assert_eq!(cursor, ids[3]);
+    let second = store.projects_after(&cursor).unwrap();
+    assert_eq!(second.projects.len(), 1);
+    assert_eq!(second.projects[0].id, ids[4]);
+    assert_eq!(second.next_after, None);
+    assert!(matches!(
+        store.projects_after("invalid"),
+        Err(PhoneProjectError::Invalid("invalid project cursor"))
+    ));
+}
+
+#[test]
+fn a_new_parent_can_be_explicitly_linked_to_the_same_live_project() {
+    let base = tempfile::tempdir().unwrap();
+    let parent = base.path().join("approved");
+    let project = parent.join("project");
+    let foreign = base.path().join("foreign");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir(&foreign).unwrap();
+    let state = base.path().join("owner-state");
+    let store = PhoneProjectStore::open(&state).unwrap();
+    let original = store.register_root(&project).unwrap();
+    let project_id = store.register_project(&project, &[original]).unwrap();
+    let added = store.register_root(&parent).unwrap();
+    let unrelated = store.register_root(&foreign).unwrap();
+    let record = binding(&project_id);
+    let agents = vec!["codex".into(), "other".into()];
+    assert!(
+        !store
+            .matches_scope(&record, std::slice::from_ref(&added), &agents)
+            .unwrap()
+    );
+    assert!(matches!(
+        store.link_project_roots(&project_id, std::slice::from_ref(&unrelated)),
+        Err(PhoneProjectError::Invalid(
+            "project is outside approved root"
+        ))
+    ));
+    store
+        .link_project_roots(&project_id, std::slice::from_ref(&added))
+        .unwrap();
+    store
+        .link_project_roots(&project_id, std::slice::from_ref(&added))
+        .unwrap();
+    drop(store);
+    std::fs::remove_dir(&project).unwrap();
+    let store = PhoneProjectStore::open(&state).unwrap();
+    assert!(store.matches_scope(&record, &[added], &agents).unwrap());
+    assert!(store.link_project_roots(&project_id, &[unrelated]).is_err());
+}
+
+#[test]
+fn linking_a_replaced_project_or_parent_never_rebinds_its_identity() {
+    let base = tempfile::tempdir().unwrap();
+    let parent = base.path().join("approved");
+    let project = parent.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let store = PhoneProjectStore::open(base.path().join("owner-state")).unwrap();
+    let root = store.register_root(&parent).unwrap();
+    let project_id = store
+        .register_project(&project, std::slice::from_ref(&root))
+        .unwrap();
+    std::fs::rename(&project, parent.join("old-project")).unwrap();
+    std::fs::create_dir(&project).unwrap();
+    assert!(matches!(
+        store.link_project_roots(&project_id, std::slice::from_ref(&root)),
+        Err(PhoneProjectError::Invalid("project identity changed"))
+    ));
+    let replacement = store
+        .register_project(&project, std::slice::from_ref(&root))
+        .unwrap();
+    std::fs::rename(&parent, base.path().join("old-parent")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    assert!(store.link_project_roots(&replacement, &[root]).is_err());
+}

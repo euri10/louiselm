@@ -59,6 +59,26 @@ pub struct PhoneProjectRootPage {
     pub next_after: Option<String>,
 }
 
+/// One locally retained project identity and its verified parent roots.
+#[derive(Serialize)]
+pub struct PhoneProjectIdentity {
+    /// Private opaque project identity.
+    pub id: String,
+    /// Recorded local path; it may no longer name this project.
+    pub path: String,
+    /// Retained verified root identities.
+    pub root_ids: Vec<String>,
+}
+
+/// A bounded page of owner-local project identities.
+#[derive(Serialize)]
+pub struct PhoneProjectPage {
+    /// Projects sorted by identity.
+    pub projects: Vec<PhoneProjectIdentity>,
+    /// Exclusive cursor when another page exists.
+    pub next_after: Option<String>,
+}
+
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Directory {
@@ -227,6 +247,42 @@ impl PhoneProjectStore {
         })
     }
 
+    /// List up to four retained projects for the local desktop operator.
+    /// Historical paths do not prove a currently selected project identity.
+    ///
+    /// # Errors
+    /// Refuses malformed cursors and private storage errors.
+    pub fn projects_after(&self, after: &str) -> Result<PhoneProjectPage, PhoneProjectError> {
+        if !after.is_empty() && !valid_id(after) {
+            return Err(PhoneProjectError::Invalid("invalid project cursor"));
+        }
+        self.locked(|| {
+            let state = self.load()?;
+            let mut projects = state
+                .projects
+                .into_iter()
+                .filter(|project| project.id.as_str() > after);
+            let page = projects
+                .by_ref()
+                .take(4)
+                .map(|project| PhoneProjectIdentity {
+                    id: project.id,
+                    path: project.directory.path,
+                    root_ids: project.roots,
+                })
+                .collect::<Vec<_>>();
+            let next = if projects.next().is_some() {
+                page.last().map(|project| project.id.clone())
+            } else {
+                None
+            };
+            Ok(PhoneProjectPage {
+                projects: page,
+                next_after: next,
+            })
+        })
+    }
+
     /// Record a fresh project identity and verified current parent-root relations.
     /// The operator must explicitly select the project and exact existing roots.
     ///
@@ -238,32 +294,13 @@ impl PhoneProjectStore {
         roots: &[String],
     ) -> Result<String, PhoneProjectError> {
         let selected = directory(path)?;
-        if roots.is_empty()
-            || roots.len() > 50
-            || roots.iter().collect::<BTreeSet<_>>().len() != roots.len()
-        {
-            return Err(PhoneProjectError::Invalid("invalid approved roots"));
-        }
+        validate_roots(roots)?;
         self.locked(|| {
             let mut state = self.load()?;
             if state.projects.len() >= MAX_RECORDS {
                 return Err(PhoneProjectError::Invalid("project limit reached"));
             }
-            for id in roots {
-                let root = state
-                    .roots
-                    .iter()
-                    .find(|root| &root.id == id)
-                    .ok_or(PhoneProjectError::Invalid("approved root is unavailable"))?;
-                if directory(Path::new(&root.directory.path))? != root.directory {
-                    return Err(PhoneProjectError::Invalid("approved root identity changed"));
-                }
-                if !Path::new(&selected.path).starts_with(&root.directory.path) {
-                    return Err(PhoneProjectError::Invalid(
-                        "project is outside approved root",
-                    ));
-                }
-            }
+            check_roots(&state, &selected, roots)?;
             if directory(Path::new(&selected.path))? != selected {
                 return Err(PhoneProjectError::Invalid("project identity changed"));
             }
@@ -278,6 +315,51 @@ impl PhoneProjectStore {
             state.projects.sort_by(|left, right| left.id.cmp(&right.id));
             self.write(&state)?;
             Ok(id)
+        })
+    }
+
+    /// Explicitly link existing roots to the same currently verified project.
+    /// This can make historical Runs visible to phones already granted those
+    /// roots; it grants no other projects, Agents or action groups.
+    ///
+    /// # Errors
+    /// Refuses missing, replaced or foreign directories, invalid input and storage errors.
+    pub fn link_project_roots(
+        &self,
+        project_id: &str,
+        roots: &[String],
+    ) -> Result<(), PhoneProjectError> {
+        validate_roots(roots)?;
+        self.locked(|| {
+            let mut state = self.load()?;
+            let project = state
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)
+                .ok_or(PhoneProjectError::Invalid("project is unavailable"))?;
+            if directory(Path::new(&project.directory.path))? != project.directory {
+                return Err(PhoneProjectError::Invalid("project identity changed"));
+            }
+            check_roots(&state, &project.directory, roots)?;
+            if directory(Path::new(&project.directory.path))? != project.directory {
+                return Err(PhoneProjectError::Invalid("project identity changed"));
+            }
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .ok_or(PhoneProjectError::Invalid("project is unavailable"))?;
+            let merged = project
+                .roots
+                .iter()
+                .chain(roots)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if merged.len() > 50 {
+                return Err(PhoneProjectError::Invalid("invalid approved roots"));
+            }
+            project.roots = merged.into_iter().collect();
+            self.write(&state)
         })
     }
 
@@ -430,6 +512,39 @@ impl PhoneProjectStore {
         }
         result
     }
+}
+
+fn validate_roots(roots: &[String]) -> Result<(), PhoneProjectError> {
+    if roots.is_empty()
+        || roots.len() > 50
+        || roots.iter().collect::<BTreeSet<_>>().len() != roots.len()
+    {
+        return Err(PhoneProjectError::Invalid("invalid approved roots"));
+    }
+    Ok(())
+}
+
+fn check_roots(
+    state: &State,
+    project: &Directory,
+    roots: &[String],
+) -> Result<(), PhoneProjectError> {
+    for id in roots {
+        let root = state
+            .roots
+            .iter()
+            .find(|root| &root.id == id)
+            .ok_or(PhoneProjectError::Invalid("approved root is unavailable"))?;
+        if directory(Path::new(&root.directory.path))? != root.directory {
+            return Err(PhoneProjectError::Invalid("approved root identity changed"));
+        }
+        if !Path::new(&project.path).starts_with(&root.directory.path) {
+            return Err(PhoneProjectError::Invalid(
+                "project is outside approved root",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn state_hash(state: &State) -> Result<String, serde_json::Error> {
