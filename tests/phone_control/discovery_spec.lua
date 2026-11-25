@@ -112,4 +112,10 @@ T["pages by subject identity and refuses a replaced controller"] = function()
   MiniTest.expect.equality(read(controller, request).code, "stale_subject")
 end
 
+T["rejects a Session-read payload in a discovery request"] = function()
+  local controller, _, _, request = fixture()
+  request.request.payload = "00000000000000000014"
+  MiniTest.expect.equality(read(controller, request).code, "malformed")
+end
+
 return T

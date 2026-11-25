@@ -24,9 +24,17 @@ internal sealed class PhoneControlReply {
         val revision: Long, val status: String, val entries: List<PhoneControlEntry>,
         val nextBefore: Long, val complete: Boolean,
     ) : PhoneControlReply()
+    data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
+    data class SessionList(val controllerId: String, val operationId: String,
+        val sessions: List<PhoneControlSessionSummary>, val nextAfter: String) : PhoneControlReply()
     data class ActionHistory(val requestId: String, val record: PhoneActionRecord) : PhoneControlReply()
     data class ActionHistoryPage(val requestId: String, val records: List<PhoneActionRecord>, val nextAfter: String) : PhoneControlReply()
 }
+
+internal data class PhoneControlSessionSummary(
+    val subjectId: String, val name: String, val agent: String, val project: String,
+    val status: String, val truncated: Boolean,
+)
 
 internal enum class PhoneActionState { UNKNOWN, ACCEPTED, REJECTED, FENCED_NO_EFFECT }
 
@@ -217,6 +225,48 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 require(nextBefore == 0L || entries.isNotEmpty() && nextBefore <= entries.first().seq)
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
                     status, entries, nextBefore, fields.wireBoolean("complete"))
+            }
+            "controller_list" -> {
+                keys("operation_id", "controllers", "next_after")
+                val controllers = fields.wireArray("controllers").map { item ->
+                    (item as? String ?: throw IllegalArgumentException("invalid controller")).also {
+                        phoneControlHex(it, 16)
+                        require(it != "00".repeat(16))
+                    }
+                }
+                require(controllers.zipWithNext().all { (left, right) -> left < right })
+                val next = string("next_after")
+                if (next.isNotEmpty()) {
+                    phoneControlHex(next, 16)
+                    require(controllers.lastOrNull() == next)
+                }
+                PhoneControlReply.ControllerList(hex("operation_id", 16), controllers, next)
+            }
+            "session_list" -> {
+                keys("controller_id", "operation_id", "sessions", "next_after")
+                val controller = hex("controller_id", 16)
+                require(controller != "00".repeat(16))
+                val sessions = fields.wireArray("sessions").map { item ->
+                    val row = requireNotNull(item).wireObject()
+                    row.wireKeys("subject_id", "name", "agent", "project", "status", "truncated")
+                    val subject = row.wireString("subject_id")
+                    phoneControlHex(subject, 16)
+                    require(subject != "00".repeat(16))
+                    val name = row.wireString("name")
+                    val agent = row.wireString("agent")
+                    val project = row.wireString("project")
+                    require(listOf(name, agent, project).all { it.toByteArray(Charsets.UTF_8).size <= 512 })
+                    val status = row.wireString("status")
+                    if (status !in setOf("starting", "ready", "admitting", "configuring", "preparing", "prompting", "running", "waiting_permission", "cancelling", "error")) throw UnsupportedReply()
+                    PhoneControlSessionSummary(subject, name, agent, project, status, row.wireBoolean("truncated"))
+                }
+                require(sessions.zipWithNext().all { (left, right) -> left.subjectId < right.subjectId })
+                val next = string("next_after")
+                if (next.isNotEmpty()) {
+                    phoneControlHex(next, 16)
+                    require(sessions.lastOrNull()?.subjectId == next)
+                }
+                PhoneControlReply.SessionList(controller, hex("operation_id", 16), sessions, next)
             }
             "action_history" -> {
                 keys("request_id", "record")

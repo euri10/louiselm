@@ -47,6 +47,8 @@ class PhoneControlActivity : Activity() {
     private lateinit var unlockButton: Button
     private lateinit var lockButton: Button
     private lateinit var refreshButton: Button
+    private lateinit var sessionsButton: Button
+    private lateinit var moreSessionsButton: Button
     private lateinit var olderButton: Button
     private lateinit var conversation: LinearLayout
     private var target: PhoneControlTarget? = null
@@ -62,6 +64,7 @@ class PhoneControlActivity : Activity() {
     private var loadedOlder = false
     private var newerOmitted = false
     private var historyChanged = false
+    private var browsePage: PhoneBrowsePage? = null
     private val expiryCheck = Runnable { scheduleExpiry() }
     private val refreshPoll = Runnable {
         if (foreground && !busy && period != null && target != null && hasReceiverNetworkAccess(this)) {
@@ -126,7 +129,8 @@ class PhoneControlActivity : Activity() {
                 showFailure(PhoneControlOutcome.REVOKED)
             } else {
                 render()
-                if (target == null) conversation.visibility = View.VISIBLE
+                if (target == null && hasReceiverNetworkAccess(this)) readSessions(interaction = false)
+                else if (target == null) render(R.string.phone_unavailable)
                 else if (hasReceiverNetworkAccess(this)) readTarget(interaction = false)
                 else render(R.string.phone_unavailable)
             }
@@ -188,8 +192,18 @@ class PhoneControlActivity : Activity() {
         add(unlockButton)
         lockButton = Button(this).apply { text = getString(R.string.phone_lock); setOnClickListener { lockWorkspace() } }
         add(lockButton)
-        refreshButton = Button(this).apply { text = getString(R.string.phone_refresh); setOnClickListener { withNetwork { readTarget() } } }
+        sessionsButton = Button(this).apply { text = getString(R.string.phone_sessions); setOnClickListener { withNetwork { showSessions() } } }
+        add(sessionsButton)
+        refreshButton = Button(this).apply {
+            text = getString(R.string.phone_refresh)
+            setOnClickListener { withNetwork { if (target == null) readSessions() else readTarget() } }
+        }
         add(refreshButton)
+        moreSessionsButton = Button(this).apply {
+            text = getString(R.string.phone_more_sessions)
+            setOnClickListener { withNetwork { readSessions(browsePage?.next) } }
+        }
+        add(moreSessionsButton)
         olderButton = Button(this).apply { text = getString(R.string.phone_load_older); setOnClickListener { withNetwork { readTarget(older = true) } } }
         add(olderButton)
         conversation = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -212,8 +226,12 @@ class PhoneControlActivity : Activity() {
         checkButton.visibility = if (currentStatus is PhoneControlStatus.Pending) View.VISIBLE else View.GONE
         unlockButton.visibility = if (currentStatus is PhoneControlStatus.Granted && !unlocked) View.VISIBLE else View.GONE
         lockButton.visibility = if (unlocked) View.VISIBLE else View.GONE
-        refreshButton.visibility = if (unlocked && target != null) View.VISIBLE else View.GONE
+        sessionsButton.visibility = if (unlocked && target != null) View.VISIBLE else View.GONE
+        sessionsButton.isEnabled = !busy
+        refreshButton.visibility = if (unlocked) View.VISIBLE else View.GONE
         refreshButton.isEnabled = !busy
+        moreSessionsButton.visibility = if (unlocked && target == null && browsePage?.next != null) View.VISIBLE else View.GONE
+        moreSessionsButton.isEnabled = !busy
         olderButton.visibility = if (unlocked && (sessionPage?.nextBefore ?: 0) != 0L) View.VISIBLE else View.GONE
         olderButton.isEnabled = !busy
         enableButton.isEnabled = !busy
@@ -307,6 +325,7 @@ class PhoneControlActivity : Activity() {
                         scheduleExpiry()
                         render()
                         if (target != null) withNetwork { readTarget() }
+                        else if (!attentionNavigation) withNetwork { readSessions() }
                     }
                     is PhoneControlResult.Failure -> showFailure(result.outcome)
                 }
@@ -350,6 +369,70 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun active(token: Long): Boolean = generation.get() == token && !isDestroyed && !isFinishing && deviceUsable()
+
+    private fun showSessions() {
+        handler.removeCallbacks(refreshPoll)
+        target = null
+        sessionPage = null
+        loadedOlder = false
+        newerOmitted = false
+        historyChanged = false
+        conversation.removeAllViews()
+        readSessions()
+    }
+
+    private fun readSessions(cursor: PhoneBrowseCursor? = null, interaction: Boolean = true) {
+        val current = period ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding()
+        if (binding == null) {
+            lockWorkspace()
+            render(R.string.phone_unavailable)
+            return
+        }
+        task({ maySend ->
+            PhoneControlBrowser(client).page(current, cursor, interaction) {
+                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }, { outcome -> if (foreground) showFailure(outcome) }) { page, _ ->
+            busy = false
+            if (!foreground) return@task
+            if (pairing.binding() != binding) {
+                lockWorkspace()
+                render(R.string.phone_unavailable)
+                return@task
+            }
+            val now = SystemClock.elapsedRealtime()
+            if (period !== current || !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
+                lockWorkspace()
+                return@task
+            }
+            browsePage = page
+            scheduleExpiry()
+            render()
+            conversation.removeAllViews()
+            conversation.visibility = View.VISIBLE
+            if (page.rows.isEmpty()) {
+                conversation.addView(TextView(this).apply { text = getString(R.string.phone_no_sessions) })
+            }
+            for (row in page.rows) {
+                conversation.addView(Button(this).apply {
+                    text = getString(R.string.phone_session_row, row.summary.name, row.summary.agent,
+                        row.summary.project, sessionState(row.summary.status), row.target.controllerId, row.target.subjectId,
+                        if (row.summary.truncated) getString(R.string.phone_truncated) else "")
+                    setOnClickListener {
+                        target = row.target
+                        sessionPage = null
+                        loadedOlder = false
+                        newerOmitted = false
+                        historyChanged = false
+                        conversation.removeAllViews()
+                        withNetwork { readTarget() }
+                    }
+                })
+            }
+        }
+    }
 
     private fun readTarget(older: Boolean = false, interaction: Boolean = true) {
         val current = period ?: return
@@ -423,19 +506,7 @@ class PhoneControlActivity : Activity() {
         fun line(value: String) {
             conversation.addView(TextView(this).apply { text = value; textSize = 16f })
         }
-        val state = when (page.status) {
-            "starting" -> R.string.phone_state_starting
-            "ready" -> R.string.phone_state_ready
-            "admitting" -> R.string.phone_state_admitting
-            "configuring" -> R.string.phone_state_configuring
-            "preparing" -> R.string.phone_state_preparing
-            "prompting" -> R.string.phone_state_prompting
-            "running" -> R.string.phone_state_running
-            "waiting_permission" -> R.string.phone_state_waiting_permission
-            "cancelling" -> R.string.phone_state_cancelling
-            else -> R.string.phone_state_error
-        }
-        line(getString(R.string.phone_session_state, getString(state)))
+        line(getString(R.string.phone_session_state, sessionState(page.status)))
         if (historyChanged) line(getString(R.string.phone_history_changed))
         if (newerOmitted) line(getString(R.string.phone_newer_omitted))
         if (!page.complete) line(getString(R.string.phone_incomplete))
@@ -453,10 +524,27 @@ class PhoneControlActivity : Activity() {
         }
     }
 
+    private fun sessionState(status: String): String {
+        val state = when (status) {
+            "starting" -> R.string.phone_state_starting
+            "ready" -> R.string.phone_state_ready
+            "admitting" -> R.string.phone_state_admitting
+            "configuring" -> R.string.phone_state_configuring
+            "preparing" -> R.string.phone_state_preparing
+            "prompting" -> R.string.phone_state_prompting
+            "running" -> R.string.phone_state_running
+            "waiting_permission" -> R.string.phone_state_waiting_permission
+            "cancelling" -> R.string.phone_state_cancelling
+            else -> R.string.phone_state_error
+        }
+        return getString(state)
+    }
+
     private fun deviceUsable(): Boolean = getSystemService(PowerManager::class.java).isInteractive &&
         !getSystemService(KeyguardManager::class.java).isDeviceLocked
 
     private fun showFailure(outcome: PhoneControlOutcome) {
+        browsePage = null
         sessionPage = null
         loadedOlder = false
         newerOmitted = false
@@ -497,6 +585,7 @@ class PhoneControlActivity : Activity() {
         loadedOlder = false
         newerOmitted = false
         historyChanged = false
+        browsePage = null
         conversation.removeAllViews()
         conversation.visibility = if (foreground) View.VISIBLE else View.GONE
         handler.removeCallbacksAndMessages(null)

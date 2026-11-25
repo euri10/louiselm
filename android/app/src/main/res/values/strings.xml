@@ -30,7 +30,11 @@
     <string name="phone_unsupported">This receiver does not support the requested phone-control operation.</string>
     <string name="phone_admin">Disable workspace or forget this phone on your computer. Capture recordings are kept.</string>
     <string name="phone_open_session">Open Session</string>
-    <string name="phone_refresh">Refresh Session</string>
+    <string name="phone_refresh">Refresh</string>
+    <string name="phone_sessions">Sessions</string>
+    <string name="phone_more_sessions">More Sessions</string>
+    <string name="phone_no_sessions">No authorized live Sessions on this page.</string>
+    <string name="phone_session_row">%1$s\n%2$s · %3$s · %4$s\nController: %5$s\nSession: %6$s\n%7$s</string>
     <string name="phone_load_older">Load older messages</string>
     <string name="phone_history_changed">Conversation updated. Load older messages again for the current snapshot.</string>
     <string name="phone_newer_omitted">Newer messages are outside this view. Refresh to return to the latest messages.</string>

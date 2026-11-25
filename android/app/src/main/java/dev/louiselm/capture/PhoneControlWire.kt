@@ -21,6 +21,11 @@ internal fun phoneControlReadPayload(before: Long, limit: Int): ByteArray {
     return ByteBuffer.allocate(10).putLong(before).putShort(limit.toShort()).array()
 }
 
+internal fun phoneControlDiscoveryPayload(after: String?, limit: Int): ByteArray {
+    require(limit in 1..50) { "invalid discovery limit" }
+    return (after?.let { phoneControlHex(it, 16) } ?: ByteArray(16)) + byteArrayOf(limit.toByte())
+}
+
 internal fun phoneControlHistoryPagePayload(after: String?, limit: Int): ByteArray {
     require(limit in 1..50) { "invalid history limit" }
     return if (after == null) byteArrayOf(1, limit.toByte())
@@ -104,6 +109,10 @@ internal class PhoneControlRequest(
                     else -> throw IllegalArgumentException("invalid history payload")
                 }
             }
+            48, 49 -> require(this.payload.size == 17 && this.payload.last().toInt() in 1..50 &&
+                expectedRevision == 0L && subjectId == "00".repeat(16) &&
+                ((action == 48 && controllerId == "00".repeat(16)) ||
+                    (action == 49 && controllerId != "00".repeat(16)))) { "invalid discovery request" }
             else -> throw IllegalArgumentException("unsupported action")
         }
     }

@@ -44,6 +44,8 @@ private object PhoneScreenFixture {
     var loseEnrollmentReply = false
     var lastPeriod: PhoneControlPeriod? = null
     var reads = 0
+    var lastTarget: PhoneControlTarget? = null
+    var sessionRows = emptyList<PhoneControlSessionSummary>()
     var revision = 1L
     var latest = listOf<PhoneControlEntry>(PhoneControlEntry.Message(1, "assistant", "private session text", false))
     var older = emptyList<PhoneControlEntry>()
@@ -53,7 +55,7 @@ private object PhoneScreenFixture {
     var pairingBinding: String? = "fixture"
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
-        loseEnrollmentReply = false; lastPeriod = null; reads = 0; pairingBinding = "fixture"
+        loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); pairingBinding = "fixture"
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; staleOlder = false; readRequests.clear()
     }
@@ -118,11 +120,29 @@ class PhoneScreenClientFixture {
         limit: Int, expectedRevision: Long, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionPage> {
         if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
         PhoneScreenFixture.reads++
+        PhoneScreenFixture.lastTarget = target
         PhoneScreenFixture.readRequests += Triple(before, expectedRevision, interaction)
         if (before != 0L && PhoneScreenFixture.staleOlder) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
         return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),
             PhoneScreenFixture.revision, "ready", if (before == 0L) PhoneScreenFixture.latest else PhoneScreenFixture.older,
             if (before == 0L) PhoneScreenFixture.nextBefore else 0, true))
+    }
+
+    @Implementation(methodName = "listControllers")
+    internal fun listControllers(period: PhoneControlPeriod, now: Long, after: String?, limit: Int,
+        interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.ControllerList> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        return PhoneControlResult.Value(PhoneControlReply.ControllerList("88".repeat(16), listOf("aa".repeat(16)), ""))
+    }
+
+    @Implementation(methodName = "listSessions")
+    internal fun listSessions(period: PhoneControlPeriod, now: Long, controllerId: String, after: String?, limit: Int,
+        interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionList> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        val remaining = PhoneScreenFixture.sessionRows.filter { after == null || it.subjectId > after }
+        val rows = remaining.take(limit)
+        val next = if (remaining.size > limit) rows.last().subjectId else ""
+        return PhoneControlResult.Value(PhoneControlReply.SessionList(controllerId, "88".repeat(16), rows, next))
     }
 }
 
@@ -191,6 +211,55 @@ class PhoneControlActivityTest {
         .single { it.text.toString() == text }
     private fun hasText(id: Int) = views(activity.window.decorView).filterIsInstance<TextView>()
         .any { it.text.toString() == activity.getString(id) }
+
+    @Test
+    fun browsesSessionsWithoutAttentionAndOpensTheExactIdenticalName() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.sessionRows = listOf(
+            PhoneControlSessionSummary("01".repeat(16), "same", "mock", "/work", "ready", false),
+            PhoneControlSessionSummary("02".repeat(16), "same", "mock", "/work", "running", false),
+        )
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(3) { drain() }
+        val rows = views(activity.window.decorView).filterIsInstance<Button>()
+            .filter { it.text.toString().contains("same") }.toList()
+        assertEquals(2, rows.size)
+        rows.single { it.text.toString().contains("02".repeat(16)) }.performClick()
+        drain()
+        assertEquals(PhoneControlTarget("aa".repeat(16), "02".repeat(16)), PhoneScreenFixture.lastTarget)
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun emptyAndLargeListsStayBoundedAndPageWithoutLosingIdentity() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(3) { drain() }
+        assertTrue(hasText(R.string.phone_no_sessions))
+        PhoneScreenFixture.sessionRows = (1..52).map {
+            PhoneControlSessionSummary("%032x".format(it), "same", "mock", "/work", "ready", false)
+        }
+        button(R.string.phone_refresh).performClick()
+        drain()
+        assertEquals(50, views(activity.window.decorView).filterIsInstance<Button>().count { it.text.toString().contains("same") })
+        button(R.string.phone_more_sessions).performClick()
+        drain()
+        val rows = views(activity.window.decorView).filterIsInstance<Button>().filter { it.text.toString().contains("same") }.toList()
+        assertEquals(2, rows.size)
+        rows.last().performClick()
+        drain()
+        assertEquals(PhoneControlTarget("aa".repeat(16), "%032x".format(52)), PhoneScreenFixture.lastTarget)
+    }
 
     @Test
     fun attentionTargetUnlocksAndDisplaysCurrentReadOnlySession() {
@@ -352,11 +421,11 @@ class PhoneControlActivityTest {
         button(R.string.phone_unlock).performClick()
         drain()
         requireNotNull(PhoneScreenFixture.prompt).invoke(null)
-        drain()
+        repeat(2) { drain() } // Unlock, then load the newly available Session list.
         assertTrue(hasText(R.string.phone_unlocked))
         assertEquals(1, PhoneScreenFixture.sends)
         controller.pause().stop().restart().start().resume()
-        drain() // Revalidate the pairing before showing protected content on return.
+        repeat(2) { drain() } // Revalidate pairing, then refresh protected content on return.
         assertTrue(hasText(R.string.phone_unlocked))
         screenOff()
         assertTrue(hasText(R.string.phone_locked))

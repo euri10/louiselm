@@ -189,6 +189,7 @@ function Controller:read(line, callback)
   end
   local before, limit = parse_payload(request.payload)
   if listing then
+    before, limit = nil, nil
     local payload = request.payload
     if type(payload) == "string" and #payload == 34 and payload:match("^[0-9a-f]+$") then
       before, limit = 0, tonumber(payload:sub(33), 16)

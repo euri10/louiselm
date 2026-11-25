@@ -203,6 +203,50 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
+    /** List attached controller identities; no Session details are returned by this request. */
+    fun listControllers(period: PhoneControlPeriod, nowMs: Long, after: String? = null,
+        limit: Int = 50, interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.ControllerList> = guarded {
+        val result = discover(period, nowMs, "00".repeat(16), after, limit, 48, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.ControllerList) return@guarded refusal(reply)
+        if (reply.operationId != operationId || reply.controllers.size > limit ||
+            reply.controllers.any { after != null && it <= after } ||
+            (reply.nextAfter.isNotEmpty() && reply.controllers.size != limit)) return@guarded malformed()
+        PhoneControlResult.Value(reply)
+    }
+
+    /** List only authorized live Sessions of one exact attached controller. */
+    fun listSessions(period: PhoneControlPeriod, nowMs: Long, controllerId: String, after: String? = null,
+        limit: Int = 50, interaction: Boolean = false, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionList> = guarded {
+        val result = discover(period, nowMs, controllerId, after, limit, 49, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.SessionList) return@guarded refusal(reply)
+        if (reply.controllerId != controllerId || reply.operationId != operationId || reply.sessions.size > limit ||
+            reply.sessions.any { after != null && it.subjectId <= after } ||
+            (reply.nextAfter.isNotEmpty() && reply.sessions.size != limit)) return@guarded malformed()
+        PhoneControlResult.Value(reply)
+    }
+
+    private fun discover(period: PhoneControlPeriod, nowMs: Long, controllerId: String, after: String?, limit: Int,
+        action: Int, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<Pair<PhoneControlReply, String>> {
+        if (!period.isActive(nowMs)) return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend()) return unavailable()
+        val config = pairingStore.load() ?: return unavailable()
+        if (currentGrant(config) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
+            period.grant.receiverIdentity, controllerId, "00".repeat(16), phoneControlDiscoveryPayload(after, limit),
+            operationId, 0, interaction, action = action)
+        val signature = period.sign(request, nowMs) ?: return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return unavailable()
+        val currentConfig = pairingStore.load() ?: return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        if (currentGrant(currentConfig) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        return PhoneControlResult.Value(reply to operationId)
+    }
+
     /** Inspect scoped retained evidence without a live Session or idle-period renewal. */
     fun readActionHistoryPage(
         period: PhoneControlPeriod,
