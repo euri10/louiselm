@@ -75,12 +75,25 @@ private object PhoneScreenFixture {
     var evidenceReads = 0
     var evidenceReadOnMain = false
     val evidenceOperationIds = mutableListOf<String>()
+    val preparedSummary = PhonePreparedSummary("33".repeat(16), "11111111-1111-4111-8111-111111111111", 3)
+    val preparedDigest = "sha256:" + "01".repeat(32)
+    val preparedDraft = PhonePreparedDraft("codex", listOf(PhonePreparedBead("a", "private prepared instruction"),
+        PhonePreparedBead("b", "second"), PhonePreparedBead("c", "third")),
+        PhonePreparedExecution("duration", 1_800_000), 6, preparedDigest,
+        PhonePreparedBeadScope(preparedDigest, listOf("a", "b", "c"), 3),
+        PhonePreparedProvider(preparedDigest, "openai", "https://api.openai.com/v1/responses",
+            listOf("127.0.0.1"), listOf("gpt-5.6-luna"), "low", 3),
+        PhonePreparedSkillScope(false, emptyList(), false, false), PhonePreparedSkills("off", preparedDigest, null), "denied")
+    var preparedReads = 0
+    var preparedFailure: PhoneControlOutcome? = null
+    val preparedInteractions = mutableListOf<Boolean>()
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
         preUnlockOffline = true
         sendCalls = 0; sendOutcome = PhoneControlOutcome.UNSUPPORTED; sendFailure = null; evidenceState = null; evidenceReads = 0; evidenceReadOnMain = false
         evidenceOperationIds.clear()
+        preparedReads = 0; preparedFailure = null; preparedInteractions.clear()
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; olderNextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
@@ -101,6 +114,28 @@ class PhoneScreenPairingFixture {
 class PhoneScreenClientFixture {
     @Implementation(methodName = "status")
     internal fun status(): PhoneControlResult<PhoneControlStatus> = PhoneControlResult.Value(PhoneScreenFixture.status)
+
+    @Implementation(methodName = "listPrepared")
+    internal fun listPrepared(period: PhoneControlPeriod, now: Long, after: String?, interaction: Boolean,
+        maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.PreparedPage> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.preparedFailure?.let { return PhoneControlResult.Failure(it) }
+        PhoneScreenFixture.preparedInteractions += interaction
+        val items = if (after == null) listOf(PhoneScreenFixture.preparedSummary) else emptyList()
+        return PhoneControlResult.Value(PhoneControlReply.PreparedPage("88".repeat(16), items,
+            items.singleOrNull()?.registrationId ?: ""))
+    }
+
+    @Implementation(methodName = "readPrepared")
+    internal fun readPrepared(period: PhoneControlPeriod, target: PhonePreparedSummary, now: Long,
+        interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.PreparedDetail> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.preparedFailure?.let { return PhoneControlResult.Failure(it) }
+        PhoneScreenFixture.preparedInteractions += interaction
+        PhoneScreenFixture.preparedReads++
+        return PhoneControlResult.Value(PhoneControlReply.PreparedDetail("88".repeat(16), target.registrationId,
+            target.runId, target.revision, PhoneScreenFixture.preparedDraft))
+    }
 
     @Implementation(methodName = "enroll")
     internal fun enroll(maySend: () -> Boolean): PhoneControlResult<PhoneControlPending> {
@@ -324,6 +359,99 @@ class PhoneControlActivityTest {
         .single { it.text.toString() == text }
     private fun hasText(id: Int) = views(activity.window.decorView).filterIsInstance<TextView>()
         .any { it.text.toString() == activity.getString(id) }
+
+    @Test
+    fun preparedDraftIsExplicitlyOpenedAndClearedOnLock() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drain() }
+        buttonText("Prepared Runs").performClick()
+        repeat(2) { drain() }
+        assertEquals(0, PhoneScreenFixture.preparedReads)
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString().contains("private prepared instruction")
+        })
+        val row = views(activity.window.decorView).filterIsInstance<Button>().single {
+            it.text.toString().contains(PhoneScreenFixture.preparedSummary.runId)
+        }
+        row.performClick()
+        repeat(2) { drain() }
+        assertEquals(1, PhoneScreenFixture.preparedReads)
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString().contains("private prepared instruction")
+        })
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString().contains("does not start")
+        })
+        val displayed = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+        for (value in listOf("6", PhoneScreenFixture.preparedDigest, "127.0.0.1", "gpt-5.6-luna")) assertTrue(displayed.contains(value))
+        assertTrue(displayed.replace(",", "").replace(" ", "").replace("\u00a0", "").contains("1800000"))
+        assertEquals(0, PhoneScreenFixture.sendCalls)
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString().contains("private prepared instruction")
+        })
+    }
+
+    @Test
+    fun preparedResumeRechecksWithoutRenewingAndExpiryClearsContent() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drain() }
+        buttonText("Prepared Runs").performClick()
+        repeat(2) { drain() }
+        views(activity.window.decorView).filterIsInstance<Button>().single {
+            it.text.toString().contains(PhoneScreenFixture.preparedSummary.runId)
+        }.performClick()
+        repeat(2) { drain() }
+        controller.pause()
+        controller.resume()
+        repeat(5) { drain() }
+        assertEquals(false, PhoneScreenFixture.preparedInteractions.last())
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString().contains("private prepared instruction")
+        })
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(5))
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString().contains("private prepared instruction")
+        })
+        assertTrue(hasText(R.string.phone_expired))
+    }
+
+    @Test
+    fun unsupportedPreparedReadsAndLateDetailNeverExposeContent() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drain() }
+        PhoneScreenFixture.preparedFailure = PhoneControlOutcome.UNSUPPORTED
+        buttonText("Prepared Runs").performClick()
+        repeat(2) { drain() }
+        assertTrue(hasText(R.string.phone_unsupported))
+        PhoneScreenFixture.preparedFailure = null
+        buttonText("Prepared Runs").performClick()
+        repeat(2) { drain() }
+        views(activity.window.decorView).filterIsInstance<Button>().single {
+            it.text.toString().contains(PhoneScreenFixture.preparedSummary.runId)
+        }.performClick()
+        screenOff()
+        repeat(2) { drain() }
+        assertEquals(0, PhoneScreenFixture.preparedReads)
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString().contains("private prepared instruction")
+        })
+    }
 
     @Test
     fun explicitSendKeepsInputAndRequiresOwnerFenceBeforeRetry() {

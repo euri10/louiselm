@@ -77,6 +77,8 @@ class PhoneControlActivity : Activity() {
     private lateinit var refreshButton: Button
     private lateinit var sessionsButton: Button
     private lateinit var moreSessionsButton: Button
+    private lateinit var preparedButton: Button
+    private lateinit var morePreparedButton: Button
     private lateinit var olderButton: Button
     private lateinit var actionHistoryButton: Button
     private lateinit var moreActionHistoryButton: Button
@@ -115,6 +117,10 @@ class PhoneControlActivity : Activity() {
     private var browsePage: PhoneBrowsePage? = null
     private var actionHistoryPage: PhoneControlReply.ActionHistoryPage? = null
     private var showingActionHistory = false
+    private var showingPrepared = false
+    private var preparedPage: PhoneControlReply.PreparedPage? = null
+    private var preparedAfter: String? = null
+    private var selectedPrepared: PhonePreparedSummary? = null
     private var draftTarget: PhoneControlTarget? = null
     private var draftReceiver: String? = null
     private var pendingActions = emptyList<PendingPhoneAction>()
@@ -211,7 +217,12 @@ class PhoneControlActivity : Activity() {
             } else {
                 render()
                 scheduleReconciliation(0)
-                if (showingActionHistory && hasReceiverNetworkAccess(this)) readActionHistory()
+                if (showingPrepared && hasReceiverNetworkAccess(this)) {
+                    val selected = selectedPrepared
+                    if (selected == null) readPreparedPage(preparedAfter, interaction = false) else readPreparedDetail(selected, interaction = false)
+                }
+                else if (showingPrepared) render(R.string.phone_unavailable)
+                else if (showingActionHistory && hasReceiverNetworkAccess(this)) readActionHistory()
                 else if (target == null && hasReceiverNetworkAccess(this)) readSessions(interaction = false)
                 else if (target == null) render(R.string.phone_unavailable)
                 else if (hasReceiverNetworkAccess(this)) readTarget(interaction = false)
@@ -257,6 +268,8 @@ class PhoneControlActivity : Activity() {
         offlinePeriod?.lock()
         offlinePeriod = null
         selectedOffline = null
+        selectedPrepared = null
+        preparedPage = null
         openedPages = emptyList()
         conversation.removeAllViews()
         handler.removeCallbacksAndMessages(null)
@@ -337,6 +350,8 @@ class PhoneControlActivity : Activity() {
         add(offlineBudgetButton)
         sessionsButton = Button(this).apply { text = getString(R.string.phone_sessions); setOnClickListener { withNetwork { showSessions() } } }
         add(sessionsButton)
+        preparedButton = Button(this).apply { text = getString(R.string.phone_prepared); setOnClickListener { withNetwork { showPrepared() } } }
+        add(preparedButton)
         actionHistoryButton = Button(this).apply {
             text = getString(R.string.phone_action_history)
             setOnClickListener { withNetwork { readActionHistory() } }
@@ -344,7 +359,13 @@ class PhoneControlActivity : Activity() {
         add(actionHistoryButton)
         refreshButton = Button(this).apply {
             text = getString(R.string.phone_refresh)
-            setOnClickListener { withNetwork { if (showingActionHistory) readActionHistory() else if (target == null) readSessions() else readTarget() } }
+            setOnClickListener { withNetwork {
+                val selected = selectedPrepared
+                if (showingPrepared && selected != null) readPreparedDetail(selected)
+                else if (showingPrepared) readPreparedPage()
+                else if (showingActionHistory) readActionHistory()
+                else if (target == null) readSessions() else readTarget()
+            } }
         }
         add(refreshButton)
         moreSessionsButton = Button(this).apply {
@@ -352,6 +373,11 @@ class PhoneControlActivity : Activity() {
             setOnClickListener { withNetwork { readSessions(browsePage?.next) } }
         }
         add(moreSessionsButton)
+        morePreparedButton = Button(this).apply {
+            text = getString(R.string.phone_more_prepared)
+            setOnClickListener { withNetwork { readPreparedPage(preparedPage?.nextAfter) } }
+        }
+        add(morePreparedButton)
         olderButton = Button(this).apply { text = getString(R.string.phone_load_older); setOnClickListener { withNetwork { readTarget(older = true) } } }
         add(olderButton)
         moreActionHistoryButton = Button(this).apply {
@@ -406,7 +432,7 @@ class PhoneControlActivity : Activity() {
         }
         val unlocked = period?.isActive(SystemClock.elapsedRealtime()) == true
         val offlineUnlocked = offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true
-        val showComposer = foreground && unlocked && ((!showingOffline && !showingActionHistory && target != null) ||
+        val showComposer = foreground && unlocked && !showingPrepared && ((!showingOffline && !showingActionHistory && target != null) ||
             sendInput.text.isNotEmpty())
         sendInput.visibility = if (showComposer) View.VISIBLE else View.GONE
         sendButton.visibility = if (showComposer) View.VISIBLE else View.GONE
@@ -454,14 +480,18 @@ class PhoneControlActivity : Activity() {
         offlineBudgetButton.visibility = if (offlineUnlocked && showingOffline) View.VISIBLE else View.GONE
         offlineBudgetButton.isEnabled = !busy
         lockButton.visibility = if (unlocked || offlineUnlocked) View.VISIBLE else View.GONE
-        sessionsButton.visibility = if (unlocked && (target != null || showingActionHistory || showingOffline)) View.VISIBLE else View.GONE
+        sessionsButton.visibility = if (unlocked && (target != null || showingActionHistory || showingOffline || showingPrepared)) View.VISIBLE else View.GONE
         sessionsButton.isEnabled = !busy
+        preparedButton.visibility = if (unlocked && !showingOffline) View.VISIBLE else View.GONE
+        preparedButton.isEnabled = !busy
         actionHistoryButton.visibility = if (unlocked && !showingOffline) View.VISIBLE else View.GONE
         actionHistoryButton.isEnabled = !busy
         refreshButton.visibility = if (unlocked && !showingOffline) View.VISIBLE else View.GONE
         refreshButton.isEnabled = !busy
-        moreSessionsButton.visibility = if (unlocked && !showingOffline && !showingActionHistory && target == null && browsePage?.next != null) View.VISIBLE else View.GONE
+        moreSessionsButton.visibility = if (unlocked && !showingOffline && !showingActionHistory && !showingPrepared && target == null && browsePage?.next != null) View.VISIBLE else View.GONE
         moreSessionsButton.isEnabled = !busy
+        morePreparedButton.visibility = if (unlocked && showingPrepared && selectedPrepared == null && !preparedPage?.nextAfter.isNullOrEmpty()) View.VISIBLE else View.GONE
+        morePreparedButton.isEnabled = !busy
         olderButton.visibility = if (unlocked && !showingOffline && !showingActionHistory && (sessionPage?.nextBefore ?: 0) != 0L) View.VISIBLE else View.GONE
         olderButton.isEnabled = !busy
         moreActionHistoryButton.visibility = if (unlocked && !showingOffline && showingActionHistory && !actionHistoryPage?.nextAfter.isNullOrEmpty()) View.VISIBLE else View.GONE
@@ -570,6 +600,7 @@ class PhoneControlActivity : Activity() {
 
     private fun showOfflineCopies() {
         val current = offlinePeriod ?: return
+        clearPrepared()
         showingOffline = true
         selectedOffline = null
         handler.removeCallbacks(refreshPoll)
@@ -1064,6 +1095,7 @@ class PhoneControlActivity : Activity() {
 
     private fun showSessions() {
         handler.removeCallbacks(refreshPoll)
+        clearPrepared()
         showingOffline = false
         selectedOffline = null
         showingActionHistory = false
@@ -1079,6 +1111,106 @@ class PhoneControlActivity : Activity() {
         readSessions()
     }
 
+    private fun clearPrepared() {
+        if (showingPrepared) conversation.removeAllViews()
+        showingPrepared = false
+        preparedPage = null
+        preparedAfter = null
+        selectedPrepared = null
+    }
+
+    private fun showPrepared() {
+        handler.removeCallbacks(refreshPoll)
+        showingOffline = false
+        showingActionHistory = false
+        actionHistoryPage = null
+        target = null
+        selectedSource = null
+        openedPages = emptyList()
+        sessionPage = null
+        browsePage = null
+        showingPrepared = true
+        preparedPage = null
+        preparedAfter = null
+        selectedPrepared = null
+        conversation.removeAllViews()
+        readPreparedPage()
+    }
+
+    private fun readPreparedPage(after: String? = null, interaction: Boolean = true) {
+        val current = period ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding()
+        if (binding == null) {
+            lockWorkspace()
+            render(R.string.phone_unavailable)
+            return
+        }
+        task({ maySend ->
+            client.listPrepared(current, SystemClock.elapsedRealtime(), after, interaction) {
+                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }, { outcome -> if (foreground) showFailure(outcome) }) { page, _ ->
+            busy = false
+            if (!foreground) return@task
+            val now = SystemClock.elapsedRealtime()
+            if (pairing.binding() != binding || period !== current ||
+                !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
+                lockWorkspace()
+                return@task
+            }
+            preparedPage = page
+            preparedAfter = after
+            selectedPrepared = null
+            scheduleExpiry()
+            render()
+            conversation.removeAllViews()
+            conversation.visibility = View.VISIBLE
+            if (page.items.isEmpty()) conversation.addView(TextView(this).apply { text = getString(R.string.phone_no_prepared) })
+            for (item in page.items) {
+                conversation.addView(Button(this).apply {
+                    text = getString(R.string.phone_prepared_row, item.runId, item.revision)
+                    setOnClickListener {
+                        selectedPrepared = item
+                        preparedPage = null
+                        conversation.removeAllViews()
+                        withNetwork { readPreparedDetail(item) }
+                    }
+                })
+            }
+        }
+    }
+
+    private fun readPreparedDetail(selected: PhonePreparedSummary, interaction: Boolean = true) {
+        val current = period ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding()
+        if (binding == null) {
+            lockWorkspace()
+            render(R.string.phone_unavailable)
+            return
+        }
+        task({ maySend ->
+            client.readPrepared(current, selected, SystemClock.elapsedRealtime(), interaction) {
+                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            }
+        }, { outcome -> if (foreground) showFailure(outcome) }) { detail, _ ->
+            busy = false
+            if (!foreground) return@task
+            val now = SystemClock.elapsedRealtime()
+            if (pairing.binding() != binding || period !== current ||
+                !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
+                lockWorkspace()
+                return@task
+            }
+            scheduleExpiry()
+            render()
+            conversation.removeAllViews()
+            for (view in phonePreparedDetailViews(this, selected, detail.detail)) conversation.addView(view)
+            conversation.visibility = View.VISIBLE
+        }
+    }
+
     private fun readActionHistory(after: String? = null) {
         val current = period ?: return
         val pairing = PairingStore(applicationContext)
@@ -1088,6 +1220,7 @@ class PhoneControlActivity : Activity() {
             render(R.string.phone_unavailable)
             return
         }
+        clearPrepared()
         showingActionHistory = true
         handler.removeCallbacks(refreshPoll)
         task({ maySend ->
@@ -1367,6 +1500,7 @@ class PhoneControlActivity : Activity() {
         !getSystemService(KeyguardManager::class.java).isDeviceLocked
 
     private fun showFailure(outcome: PhoneControlOutcome) {
+        preparedPage = null
         browsePage = null
         actionHistoryPage = null
         sessionPage = null
@@ -1374,11 +1508,13 @@ class PhoneControlActivity : Activity() {
         handler.removeCallbacks(refreshPoll)
         conversation.removeAllViews()
         if (outcome == PhoneControlOutcome.EXPIRED) {
+            clearPrepared()
             period?.lock()
             period = null
             resetReconciliation()
         }
         if (outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED) {
+            clearPrepared()
             period?.lock()
             period = null
             resetReconciliation()
@@ -1418,6 +1554,7 @@ class PhoneControlActivity : Activity() {
         openedPages = emptyList()
         showingActionHistory = false
         actionHistoryPage = null
+        clearPrepared()
         resetReconciliation()
         sessionPage = null
         newerOmitted = false
@@ -1450,6 +1587,7 @@ class PhoneControlActivity : Activity() {
             handler.removeCallbacks(refreshPoll)
             handler.removeCallbacks(reconcilePoll)
             if (!showingOffline) {
+                clearPrepared()
                 sessionPage = null
                 openedPages = emptyList()
                 conversation.removeAllViews()

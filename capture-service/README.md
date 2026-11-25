@@ -141,8 +141,9 @@ Republication requires the current registration ID and revision; unpublication
 hides it while retaining the private snapshot. Inspection can print sensitive
 instructions and paths to the local terminal. The protected receiver can read
 an exact registered revision and discover eligible registrations with current
-phone scope; Android presentation is not yet provided. Neither operation starts a Run or opens a
-waiting controller.
+phone scope. Android can browse these inactive drafts and inspect their exact
+protected instructions and limits while unlocked. Neither operation starts a
+Run or opens a waiting controller.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver
