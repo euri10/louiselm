@@ -141,6 +141,10 @@ internal class PhoneControlRequest(
                 expectedRevision == 0L && subjectId == "00".repeat(16) &&
                 ((action == 48 && controllerId == "00".repeat(16)) ||
                     (action == 49 && controllerId != "00".repeat(16)))) { "invalid discovery request" }
+            52 -> require(this.payload.size == 16 && expectedRevision == 0L &&
+                controllerId == "00".repeat(16) && subjectId == "00".repeat(16)) { "invalid prepared discovery" }
+            53 -> require(this.payload.isEmpty() && expectedRevision > 0 &&
+                controllerId == "00".repeat(16) && subjectId != "00".repeat(16)) { "invalid prepared detail" }
             else -> throw IllegalArgumentException("unsupported action")
         }
     }

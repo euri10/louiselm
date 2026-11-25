@@ -10,6 +10,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PhoneControlWireTest {
@@ -51,6 +52,30 @@ class PhoneControlWireTest {
             val changed = transcript.clone().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() }
             assertFalse(Signature.getInstance("SHA256withECDSA").run { initVerify(publicKey); update(changed); verify(signature) })
         }
+    }
+
+    @Test
+    fun preparedDiscoveryAndDetailBindTheirCursorSubjectAndRevision() {
+        val existing = fixture.getJSONObject("request")
+        val zero = "00".repeat(16)
+        val registration = "ab".repeat(16)
+        fun request(action: Int, subject: String, payload: ByteArray, revision: Long) = PhoneControlRequest(
+            existing.getString("grant_id"), existing.getLong("grant_revision"), existing.getString("period_id"),
+            existing.getString("receiver_identity"), zero, subject, payload,
+            existing.getString("operation_id"), revision, true, action = action,
+        )
+        val page = request(52, zero, phoneControlHex(registration, 16), 0)
+        assertEquals(52, page.json(ByteArray(8)).getInt("action"))
+        assertEquals(registration, page.json(ByteArray(8)).getString("payload"))
+        val detail = request(53, registration, ByteArray(0), 7)
+        assertEquals(registration, detail.json(ByteArray(8)).getString("subject_id"))
+        assertEquals(7L, detail.json(ByteArray(8)).getLong("expected_revision"))
+        assertFalse(page.transcript().contentEquals(detail.transcript()))
+        assertThrows(IllegalArgumentException::class.java) { request(52, registration, ByteArray(16), 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(52, zero, ByteArray(15), 0) }
+        assertThrows(IllegalArgumentException::class.java) { request(53, zero, ByteArray(0), 1) }
+        assertThrows(IllegalArgumentException::class.java) { request(53, registration, ByteArray(1), 1) }
+        assertThrows(IllegalArgumentException::class.java) { request(53, registration, ByteArray(0), 0) }
     }
 
     @Test
