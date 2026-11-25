@@ -80,6 +80,8 @@ pub(super) enum Command {
 pub(super) enum PhoneControl {
     /// Read and authenticate one controller frame from standard input.
     Verify,
+    /// Persist an exact native-owner action reservation or outcome.
+    OwnerJournal,
     /// Start an enrollment for an already paired device.
     Start {
         #[arg(long)]

@@ -4,6 +4,7 @@ mod authority;
 mod discovery;
 mod evidence;
 mod http;
+pub(crate) mod owner_journal;
 mod socket;
 
 pub use evidence::{

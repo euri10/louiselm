@@ -163,6 +163,11 @@ pub async fn run() -> Result<(), CliError> {
         } => tokio::task::spawn_blocking(move || verify_phone_control(&paths))
             .await
             .map_err(std::io::Error::other)?,
+        Command::PhoneControl {
+            command: PhoneControl::OwnerJournal,
+        } => tokio::task::spawn_blocking(move || phone_action_owner_journal(&paths))
+            .await
+            .map_err(std::io::Error::other)?,
         Command::PhoneControl { command } => {
             let response = phone_control_admin(&paths, command).await?;
             println!("{}", serde_json::to_string(&response)?);
@@ -211,6 +216,19 @@ fn verify_phone_control(paths: &Paths) -> Result<(), CliError> {
         Ok(()) => println!("{{\"v\":1,\"type\":\"verified\"}}"),
         Err(code) => println!("{{\"v\":1,\"type\":\"error\",\"code\":\"{code}\"}}"),
     }
+    Ok(())
+}
+
+fn phone_action_owner_journal(paths: &Paths) -> Result<(), CliError> {
+    let mut input = Vec::new();
+    std::io::stdin()
+        .take(u64::try_from(crate::phone_control::MAX_FRAME + 1).map_err(std::io::Error::other)?)
+        .read_to_end(&mut input)?;
+    let response = crate::phone_control::owner_journal::handle(
+        &paths.state.join("louiselm/workflow/phone-action-owner"),
+        &input,
+    );
+    println!("{}", serde_json::to_string(&response)?);
     Ok(())
 }
 
@@ -286,7 +304,7 @@ async fn phone_control_admin_exchange(
             serde_json::json!({"v":1,"type":"forget","capability":capability,"device_id":device_id}),
             "forgotten",
         ),
-        PhoneControl::Verify => {
+        PhoneControl::Verify | PhoneControl::OwnerJournal => {
             return Err(CliError::Invalid(
                 "expected an administration command".into(),
             ));

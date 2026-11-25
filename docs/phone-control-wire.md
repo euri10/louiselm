@@ -352,3 +352,36 @@ bytes/payload, wrong keys, stale challenge, cross-subject and replay. Random
 fresh signatures are also exercised. The tests model freshness contexts only;
 they do not claim that a production authority, real Keystore, local socket or
 physical Android flow exists. Those are the downstream slices and .22.
+
+## Native action journal, version 1
+
+`louiselm-capture phone-control owner-journal` is a local storage helper for
+the trusted native owner, not an HTTPS action or a source of phone authority.
+It reads one bounded JSON object on stdin and returns one JSON object. Its
+separate journal lives under `louiselm/workflow/phone-action-owner` in the
+capture state root; it is not capture-service's action-history archive. The
+caller must authenticate the request and establish the exact live owner,
+canonical project and configured Agent independently.
+
+The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
+`{v:1,type:"fence",identity:ActionIdentity,at_ms:integer}`, or
+`{v:1,type:"report",identity:ActionIdentity,outcome:OwnerOutcome,at_ms:integer}`.
+`ActionIdentity` contains exactly `operation_id`, `receiver_identity`,
+`controller_id`, `subject_id`, `action`, `payload_hash`, `grant_id`,
+`grant_revision`, `period_id`, `expected_revision`, `project`, `agent` and
+`recorded_at_ms`, using the bounds and encodings above. The project and Agent
+come from the native owner, never phone claims. `OwnerOutcome` is exactly
+`{accepted:{evidence:hex32}}` or `{rejected:{evidence:hex32}}`; the native
+owner reports only a fact it has established. No payload or prompt is stored.
+
+Begin returns `{v:1,type:"begun"}` only after durable reservation, or
+`{v:1,type:"existing",outcome:ExistingOutcome}` for an existing exact identity.
+`ExistingOutcome` is `"unknown"`, either `OwnerOutcome`, or
+`{fenced_no_effect:{evidence:hex32}}`. Existing operations never execute again. Fence returns
+`{v:1,type:"fenced",evidence:hex32}` only after it wins reservation and the
+fence is durable; an already begun operation returns `{v:1,type:"uncertain"}`.
+An existing fence returns its original evidence. Report returns
+`{v:1,type:"recorded"}` only after the owner outcome is durable. Errors are
+`{v:1,type:"error",code:string}`, with `malformed`, `conflict` or `unavailable`.
+The owner must route every effect through begin for a winning fence to prove
+that late delivery cannot execute; missing or damaged storage is never proof.
