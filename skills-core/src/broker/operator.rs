@@ -213,6 +213,19 @@ pub enum VerificationControlRequest {
         /// Explicit operator discard; false is read-only inspection.
         discard: bool,
     },
+    /// Read one bounded page of an exact retained saved result.
+    SavedReviewPage {
+        /// Saved publication identity.
+        result_id: String,
+        /// Exact originating Run identity.
+        run_id: String,
+        /// Prior page's revision, or none for the first page.
+        revision: Option<String>,
+        /// Position within the retained result.
+        cursor: super::promotion::SavedReviewCursor,
+        /// Maximum UTF-8 bytes of content in this page.
+        limit: usize,
+    },
     /// Copy the selected baseline and exact plan into private broker storage.
     Stage {
         /// Identifier of the private staged input.
@@ -265,6 +278,11 @@ pub enum VerificationControlResponse {
     SavedResult {
         /// Historical verification and remeasured changes, no source payloads.
         result: Box<super::promotion::SavedResult>,
+    },
+    /// One bounded, read-only page from the retained saved-result owner.
+    SavedReviewPage {
+        /// Exact historical evidence and one before/after file page.
+        page: Box<super::promotion::SavedReviewPage>,
     },
     /// Exact private input digest.
     Staged {
@@ -355,6 +373,28 @@ pub fn verification(
             VerificationControlRequest::SavedResult { result_id, discard },
             VerificationControlResponse::SavedResult { result },
         ) => result.request.request_id == *result_id && (!discard || result.discarded),
+        (
+            VerificationControlRequest::SavedReviewPage {
+                result_id,
+                run_id,
+                revision,
+                limit,
+                ..
+            },
+            VerificationControlResponse::SavedReviewPage { page },
+        ) => {
+            page.schema == "louiselm.saved-review-page/1"
+                && page.result_id == *result_id
+                && page.run_id == *run_id
+                && Digest::parse(&page.revision).is_ok()
+                && revision
+                    .as_ref()
+                    .is_none_or(|expected| expected == &page.revision)
+                && page
+                    .file
+                    .as_ref()
+                    .is_none_or(|file| file.text.len() <= *limit)
+        }
         (
             VerificationControlRequest::Stage { plan_digest, .. },
             VerificationControlResponse::Staged { input_digest },

@@ -14,11 +14,15 @@ use louiselm_skills::{
     workspace::{bundle, verification as jobs},
 };
 
+fn fixture(root: &Path) -> SavedResult {
+    fixture_with_bytes(root, b"exact saved result")
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "One fixture binds exact source, job, producer/verifier evidence and the durable publication marker for store regressions."
 )]
-fn fixture(root: &Path) -> SavedResult {
+fn fixture_with_bytes(root: &Path, result: &[u8]) -> SavedResult {
     let mut producer_launch = request("producer");
     producer_launch.run_id = "11111111-2222-4333-8444-555555555555".into();
     let mut verifier_launch = request("verifier");
@@ -29,7 +33,7 @@ fn fixture(root: &Path) -> SavedResult {
     fs::write(snapshot.join("snapshot.json"), &bytes).unwrap();
     let work = root.join("producer-work");
     fs::create_dir(&work).unwrap();
-    fs::write(work.join("result"), b"exact saved result").unwrap();
+    fs::write(work.join("result"), result).unwrap();
     let bundle_path = root.join("bundle");
     let exported = bundle::export(&snapshot, &Digest::of(&bytes), &work, &bundle_path).unwrap();
     let plan = root.join("plan.json");
@@ -273,6 +277,248 @@ fn saved_result_survives_reopen_and_producer_removal_until_explicit_discard() {
             .join("authorizations/saved-results/promotion/transfer/job/source/result")
             .exists()
     );
+}
+
+#[test]
+fn saved_review_pages_exact_bytes_after_restart_without_deciding() {
+    use louiselm_skills::broker::promotion::{SavedReviewCursor, SavedReviewSide};
+
+    let root = TempDir::new().unwrap();
+    let saved = fixture(root.path());
+    let service = verification::reopen(root.path(), "review-first.sock");
+    drop(service);
+    fs::remove_dir_all(root.path().join("producer-work")).unwrap();
+    let restarted = verification::reopen(root.path(), "review-reopened.sock");
+    let cursor = SavedReviewCursor {
+        file: 0,
+        side: SavedReviewSide::Before,
+        offset: 0,
+    };
+    let page = restarted
+        .saved_review_page(
+            1000,
+            "promotion",
+            &saved.selection.run_id,
+            None,
+            cursor.clone(),
+            5,
+        )
+        .unwrap();
+    assert_eq!(page.run_id, saved.selection.run_id);
+    assert_eq!(page.result_id, "promotion");
+    assert_eq!(
+        page.agent_id,
+        saved.verification.producer.request.launch.agent_id
+    );
+    assert_eq!(page.base_commit, saved.selection.expected_head);
+    let first = page.file.as_ref().unwrap();
+    assert_eq!(first.path, "result");
+    assert_eq!(first.side, SavedReviewSide::After);
+    assert_eq!(first.text, "exact");
+    assert!(!first.binary);
+
+    let mut text = first.text.clone();
+    let mut next = page.next;
+    while let Some(cursor) = next {
+        let page = restarted
+            .saved_review_page(
+                1000,
+                "promotion",
+                &saved.selection.run_id,
+                Some(&page.revision),
+                cursor,
+                5,
+            )
+            .unwrap();
+        text.push_str(&page.file.as_ref().unwrap().text);
+        next = page.next;
+    }
+    assert_eq!(text, "exact saved result");
+    assert!(matches!(
+        restarted.saved_review_page(
+            1001,
+            "promotion",
+            &saved.selection.run_id,
+            None,
+            cursor.clone(),
+            5
+        ),
+        Err(BrokerError::ControllerMismatch)
+    ));
+    assert!(
+        restarted
+            .saved_review_page(1000, "promotion", "other-run", None, cursor.clone(), 5)
+            .is_err()
+    );
+    assert!(
+        restarted
+            .saved_review_page(
+                1000,
+                "promotion",
+                &saved.selection.run_id,
+                Some("changed"),
+                cursor,
+                5
+            )
+            .is_err()
+    );
+    assert_eq!(restarted.saved_result(1000, "promotion").unwrap(), saved);
+}
+
+#[test]
+fn saved_review_bounds_utf8_and_reports_binary_or_corrupt_bytes() {
+    use louiselm_skills::broker::promotion::{SavedReviewCursor, SavedReviewSide};
+
+    let root = TempDir::new().unwrap();
+    let bytes = format!("{}é🙂end", "a".repeat(4095));
+    let saved = fixture_with_bytes(root.path(), bytes.as_bytes());
+    let service = verification::reopen(root.path(), "review-large.sock");
+    let cursor = SavedReviewCursor {
+        file: 0,
+        side: SavedReviewSide::Before,
+        offset: 0,
+    };
+    let first = service
+        .saved_review_page(
+            1000,
+            "promotion",
+            &saved.selection.run_id,
+            None,
+            cursor.clone(),
+            4096,
+        )
+        .unwrap();
+    assert_eq!(first.file.as_ref().unwrap().text.len(), 4095);
+    let second = service
+        .saved_review_page(
+            1000,
+            "promotion",
+            &saved.selection.run_id,
+            Some(&first.revision),
+            first.next.unwrap(),
+            4096,
+        )
+        .unwrap();
+    assert_eq!(second.file.unwrap().text, "é🙂end");
+    assert!(second.next.is_none());
+    let retained = root
+        .path()
+        .join("authorizations/saved-results/promotion/transfer/job/source/result");
+    fs::set_permissions(&retained, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(retained, b"corrupted").unwrap();
+    assert!(
+        service
+            .saved_review_page(
+                1000,
+                "promotion",
+                &saved.selection.run_id,
+                None,
+                cursor.clone(),
+                4096
+            )
+            .is_err()
+    );
+
+    let binary_root = TempDir::new().unwrap();
+    let binary = fixture_with_bytes(binary_root.path(), b"binary\0content");
+    let binary_service = verification::reopen(binary_root.path(), "review-binary.sock");
+    let page = binary_service
+        .saved_review_page(
+            1000,
+            "promotion",
+            &binary.selection.run_id,
+            None,
+            cursor,
+            4096,
+        )
+        .unwrap();
+    assert!(page.file.as_ref().unwrap().binary);
+    assert_eq!(page.file.unwrap().text, "");
+    assert!(page.next.is_none());
+}
+
+#[test]
+fn saved_review_crosses_authenticated_operator_socket() {
+    use louiselm_skills::broker::{
+        operator::{
+            self, InspectError, OperatorServer, VerificationControlRequest,
+            VerificationControlResponse,
+        },
+        promotion::{SavedReviewCursor, SavedReviewSide},
+    };
+
+    let root = TempDir::new().unwrap();
+    let saved = fixture(root.path());
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("review-operator.sock");
+    let uid = rustix::process::geteuid().as_raw();
+    let server = OperatorServer::bind(&path, uid).unwrap();
+    let service = verification::reopen(root.path(), "review-owner.sock");
+    let worker = thread::spawn(move || {
+        server
+            .serve_once(
+                |_, _| Err(InspectError::UnknownSession),
+                |_| panic!("not launch-input staging"),
+                |request, _| {
+                    let VerificationControlRequest::SavedReviewPage {
+                        result_id,
+                        run_id,
+                        revision,
+                        cursor,
+                        limit,
+                    } = request
+                    else {
+                        panic!("unexpected verification request");
+                    };
+                    let page = service
+                        .saved_review_page(
+                            1000,
+                            result_id,
+                            run_id,
+                            revision.as_deref(),
+                            cursor.clone(),
+                            *limit,
+                        )
+                        .map_err(|_| InspectError::StatusUnavailable)?;
+                    Ok(VerificationControlResponse::SavedReviewPage {
+                        page: Box::new(page),
+                    })
+                },
+                |_| panic!("not authorization"),
+                |_, _| panic!("not dependencies"),
+                |_, _| panic!("not inspection"),
+                |_| panic!("not conformance"),
+                |_, _, _| panic!("not skill"),
+                |_, _| panic!("not Beads"),
+                |_, _| panic!("not retention"),
+                |_, _, _| panic!("not waiver"),
+                |_, _, _| panic!("not extension"),
+            )
+            .unwrap();
+    });
+    let response = operator::verification(
+        &path,
+        uid,
+        &VerificationControlRequest::SavedReviewPage {
+            result_id: "promotion".into(),
+            run_id: saved.selection.run_id,
+            revision: None,
+            cursor: SavedReviewCursor {
+                file: 0,
+                side: SavedReviewSide::Before,
+                offset: 0,
+            },
+            limit: 4096,
+        },
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    worker.join().unwrap();
+    let VerificationControlResponse::SavedReviewPage { page } = response else {
+        panic!("missing review page")
+    };
+    assert_eq!(page.file.unwrap().text, "exact saved result");
+    assert_eq!(page.current_verification, "unavailable");
 }
 
 #[test]

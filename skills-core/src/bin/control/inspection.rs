@@ -249,6 +249,29 @@ impl Queries {
                     })
                     .map_err(|_| InspectError::StatusUnavailable)
             }
+            Request::SavedReviewPage {
+                result_id,
+                run_id,
+                revision,
+                cursor,
+                limit,
+            } => {
+                operator::validate_subject(result_id)?;
+                operator::validate_subject(run_id)?;
+                broker
+                    .saved_review_page(
+                        self.operator_uid,
+                        result_id,
+                        run_id,
+                        revision.as_deref(),
+                        cursor.clone(),
+                        *limit,
+                    )
+                    .map(|page| Response::SavedReviewPage {
+                        page: Box::new(page),
+                    })
+                    .map_err(|_| InspectError::StatusUnavailable)
+            }
             Request::Stage {
                 input_id,
                 snapshot,
@@ -665,6 +688,7 @@ impl Queries {
                         | Request::StageRefresh { .. }
                         | Request::AcceptSavedResult { .. }
                         | Request::Status { .. }
+                        | Request::SavedReviewPage { .. }
                         | Request::SavedResult { .. } => Err(BrokerError::InvalidGrant),
                     }
                     .map_err(|_| InspectError::StatusUnavailable);

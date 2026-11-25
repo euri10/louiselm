@@ -100,6 +100,25 @@ impl InstalledBroker {
         }
     }
 
+    /// Reads a bounded exact saved-result page as the authenticated operator.
+    /// # Errors
+    /// Refuses a foreign operator, stale selection, invalid cursor or damaged evidence.
+    pub fn saved_review_page(
+        &self,
+        uid: u32,
+        id: &str,
+        run_id: &str,
+        revision: Option<&str>,
+        cursor: crate::broker::promotion::SavedReviewCursor,
+        limit: usize,
+    ) -> Result<crate::broker::promotion::SavedReviewPage, BrokerError> {
+        if uid != self.verifier.config().operator_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        self.service
+            .saved_review_page(uid, id, run_id, revision, cursor, limit)
+    }
+
     /// Records the authenticated operator's confirmed commit without checkout access.
     /// # Errors
     /// Refuses foreign ownership, incomplete application or conflicting decisions.

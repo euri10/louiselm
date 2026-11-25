@@ -128,7 +128,7 @@ struct SnapshotRecord {
 
 pub(crate) struct SourceFile {
     pub(crate) bytes: Vec<u8>,
-    executable: bool,
+    pub(crate) executable: bool,
 }
 
 type SourceFiles = BTreeMap<String, SourceFile>;
