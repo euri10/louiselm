@@ -128,6 +128,7 @@ class PhoneControlActivity : Activity() {
     private var runPage: PhoneControlReply.RunPage? = null
     private var runAfter: String? = null
     private var selectedRunId: String? = null
+    private var linkedRunSession: PhoneRunSessionTarget? = null
     private var draftTarget: PhoneControlTarget? = null
     private var draftReceiver: String? = null
     private var pendingActions = emptyList<PendingPhoneAction>()
@@ -295,6 +296,7 @@ class PhoneControlActivity : Activity() {
         selectedPrepared = null
         preparedPage = null
         selectedRunId = null
+        linkedRunSession = null
         runPage = null
         openedPages = emptyList()
         conversation.removeAllViews()
@@ -468,7 +470,7 @@ class PhoneControlActivity : Activity() {
         }
         val unlocked = period?.isActive(SystemClock.elapsedRealtime()) == true
         val offlineUnlocked = offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true
-        val showComposer = foreground && unlocked && !showingPrepared && !showingRuns && ((!showingOffline && !showingActionHistory && target != null) ||
+        val showComposer = foreground && unlocked && linkedRunSession == null && !showingPrepared && !showingRuns && ((!showingOffline && !showingActionHistory && target != null) ||
             sendInput.text.isNotEmpty())
         sendInput.visibility = if (showComposer) View.VISIBLE else View.GONE
         sendButton.visibility = if (showComposer) View.VISIBLE else View.GONE
@@ -494,7 +496,7 @@ class PhoneControlActivity : Activity() {
             else -> sendNotice ?: R.string.phone_send_ready
         })
         sendButton.isEnabled = !busy && reconciliationLoaded && !wrongTarget && !unresolved && !reviewNeeded && !acceptedDraft &&
-            sendInput.text.isNotEmpty() && sessionPage?.status == "ready" && target != null && !showingOffline && !showingActionHistory
+            linkedRunSession == null && sendInput.text.isNotEmpty() && sessionPage?.status == "ready" && target != null && !showingOffline && !showingActionHistory
         enableButton.visibility = if (currentStatus is PhoneControlStatus.Granted) View.GONE else View.VISIBLE
         checkButton.visibility = if (currentStatus is PhoneControlStatus.Pending) View.VISIBLE else View.GONE
         unlockButton.visibility = if (currentStatus is PhoneControlStatus.Granted && !unlocked) View.VISIBLE else View.GONE
@@ -502,7 +504,7 @@ class PhoneControlActivity : Activity() {
         offlineUnlockButton.isEnabled = !busy
         offlineCopiesButton.visibility = if (offlineUnlocked) View.VISIBLE else View.GONE
         offlineCopiesButton.isEnabled = !busy
-        offlineKeepButton.visibility = if (unlocked && offlineUnlocked && target != null && !showingOffline && !showingActionHistory) View.VISIBLE else View.GONE
+        offlineKeepButton.visibility = if (unlocked && offlineUnlocked && linkedRunSession == null && target != null && !showingOffline && !showingActionHistory) View.VISIBLE else View.GONE
         offlineKeepButton.isEnabled = !busy
         offlineOlderButton.visibility = if (offlineUnlocked && showingOffline && selectedOffline != null &&
             offlinePageIndex + 1 < (selectedOffline?.pages ?: 0)) View.VISIBLE else View.GONE
@@ -640,6 +642,7 @@ class PhoneControlActivity : Activity() {
 
     private fun showOfflineCopies() {
         val current = offlinePeriod ?: return
+        clearRunSession()
         attentionRunId = null
         clearRuns()
         clearPrepared()
@@ -797,6 +800,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun keepOffline() {
+        if (linkedRunSession != null) return
         val online = period ?: return
         val local = offlinePeriod ?: return
         val requested = target ?: return
@@ -1008,6 +1012,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun sendPrompt() {
+        if (linkedRunSession != null) return
         if (!sendButton.isEnabled) return
         if (sendDigest() == null) {
             sendNotice = R.string.phone_send_invalid
@@ -1136,6 +1141,11 @@ class PhoneControlActivity : Activity() {
         }
     }
 
+    private fun clearRunSession() {
+        if (linkedRunSession != null) target = null
+        linkedRunSession = null
+    }
+
     private fun clearRuns() {
         if (showingRuns) conversation.removeAllViews()
         showingRuns = false
@@ -1150,6 +1160,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun showRuns() {
+        clearRunSession()
         handler.removeCallbacks(refreshPoll)
         attentionRunId = null
         clearPrepared()
@@ -1223,12 +1234,21 @@ class PhoneControlActivity : Activity() {
             return
         }
         task({ maySend ->
-            client.readRun(current, runId, expectedRevision, SystemClock.elapsedRealtime(), interaction) {
-                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            val permitted = { foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime()) }
+            when (val detail = client.readRun(current, runId, expectedRevision, SystemClock.elapsedRealtime(), interaction, permitted)) {
+                is PhoneControlResult.Failure -> detail
+                is PhoneControlResult.Value -> {
+                    when (val live = client.readRunLive(current, runId, detail.value.run.summary.revision,
+                        SystemClock.elapsedRealtime(), false, permitted)) {
+                        is PhoneControlResult.Value -> PhoneControlResult.Value(detail.value to live.value)
+                        is PhoneControlResult.Failure -> if (live.outcome == PhoneControlOutcome.UNAVAILABLE)
+                            PhoneControlResult.Value(detail.value to null) else live
+                    }
+                }
             }
-        }, { outcome -> if (foreground) showFailure(outcome) }) { detail, _ ->
+        }, { outcome -> if (foreground) showFailure(outcome) }) { result, _ ->
             busy = false
-            if (!foreground) return@task
+            if (!foreground || !showingRuns || selectedRunId != runId) return@task
             val now = SystemClock.elapsedRealtime()
             if (pairing.binding() != binding || period !== current ||
                 !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
@@ -1238,12 +1258,30 @@ class PhoneControlActivity : Activity() {
             scheduleExpiry()
             render()
             conversation.removeAllViews()
-            for (view in phoneRunDetailViews(this, detail.run)) conversation.addView(view)
+            for (view in phoneRunDetailViews(this, result.first.run)) conversation.addView(view)
+            for (view in phoneRunLiveViews(this, result.second) { openRunSession(it) }) conversation.addView(view)
             conversation.visibility = View.VISIBLE
         }
     }
 
+    private fun openRunSession(selected: PhoneRunSessionTarget) {
+        val current = period ?: return
+        if (!foreground || !showingRuns || selectedRunId != selected.runId || !current.isActive(SystemClock.elapsedRealtime())) return
+        clearRuns()
+        linkedRunSession = selected
+        target = selected.session
+        selectedSource = null
+        openedPages = emptyList()
+        sessionOpenedAtMs = null
+        sessionPage = null
+        newerOmitted = false
+        historyChanged = false
+        conversation.removeAllViews()
+        withNetwork { readTarget() }
+    }
+
     private fun showSessions() {
+        clearRunSession()
         handler.removeCallbacks(refreshPoll)
         attentionRunId = null
         clearRuns()
@@ -1272,6 +1310,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun showPrepared() {
+        clearRunSession()
         handler.removeCallbacks(refreshPoll)
         attentionRunId = null
         clearRuns()
@@ -1375,6 +1414,7 @@ class PhoneControlActivity : Activity() {
             return
         }
         attentionRunId = null
+        clearRunSession()
         clearRuns()
         clearPrepared()
         showingActionHistory = true
@@ -1460,6 +1500,7 @@ class PhoneControlActivity : Activity() {
                         row.summary.project, sessionState(row.summary.status), row.target.controllerId, row.target.subjectId,
                         if (row.summary.truncated) getString(R.string.phone_truncated) else "")
                     setOnClickListener {
+                        clearRunSession()
                         target = row.target
                         selectedSource = PhoneOfflineSource(current.grant.receiverIdentity, row.target,
                             row.summary.name, row.summary.agent, row.summary.project)
@@ -1479,7 +1520,12 @@ class PhoneControlActivity : Activity() {
     private fun readTarget(older: Boolean = false, interaction: Boolean = true) {
         val current = period ?: return
         val requested = target ?: return
-        val local = offlinePeriod
+        val linked = linkedRunSession
+        if (linked != null && linked.session != requested) {
+            showFailure(PhoneControlOutcome.STALE_SUBJECT)
+            return
+        }
+        val local = if (linked == null) offlinePeriod else null
         val storedSource = selectedSource?.takeIf { it.target == requested && it.receiver == current.grant.receiverIdentity }
             ?: PhoneOfflineSource(current.grant.receiverIdentity, requested, getString(R.string.phone_open_session), "", "")
         if (interaction && !older) sessionOpenedAtMs = System.currentTimeMillis()
@@ -1501,11 +1547,13 @@ class PhoneControlActivity : Activity() {
             val fence = if (interaction && local != null) offlineResult {
                 PhoneControlResult.Value(offlineStore.sourceFence(storedSource))
             } else null
-            fun read(cursor: Long, revision: Long, limit: Int, userInteraction: Boolean) =
-                client.readSession(current, requested, SystemClock.elapsedRealtime(), before = cursor, limit = limit,
-                    expectedRevision = revision, interaction = userInteraction) {
-                    foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
-                }
+            fun read(cursor: Long, revision: Long, limit: Int, userInteraction: Boolean): PhoneControlResult<PhoneControlReply.SessionPage> {
+                val permitted = { foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime()) }
+                return if (linked == null) client.readSession(current, requested, SystemClock.elapsedRealtime(), before = cursor,
+                    limit = limit, expectedRevision = revision, interaction = userInteraction, maySend = permitted)
+                else client.readRunSession(current, linked, SystemClock.elapsedRealtime(), before = cursor,
+                    limit = limit, expectedRevision = revision, interaction = userInteraction, maySend = permitted)
+            }
             when (val first = read(before, if (older) previous?.revision ?: 0 else 0, 50, interaction)) {
                 is PhoneControlResult.Failure -> first
                 is PhoneControlResult.Value -> {
@@ -1520,7 +1568,8 @@ class PhoneControlActivity : Activity() {
                                 else listOf(first.value)
                             var message: Int? = null
                             if (interaction && (!older || priorPages.isNotEmpty())) {
-                                if (local == null || openedAt == null) message = R.string.phone_offline_not_saved
+                                if (linked != null) message = R.string.phone_run_session_read_only
+                                else if (local == null || openedAt == null) message = R.string.phone_offline_not_saved
                                 else {
                                     val save = offlineResult {
                                         val key = local.key(SystemClock.elapsedRealtime())
@@ -1707,6 +1756,7 @@ class PhoneControlActivity : Activity() {
         period = null
         offlinePeriod?.lock()
         offlinePeriod = null
+        clearRunSession()
         showingOffline = false
         selectedOffline = null
         selectedSource = null

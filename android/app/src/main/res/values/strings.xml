@@ -39,7 +39,7 @@
     <string name="phone_run_stale">This Run is unavailable or changed. Refresh to check its current state.</string>
     <string name="phone_open_run">Open Run</string>
     <string name="phone_run_row">Run: %1$s\nRevision %2$d · %3$s</string>
-    <string name="phone_run_freshness">Current durable record at last read. Live controller not checked; linked Session navigation is unavailable.</string>
+    <string name="phone_run_freshness">Current durable record at last read. Live controller availability is shown separately.</string>
     <string name="phone_run_live_absent">No live Run controller is connected. The durable record remains available.</string>
     <string name="phone_run_live_unreachable">The live Run controller could not be verified. Showing the durable record only.</string>
     <string name="phone_run_live_observed">Live controller observed during this read; it may have changed.</string>
@@ -47,6 +47,7 @@
     <string name="phone_run_live_bead">Bead %1$d/%2$d: %3$s.</string>
     <string name="phone_run_live_session">Open linked Session: %1$s · %2$s</string>
     <string name="phone_run_live_truncated">Additional linked Sessions were omitted.</string>
+    <string name="phone_run_session_read_only">Run-linked Session is read-only and is not saved offline.</string>
     <string name="phone_run_identity">Run: %1$s\nRevision %2$d · %3$s</string>
     <string name="phone_run_work">Generated work: %1$d consumed, %2$d reserved, %3$d remaining of %4$d. Pending mutations: %5$d.</string>
     <string name="phone_run_admitted">Admitted</string>

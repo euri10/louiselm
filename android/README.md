@@ -154,6 +154,26 @@ original had no effect and was fenced, followed by a Session refresh and review.
 Text in this composer is not yet a durable draft: retain a copy before closing
 the app. Durable drafts are tracked separately in `louiselm-qbr.12.12`.
 
+### Runs and prepared selections
+
+**Runs** browses authorized durable Run records or opens the exact Run from an
+Attention card. The screen shows generated-work bounds, Park/expiry and the
+Agent's advertised `session/load` capability without promising recovery. Live
+controller availability is checked separately: an absent or unreachable owner
+does not erase the durable record. A connected owner's current phase and linked
+Sessions are observations from that read, not guarantees it remains connected.
+Open a linked Session to read it under the exact Run owner and revision; this
+view is read-only and does not save offline copies. A stale owner or revision
+requires a fresh Run read rather than redirecting to a replacement.
+
+**Prepared Runs** lists only selections explicitly published by the desktop
+operator, with protected instructions and limits in their detail view. Viewing
+one does not Start a Run, allocate Sessions, grant capability, or start a
+deadline. The operator may reopen its waiting controller after a restart; the
+phone never launches one automatically. Run support uses optional skills-core
+integration and reports unsupported if it is absent; ordinary Sessions do not
+depend on it. Phone Start and saved-result review are separate work.
+
 ### Saved offline copies
 
 When prompted, unlock offline copies separately to save recently opened Session

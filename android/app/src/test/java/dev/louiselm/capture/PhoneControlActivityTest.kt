@@ -91,6 +91,10 @@ private object PhoneScreenFixture {
     val runView = PhoneRunView(runSummary, true, PhoneRunLoad.UNSUPPORTED, PhoneRunWork(5, 2, 1, 2), 1, 1234, true, false, 0)
     val runReads = mutableListOf<Triple<String, Long, Boolean>>()
     var runFailure: PhoneControlOutcome? = null
+    var runController = PhoneRunController.ABSENT
+    var runLiveFailure: PhoneControlOutcome? = null
+    val runLiveReads = mutableListOf<Triple<String, Long, Boolean>>()
+    val runSessionReads = mutableListOf<PhoneRunSessionTarget>()
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
@@ -98,6 +102,7 @@ private object PhoneScreenFixture {
         sendCalls = 0; sendOutcome = PhoneControlOutcome.UNSUPPORTED; sendFailure = null; evidenceState = null; evidenceReads = 0; evidenceReadOnMain = false
         evidenceOperationIds.clear()
         preparedReads = 0; preparedFailure = null; preparedInteractions.clear(); runReads.clear(); runFailure = null
+        runController = PhoneRunController.ABSENT; runLiveFailure = null; runLiveReads.clear(); runSessionReads.clear()
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; olderNextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
@@ -135,6 +140,20 @@ class PhoneScreenClientFixture {
         PhoneScreenFixture.runFailure?.let { return PhoneControlResult.Failure(it) }
         if (runId != PhoneScreenFixture.runSummary.runId) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
         return PhoneControlResult.Value(PhoneControlReply.RunDetail("88".repeat(16), PhoneScreenFixture.runView))
+    }
+
+    @Implementation(methodName = "readRunLive")
+    internal fun readRunLive(period: PhoneControlPeriod, runId: String, expectedRevision: Long, now: Long,
+        interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.RunLive> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.runLiveReads += Triple(runId, expectedRevision, interaction)
+        PhoneScreenFixture.runLiveFailure?.let { return PhoneControlResult.Failure(it) }
+        val connected = PhoneScreenFixture.runController == PhoneRunController.CONNECTED
+        val live = if (connected) PhoneRunLiveView("aa".repeat(16), "bb".repeat(16), PhoneRunOwnerStatus.ACTIVE,
+            PhoneRunPhase.WORKING, 1, 2, "b-1", listOf(PhoneRunLiveSession("cc".repeat(16), "codex", "ready")), false)
+            else null
+        return PhoneControlResult.Value(PhoneControlReply.RunLive("88".repeat(16), runId, expectedRevision,
+            PhoneScreenFixture.runController, live))
     }
 
     @Implementation(methodName = "listPrepared")
@@ -217,6 +236,14 @@ class PhoneScreenClientFixture {
         return PhoneControlResult.Value(PhoneControlReply.SessionPage(target.controllerId, target.subjectId, "88".repeat(16),
             PhoneScreenFixture.revision, "ready", if (before == 0L) PhoneScreenFixture.latest else PhoneScreenFixture.older,
             if (before == 0L) PhoneScreenFixture.nextBefore else PhoneScreenFixture.olderNextBefore, complete, source))
+    }
+
+    @Implementation(methodName = "readRunSession")
+    internal fun readRunSession(period: PhoneControlPeriod, target: PhoneRunSessionTarget, now: Long, before: Long,
+        limit: Int, expectedRevision: Long, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SessionPage> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.runSessionReads += target
+        return readSession(period, target.session, now, before, limit, expectedRevision, interaction, maySend)
     }
 
     @Implementation(methodName = "listControllers")
@@ -495,7 +522,7 @@ class PhoneControlActivityTest {
         val displayed = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
         assertTrue(displayed.contains("Cold Parked"))
         assertTrue(displayed.contains("expired"))
-        assertTrue(displayed.contains("Live controller not checked"))
+        assertTrue(displayed.contains("No live Run controller"))
         assertTrue(displayed.contains("2 remaining"))
         assertEquals(View.GONE, button(R.string.phone_send).visibility)
         assertEquals(0, PhoneScreenFixture.sendCalls)
@@ -505,6 +532,73 @@ class PhoneControlActivityTest {
         assertEquals(Triple(PhoneScreenFixture.runSummary.runId, 0L, false), PhoneScreenFixture.runReads.last())
         screenOff()
         assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("2 remaining") })
+    }
+
+    @Test
+    fun liveRunShowsItsOwnedSessionWithoutRunWritesOrOfflineCopies() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.runController = PhoneRunController.CONNECTED
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drain() }
+        buttonText("Runs").performClick()
+        repeat(2) { drain() }
+        views(activity.window.decorView).filterIsInstance<Button>().single {
+            it.text.toString().contains(PhoneScreenFixture.runSummary.runId)
+        }.performClick()
+        repeat(3) { drain() }
+        assertEquals(Triple(PhoneScreenFixture.runSummary.runId, 3L, false), PhoneScreenFixture.runLiveReads.single())
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("b-1") })
+        buttonText("Open linked Session: codex · ready").performClick()
+        repeat(3) { drain() }
+        assertEquals(PhoneRunSessionTarget(PhoneScreenFixture.runSummary.runId, 3, "bb".repeat(16),
+            PhoneControlTarget("aa".repeat(16), "cc".repeat(16))), PhoneScreenFixture.runSessionReads.single())
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+        assertEquals(View.GONE, button(R.string.phone_send).visibility)
+        assertEquals(View.GONE, button(R.string.phone_offline_keep).visibility)
+        assertEquals(0, PhoneScreenFixture.sendCalls)
+        controller.pause()
+        controller.resume()
+        repeat(5) { drain() }
+        assertEquals(2, PhoneScreenFixture.runSessionReads.size)
+        assertEquals(PhoneScreenFixture.runSessionReads.first(), PhoneScreenFixture.runSessionReads.last())
+        assertEquals(false, PhoneScreenFixture.readRequests.last().third)
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun unreachableLiveOwnerKeepsDurableStateButStaleOrUnsupportedDoesNot() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.runLiveFailure = PhoneControlOutcome.UNAVAILABLE
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drain() }
+        buttonText("Runs").performClick()
+        repeat(2) { drain() }
+        views(activity.window.decorView).filterIsInstance<Button>().single {
+            it.text.toString().contains(PhoneScreenFixture.runSummary.runId)
+        }.performClick()
+        repeat(3) { drain() }
+        var text = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+        assertTrue(text.contains("2 remaining"))
+        assertTrue(text.contains("could not be verified"))
+        PhoneScreenFixture.runLiveFailure = PhoneControlOutcome.STALE_SUBJECT
+        button(R.string.phone_refresh).performClick()
+        repeat(3) { drain() }
+        text = views(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+        assertFalse(text.contains("2 remaining"))
+        assertTrue(text.contains("Run is unavailable"))
+        PhoneScreenFixture.runLiveFailure = PhoneControlOutcome.UNSUPPORTED
+        button(R.string.phone_refresh).performClick()
+        repeat(3) { drain() }
+        assertTrue(hasText(R.string.phone_unsupported))
     }
 
     @Test
