@@ -6,7 +6,7 @@
     reason = "test fixtures abort on setup or assertion failure"
 )]
 
-use louiselm_capture::{PreparedRunStore, RunProjectBinding};
+use louiselm_capture::{PreparedRunError, PreparedRunStore, RunProjectBinding};
 
 const RUN: &str = "11111111-1111-4111-8111-111111111111";
 
@@ -49,23 +49,29 @@ fn exact_snapshots_survive_restart_republication_and_unpublication() {
         .unwrap();
     assert_eq!(second.id, first.id);
     assert_eq!(second.revision, 2);
-    assert!(
-        store.read(&first.id, 1).is_err(),
-        "old previews must refresh"
-    );
-    assert!(
-        store
-            .publish(Some((&first.id, 1)), &binding(), original)
-            .is_err()
-    );
+    assert!(matches!(
+        store.read(&first.id, 1),
+        Err(PreparedRunError::Invalid("registration revision is stale"))
+    ));
+    assert!(matches!(
+        store.publish(Some((&first.id, 1)), &binding(), original),
+        Err(PreparedRunError::Invalid(
+            "stale or conflicting registration"
+        ))
+    ));
     assert_eq!(store.read(&first.id, 2).unwrap().selection, revised);
-    assert!(
-        store.unpublish(&first.id, 1).is_err(),
-        "stale removal must refuse"
-    );
+    assert!(matches!(
+        store.unpublish(&first.id, 1),
+        Err(PreparedRunError::Invalid(
+            "stale or unpublished registration"
+        ))
+    ));
     store.unpublish(&first.id, 2).unwrap();
     assert_eq!(store.list().unwrap(), Vec::new());
-    assert!(store.read(&first.id, 2).is_err());
+    assert!(matches!(
+        store.read(&first.id, 2),
+        Err(PreparedRunError::Invalid("registration is unavailable"))
+    ));
     drop(store);
 
     let store = PreparedRunStore::open(&path).unwrap();
@@ -81,22 +87,42 @@ fn invalid_or_conflicting_registration_is_refused_without_mutation() {
     let root = tempfile::tempdir().unwrap();
     let store = PreparedRunStore::open(root.path().join("prepared")).unwrap();
     let first = store.publish(None, &binding(), "{}").unwrap();
-    assert!(store.publish(None, &binding(), "{}").is_err());
+    assert!(matches!(
+        store.publish(None, &binding(), "{}"),
+        Err(PreparedRunError::Invalid("Run is already registered"))
+    ));
     let mut changed = binding();
     changed.run_id = "22222222-2222-4222-8222-222222222222".into();
-    assert!(store.publish(Some((&first.id, 1)), &changed, "{}").is_err());
+    assert!(matches!(
+        store.publish(Some((&first.id, 1)), &changed, "{}"),
+        Err(PreparedRunError::Invalid(
+            "stale or conflicting registration"
+        ))
+    ));
     changed = binding();
     changed.project_id = "04".repeat(16);
-    assert!(store.publish(Some((&first.id, 1)), &changed, "{}").is_err());
+    assert!(matches!(
+        store.publish(Some((&first.id, 1)), &changed, "{}"),
+        Err(PreparedRunError::Invalid(
+            "stale or conflicting registration"
+        ))
+    ));
     changed = binding();
     changed.agents.clear();
-    assert!(store.publish(None, &changed, "{}").is_err());
-    assert!(store.publish(None, &binding(), "not json").is_err());
-    assert!(
-        store
-            .publish(None, &binding(), &"x".repeat(65_537))
-            .is_err()
-    );
+    assert!(matches!(
+        store.publish(None, &changed, "{}"),
+        Err(PreparedRunError::Invalid("invalid owner binding"))
+    ));
+    assert!(matches!(
+        store.publish(None, &binding(), "not json"),
+        Err(PreparedRunError::Json(_))
+    ));
+    assert!(matches!(
+        store.publish(None, &binding(), &"x".repeat(65_537)),
+        Err(PreparedRunError::Invalid(
+            "invalid selection size or encoding"
+        ))
+    ));
     assert_eq!(store.list().unwrap(), vec![first]);
 }
 
@@ -136,13 +162,19 @@ fn publication_check_serializes_with_revision_and_unpublication() {
     store
         .with_published(&first.id, 1, |revision| {
             assert_eq!(revision.selection, "{}");
-            assert!(competing_lock.try_lock_exclusive().is_err());
+            assert_eq!(
+                competing_lock.try_lock_exclusive().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
         })
         .unwrap();
     competing_lock.try_lock_exclusive().unwrap();
     FileExt::unlock(&competing_lock).unwrap();
     store.unpublish(&first.id, 1).unwrap();
-    assert!(store.with_published(&first.id, 1, |_| ()).is_err());
+    assert!(matches!(
+        store.with_published(&first.id, 1, |_| ()),
+        Err(PreparedRunError::Invalid("registration is unavailable"))
+    ));
 }
 
 #[test]
@@ -153,7 +185,32 @@ fn missing_or_damaged_existing_store_fails_closed() {
     store.publish(None, &binding(), "{}").unwrap();
     drop(store);
     std::fs::write(path.join("registrations.json"), b"{}").unwrap();
-    assert!(PreparedRunStore::open(&path).is_err());
+    assert!(matches!(
+        PreparedRunStore::open(&path),
+        Err(PreparedRunError::Json(_))
+    ));
     std::fs::remove_file(path.join("registrations.json")).unwrap();
-    assert!(PreparedRunStore::open(&path).is_err());
+    assert!(
+        matches!(PreparedRunStore::open(&path), Err(PreparedRunError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+    );
+}
+
+#[test]
+fn syntactically_valid_selection_corruption_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("prepared");
+    let store = PreparedRunStore::open(&path).unwrap();
+    store
+        .publish(None, &binding(), "{\"prompt\":\"original\"}")
+        .unwrap();
+    drop(store);
+    let file = path.join("registrations.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    state["registrations"][0]["revisions"][0]["selection"] = "{\"prompt\":\"altered\"}".into();
+    std::fs::write(file, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(matches!(
+        PreparedRunStore::open(&path),
+        Err(PreparedRunError::Invalid("store integrity check failed"))
+    ));
 }

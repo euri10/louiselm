@@ -156,6 +156,8 @@ pub struct Run {
     /// Owner-established original-project binding; absent for local-only Runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phone_binding: Option<RunProjectBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phone_binding_sha256: Option<String>,
     /// Whether admission confirmed ACP `session/load` support.
     pub load_session: Option<bool>,
     /// One of `admitted`, `active`, `parked`, `cold_parked`, `resuming`, or `disposed`.
@@ -417,7 +419,7 @@ impl RunStore {
         validate_token(token)?;
         self.locked(|| {
             let path = self.path(&admission.id);
-            let run = Run {
+            let mut run = Run {
                 schema_version: 4,
                 revision: 1,
                 id: admission.id,
@@ -426,6 +428,7 @@ impl RunStore {
                 acp_session_id: None,
                 working_dir: None,
                 phone_binding,
+                phone_binding_sha256: None,
                 load_session: None,
                 state: "admitted".to_owned(),
                 park_ttl_ms: admission.park_ttl_ms,
@@ -443,6 +446,7 @@ impl RunStore {
                 generate_token_sha256: token_sha256(token),
                 cleanup: Vec::new(),
             };
+            seal_phone_run(&mut run)?;
             if path.exists() {
                 return if self.run(&run.id)? == run {
                     Ok(())
@@ -799,6 +803,15 @@ impl RunStore {
             Err(error) => return Err(error.into()),
         };
         let run: Run = serde_json::from_reader(BufReader::new(file))?;
+        match (&run.phone_binding, &run.phone_binding_sha256) {
+            (None, None) => {}
+            (Some(_), Some(seal)) if *seal == phone_run_hash(&run)? => {}
+            _ => {
+                return Err(RunStoreError::Invalid(
+                    "Run project binding integrity failed".to_owned(),
+                ));
+            }
+        }
         if run.schema_version != 4
             || run.revision == 0
             || run.id != id
@@ -1181,7 +1194,26 @@ fn advance_revision(run: &mut Run) -> Result<(), RunStoreError> {
         .revision
         .checked_add(1)
         .ok_or_else(|| RunStoreError::Invalid("Run revision overflowed".to_owned()))?;
+    seal_phone_run(run)?;
     Ok(())
+}
+
+fn seal_phone_run(run: &mut Run) -> Result<(), RunStoreError> {
+    if run.phone_binding.is_some() {
+        run.phone_binding_sha256 = Some(phone_run_hash(run)?);
+    }
+    Ok(())
+}
+
+fn phone_run_hash(run: &Run) -> Result<String, RunStoreError> {
+    let mut value = serde_json::to_value(run)?;
+    let serde_json::Value::Object(fields) = &mut value else {
+        return Err(RunStoreError::Invalid(
+            "invalid Run integrity input".to_owned(),
+        ));
+    };
+    fields.remove("phone_binding_sha256");
+    Ok(lower_hex(&Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
 fn add_contributor(binding: &mut RunProjectBinding, agent: &str) -> Result<bool, RunStoreError> {

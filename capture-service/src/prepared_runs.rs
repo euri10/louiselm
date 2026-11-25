@@ -12,12 +12,13 @@ use std::{
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::permissions::set_private_permissions;
+use crate::{hex::lower_hex, permissions::set_private_permissions};
 
-const SCHEMA: &str = "louiselm.prepared-runs/1";
+const SCHEMA: &str = "louiselm.prepared-runs/2";
 const MAX_SELECTION: usize = 65_536;
 const MAX_STORE: usize = 8 * 1024 * 1024;
 const MAX_REGISTRATIONS: usize = 50;
@@ -98,6 +99,14 @@ pub enum PreparedRunError {
 struct State {
     schema: String,
     registrations: Vec<PreparedRunRegistration>,
+    sha256: String,
+}
+
+#[derive(Serialize)]
+struct StoredState<'a> {
+    schema: &'a str,
+    registrations: &'a [PreparedRunRegistration],
+    sha256: String,
 }
 
 /// Filesystem-backed, process-safe private prepared-Run registrations.
@@ -133,6 +142,7 @@ impl PreparedRunStore {
                 store.write(&State {
                     schema: SCHEMA.into(),
                     registrations: Vec::new(),
+                    sha256: String::new(),
                 })?;
             }
             store.load()?;
@@ -365,12 +375,19 @@ impl PreparedRunStore {
         }
         let state: State = serde_json::from_slice(&bytes)?;
         validate_state(&state)?;
+        if state.sha256 != state_hash(&state)? {
+            return Err(PreparedRunError::Invalid("store integrity check failed"));
+        }
         Ok(state)
     }
 
     fn write(&self, state: &State) -> Result<(), PreparedRunError> {
         validate_state(state)?;
-        let bytes = serde_json::to_vec(state)?;
+        let bytes = serde_json::to_vec(&StoredState {
+            schema: &state.schema,
+            registrations: &state.registrations,
+            sha256: state_hash(state)?,
+        })?;
         if bytes.len() > MAX_STORE {
             return Err(PreparedRunError::Invalid("store size limit exceeded"));
         }
@@ -393,6 +410,11 @@ impl PreparedRunStore {
         }
         result
     }
+}
+
+fn state_hash(state: &State) -> Result<String, serde_json::Error> {
+    let bytes = serde_json::to_vec(&(&state.schema, &state.registrations))?;
+    Ok(lower_hex(&Sha256::digest(bytes)))
 }
 
 fn valid_id(value: &str) -> bool {

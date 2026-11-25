@@ -6,7 +6,7 @@
     reason = "test fixtures abort on setup or assertion failure"
 )]
 
-use louiselm_capture::{RunAdmission, RunProjectBinding, RunSession, RunStore};
+use louiselm_capture::{RunAdmission, RunProjectBinding, RunSession, RunStore, RunStoreError};
 
 const RUN: &str = "11111111-1111-4111-8111-111111111111";
 const TOKEN: &str = "generate-token-1234";
@@ -74,11 +74,11 @@ fn old_unbound_runs_never_gain_a_binding_by_retroactive_admission() {
     let store = RunStore::new(root.path()).unwrap();
     store.admit(admission(), TOKEN).unwrap();
     assert!(
-        store
-            .admit_phone_bound(admission(), TOKEN, binding())
-            .is_err()
+        matches!(store.admit_phone_bound(admission(), TOKEN, binding()), Err(RunStoreError::Invalid(error)) if error == "Run UUID conflicts with existing record")
     );
-    assert!(store.add_phone_contributor(RUN, "codex").is_err());
+    assert!(
+        matches!(store.add_phone_contributor(RUN, "codex"), Err(RunStoreError::Invalid(error)) if error == "Run has no owner project binding")
+    );
     assert_eq!(store.run(RUN).unwrap().phone_binding, None);
 }
 
@@ -120,7 +120,10 @@ fn protected_projection_checks_current_revision_while_contributors_are_locked() 
     let project = store
         .with_phone_binding(RUN, 1, |binding, view| {
             assert_eq!(view.revision, 1);
-            assert!(competing_lock.try_lock_exclusive().is_err());
+            assert_eq!(
+                competing_lock.try_lock_exclusive().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
             binding.project_id.clone()
         })
         .unwrap();
@@ -128,11 +131,31 @@ fn protected_projection_checks_current_revision_while_contributors_are_locked() 
     competing_lock.try_lock_exclusive().unwrap();
     FileExt::unlock(&competing_lock).unwrap();
     store.add_phone_contributor(RUN, "other").unwrap();
-    assert!(store.with_phone_binding(RUN, 1, |_, _| ()).is_err());
+    assert!(
+        matches!(store.with_phone_binding(RUN, 1, |_, _| ()), Err(RunStoreError::Invalid(error)) if error == "stale Run revision: expected 1, found 2")
+    );
     assert_eq!(
         store
             .with_phone_binding(RUN, 0, |binding, _| binding.agents.len())
             .unwrap(),
         2
+    );
+}
+
+#[test]
+fn syntactically_valid_contributor_corruption_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let store = RunStore::new(root.path()).unwrap();
+    store
+        .admit_phone_bound(admission(), TOKEN, binding())
+        .unwrap();
+    store.add_phone_contributor(RUN, "other").unwrap();
+    let file = root.path().join(format!("{RUN}.json"));
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    state["phone_binding"]["agents"] = serde_json::json!(["codex"]);
+    std::fs::write(file, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(
+        matches!(store.run(RUN), Err(RunStoreError::Invalid(error)) if error == "Run project binding integrity failed")
     );
 }
