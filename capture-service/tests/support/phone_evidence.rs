@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 pub fn initialize(directory: &Path, guard: &Path, receiver: &str) {
     fs::create_dir_all(directory).unwrap();
     fs::create_dir_all(guard.parent().unwrap()).unwrap();
+    let mut guard_lock = guard.as_os_str().to_os_string();
+    guard_lock.push(".lock");
+    fs::write(guard_lock, b"").unwrap();
     fs::write(directory.with_extension("lock"), b"").unwrap();
     let bytes = br#"{"v":1,"actions":{}}"#;
     let mut digest = String::new();

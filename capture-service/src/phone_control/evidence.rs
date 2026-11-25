@@ -147,7 +147,7 @@ struct Seal {
     sha256: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReceiverGuard {
     v: u8,
@@ -155,6 +155,26 @@ struct ReceiverGuard {
     generation: String,
     bytes: u64,
     sha256: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_pending"
+    )]
+    pending: Option<PendingUpdate>,
+}
+
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PendingUpdate {
+    bytes: u64,
+    sha256: String,
+}
+
+fn deserialize_pending<'de, D>(deserializer: D) -> Result<Option<PendingUpdate>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    PendingUpdate::deserialize(deserializer).map(Some)
 }
 
 struct GuardBinding {
@@ -183,6 +203,7 @@ pub struct ActionEvidenceStore {
     lock: StoreLock,
     failed: Mutex<bool>,
     guard: Option<GuardBinding>,
+    guard_lock: Option<(PathBuf, StoreLock)>,
 }
 
 impl ActionEvidenceStore {
@@ -202,7 +223,21 @@ impl ActionEvidenceStore {
         receiver: &str,
     ) -> Result<Self, ActionEvidenceError> {
         fixed::<32>(receiver).map_err(|_| ActionEvidenceError::Unavailable)?;
+        let guard_lock_path = guard_lock_path(guard.as_ref());
+        let guard_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&guard_lock_path)
+            .map_err(unavailable)?;
+        guard_file.try_lock_exclusive().map_err(unavailable)?;
+        let guard_lock = StoreLock(guard_file);
         let mut store = Self::open_inner(directory.as_ref(), false)?;
+        store.guard_lock = Some((guard_lock_path, guard_lock));
+        store.verify_lock()?;
+        let record = read_guard(guard.as_ref(), receiver)?;
+        if record.pending.is_some() {
+            recover_update(&store.directory, guard.as_ref(), receiver, record)?;
+        }
         let snapshot = load(&store.directory)?;
         if snapshot
             .actions
@@ -223,12 +258,16 @@ impl ActionEvidenceStore {
 
     #[cfg(test)]
     pub(super) fn open(directory: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
-        Self::open_inner(directory.as_ref(), true)
+        let store = Self::open_inner(directory.as_ref(), true)?;
+        load(&store.directory)?;
+        Ok(store)
     }
 
     #[cfg(test)]
     pub(super) fn open_existing(directory: &Path) -> Result<Self, ActionEvidenceError> {
-        Self::open_inner(directory, false)
+        let store = Self::open_inner(directory, false)?;
+        load(&store.directory)?;
+        Ok(store)
     }
 
     fn open_inner(directory: &Path, initialize: bool) -> Result<Self, ActionEvidenceError> {
@@ -288,8 +327,6 @@ impl ActionEvidenceStore {
                     actions: BTreeMap::new(),
                 },
             )?;
-        } else {
-            load(directory)?;
         }
         Ok(Self {
             directory: directory.to_owned(),
@@ -297,6 +334,7 @@ impl ActionEvidenceStore {
             lock,
             failed: Mutex::new(false),
             guard: None,
+            guard_lock: None,
         })
     }
 
@@ -552,12 +590,13 @@ impl ActionEvidenceStore {
         let (result, changed) = operation(&mut snapshot)?;
         if changed {
             let bytes = snapshot_bytes(&snapshot)?;
-            let persisted = persist_bytes(&self.directory, &bytes).and_then(|()| {
-                if let Some(guard) = &self.guard {
-                    write_guard(guard, &bytes)?;
-                }
-                Ok(())
-            });
+            let persisted = if let Some(guard) = &self.guard {
+                read_bounded(&self.directory.join("actions.json"), MAX_STORE_BYTES)
+                    .and_then(|previous| stage_update(&self.directory, guard, &previous, &bytes))
+                    .and_then(|()| self.verify_lock())
+            } else {
+                persist_bytes(&self.directory, &bytes)
+            };
             if let Err(error) = persisted {
                 *failed = true;
                 return Err(error);
@@ -578,14 +617,28 @@ impl ActionEvidenceStore {
     }
 
     fn verify_lock(&self) -> Result<(), ActionEvidenceError> {
-        let held = self.lock.0.metadata().map_err(unavailable)?;
-        let current = fs::metadata(&self.lock_path).map_err(unavailable)?;
-        #[cfg(unix)]
-        if held.dev() != current.dev() || held.ino() != current.ino() {
-            return Err(ActionEvidenceError::Unavailable);
+        verify_lock(&self.lock_path, &self.lock)?;
+        if let Some((path, lock)) = &self.guard_lock {
+            verify_lock(path, lock)?;
         }
         Ok(())
     }
+}
+
+fn guard_lock_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+fn verify_lock(path: &Path, lock: &StoreLock) -> Result<(), ActionEvidenceError> {
+    let held = lock.0.metadata().map_err(unavailable)?;
+    let current = fs::metadata(path).map_err(unavailable)?;
+    #[cfg(unix)]
+    if held.dev() != current.dev() || held.ino() != current.ino() {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    Ok(())
 }
 
 fn verify_guard(
@@ -593,13 +646,27 @@ fn verify_guard(
     receiver: &str,
     bytes: &[u8],
 ) -> Result<ReceiverGuard, ActionEvidenceError> {
+    let record = read_guard(path, receiver)?;
+    if record.pending.is_some()
+        || record.bytes != bytes.len() as u64
+        || record.sha256 != lower_hex(&Sha256::digest(bytes))
+    {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    Ok(record)
+}
+
+fn read_guard(path: &Path, receiver: &str) -> Result<ReceiverGuard, ActionEvidenceError> {
     let record: ReceiverGuard = serde_json::from_slice(&read_bounded(path, 1024)?)
         .map_err(|_| ActionEvidenceError::Unavailable)?;
     if record.v != 1
         || record.receiver_identity != receiver
         || fixed::<16>(&record.generation).is_err()
-        || record.bytes != bytes.len() as u64
-        || record.sha256 != lower_hex(&Sha256::digest(bytes))
+        || record.bytes > MAX_STORE_BYTES
+        || fixed::<32>(&record.sha256).is_err()
+        || record.pending.as_ref().is_some_and(|pending| {
+            pending.bytes > MAX_STORE_BYTES || fixed::<32>(&pending.sha256).is_err()
+        })
     {
         return Err(ActionEvidenceError::Unavailable);
     }
@@ -613,24 +680,131 @@ fn write_guard(guard: &GuardBinding, bytes: &[u8]) -> Result<(), ActionEvidenceE
         generation: guard.generation.clone(),
         bytes: bytes.len() as u64,
         sha256: lower_hex(&Sha256::digest(bytes)),
+        pending: None,
     };
-    let parent = guard
-        .path
-        .parent()
-        .ok_or(ActionEvidenceError::Unavailable)?;
-    let name = guard
-        .path
+    put_guard(&guard.path, &record)
+}
+
+fn put_guard(path: &Path, record: &ReceiverGuard) -> Result<(), ActionEvidenceError> {
+    let parent = path.parent().ok_or(ActionEvidenceError::Unavailable)?;
+    let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(ActionEvidenceError::Unavailable)?;
-    let bytes = serde_json::to_vec(&record).map_err(|_| ActionEvidenceError::Unavailable)?;
+    let bytes = serde_json::to_vec(record).map_err(|_| ActionEvidenceError::Unavailable)?;
     replace(parent, name, &bytes)
+}
+
+fn stage_update(
+    directory: &Path,
+    guard: &GuardBinding,
+    previous: &[u8],
+    next: &[u8],
+) -> Result<(), ActionEvidenceError> {
+    let mut record = verify_guard(&guard.path, &guard.receiver, previous)?;
+    if record.generation != guard.generation {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    // The guard's pending digest commits these bounded images before replacement.
+    replace(directory, "pending-before.json", previous)?;
+    replace(directory, "pending-after.json", next)?;
+    if verify_guard(&guard.path, &guard.receiver, previous)? != record {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    record.pending = Some(PendingUpdate {
+        bytes: next.len() as u64,
+        sha256: lower_hex(&Sha256::digest(next)),
+    });
+    put_guard(&guard.path, &record)?;
+    persist_bytes(directory, next)?;
+    if read_guard(&guard.path, &guard.receiver)? != record {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    write_guard(guard, next)
+}
+
+fn recover_update(
+    directory: &Path,
+    guard_path: &Path,
+    receiver: &str,
+    record: ReceiverGuard,
+) -> Result<(), ActionEvidenceError> {
+    let pending = record
+        .pending
+        .as_ref()
+        .ok_or(ActionEvidenceError::Unavailable)?;
+    let previous = read_bounded(&directory.join("pending-before.json"), MAX_STORE_BYTES)?;
+    let next = read_bounded(&directory.join("pending-after.json"), MAX_STORE_BYTES)?;
+    if record.bytes != previous.len() as u64
+        || record.sha256 != lower_hex(&Sha256::digest(&previous))
+        || pending.bytes != next.len() as u64
+        || pending.sha256 != lower_hex(&Sha256::digest(&next))
+    {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    let before = parse_snapshot(&previous)?;
+    let after = parse_snapshot(&next)?;
+    if !preserves_evidence(&before, &after, receiver) {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    let current = read_bounded(&directory.join("actions.json"), MAX_STORE_BYTES)?;
+    let seal: Seal = serde_json::from_slice(&read_bounded(&directory.join("seal.json"), 512)?)
+        .map_err(|_| ActionEvidenceError::Unavailable)?;
+    if !((current == previous && seal_matches(&seal, &previous))
+        || (current == next && (seal_matches(&seal, &previous) || seal_matches(&seal, &next))))
+    {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    persist_bytes(directory, &next)?;
+    if read_guard(guard_path, receiver)? != record {
+        return Err(ActionEvidenceError::Unavailable);
+    }
+    write_guard(
+        &GuardBinding {
+            path: guard_path.to_owned(),
+            receiver: receiver.to_owned(),
+            generation: record.generation,
+        },
+        &next,
+    )
+}
+
+fn preserves_evidence(before: &Snapshot, after: &Snapshot, receiver: &str) -> bool {
+    if after
+        .actions
+        .values()
+        .any(|record| record.identity.receiver_identity != receiver)
+    {
+        return false;
+    }
+    before.actions.iter().all(|(id, old)| {
+        let Some(new) = after.actions.get(id) else {
+            return false;
+        };
+        if old.identity != new.identity || old.updated_at_ms > new.updated_at_ms {
+            return false;
+        }
+        if matches!(
+            old.outcome,
+            ActionOutcome::Rejected { .. }
+                | ActionOutcome::FencedNoEffect { .. }
+                | ActionOutcome::Completed { .. }
+        ) && old.outcome != new.outcome
+        {
+            return false;
+        }
+        old.phases
+            .iter()
+            .chain(phase_rank(&old.outcome).map(|_| &old.outcome))
+            .all(|phase| new.phases.contains(phase) || new.outcome == *phase)
+    })
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test fixture")]
 pub(super) fn initialize_receiver_fixture(directory: &Path, guard: &Path, receiver: &str) {
     fs::create_dir_all(guard.parent().unwrap()).unwrap();
+    fs::write(guard_lock_path(guard), b"").unwrap();
     drop(ActionEvidenceStore::open(directory).unwrap());
     let bytes = fs::read(directory.join("actions.json")).unwrap();
     write_guard(
@@ -740,14 +914,21 @@ fn load(directory: &Path) -> Result<Snapshot, ActionEvidenceError> {
     let seal_bytes = read_bounded(&directory.join("seal.json"), 512)?;
     let seal: Seal =
         serde_json::from_slice(&seal_bytes).map_err(|_| ActionEvidenceError::Unavailable)?;
-    if seal.v != 1
-        || seal.bytes != bytes.len() as u64
-        || seal.sha256 != lower_hex(&Sha256::digest(&bytes))
-    {
+    if !seal_matches(&seal, &bytes) {
         return Err(ActionEvidenceError::Unavailable);
     }
+    parse_snapshot(&bytes)
+}
+
+fn seal_matches(seal: &Seal, bytes: &[u8]) -> bool {
+    seal.v == 1
+        && seal.bytes == bytes.len() as u64
+        && seal.sha256 == lower_hex(&Sha256::digest(bytes))
+}
+
+fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ActionEvidenceError> {
     let snapshot: Snapshot =
-        serde_json::from_slice(&bytes).map_err(|_| ActionEvidenceError::Unavailable)?;
+        serde_json::from_slice(bytes).map_err(|_| ActionEvidenceError::Unavailable)?;
     if snapshot.v != 1
         || snapshot.actions.iter().any(|(id, record)| {
             id != &record.identity.operation_id

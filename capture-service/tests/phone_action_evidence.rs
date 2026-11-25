@@ -166,6 +166,195 @@ fn losing_the_live_lock_refuses_further_access() {
 }
 
 #[test]
+fn replacing_the_store_lock_cannot_create_a_concurrent_writer() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    phone_evidence::initialize_store(&path);
+    let store = phone_evidence::open(&path).unwrap();
+    store.reserve(&identity(temp.path(), 2)).unwrap();
+    fs::remove_file(path.with_extension("lock")).unwrap();
+    fs::write(path.with_extension("lock"), b"").unwrap();
+    assert!(matches!(
+        phone_evidence::open(&path),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+}
+
+#[test]
+fn losing_the_receiver_guard_lock_refuses_live_and_restarted_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    phone_evidence::initialize_store(&path);
+    let store = phone_evidence::open(&path).unwrap();
+    let original = identity(temp.path(), 2);
+    store.reserve(&original).unwrap();
+    let mut lock = path.with_extension("guard").into_os_string();
+    lock.push(".lock");
+    fs::remove_file(lock).unwrap();
+    assert_eq!(
+        store.lookup(&original.operation_id),
+        Err(ActionEvidenceError::Unavailable)
+    );
+    drop(store);
+    assert!(matches!(
+        phone_evidence::open(&path),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+}
+
+#[test]
+fn interrupted_proven_update_completes_without_losing_prior_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    let guard_path = path.with_extension("guard");
+    phone_evidence::initialize_store(&path);
+    let original = identity(temp.path(), 2);
+    let second = identity(temp.path(), 3);
+    let store = phone_evidence::open(&path).unwrap();
+    store.reserve(&original).unwrap();
+    let previous = fs::read(path.join("actions.json")).unwrap();
+    let previous_seal = fs::read(path.join("seal.json")).unwrap();
+    let mut guard: serde_json::Value =
+        serde_json::from_slice(&fs::read(&guard_path).unwrap()).unwrap();
+    store.reserve(&second).unwrap();
+    let next = fs::read(path.join("actions.json")).unwrap();
+    let next_guard: serde_json::Value =
+        serde_json::from_slice(&fs::read(&guard_path).unwrap()).unwrap();
+    drop(store);
+
+    fs::write(path.join("actions.json"), &next).unwrap();
+    fs::write(path.join("seal.json"), &previous_seal).unwrap();
+    fs::write(path.join("pending-before.json"), &previous).unwrap();
+    fs::write(path.join("pending-after.json"), &next).unwrap();
+    guard["pending"] = serde_json::json!({
+        "bytes":next_guard["bytes"],"sha256":next_guard["sha256"]
+    });
+    fs::write(&guard_path, serde_json::to_vec(&guard).unwrap()).unwrap();
+
+    let recovered = phone_evidence::open(&path).unwrap();
+    assert_eq!(
+        recovered.lookup(&original.operation_id).unwrap().outcome,
+        ActionOutcome::Unknown
+    );
+    assert_eq!(
+        recovered.lookup(&second.operation_id).unwrap().outcome,
+        ActionOutcome::Unknown
+    );
+}
+
+#[test]
+fn update_crash_points_preserve_the_last_proven_history() {
+    for point in 0..7 {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("actions");
+        let guard_path = path.with_extension("guard");
+        phone_evidence::initialize_store(&path);
+        let original = identity(temp.path(), 2);
+        let second = identity(temp.path(), 3);
+        let accepted = ActionOutcome::Accepted {
+            evidence: "17".repeat(32),
+        };
+        let store = phone_evidence::open(&path).unwrap();
+        store.reserve(&original).unwrap();
+        store.report(&original, &accepted, 2_000).unwrap();
+        let old = fs::read(path.join("actions.json")).unwrap();
+        let old_seal = fs::read(path.join("seal.json")).unwrap();
+        let old_guard = fs::read(&guard_path).unwrap();
+        store.reserve(&second).unwrap();
+        let new = fs::read(path.join("actions.json")).unwrap();
+        let new_seal = fs::read(path.join("seal.json")).unwrap();
+        let new_guard = fs::read(&guard_path).unwrap();
+        drop(store);
+
+        fs::write(
+            path.join("actions.json"),
+            if point >= 4 { &new } else { &old },
+        )
+        .unwrap();
+        fs::write(
+            path.join("seal.json"),
+            if point >= 5 { &new_seal } else { &old_seal },
+        )
+        .unwrap();
+        if point >= 1 {
+            fs::write(path.join("pending-before.json"), &old).unwrap();
+        }
+        if point >= 2 {
+            fs::write(path.join("pending-after.json"), &new).unwrap();
+        }
+        let mut guard: serde_json::Value = serde_json::from_slice(&old_guard).unwrap();
+        let next_guard: serde_json::Value = serde_json::from_slice(&new_guard).unwrap();
+        if (3..6).contains(&point) {
+            guard["pending"] =
+                serde_json::json!({"bytes":next_guard["bytes"],"sha256":next_guard["sha256"]});
+        }
+        fs::write(
+            &guard_path,
+            if point == 6 {
+                new_guard
+            } else {
+                serde_json::to_vec(&guard).unwrap()
+            },
+        )
+        .unwrap();
+
+        let recovered = phone_evidence::open(&path).unwrap();
+        assert_eq!(
+            recovered.lookup(&original.operation_id).unwrap().outcome,
+            accepted,
+            "point {point}"
+        );
+        if point < 3 {
+            assert_eq!(
+                recovered.lookup(&second.operation_id),
+                Err(ActionEvidenceError::Unavailable),
+                "point {point}"
+            );
+        } else {
+            assert_eq!(
+                recovered.lookup(&second.operation_id).unwrap().outcome,
+                ActionOutcome::Unknown,
+                "point {point}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pending_update_cannot_remove_an_existing_identity_or_replace_missing_proof() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    let guard_path = path.with_extension("guard");
+    phone_evidence::initialize_store(&path);
+    let empty = fs::read(path.join("actions.json")).unwrap();
+    let empty_guard: serde_json::Value =
+        serde_json::from_slice(&fs::read(&guard_path).unwrap()).unwrap();
+    let store = phone_evidence::open(&path).unwrap();
+    store.reserve(&identity(temp.path(), 2)).unwrap();
+    let previous = fs::read(path.join("actions.json")).unwrap();
+    let mut guard: serde_json::Value =
+        serde_json::from_slice(&fs::read(&guard_path).unwrap()).unwrap();
+    drop(store);
+    fs::write(path.join("pending-before.json"), &previous).unwrap();
+    fs::write(path.join("pending-after.json"), &empty).unwrap();
+    guard["pending"] =
+        serde_json::json!({"bytes":empty_guard["bytes"],"sha256":empty_guard["sha256"]});
+    fs::write(&guard_path, serde_json::to_vec(&guard).unwrap()).unwrap();
+
+    assert!(matches!(
+        phone_evidence::open(&path),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+    assert_eq!(fs::read(path.join("actions.json")).unwrap(), previous);
+    fs::remove_file(path.join("pending-after.json")).unwrap();
+    assert!(matches!(
+        phone_evidence::open(&path),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+    assert_eq!(fs::read(path.join("actions.json")).unwrap(), previous);
+}
+
+#[test]
 fn corruption_and_uncertain_writes_do_not_reopen_an_empty_store() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("actions");

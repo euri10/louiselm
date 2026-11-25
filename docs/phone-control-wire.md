@@ -573,8 +573,10 @@ snapshot digest outside the store and its lock. A missing or damaged guard,
 missing store or lock, or an older store with a current guard is unavailable;
 none initializes an empty history. Initialization and operator recovery are
 not yet available, so existing receivers without these records also refuse
-action evidence. An interrupted update may require recovery. Capture-only
-work and otherwise authorized phone reads do not depend on this archive.
+action evidence. An interrupted update completes on restart only when its
+guard and staged snapshots prove the exact update and preserve prior identities
+and owner evidence; otherwise it remains unavailable. Capture-only work and
+otherwise authorized phone reads do not depend on this archive.
 
 The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
 `{v:1,type:"inspect",identity:ActionIdentity}`,

@@ -130,6 +130,50 @@ fn owner_commands_refuse_a_missing_or_corrupt_receiver_guard() {
 }
 
 #[test]
+fn owner_cli_recovers_a_proven_interrupted_update_and_rejects_rollback() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let original = identity(temp.path(), 11);
+    let second = identity(temp.path(), 12);
+    let command =
+        |request: &ActionIdentity| serde_json::json!({"v":1,"type":"begin","identity":request});
+    assert_eq!(invoke(temp.path(), &command(&original))["type"], "begun");
+    let path = temp.path().join("louiselm/workflow/phone-action-owner");
+    let guard_path = temp
+        .path()
+        .join("louiselm/capture/tls/phone-action-owner.json");
+    let previous = fs::read(path.join("actions.json")).unwrap();
+    let previous_seal = fs::read(path.join("seal.json")).unwrap();
+    let mut previous_guard: serde_json::Value =
+        serde_json::from_slice(&fs::read(&guard_path).unwrap()).unwrap();
+    assert_eq!(invoke(temp.path(), &command(&second))["type"], "begun");
+    let next = fs::read(path.join("actions.json")).unwrap();
+    let next_guard: serde_json::Value =
+        serde_json::from_slice(&fs::read(&guard_path).unwrap()).unwrap();
+
+    fs::write(path.join("actions.json"), &next).unwrap();
+    fs::write(path.join("seal.json"), &previous_seal).unwrap();
+    fs::write(path.join("pending-before.json"), &previous).unwrap();
+    fs::write(path.join("pending-after.json"), &next).unwrap();
+    previous_guard["pending"] =
+        serde_json::json!({"bytes":next_guard["bytes"],"sha256":next_guard["sha256"]});
+    fs::write(&guard_path, serde_json::to_vec(&previous_guard).unwrap()).unwrap();
+    assert_eq!(invoke(temp.path(), &command(&original))["type"], "existing");
+    assert_eq!(invoke(temp.path(), &command(&second))["type"], "existing");
+
+    fs::write(path.join("actions.json"), previous).unwrap();
+    fs::write(path.join("seal.json"), previous_seal).unwrap();
+    assert_eq!(
+        invoke(temp.path(), &command(&original))["code"],
+        "unavailable"
+    );
+    assert_eq!(
+        invoke(temp.path(), &command(&second))["code"],
+        "unavailable"
+    );
+}
+
+#[test]
 fn local_owner_command_persists_a_fence_across_processes() {
     let temp = tempfile::tempdir().unwrap();
     initialize(temp.path());
