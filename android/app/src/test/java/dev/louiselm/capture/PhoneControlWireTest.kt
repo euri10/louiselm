@@ -1,0 +1,73 @@
+package dev.louiselm.capture
+
+import java.security.KeyFactory
+import java.security.MessageDigest
+import java.security.Signature
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.X509EncodedKeySpec
+import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PhoneControlWireTest {
+    private val fixture = JSONObject(requireNotNull(javaClass.getResourceAsStream("/phone-control-v1.json"))
+        .bufferedReader().use { it.readText() })
+
+    @Test
+    fun productionTranscriptsAndSignaturesMatchTheSharedVectors() {
+        val proof = fixture.getJSONObject("proof")
+        val message = PhoneControlProof(
+            proof.getString("grant_id"), proof.getLong("grant_revision"), proof.getString("enrolled_key_hash"),
+            proof.getString("receiver_identity"), proof.getString("challenge_id"), proof.getString("challenge"),
+            proof.getString("working_key"),
+        )
+        assertArrayEquals(phoneControlHex(proof.getString("transcript"), 226), message.transcript())
+        val request = fixture.getJSONObject("request")
+        val payload = phoneControlReadPayload(request.getLong("before"), request.getInt("limit"))
+        val envelope = PhoneControlRequest(
+            request.getString("grant_id"), request.getLong("grant_revision"), request.getString("period_id"),
+            request.getString("receiver_identity"), request.getString("controller_id"), request.getString("subject_id"),
+            payload, request.getString("operation_id"), request.getLong("expected_revision"), true,
+        )
+        assertArrayEquals(phoneControlHex(request.getString("payload"), 10), payload)
+        assertArrayEquals(phoneControlHex(request.getString("transcript"), 187), envelope.transcript())
+        assertEquals(request.getString("payload_hash"), phoneControlHex(MessageDigest.getInstance("SHA-256").digest(payload)))
+        for ((kind, transcript) in listOf("enrolled" to message.transcript(), "working" to envelope.transcript())) {
+            val key = fixture.getJSONObject("keys").getJSONObject(kind)
+            val factory = KeyFactory.getInstance("EC")
+            val privateKey = factory.generatePrivate(PKCS8EncodedKeySpec(phoneControlHex(key.getString("pkcs8"))))
+            val publicKey = factory.generatePublic(X509EncodedKeySpec(phoneControlHex(key.getString("spki"))))
+            val vector = if (kind == "enrolled") proof else request
+            assertTrue(Signature.getInstance("SHA256withECDSA").run {
+                initVerify(publicKey)
+                update(transcript)
+                verify(phoneControlHex(vector.getString("signature_der")))
+            })
+            val signature = Signature.getInstance("SHA256withECDSA").run { initSign(privateKey); update(transcript); sign() }
+            assertTrue(Signature.getInstance("SHA256withECDSA").run { initVerify(publicKey); update(transcript); verify(signature) })
+            val changed = transcript.clone().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() }
+            assertFalse(Signature.getInstance("SHA256withECDSA").run { initVerify(publicKey); update(changed); verify(signature) })
+        }
+    }
+
+    @Test
+    fun invalidReadRangesAndNoncanonicalIdentifiersAreRejected() {
+        for ((before, limit) in listOf(-1L to 1, 0L to 0, 0L to 51, 9_007_199_254_740_992L to 1)) {
+            try {
+                phoneControlReadPayload(before, limit)
+                throw AssertionError("invalid range accepted: $before/$limit")
+            } catch (_: IllegalArgumentException) {
+                // Expected.
+            }
+        }
+        try {
+            phoneControlHex("AA", 1)
+            throw AssertionError("uppercase hex accepted")
+        } catch (_: IllegalArgumentException) {
+            // Expected.
+        }
+    }
+}
