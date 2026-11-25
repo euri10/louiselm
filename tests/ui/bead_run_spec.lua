@@ -202,4 +202,100 @@ T["waiting view refuses failed phone registration without starting the Run"] = f
   MiniTest.expect.equality(controller.status, "new")
 end
 
+T["active view tracks and releases the exact phone owner"] = function()
+  local tracked, untracked, disconnected, started, disposed = 0, 0, 0, 0, 0
+  local controller = {
+    status = "new",
+    options = { envelope = { run_id = "run-1" } },
+    summary = { accepted = {}, failed = {}, text = "" },
+    start = function(self)
+      started = started + 1
+      self.status = "active"
+      return true
+    end,
+    dispose = function(self)
+      disposed = disposed + 1
+      self.status = "disposed"
+      return true
+    end,
+  }
+  local owner = {
+    track_run = function(_, value)
+      MiniTest.expect.equality(value, controller)
+      tracked = tracked + 1
+      return true
+    end,
+    untrack_run = function(_, value)
+      MiniTest.expect.equality(value, controller)
+      untracked = untracked + 1
+    end,
+    dispose = function()
+      disconnected = disconnected + 1
+      return true
+    end,
+  }
+  ---@cast controller louiselm.workflow.BeadExecutor
+  local buffer = assert(require("louiselm.ui.bead_run").open(controller, owner))
+  MiniTest.expect.equality({ tracked, started }, { 1, 1 })
+  nvim.api.nvim_buf_delete(buffer, { force = true })
+  MiniTest.expect.equality({ untracked, disconnected, disposed }, { 1, 1, 1 })
+end
+
+T["active view never starts after failed phone owner registration"] = function()
+  local started = 0
+  local controller = {
+    status = "new",
+    options = { envelope = { run_id = "run-1" } },
+    start = function()
+      started = started + 1
+      return true
+    end,
+  }
+  local owner = {
+    track_run = function()
+      return false, "duplicate Run"
+    end,
+    untrack_run = function() end,
+    dispose = function()
+      return true
+    end,
+  }
+  ---@cast controller louiselm.workflow.BeadExecutor
+  local buffer, err = require("louiselm.ui.bead_run").open(controller, owner)
+  MiniTest.expect.equality({ buffer, err, started }, { nil, "duplicate Run", 0 })
+end
+
+T["an asynchronous readiness failure releases the phone and Run owners"] = function()
+  local done, disconnected, disposed
+  local controller = {
+    status = "new",
+    options = { envelope = { run_id = "run-1" } },
+    summary = { accepted = {}, failed = {}, text = "" },
+    start = function(_, callback)
+      done = callback
+      return true
+    end,
+    dispose = function(self)
+      disposed = true
+      self.status = "disposed"
+      return true
+    end,
+  }
+  local owner = {
+    track_run = function()
+      return true
+    end,
+    untrack_run = function() end,
+    dispose = function()
+      disconnected = true
+      return true
+    end,
+  }
+  ---@cast controller louiselm.workflow.BeadExecutor
+  local buffer = assert(require("louiselm.ui.bead_run").open(controller, owner))
+  done(false, "Run readiness input cleanup failed", controller.summary)
+  MiniTest.expect.equality({ disconnected, disposed }, { true, true })
+  nvim.api.nvim_buf_delete(buffer, { force = true })
+end
+
 return T

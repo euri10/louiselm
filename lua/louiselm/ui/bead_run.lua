@@ -11,6 +11,30 @@ local PHASES = {
   promoting = "Promoting",
 }
 
+local function track_phone(controller, owner)
+  if owner == nil then
+    return true
+  end
+  if
+    type(owner) ~= "table"
+    or type(owner.track_run) ~= "function"
+    or type(owner.untrack_run) ~= "function"
+    or type(owner.dispose) ~= "function"
+  then
+    return false, "Run view requires an explicit phone owner"
+  end
+  local tracked, err = owner:track_run(controller)
+  return tracked, err or (not tracked and "Could not register Run" or nil)
+end
+
+local function release_phone(controller, owner)
+  if owner == nil then
+    return true
+  end
+  owner:untrack_run(controller)
+  return owner:dispose()
+end
+
 local function counts(summary)
   local rejected = 0
   for _, failure in ipairs(summary.failed) do
@@ -47,19 +71,9 @@ function M.waiting(controller, identity, phone_owner)
   then
     return nil, "Waiting view requires a new controller"
   end
-  if phone_owner ~= nil then
-    if
-      type(phone_owner) ~= "table"
-      or type(phone_owner.track_run) ~= "function"
-      or type(phone_owner.untrack_run) ~= "function"
-      or type(phone_owner.dispose) ~= "function"
-    then
-      return nil, "Waiting view requires an explicit phone owner"
-    end
-    local tracked, err = phone_owner:track_run(controller)
-    if not tracked then
-      return nil, err or "Could not register waiting Run"
-    end
+  local tracked, track_error = track_phone(controller, phone_owner)
+  if not tracked then
+    return nil, track_error
   end
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_set_current_buf(buffer)
@@ -85,12 +99,9 @@ function M.waiting(controller, identity, phone_owner)
       nvim.api.nvim_del_autocmd(leave)
       leave = nil
     end
-    if phone_owner then
-      phone_owner:untrack_run(controller)
-      local stopped, stop_error = phone_owner:dispose()
-      if not stopped then
-        nvim.notify(stop_error or "Phone controller disposal failed", nvim.log.levels.ERROR)
-      end
+    local stopped, stop_error = release_phone(controller, phone_owner)
+    if not stopped then
+      nvim.notify(stop_error or "Phone controller disposal failed", nvim.log.levels.ERROR)
     end
     local ok, err = controller:dispose()
     if not ok then
@@ -108,11 +119,16 @@ end
 ---Take ownership of a new controller, install its progress presentation and start.
 ---Closing the view/editor disposes the controller; a budget hold retains Sessions until q.
 ---@param controller louiselm.workflow.BeadExecutor New controller; its on_progress callback becomes view-owned.
+---@param phone_owner? table Explicit phone channel; the view owns it when supplied.
 ---@return integer? buffer Run view, or nil if startup was refused.
 ---@return string? error_message Startup/disposal failure; no worker output.
-function M.open(controller)
+function M.open(controller, phone_owner)
   if controller.status ~= "new" then
     return nil, "Run view requires a new controller"
+  end
+  local tracked, track_error = track_phone(controller, phone_owner)
+  if not tracked then
+    return nil, track_error
   end
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_set_current_buf(buffer)
@@ -134,7 +150,9 @@ function M.open(controller)
       nvim.api.nvim_del_autocmd(leave)
       leave = nil
     end
-    return controller:dispose()
+    local stopped, stop_error = release_phone(controller, phone_owner)
+    local released, release_error = controller:dispose()
+    return stopped and released, stop_error or release_error
   end
   local function stop()
     local ok, err = release()

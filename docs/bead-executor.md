@@ -343,8 +343,7 @@ be installed. This opens the exact published revision without starting,
 authorizing, allocating Sessions, or consuming a limit. The view explicitly
 connects a phone controller for this exact Run and releases it when closed;
 connection availability is not assumed. It does not offer Start. A later Start
-must independently
-perform the normal readiness, rehearsal and broker checks. The controller
+must independently perform the normal readiness, rehearsal and broker checks. The controller
 retains the exact registration revision and selection digest; if an authorized
 caller later starts it, owner-bound Run accounting is admitted after broker
 authorization and before the first Session attachment. Admission refuses a
@@ -363,6 +362,24 @@ nvim --noplugin -u NONE --cmd 'set runtimepath^=/approved/louiselm' \
 The file must be operator-owned mode 0600 and at most 64KiB. Review it before
 Start: it rechecks the exact rehearsal and current readiness, then activates the
 reviewed limits at dispatch. A missing pass leaves the saved draft inactive.
+
+To start that same published selection from the desktop, add both options before
+the final `-c` above:
+
+```sh
+--cmd 'let g:louiselm_bead_run_registration="REGISTRATION_HEX"' \
+--cmd 'let g:louiselm_bead_run_revision=1'
+```
+
+The owner must still expose that exact published revision and the selection
+file's bytes, including any trailing newline, must match its retained snapshot.
+An initial mismatch, unpublication, absent integration or stale revision refuses
+before rehearsal; there is no fallback to an unbound Run. If publication changes
+later, owner admission refuses before the first Session, even if native broker
+authorization already returned. Inspect the original outcome rather than retrying.
+The existing rehearsal and broker checks still apply. The active view tracks the
+exact phone owner and releases it with the Run controller. Omit both options for
+the unchanged local-only Run path.
 No API key belongs in it. The closed `louiselm.operator.bead-run/2` object
 contains:
 
