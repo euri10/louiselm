@@ -4,11 +4,7 @@ local nvim = vim
 local Controller = require("louiselm.phone_control.controller")
 local T = MiniTest.new_set()
 
-T["a Send waits for current authority after durable owner reservation"] = function()
-  local binary = nvim.env.LOUISELM_TEST_CAPTURE
-  if binary == nil or binary == "" then
-    MiniTest.skip("set LOUISELM_TEST_CAPTURE to the built capture executable")
-  end
+T["the unguarded version-1 Send is unsupported before owner reservation"] = function()
   local root, directory = nvim.fn.getcwd(), nvim.fn.tempname()
   local previous = nvim.env.LOUISELM_CAPTURE_STATE_DIR
   nvim.env.LOUISELM_CAPTURE_STATE_DIR = directory
@@ -24,8 +20,7 @@ T["a Send waits for current authority after durable owner reservation"] = functi
     return "turn-1"
   end
   owner.sessions.s = session
-  local controller =
-    Controller.new({ service = { "/bin/sh", root .. "/tests/fixtures/phone_control_action_stub.sh", binary } })
+  local controller = Controller.new({ service = { "/nonexistent-capture" } })
   require("tests.fixtures.phone_control_history")(session, controller)
   assert(controller:attach(string.rep("01", 16)))
   local subject = assert(controller:track(session))
@@ -77,9 +72,9 @@ T["a Send waits for current authority after durable owner reservation"] = functi
     end))
     return result
   end
-  local prepared = read(request)
-  MiniTest.expect.equality(prepared.type, "action_prepared")
+  MiniTest.expect.equality(read(request), { v = 1, type = "error", code = "unsupported" })
   MiniTest.expect.equality(prompts, 0)
+  MiniTest.expect.equality(nvim.uv.fs_stat(directory), nil)
   local commit = {
     v = 1,
     type = "action_commit",
@@ -87,26 +82,10 @@ T["a Send waits for current authority after durable owner reservation"] = functi
     operation_id = request.request.operation_id,
     remaining_ms = 10000,
   }
-  local admitted = read(commit)
-  MiniTest.expect.equality(admitted.state, "accepted")
-  MiniTest.expect.equality(prompts, 1)
-  MiniTest.expect.equality(read(commit).code, "unavailable")
-  MiniTest.expect.equality(prompts, 1)
-  request.request.operation_id = string.rep("06", 16)
-  MiniTest.expect.equality(read(request).type, "action_prepared")
-  commit.operation_id = request.request.operation_id
-  commit.remaining_ms = 0
-  local expired = read(commit)
-  MiniTest.expect.equality(expired.state, "fenced_no_effect")
-  MiniTest.expect.equality(expired.code, "expired")
-  MiniTest.expect.equality(prompts, 1)
-  request.request.operation_id = string.rep("07", 16)
-  MiniTest.expect.equality(read(request).type, "action_prepared")
+  MiniTest.expect.equality(read(commit), { v = 1, type = "error", code = "unavailable" })
   assert(controller:detach())
-  commit.operation_id = request.request.operation_id
-  commit.remaining_ms = 10000
   MiniTest.expect.equality(read(commit).code, "unavailable")
-  MiniTest.expect.equality(prompts, 1)
+  MiniTest.expect.equality(prompts, 0)
 end
 
 return T

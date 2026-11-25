@@ -368,6 +368,13 @@ function Controller:read(line, callback)
   local request, grant = message.request, message.grant
   local listing = message.type == "list_sessions" and request.action == 49
   local sending = message.type == "send_prompt" and request.action == 3
+  if sending then
+    -- The version-1 commit lacks the crash-safe guard and connection witness.
+    nvim.schedule(function()
+      callback(error_result("unsupported"))
+    end)
+    return
+  end
   if message.v ~= 1 or not (listing or sending or (message.type == "read_session" and request.action == 1)) then
     nvim.schedule(function()
       callback(error_result("unsupported"))
