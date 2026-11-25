@@ -1,6 +1,8 @@
 package dev.louiselm.capture
 
 import android.content.Context
+import android.view.View
+import android.widget.Button
 import android.widget.TextView
 import java.text.DateFormat
 import java.util.Date
@@ -37,5 +39,39 @@ internal fun phoneRunDetailViews(context: Context, run: PhoneRunView): List<Text
             time(run.parkExpiresAtMs))))
     }
     if (run.resumePending) views.add(text(context.getString(R.string.phone_run_resume_deadline, time(run.resumeDeadlineMs))))
+    return views
+}
+
+/** Display a separately checked live observation; Session targets retain every owner identity. */
+internal fun phoneRunLiveViews(
+    context: Context,
+    reply: PhoneControlReply.RunLive?,
+    open: (PhoneRunSessionTarget) -> Unit,
+): List<View> {
+    fun text(value: String) = TextView(context).apply { this.text = value; textSize = 16f }
+    if (reply == null || reply.controller == PhoneRunController.UNREACHABLE) {
+        return listOf(text(context.getString(R.string.phone_run_live_unreachable)))
+    }
+    if (reply.controller == PhoneRunController.ABSENT) {
+        return listOf(text(context.getString(R.string.phone_run_live_absent)))
+    }
+    val live = reply.live ?: return listOf(text(context.getString(R.string.phone_run_live_unreachable)))
+    val views = mutableListOf<View>(
+        text(context.getString(R.string.phone_run_live_observed)),
+        text(context.getString(R.string.phone_run_live_phase, live.status.name.lowercase().replace('_', ' '),
+            live.phase.name.lowercase().replace('_', ' '))),
+    )
+    if (live.phase != PhoneRunPhase.NONE) {
+        views.add(text(context.getString(R.string.phone_run_live_bead, live.beadIndex, live.beadTotal, live.beadId)))
+    }
+    for (session in live.sessions) {
+        val target = PhoneRunSessionTarget(reply.runId, reply.durableRevision, live.ownerId,
+            PhoneControlTarget(live.controllerId, session.subjectId))
+        views.add(Button(context).apply {
+            text = context.getString(R.string.phone_run_live_session, session.agent, session.status.replace('_', ' '))
+            setOnClickListener { open(target) }
+        })
+    }
+    if (live.sessionsTruncated) views.add(text(context.getString(R.string.phone_run_live_truncated)))
     return views
 }
