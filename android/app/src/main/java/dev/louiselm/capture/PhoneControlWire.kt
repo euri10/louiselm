@@ -186,6 +186,12 @@ internal class PhoneControlRequest(
                 }
                 phoneControlReadPayload(before, limit)
             }
+            80 -> {
+                require(expectedRevision == 0L && controllerId == "00".repeat(16) && subjectId != "00".repeat(16)) {
+                    "invalid saved review target"
+                }
+                validateSavedReviewPayload(this.payload)
+            }
             else -> throw IllegalArgumentException("unsupported action")
         }
     }
