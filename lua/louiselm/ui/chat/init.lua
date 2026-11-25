@@ -806,10 +806,8 @@ local function accept_prompt(self, view, pending)
   if self.attention ~= nil and pending.acp_session_id ~= nil then
     self.attention:prompt_started(pending.acp_session_id)
   end
-  if pending.source_session_id ~= nil then
-    view.transcript:record_handoff(pending.text, pending.source_session_id)
-  else
-    view.transcript:record_user(pending.text)
+  if pending.source_session_id ~= nil and pending.turn_id ~= nil then
+    view.transcript:mark_handoff(pending.turn_id, pending.source_session_id)
   end
   clear_queued_prompt(view)
   if pending.text:sub(1, 1) ~= "/" then
@@ -1466,9 +1464,6 @@ local function observe_view_event(self, view, event)
     -- A synchronous completion still needs the returned ID before it may touch input.
     view.pending_admission.settlement = event
   end
-  -- Recording is a pure data transform, not an editor/UI operation, so it can run
-  -- directly in this fast-event callback instead of waiting for the scheduled turn.
-  view.transcript:record(event)
   local state = event.type == "turn_done" and nvim.deepcopy(view.session:inspect()) or nil
   -- ACP stdout callbacks run in a fast event; buffer APIs must run later.
   nvim.schedule(function()
@@ -1892,7 +1887,7 @@ local function attach_session(self, session, event_relay, background)
     replay_turn = 0,
     restored_usage = restored_usage,
     replay_events = replay_active and {} or nil,
-    transcript = Transcript.new(),
+    transcript = session.transcript,
     unsubscribe = function() end,
     last_forensics_path = nil,
   }

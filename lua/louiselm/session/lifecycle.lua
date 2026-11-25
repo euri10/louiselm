@@ -2,6 +2,7 @@ local Acp = require("louiselm.acp")
 local Interactions = require("louiselm.acp.interactions")
 local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
+local Transcript = require("louiselm.session.transcript")
 local Validation = require("louiselm.session.validation")
 local Compaction = require("louiselm.session.compaction")
 local Provider = require("louiselm.agent.provider")
@@ -98,6 +99,7 @@ local nvim = vim
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.
 ---@field emitter louiselm.session.EventEmitter Event subscribers.
+---@field transcript louiselm.session.Transcript Conversation owned for this Session's lifetime.
 ---@field client louiselm.acp.Client? ACP client.
 ---@field acp_session_id string? Agent-side session identifier.
 ---@field load_session_id string? Agent-side session identifier to load.
@@ -1571,6 +1573,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       embedded_context = false,
     },
     emitter = Events.new(),
+    transcript = Transcript.new(),
     owner = owner,
     definition = definition,
     options = options,
@@ -1595,6 +1598,9 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     start_timeout_ms = options.start_timeout_ms or DEFAULT_START_TIMEOUT_MS,
     stderr_buffer = "",
   }, Session)
+  session:on(function(event)
+    session.transcript:record(event)
+  end)
   if options.on_event ~= nil then
     session:on(options.on_event)
   end

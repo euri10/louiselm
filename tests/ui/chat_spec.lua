@@ -37,6 +37,7 @@ end
 local function fake_session(id, agent)
   local listeners = {}
   local session = {
+    transcript = require("louiselm.session.transcript").new(),
     state = { id = id, agent = agent, status = "ready", current_turn = 0, config_options = {} },
     prompts = {},
     prompt_sets_status = false,
@@ -73,7 +74,7 @@ local function fake_session(id, agent)
     end)
   end
 
-  function session:prompt(prompt, _, metadata)
+  function session:prompt(prompt, _, metadata, display_text)
     if self.prompt_error ~= nil then
       return nil, self.prompt_error
     end
@@ -86,6 +87,15 @@ local function fake_session(id, agent)
       type = "admission_settled",
       session_id = self.state.id,
       data = { turn_id = #self.prompts, result = "dispatched" },
+    })
+    self:emit({
+      type = "prompt_dispatched",
+      session_id = self.state.id,
+      data = {
+        turn_id = #self.prompts,
+        prompt = type(prompt) == "string" and { { type = "text", text = prompt } } or prompt,
+        display_text = display_text,
+      },
     })
     return #self.prompts
   end
@@ -110,6 +120,7 @@ local function fake_session(id, agent)
   end
 
   function session:emit(event)
+    self.transcript:record(event)
     for _, listener in ipairs(listeners) do
       listener(event)
     end
@@ -1420,6 +1431,11 @@ T["chat"]["handoff cannot replace an ordinary prompt awaiting admission"] = func
     type = "admission_settled",
     session_id = "target",
     data = { turn_id = "ordinary-turn", result = "dispatched" },
+  })
+  target:emit({
+    type = "prompt_dispatched",
+    session_id = "target",
+    data = { turn_id = "ordinary-turn", prompt = { { type = "text", text = "ordinary task" } } },
   })
   assert(nvim.wait(1000, function()
     return chat.views.target.pending_admission == nil

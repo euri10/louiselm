@@ -10,6 +10,7 @@ local nvim = vim
 local function fake_session(id, agent)
   local listeners = {}
   local session = {
+    transcript = require("louiselm.session.transcript").new(),
     state = {
       id = id,
       agent = agent,
@@ -38,12 +39,21 @@ local function fake_session(id, agent)
     return self.state
   end
 
-  function session:prompt(prompt)
+  function session:prompt(prompt, _, _, display_text)
     self.prompts[#self.prompts + 1] = prompt
     self:emit({
       type = "admission_settled",
       session_id = self.state.id,
       data = { turn_id = #self.prompts, result = "dispatched" },
+    })
+    self:emit({
+      type = "prompt_dispatched",
+      session_id = self.state.id,
+      data = {
+        turn_id = #self.prompts,
+        prompt = type(prompt) == "string" and { { type = "text", text = prompt } } or prompt,
+        display_text = display_text,
+      },
     })
     return #self.prompts
   end
@@ -60,6 +70,7 @@ local function fake_session(id, agent)
   end
 
   function session:emit(event)
+    self.transcript:record(event)
     for _, listener in ipairs(listeners) do
       listener(event)
     end

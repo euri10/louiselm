@@ -51,9 +51,11 @@
 ---@class louiselm.session.Transcript
 ---@field entries louiselm.session.TranscriptEntry[] Recorded blocks, in arrival order.
 ---@field open_tool_calls table<string, louiselm.session.TranscriptEntry> Tool calls awaiting a terminal status, by ACP tool call id.
+---@field dispatched table<string|number, louiselm.session.TranscriptEntry> Dispatched prompts indexed for Handoff provenance.
 ---@field record fun(self: louiselm.session.Transcript, event: louiselm.session.Event) Ingest one session event.
 ---@field record_user fun(self: louiselm.session.Transcript, text: string) Record a live, client-submitted prompt.
 ---@field record_handoff fun(self: louiselm.session.Transcript, text: string, source_session_id: string) Record a Handoff prompt and its source Session.
+---@field mark_handoff fun(self: louiselm.session.Transcript, turn_id: string|number, source_session_id: string) Attach Handoff provenance to an already-dispatched prompt.
 ---@field snapshot fun(self: louiselm.session.Transcript): louiselm.session.TranscriptEntry[] Copy of recorded entries in order.
 
 local M = {}
@@ -135,7 +137,29 @@ end
 ---@param self louiselm.session.Transcript
 ---@param event louiselm.session.Event
 function Transcript:record(event)
-  if event.type == "compaction_updated" then
+  if event.type == "prompt_dispatched" then
+    local parts = {}
+    for _, block in ipairs(event.data.prompt) do
+      if type(block) == "table" then
+        if block.type == "text" and type(block.text) == "string" then
+          parts[#parts + 1] = block.text
+        elseif
+          block.type == "resource"
+          and type(block.resource) == "table"
+          and type(block.resource.text) == "string"
+        then
+          parts[#parts + 1] = block.resource.text
+        elseif block.type == "resource_link" and type(block.uri) == "string" then
+          parts[#parts + 1] = "[resource: " .. block.uri .. "]"
+        elseif type(block.type) == "string" then
+          parts[#parts + 1] = "[" .. block.type .. "]"
+        end
+      end
+    end
+    local entry = { kind = "user", text = event.data.display_text or table.concat(parts, "\n") }
+    self.entries[#self.entries + 1] = entry
+    self.dispatched[event.data.turn_id] = entry
+  elseif event.type == "compaction_updated" then
     for _, entry in ipairs(self.entries) do
       if entry.kind == "compaction" and entry.id == event.data.id then
         entry.compaction = nvim.deepcopy(event.data)
@@ -188,6 +212,17 @@ function Transcript:record(event)
   end
 end
 
+---Attach provenance to the exact submitted prompt after the UI settles it.
+---@param self louiselm.session.Transcript
+---@param turn_id string|number Dispatched turn identity.
+---@param source_session_id string Source Session identity.
+function Transcript:mark_handoff(turn_id, source_session_id)
+  local entry = self.dispatched[turn_id]
+  if entry ~= nil then
+    entry.handoff_source_session_id = source_session_id
+  end
+end
+
 ---Record a prompt the local client just submitted. Live-turn user prompts never
 ---arrive as ACP events -- the local client is what sends them -- so this is the only
 ---capture point for them; resumed-session history arrives as `user_chunk` events
@@ -228,7 +263,7 @@ end
 ---Create an empty transcript recorder.
 ---@return louiselm.session.Transcript transcript
 function M.new()
-  return setmetatable({ entries = {}, open_tool_calls = {} }, Transcript)
+  return setmetatable({ entries = {}, open_tool_calls = {}, dispatched = {} }, Transcript)
 end
 
 ---Collapse a value onto one line so it can be interpolated into a single-line
