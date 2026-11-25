@@ -83,12 +83,13 @@ function Registry:read_selected_content(job, callback)
   return require("louiselm.routing.reader").start(self, job, callback)
 end
 local registries = {} ---@type louiselm.session.Registry[]
-local session_observers = {} ---@type table<fun(session: louiselm.session.Session, present: boolean), boolean>
+local session_observers = {} ---@type table<fun(session: louiselm.session.Session, present: boolean, existing: boolean), boolean>
 
 ---Observe Session creation and removal across explicitly owned registries.
 ---The returned function releases the observer; callbacks run on the creating
----or disposing Session's existing event boundary.
----@param callback fun(session: louiselm.session.Session, present: boolean)
+---or disposing Session's existing event boundary. The third argument distinguishes
+---initial enumeration, whose earlier events were not observed, from new Sessions.
+---@param callback fun(session: louiselm.session.Session, present: boolean, existing: boolean)
 ---@return fun() unsubscribe
 function M.observe_sessions(callback)
   session_observers[callback] = true
@@ -96,7 +97,7 @@ function M.observe_sessions(callback)
     for _, id in ipairs(registry.order) do
       local session = registry.sessions[id]
       if session ~= nil then
-        callback(session, true)
+        callback(session, true, true)
       end
     end
   end
@@ -107,7 +108,7 @@ end
 
 local function publish_session(session, present)
   for callback in pairs(session_observers) do
-    callback(session, present)
+    callback(session, present, false)
   end
 end
 
