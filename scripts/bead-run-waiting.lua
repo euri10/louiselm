@@ -17,8 +17,18 @@ local pending, err = require("louiselm.workflow.prepared").open_registered(
     if not controller then
       return refuse(error_message or "Registered Run is unavailable")
     end
-    local buffer, view_error = require("louiselm.ui.bead_run").waiting(controller, identity)
+    local phone, phone_error = require("louiselm.phone_control").start({ phone_control = { enabled = true } })
+    if phone_error then
+      nvim.notify("Phone controller unavailable; the Run remains local", nvim.log.levels.WARN)
+    end
+    local buffer, view_error = require("louiselm.ui.bead_run").waiting(controller, identity, phone)
     if not buffer then
+      if phone then
+        local stopped, stop_error = phone:dispose()
+        if not stopped then
+          refuse(stop_error or "Phone controller disposal failed")
+        end
+      end
       local disposed, dispose_error = controller:dispose()
       refuse(not disposed and dispose_error or view_error or "Waiting Run view is unavailable")
     end

@@ -27,9 +27,10 @@ end
 ---Own a prepared controller in a waiting view without starting it.
 ---@param controller louiselm.workflow.BeadExecutor New controller.
 ---@param identity? { registration_id: string, revision: integer, run_id: string } Exact local registration opened by the owner.
+---@param phone_owner? table Explicit phone channel; the view owns it when supplied.
 ---@return integer? buffer Waiting view, or nil when the controller is not new.
 ---@return string? error_message
-function M.waiting(controller, identity)
+function M.waiting(controller, identity, phone_owner)
   if
     controller.status ~= "new"
     or (
@@ -46,13 +47,28 @@ function M.waiting(controller, identity)
   then
     return nil, "Waiting view requires a new controller"
   end
+  if phone_owner ~= nil then
+    if
+      type(phone_owner) ~= "table"
+      or type(phone_owner.track_run) ~= "function"
+      or type(phone_owner.untrack_run) ~= "function"
+      or type(phone_owner.dispose) ~= "function"
+    then
+      return nil, "Waiting view requires an explicit phone owner"
+    end
+    local tracked, err = phone_owner:track_run(controller)
+    if not tracked then
+      return nil, err or "Could not register waiting Run"
+    end
+  end
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_set_current_buf(buffer)
   nvim.bo[buffer].filetype = "text"
   local lines = {
     "Run " .. controller.options.envelope.run_id,
     "Waiting; this Run has not started.",
-    "Phone controller availability is not established. Press q to close.",
+    phone_owner and "Phone controller connecting; availability is not established. Press q to close."
+      or "Phone controller availability is not established. Press q to close.",
   }
   if identity ~= nil then
     lines[#lines + 1] = string.format("Registration %s, revision %d", identity.registration_id, identity.revision)
@@ -68,6 +84,13 @@ function M.waiting(controller, identity)
     if leave then
       nvim.api.nvim_del_autocmd(leave)
       leave = nil
+    end
+    if phone_owner then
+      phone_owner:untrack_run(controller)
+      local stopped, stop_error = phone_owner:dispose()
+      if not stopped then
+        nvim.notify(stop_error or "Phone controller disposal failed", nvim.log.levels.ERROR)
+      end
     end
     local ok, err = controller:dispose()
     if not ok then

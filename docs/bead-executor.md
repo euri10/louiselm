@@ -340,9 +340,10 @@ nvim --noplugin -u NONE --cmd 'set runtimepath^=/approved/louiselm' \
 
 The authenticated local owner must be available and skills integration must
 be installed. This opens the exact published revision without starting,
-authorizing, allocating Sessions, or consuming a limit; closing the view
-disposes the controller. The waiting view is currently local only: it does not
-register a phone controller or offer Start. A later Start must independently
+authorizing, allocating Sessions, or consuming a limit. The view explicitly
+connects a phone controller for this exact Run and releases it when closed;
+connection availability is not assumed. It does not offer Start. A later Start
+must independently
 perform the normal readiness, rehearsal and broker checks. The controller
 retains the exact registration revision and selection digest; if an authorized
 caller later starts it, owner-bound Run accounting is admitted after broker

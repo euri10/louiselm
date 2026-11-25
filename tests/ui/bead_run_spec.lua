@@ -139,4 +139,67 @@ T["waiting view owns a controller without starting it"] = function()
   MiniTest.expect.equality(started, 0)
 end
 
+T["waiting view owns and disconnects its explicit phone controller"] = function()
+  local tracked, untracked, disconnected, started, disposed = 0, 0, 0, 0, 0
+  local controller = {
+    status = "new",
+    options = { envelope = { run_id = "run-waiting" } },
+    start = function()
+      started = started + 1
+      return true
+    end,
+    dispose = function(self)
+      disposed = disposed + 1
+      self.status = "disposed"
+      return true
+    end,
+  }
+  local owner = {
+    track_run = function(_, value)
+      MiniTest.expect.equality(value, controller)
+      tracked = tracked + 1
+      return true
+    end,
+    untrack_run = function(_, value)
+      MiniTest.expect.equality(value, controller)
+      untracked = untracked + 1
+    end,
+    dispose = function()
+      disconnected = disconnected + 1
+      return true
+    end,
+  }
+  ---@cast controller louiselm.workflow.BeadExecutor
+  local buffer = assert(require("louiselm.ui.bead_run").waiting(controller, {
+    run_id = "run-waiting",
+    registration_id = "selection",
+    revision = 1,
+  }, owner))
+  local text = table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+  assert(text:find("connecting", 1, true), text)
+  MiniTest.expect.equality({ tracked, started }, { 1, 0 })
+  nvim.api.nvim_buf_delete(buffer, { force = true })
+  MiniTest.expect.equality({ untracked, disconnected, disposed, started }, { 1, 1, 1, 0 })
+end
+
+T["waiting view refuses failed phone registration without starting the Run"] = function()
+  local controller = {
+    status = "new",
+    options = { envelope = { run_id = "run-waiting" } },
+  }
+  local owner = {
+    track_run = function()
+      return false, "duplicate Run"
+    end,
+    untrack_run = function() end,
+    dispose = function()
+      return true
+    end,
+  }
+  ---@cast controller louiselm.workflow.BeadExecutor
+  local buffer, err = require("louiselm.ui.bead_run").waiting(controller, nil, owner)
+  MiniTest.expect.equality({ buffer, err }, { nil, "duplicate Run" })
+  MiniTest.expect.equality(controller.status, "new")
+end
+
 return T
