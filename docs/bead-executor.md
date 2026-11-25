@@ -562,7 +562,10 @@ then sends signed phone reads over local HTTPS through capture and the installed
 `louiselm-control` after producer Disposal and Run expiry. It checks bounded
 continuation, exact identities, destination replacement and revocation while
 the broker's `promotion_pending` stays unresolved. It is not physical Android
-acceptance. Build the capture library test in a private `CARGO_TARGET_DIR`, and
+acceptance. The fixture attaches the observed producer to capture before
+Disposal; because its Agent does not advertise `session/load`, it does not
+invent a cold Park. Expiry is checked against the original broker Run deadline.
+Build the capture library test in a private `CARGO_TARGET_DIR`, and
 select its executable from Cargo's JSON artifact output to avoid shared-target
 cross-checkout contamination. The case requires both
 `SAVED_REVIEW_INSTALLED_HTTP_PASSED` and `SAVED_REVIEW_PROMOTION_PENDING_UNCHANGED`.

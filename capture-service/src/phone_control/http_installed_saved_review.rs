@@ -22,7 +22,7 @@ use super::{
     run_tests::signed_run,
     tests::{scoped_grant, unhex},
 };
-use crate::{PairingRegistry, PhoneProjectStore, RunDraft, RunStore, hex::lower_hex};
+use crate::{PairingRegistry, PhoneProjectStore, RunSession, RunStore, hex::lower_hex};
 
 const RUN: &str = "44444444-4444-4444-8444-444444444444";
 const TEST: &str = "phone_control::http::installed_saved_review::installed_saved_review";
@@ -35,6 +35,7 @@ async fn installed_saved_review() {
     let root = Path::new(&root);
     match std::env::var("LOUISELM_TEST_REVIEW_PHASE").as_deref() {
         Ok("prepare") => prepare(root),
+        Ok("attach") => attach(root),
         Ok("review") => review(root).await,
         _ => panic!("{TEST} requires an explicit fixture phase"),
     }
@@ -93,6 +94,33 @@ fn prepare(root: &Path) {
     println!("SAVED_REVIEW_SOURCE_AND_RUN_BOUND");
 }
 
+fn attach(root: &Path) {
+    let runs = RunStore::new(root.join("runs")).unwrap();
+    let admitted = runs.run(RUN).unwrap();
+    assert_eq!(admitted.state, "admitted");
+    assert!(admitted.session_id.is_none());
+    let agent = std::env::var("LOUISELM_TEST_PRODUCER_AGENT").unwrap();
+    let acp = std::env::var("LOUISELM_TEST_PRODUCER_ACP").unwrap();
+    let working_dir = std::env::var("LOUISELM_TEST_PRODUCER_CWD").unwrap();
+    assert_eq!(agent, "agent");
+    assert_eq!(acp, "fixture-acp");
+    assert_eq!(std::env::var("LOUISELM_TEST_PRODUCER_LOAD").unwrap(), "0");
+    runs.attach(RunSession {
+        id: RUN.into(),
+        session_id: format!("{agent}/{acp}"),
+        agent,
+        acp_session_id: acp,
+        working_dir,
+        load_session: false,
+    })
+    .unwrap();
+    let attached = runs.run(RUN).unwrap();
+    assert_eq!(attached.state, "active");
+    assert_eq!(attached.session_id.as_deref(), Some("agent/fixture-acp"));
+    assert_eq!(attached.load_session, Some(false));
+    println!("SAVED_REVIEW_PRODUCER_ATTACHED");
+}
+
 fn payload(result: &str, revision: Option<&str>, cursor: Option<&Value>) -> Vec<u8> {
     let mut payload = vec![1, u8::try_from(result.len()).unwrap()];
     payload.extend(result.as_bytes());
@@ -126,24 +154,20 @@ async fn request(client: &reqwest::Client, url: &str, credential: &str, body: &V
 async fn review(root: &Path) {
     let result_id = std::env::var("LOUISELM_TEST_REVIEW_RESULT").expect("saved result identity");
     let runs = RunStore::new(root.join("runs")).unwrap();
-    runs.park_cold(
-        RunDraft {
-            id: RUN.into(),
-            session_id: "agent/fixture-acp".into(),
-            agent: "agent".into(),
-            acp_session_id: "fixture-acp".into(),
-            working_dir: root.join("checkout").to_string_lossy().into_owned(),
-            load_session: true,
-            claimed_issue_ids: vec![],
-        },
-        1,
-    )
-    .unwrap();
-    assert_eq!(
-        runs.reap_expired(3_600_002, |_| Ok(())).unwrap().disposed,
-        1
+    let expiry = std::env::var("LOUISELM_TEST_REVIEW_EXPIRES_MS")
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!(
+        crate::time::now_ms() >= expiry,
+        "original Run must have expired"
     );
-    assert_eq!(runs.run(RUN).unwrap().state, "disposed");
+    // This mock does not advertise session/load, so the capture ledger cannot
+    // truthfully cold-Park it. The launcher proves real producer Disposal.
+    let retained = runs.run(RUN).unwrap();
+    assert_eq!(retained.state, "active");
+    assert_eq!(retained.session_id.as_deref(), Some("agent/fixture-acp"));
+    assert_eq!(retained.load_session, Some(false));
     let attention = crate::AttentionStore::new(root.join("attention"), Some(runs.clone())).unwrap();
     let pending = serde_json::from_value(json!({"subject_kind":"run","subject_id":RUN,
         "kind":"promotion_pending","source_operation_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

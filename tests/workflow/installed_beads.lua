@@ -30,6 +30,26 @@ end
 print("installed verification case " .. index)
 local completed, failure, observed = false, nil, false
 local reviewed
+local function capture_review(phase, extra)
+  local env = {
+    LOUISELM_TEST_REVIEW_ROOT = nvim.env.XDG_STATE_HOME,
+    LOUISELM_TEST_REVIEW_PHASE = phase,
+  }
+  for key, value in pairs(extra) do
+    env[key] = value
+  end
+  local gate = nvim
+    .system({
+      assert(nvim.env.LOUISELM_TEST_CAPTURE_TEST),
+      "phone_control::http::installed_saved_review::installed_saved_review",
+      "--exact",
+      "--ignored",
+      "--nocapture",
+    }, { env = env, clear_env = true, text = true })
+    :wait()
+  assert(gate.code == 0 and gate.stdout:find("1 passed", 1, true), gate.stderr .. gate.stdout)
+  return gate.stdout
+end
 local controller = assert(Workflow.new_bead_executor({
   agent_id = "agent",
   envelope = case.envelope,
@@ -61,30 +81,19 @@ local controller = assert(Workflow.new_bead_executor({
         assert(inspected.code == 0, "saved result inspection must work after producer Disposal")
         local saved = nvim.json.decode(inspected.stdout).result
         assert(saved.request.request_id == preview.selection.request_id and saved.discarded == false)
+        if saved_review then
+          assert(saved.selection.producer_session_id == case.grant.request.session_id)
+        end
         assert(saved.verification.execution.cleanup_proven == true)
         assert(preview.selection.expires_at_ms == nil, "saved review must have no deadline")
         if saved_review then
           nvim.defer_fn(function()
             assert(now_ms() >= case.envelope.expires_at_ms, "original Run must have expired")
-            local gate = nvim
-              .system({
-                assert(nvim.env.LOUISELM_TEST_CAPTURE_TEST),
-                "phone_control::http::installed_saved_review::installed_saved_review",
-                "--exact",
-                "--ignored",
-                "--nocapture",
-              }, {
-                env = {
-                  LOUISELM_TEST_REVIEW_ROOT = nvim.env.XDG_STATE_HOME,
-                  LOUISELM_TEST_REVIEW_PHASE = "review",
-                  LOUISELM_TEST_REVIEW_RESULT = preview.selection.request_id,
-                },
-                clear_env = true,
-                text = true,
-              })
-              :wait()
-            assert(gate.code == 0 and gate.stdout:find("1 passed", 1, true), gate.stderr .. gate.stdout)
-            assert(gate.stdout:find("SAVED_REVIEW_INSTALLED_HTTP_PASSED", 1, true), gate.stdout)
+            local output = capture_review("review", {
+              LOUISELM_TEST_REVIEW_RESULT = preview.selection.request_id,
+              LOUISELM_TEST_REVIEW_EXPIRES_MS = string.format("%.0f", case.envelope.expires_at_ms),
+            })
+            assert(output:find("SAVED_REVIEW_INSTALLED_HTTP_PASSED", 1, true), output)
             print("SAVED_REVIEW_INSTALLED_HTTP_PASSED")
             decide(nil, "leave saved review pending")
           end, math.max(1, case.envelope.expires_at_ms - now_ms() + 50))
@@ -246,6 +255,20 @@ local controller = assert(Workflow.new_bead_executor({
   on_worker = function(result, continue)
     assert(result.bead_id == case.bead_id)
     assert(result.envelope_digest ~= result.request_digest)
+    if saved_review then
+      assert(not result.error, result.error)
+      local session = assert(result.session)
+      local capabilities = assert(session.client).agent_capabilities
+      assert(type(capabilities) == "table")
+      local output = capture_review("attach", {
+        LOUISELM_TEST_PRODUCER_AGENT = session.state.agent,
+        LOUISELM_TEST_PRODUCER_ACP = assert(session.acp_session_id),
+        LOUISELM_TEST_PRODUCER_CWD = session.state.working_dir,
+        LOUISELM_TEST_PRODUCER_LOAD = capabilities.loadSession == true and "1" or "0",
+      })
+      assert(output:find("SAVED_REVIEW_PRODUCER_ATTACHED", 1, true), output)
+      print("SAVED_REVIEW_PRODUCER_ATTACHED")
+    end
     if index == 3 then
       assert(
         result.error and result.error:find("exited", 1, true),
