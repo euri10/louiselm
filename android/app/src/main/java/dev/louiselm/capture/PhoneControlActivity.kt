@@ -1791,8 +1791,9 @@ class PhoneControlActivity : Activity() {
             PhoneControlOutcome.OUT_OF_SCOPE -> R.string.phone_out_of_scope
             PhoneControlOutcome.UNSUPPORTED -> R.string.phone_unsupported
             PhoneControlOutcome.UNAUTHENTICATED, PhoneControlOutcome.MALFORMED -> R.string.phone_invalid
-            PhoneControlOutcome.STALE_SUBJECT -> if (showingRuns) R.string.phone_run_stale else R.string.phone_stale
-            PhoneControlOutcome.UNAVAILABLE -> R.string.phone_unavailable
+            PhoneControlOutcome.STALE_SUBJECT -> if (selectedSavedResult != null) R.string.phone_saved_unavailable
+                else if (showingRuns) R.string.phone_run_stale else R.string.phone_stale
+            PhoneControlOutcome.UNAVAILABLE -> if (selectedSavedResult != null) R.string.phone_saved_unavailable else R.string.phone_unavailable
         })
     }
 
