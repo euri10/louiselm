@@ -99,7 +99,7 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
         Err(error) => json!({"v":1,"type":"error","code":match error {
             ActionEvidenceError::Malformed => "malformed",
             ActionEvidenceError::Conflict => "conflict",
-            ActionEvidenceError::Unavailable => "unavailable",
+            ActionEvidenceError::Unavailable | ActionEvidenceError::Unresolved => "unavailable",
         }}),
     }
 }

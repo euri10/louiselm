@@ -408,3 +408,9 @@ An existing fence returns its original evidence. Report returns
 `{v:1,type:"error",code:string}`, with `malformed`, `conflict` or `unavailable`.
 The owner must route every effect through begin for a winning fence to prove
 that late delivery cannot execute; missing or damaged storage is never proof.
+
+Capture's `reserve_session_prompt` checks retained unknown records and reserves
+the new identity in one durable transaction. It accepts an exception only for
+an operation the native owner has proved independent of this exact prompt.
+Different controller, Session or operation IDs alone are not such proof;
+missing or unavailable evidence cannot supply it.

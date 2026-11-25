@@ -109,6 +109,9 @@ pub enum ActionEvidenceError {
     /// An existing identity or outcome conflicts with the submitted one.
     #[error("conflicting action evidence")]
     Conflict,
+    /// An uncertain action for this exact Session must be reconciled first.
+    #[error("an action for this Session is unresolved")]
+    Unresolved,
     /// Evidence is absent, damaged, locked, or cannot be durably stored.
     #[error("action evidence unavailable")]
     Unavailable,
@@ -225,6 +228,39 @@ impl ActionEvidenceStore {
         &self,
         identity: &ActionIdentity,
     ) -> Result<ActionReservation, ActionEvidenceError> {
+        self.reserve_inner(identity, None)
+    }
+
+    /// Reserve a Session prompt only after every unknown action is accounted for.
+    ///
+    /// The caller must authenticate the request and resolve the subject's scope
+    /// through the native owner. `independent` contains only operation IDs the
+    /// native owner has proved independent of this exact prompt; a different
+    /// controller or subject ID alone does not establish independence. This
+    /// guard never expires or removes evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unresolved, malformed, conflicting, or unavailable refusal.
+    pub fn reserve_session_prompt(
+        &self,
+        identity: &ActionIdentity,
+        independent: &[String],
+    ) -> Result<ActionReservation, ActionEvidenceError> {
+        if identity.action != 3 {
+            return Err(ActionEvidenceError::Malformed);
+        }
+        for operation in independent {
+            fixed::<16>(operation).map_err(|_| ActionEvidenceError::Malformed)?;
+        }
+        self.reserve_inner(identity, Some(independent))
+    }
+
+    fn reserve_inner(
+        &self,
+        identity: &ActionIdentity,
+        independent: Option<&[String]>,
+    ) -> Result<ActionReservation, ActionEvidenceError> {
         validate_identity(identity)?;
         self.access(|snapshot| {
             if let Some(existing) = snapshot.actions.get(&identity.operation_id) {
@@ -233,6 +269,15 @@ impl ActionEvidenceStore {
                 } else {
                     Err(ActionEvidenceError::Conflict)
                 };
+            }
+            if independent.is_some_and(|proved| {
+                snapshot.actions.values().any(|record| {
+                    record.identity.receiver_identity == identity.receiver_identity
+                        && record.outcome == ActionOutcome::Unknown
+                        && !proved.contains(&record.identity.operation_id)
+                })
+            }) {
+                return Err(ActionEvidenceError::Unresolved);
             }
             let project = fs::canonicalize(&identity.project).map_err(unavailable)?;
             if project != Path::new(&identity.project) || !project.is_dir() {
@@ -527,6 +572,7 @@ fn unavailable(_: io::Error) -> ActionEvidenceError {
 mod tests {
     use super::{
         ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
+        ActionReservation,
     };
 
     #[test]
@@ -589,6 +635,65 @@ mod tests {
         assert_eq!(
             store.lookup(&original.operation_id).unwrap().identity,
             original
+        );
+    }
+
+    #[test]
+    fn unresolved_action_blocks_until_the_owner_proves_independence_or_fences_it() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ActionEvidenceStore::open(root.path().join("actions")).unwrap();
+        let first = ActionIdentity {
+            operation_id: "01".repeat(16),
+            receiver_identity: "02".repeat(32),
+            controller_id: "03".repeat(16),
+            subject_id: "04".repeat(16),
+            action: 3,
+            payload_hash: "05".repeat(32),
+            grant_id: "06".repeat(16),
+            grant_revision: 1,
+            period_id: "07".repeat(16),
+            expected_revision: 1,
+            project: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1,
+        };
+        assert_eq!(
+            store.reserve_session_prompt(&first, &[]),
+            Ok(ActionReservation::New)
+        );
+        let mut next = first.clone();
+        next.operation_id = "08".repeat(16);
+        assert_eq!(
+            store.reserve_session_prompt(&next, &[]),
+            Err(ActionEvidenceError::Unresolved)
+        );
+        let mut independent = next.clone();
+        independent.operation_id = "0b".repeat(16);
+        independent.subject_id = "09".repeat(16);
+        assert_eq!(
+            store.reserve_session_prompt(&independent, &[]),
+            Err(ActionEvidenceError::Unresolved)
+        );
+        assert_eq!(
+            store.reserve_session_prompt(&independent, std::slice::from_ref(&first.operation_id)),
+            Ok(ActionReservation::New)
+        );
+        store
+            .report(
+                &first,
+                &ActionOutcome::FencedNoEffect {
+                    evidence: "0a".repeat(32),
+                },
+                2,
+            )
+            .unwrap();
+        assert_eq!(
+            store.reserve_session_prompt(&next, std::slice::from_ref(&independent.operation_id)),
+            Ok(ActionReservation::New)
         );
     }
 }
