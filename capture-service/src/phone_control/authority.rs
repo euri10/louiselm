@@ -1,5 +1,7 @@
 //! Durable grants and ephemeral phone-control authority.
 
+#[path = "authority_prepared.rs"]
+mod prepared;
 #[path = "sleep_clock.rs"]
 mod sleep_clock;
 
@@ -17,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use super::prepared_owner::{OwnerPreparedError, PreparedReader, project_detail};
 use super::source::{PhoneSourceError, PhoneSourceStore, SourceProof};
 use super::source_checkout::CheckoutProof;
 use super::{
@@ -769,6 +770,7 @@ impl Authority {
         let sleep_started = self.sleep_now()?;
         match request.action {
             1 => validate_request_shape(request).map_err(refusal)?,
+            52 => super::validate_prepared_list_request_shape(request).map_err(refusal)?,
             53 => super::validate_prepared_request_shape(request).map_err(refusal)?,
             _ => super::validate_discovery_request_shape(request).map_err(refusal)?,
         }
@@ -798,6 +800,7 @@ impl Authority {
                 1 => "read_session",
                 48 => "list_controllers",
                 49 => "list_sessions",
+                52 => "list_prepared",
                 53 => "read_prepared",
                 _ => return Err(Refusal::Unsupported),
             }
@@ -889,76 +892,6 @@ impl Authority {
             self.finish_read_locked(&mut state, permit, success, now, wall_ms, started)
         });
         if result.is_err() {
-            state.pending_reads.remove(&permit.operation_id);
-        }
-        result.map_err(|_| Refusal::Unavailable)?
-    }
-
-    pub(super) fn finish_prepared_delivery(
-        &self,
-        permit: &ReadPermit,
-        pairing: &PairingRegistry,
-        credential: &str,
-        reader: Option<&PreparedReader>,
-    ) -> Result<serde_json::Value, Refusal> {
-        let now = Instant::now();
-        let wall_ms = crate::time::now_ms();
-        let started = Instant::now();
-        let mut state = self.lock()?;
-        let result = pairing.with_authenticated_device(credential, |device| {
-            if device != Some(permit.device.as_str()) {
-                return Err(Refusal::Revoked);
-            }
-            if Sha256::digest(&permit.frame).as_slice() != permit.frame_sha256 {
-                return Err(Refusal::Unauthenticated);
-            }
-            verify_phone_control_frame(&permit.frame, &self.receiver_identity).map_err(refusal)?;
-            let frame: Frame = serde_json::from_slice(&permit.frame).map_err(|_| Refusal::Malformed)?;
-            let request = &frame.request;
-            if request.action != 53
-                || request.operation_id != permit.operation_id
-                || request.grant_id != permit.grant_id
-                || request.period_id != permit.period_id
-            {
-                return Err(Refusal::Unauthenticated);
-            }
-            let grant = state.grants.get(&permit.device).cloned().ok_or(Refusal::Revoked)?;
-            if grant.grant_id != permit.grant_id
-                || grant.grant_revision != request.grant_revision
-                || grant.enrolled_key != frame.grant.enrolled_key
-                || grant.receiver_identity != self.receiver_identity
-            {
-                return Err(Refusal::Revoked);
-            }
-            if !grant.scope.groups.iter().any(|group| group == "read") {
-                return Err(Refusal::OutOfScope);
-            }
-            let projects = self.projects.as_ref().map_err(|_| Refusal::Unavailable)?;
-            let result = reader.ok_or(Refusal::Unsupported)?.with_published(
-                &request.subject_id,
-                request.expected_revision,
-                |saved, owner| {
-                    let agents = saved.binding.agents.iter().all(|agent| grant.scope.agents.contains(agent));
-                    let project = if let Some(roots) = grant.project_roots()? {
-                        projects.matches_scope(&saved.binding, roots, &grant.scope.agents).map_err(|_| Refusal::Unavailable)?
-                    } else {
-                        grant.legacy_project_confirmed(&saved.binding.project_id)?
-                            && projects.matches_current_parent(&saved.binding.project_id, &grant.scope.projects).map_err(|_| Refusal::Unavailable)?
-                    };
-                    if !agents || !project {
-                        return Err(Refusal::OutOfScope);
-                    }
-                    let detail = project_detail(saved, owner).map_err(|_| Refusal::Unavailable)?;
-                    // Keep publication and Run locks through the final lease transition.
-                    self.finish_read_locked(&mut state, permit, true, now, wall_ms, started)?;
-                    Ok(serde_json::json!({"v":1,"type":"prepared_detail","request_id":request.operation_id,
-                        "registration_id":request.subject_id,"run_id":saved.binding.run_id,
-                        "revision":saved.revision,"detail":detail}))
-                },
-            ).map_err(|error| prepared_read_refusal(&error))??;
-            Ok(result)
-        });
-        if !matches!(&result, Ok(Ok(_))) {
             state.pending_reads.remove(&permit.operation_id);
         }
         result.map_err(|_| Refusal::Unavailable)?
@@ -1293,17 +1226,6 @@ fn source_refusal(error: PhoneSourceError) -> Refusal {
             | "snapshot path must be absolute",
         ) => Refusal::Malformed,
         PhoneSourceError::Project(error) => project_refusal(&error),
-        _ => Refusal::Unavailable,
-    }
-}
-
-fn prepared_read_refusal(error: &OwnerPreparedError) -> Refusal {
-    match error {
-        OwnerPreparedError::Source(PhoneSourceError::Unsupported) => Refusal::Unsupported,
-        OwnerPreparedError::Run(crate::RunStoreError::Invalid(_))
-        | OwnerPreparedError::Prepared(crate::PreparedRunError::Invalid(_)) => {
-            Refusal::StaleSubject
-        }
         _ => Refusal::Unavailable,
     }
 }

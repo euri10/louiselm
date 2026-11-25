@@ -191,7 +191,7 @@ async fn process_http(
             .ok_or(Refusal::Unauthenticated)?;
         if path == "/v1/phone-control/request" {
             let signed: SignedRequest = decode(&body, "request")?;
-            if matches!(signed.request.action, 1 | 48 | 49 | 53) {
+            if matches!(signed.request.action, 1 | 48 | 49 | 52 | 53) {
                 let permit =
                     initial_state
                         .authority
@@ -216,7 +216,7 @@ async fn process_http(
     match started {
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
-            if request.action == 53 {
+            if matches!(request.action, 52 | 53) {
                 return finish_prepared(state, credential, *permit).await;
             }
             let mut listed_controllers = Vec::new();

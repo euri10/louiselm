@@ -271,6 +271,17 @@ impl PreparedRunStore {
     /// # Errors
     /// Returns invalid-state and storage errors.
     pub fn list(&self) -> Result<Vec<PreparedRunSummary>, PreparedRunError> {
+        Ok(self
+            .list_bindings()?
+            .into_iter()
+            .map(|(summary, _)| summary)
+            .collect())
+    }
+
+    // Candidate bindings stay private until the caller checks current phone scope.
+    pub(crate) fn list_bindings(
+        &self,
+    ) -> Result<Vec<(PreparedRunSummary, RunProjectBinding)>, PreparedRunError> {
         self.locked(|| {
             let state = self.load()?;
             state
@@ -282,11 +293,14 @@ impl PreparedRunStore {
                         .revisions
                         .last()
                         .ok_or(PreparedRunError::Invalid("registration has no revision"))?;
-                    Ok(PreparedRunSummary {
-                        id: entry.id,
-                        run_id: current.binding.run_id.clone(),
-                        revision: current.revision,
-                    })
+                    Ok((
+                        PreparedRunSummary {
+                            id: entry.id,
+                            run_id: current.binding.run_id.clone(),
+                            revision: current.revision,
+                        },
+                        current.binding.clone(),
+                    ))
                 })
                 .collect()
         })

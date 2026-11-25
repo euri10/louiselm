@@ -12,7 +12,8 @@ use std::{
 };
 
 use super::{
-    prepared_owner::{PreparedOwner, Publication, project_detail, publish_with},
+    prepared_owner::{PreparedOwner, Publication, publish_with},
+    prepared_selection::project_detail,
     source_checkout_tests::{materialize, setup},
 };
 use crate::{PreparedRunStore, RunAdmission, RunStore};
@@ -344,7 +345,18 @@ fn protected_detail_holds_unused_run_and_exact_publication_locks() {
         previous: None,
     };
     let summary = publish_with(&source_store, &prepared, &runs, &request, |_| Ok(())).unwrap();
-    let owner = PreparedOwner::new(root.path().to_path_buf(), runs.clone());
+    let mut owner = PreparedOwner::new(root.path().to_path_buf(), runs.clone());
+    owner.set_test_integration(|| Ok(()));
+    let candidates = owner.reader().candidates().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].0, summary);
+    assert_eq!(
+        candidates[0].1,
+        prepared
+            .read(&summary.id, summary.revision)
+            .unwrap()
+            .binding
+    );
     let open_lock = |path: &Path| {
         std::fs::OpenOptions::new()
             .read(true)
@@ -392,6 +404,7 @@ fn protected_detail_holds_unused_run_and_exact_publication_locks() {
             .is_err()
     );
     prepared.unpublish(&summary.id, summary.revision).unwrap();
+    assert_eq!(owner.reader().candidates().unwrap(), Vec::new());
     assert!(
         owner
             .with_published_by(&summary.id, summary.revision, || Ok(()), |_, _| ())

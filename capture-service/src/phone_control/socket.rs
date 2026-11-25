@@ -1051,7 +1051,11 @@ fn prepared_refusal(error: &OwnerPreparedError) -> Refusal {
         | OwnerPreparedError::Prepared(crate::PreparedRunError::Invalid(_)) => {
             Refusal::StaleSubject
         }
-        OwnerPreparedError::Invalid(_) | OwnerPreparedError::Json(_) => Refusal::Malformed,
+        OwnerPreparedError::Invalid(_)
+        | OwnerPreparedError::Selection(
+            super::prepared_selection::SelectionError::Invalid(_)
+            | super::prepared_selection::SelectionError::Json(_),
+        ) => Refusal::Malformed,
         _ => Refusal::Unavailable,
     }
 }

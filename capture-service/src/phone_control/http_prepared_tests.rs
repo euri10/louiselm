@@ -59,6 +59,43 @@ fn signed_prepared(
     }})
 }
 
+fn signed_prepared_list(
+    fixture: &Value,
+    grant: &StoredGrant,
+    period: &str,
+    after: &str,
+    operation: u128,
+) -> Value {
+    let zero = "00".repeat(16);
+    let payload = fixed::<16>(after).unwrap();
+    let digest = lower_hex(&Sha256::digest(payload));
+    let operation = format!("{operation:032x}");
+    let mut bytes = prefix(2);
+    bytes.extend(fixed::<16>(&grant.grant_id).unwrap());
+    bytes.extend(grant.grant_revision.to_be_bytes());
+    bytes.extend(fixed::<16>(period).unwrap());
+    bytes.extend(fixed::<32>(&grant.receiver_identity).unwrap());
+    bytes.extend(fixed::<16>(&zero).unwrap());
+    bytes.extend(fixed::<16>(&zero).unwrap());
+    bytes.push(52);
+    bytes.extend(fixed::<32>(&digest).unwrap());
+    bytes.extend(fixed::<16>(&operation).unwrap());
+    bytes.extend(0_u64.to_be_bytes());
+    bytes.push(1);
+    let key = EcdsaKeyPair::from_pkcs8(
+        &ECDSA_P256_SHA256_ASN1_SIGNING,
+        &unhex(fixture["keys"]["working"]["pkcs8"].as_str().unwrap()),
+    )
+    .unwrap();
+    let signature = key.sign(&SystemRandom::new(), &bytes).unwrap();
+    json!({"v":1,"type":"request","request":{
+        "grant_id":grant.grant_id,"grant_revision":grant.grant_revision,"period_id":period,
+        "receiver_identity":grant.receiver_identity,"controller_id":zero,"subject_id":zero,
+        "action":52,"payload":after,"payload_hash":digest,"operation_id":operation,
+        "expected_revision":0,"interaction":1,"signature":lower_hex(signature.as_ref())
+    }})
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -143,6 +180,32 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         .authority
         .link_project_roots(&project_id, grant.project_roots().unwrap().unwrap())
         .unwrap();
+    // A foreign registration has no source proof. Discovery must skip it
+    // without leaking its existence or attempting to read that proof.
+    let foreign = root.path().join("foreign");
+    std::fs::create_dir(&foreign).unwrap();
+    let foreign_root = service
+        .authority
+        .register_root(foreign.to_str().unwrap())
+        .unwrap();
+    let foreign_project = service
+        .authority
+        .register_project(foreign.to_str().unwrap(), &[foreign_root])
+        .unwrap();
+    let foreign_binding = crate::RunProjectBinding {
+        run_id: "22222222-2222-4222-8222-222222222222".into(),
+        project_id: foreign_project,
+        source_id: "aa".repeat(16),
+        checkout_id: "bb".repeat(16),
+        agents: vec!["codex".into()],
+    };
+    prepared
+        .publish(
+            None,
+            &foreign_binding,
+            &std::fs::read_to_string(&selection_path).unwrap(),
+        )
+        .unwrap();
     let signed = signed_prepared(
         &fixture,
         &grant,
@@ -191,6 +254,48 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         "private instructions"
     );
     assert!(!detail.to_string().contains(root.path().to_str().unwrap()));
+    let page = signed_prepared_list(&fixture, &grant, &period, &"00".repeat(16), 600);
+    let (_, list) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &page.to_string(),
+    )
+    .await;
+    assert_eq!(list["type"], "prepared_page");
+    assert_eq!(list["items"][0]["registration_id"], registered.id);
+    assert_eq!(list["items"][0]["run_id"], run);
+    assert_eq!(list["next_after"], registered.id);
+    assert!(!list.to_string().contains("private instructions"));
+    assert!(!list.to_string().contains(root.path().to_str().unwrap()));
+    let (_, replayed_page) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &page.to_string(),
+    )
+    .await;
+    assert_eq!(replayed_page["code"], "unauthenticated");
+    let mut malformed_page = signed_prepared_list(&fixture, &grant, &period, &"00".repeat(16), 602);
+    malformed_page["request"]["subject_id"] = registered.id.clone().into();
+    let (_, malformed) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &malformed_page.to_string(),
+    )
+    .await;
+    assert_eq!(malformed["code"], "malformed");
+    let page = signed_prepared_list(&fixture, &grant, &period, &registered.id, 601);
+    let (_, end) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &page.to_string(),
+    )
+    .await;
+    assert_eq!(end["items"], serde_json::json!([]));
+    assert_eq!(end["next_after"], "");
     let (_, replay) = post(
         app.clone(),
         "/v1/phone-control/request",
@@ -233,8 +338,6 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
     .await;
     assert_eq!(refused["code"], "unauthenticated");
 
-    let foreign = root.path().join("foreign");
-    std::fs::create_dir(&foreign).unwrap();
     for (index, selected, agents, groups) in [
         (510, root.path(), vec!["other".into()], vec!["read".into()]),
         (
@@ -288,6 +391,25 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         )
         .await;
         assert_eq!(denied["code"], "out_of_scope");
+        let page = signed_prepared_list(
+            &fixture,
+            &other_grant,
+            &other_period,
+            &"00".repeat(16),
+            index + 100,
+        );
+        let (_, list) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &other.credential,
+            &page.to_string(),
+        )
+        .await;
+        if index == 511 {
+            assert_eq!(list["code"], "out_of_scope");
+        } else {
+            assert_eq!(list["items"], serde_json::json!([]));
+        }
     }
     let offer = pairing
         .issue("https://192.168.1.2:7391", &receiver, 1_000, 10_000)
@@ -308,6 +430,16 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         .authority
         .link_project_roots(&project_id, other_grant.project_roots().unwrap().unwrap())
         .unwrap();
+    let other_page =
+        signed_prepared_list(&fixture, &other_grant, &other_period, &"00".repeat(16), 617);
+    let (_, visible) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &paired_other.credential,
+        &other_page.to_string(),
+    )
+    .await;
+    assert_eq!(visible["items"][0]["registration_id"], registered.id);
     let signed: super::SignedRequest = serde_json::from_value(signed_prepared(
         &fixture,
         &other_grant,
@@ -353,6 +485,15 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
     )
     .await;
     assert_eq!(refused["code"], "unsupported");
+    let absent_page = signed_prepared_list(&fixture, &grant, &period, &"00".repeat(16), 622);
+    let (_, refused) = post(
+        service.router(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &absent_page.to_string(),
+    )
+    .await;
+    assert_eq!(refused["code"], "unsupported");
     std::fs::remove_file(&selection_path).unwrap();
     std::fs::rename(
         root.path().join("project"),
@@ -391,6 +532,18 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         .authority
         .begin_read(&phone.device_id, &signed.request, Instant::now())
         .unwrap();
+    let signed_list: super::SignedRequest = serde_json::from_value(signed_prepared_list(
+        &fixture,
+        &grant,
+        &period,
+        &"00".repeat(16),
+        621,
+    ))
+    .unwrap();
+    let pending_list = service
+        .authority
+        .begin_read(&phone.device_id, &signed_list.request, Instant::now())
+        .unwrap();
     prepared
         .unpublish(&registered.id, registered.revision)
         .unwrap();
@@ -403,6 +556,11 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
         ),
         Err(super::Refusal::StaleSubject)
     );
+    let empty = service
+        .authority
+        .finish_prepared_delivery(&pending_list, &pairing, &phone.credential, Some(&reader))
+        .unwrap();
+    assert_eq!(empty["items"], serde_json::json!([]));
     let removed = signed_prepared(
         &fixture,
         &grant,
@@ -419,6 +577,15 @@ async fn prepared_detail_requires_current_phone_scope_without_a_controller() {
     )
     .await;
     assert_eq!(refused["code"], "stale_subject");
+    let page = signed_prepared_list(&fixture, &grant, &period, &"00".repeat(16), 620);
+    let (_, empty) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &page.to_string(),
+    )
+    .await;
+    assert_eq!(empty["items"], serde_json::json!([]));
     let signed: super::SignedRequest = serde_json::from_value(signed_prepared(
         &fixture,
         &grant,

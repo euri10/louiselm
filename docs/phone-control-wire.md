@@ -297,6 +297,20 @@ rechecks pairing, grant, period and controller before protected delivery.
 For either action `interaction` may be one only for an explicit phone action;
 automatic page continuation and background reads use zero.
 
+Action `52`, `list_prepared`, requires `read`. The controller and subject IDs
+are all zeroes; `expected_revision` is zero. Its payload is exactly the
+16-byte exclusive registration-ID cursor; zero starts from the beginning.
+Success is `{v:1,type:"prepared_page",request_id:hex16,items:[PreparedSummary],next_after:hex16-or-empty-string}`,
+where each `PreparedSummary` is `{registration_id:hex16,run_id:uuid,revision:integer,state:"prepared"}`.
+Each page contains at most one eligible item and no instructions or paths. A
+nonempty page always returns that item's ID as `next_after`; request another
+page until an empty page returns an empty cursor. This avoids disclosing whether
+other phones' registrations exist. Results are live, ordered by registration ID;
+refresh from zero to discover later publications. The owner checks the current
+Read grant and complete project/Agent scope for each returned row and holds its
+Run and publication locks through final authorization. There is no per-phone
+registration list, no live-controller requirement, and no Start or approval.
+
 Action `53`, `read_prepared`, requires `read`. The controller ID is all zeroes,
 the subject ID is the exact `hex16` registration ID, the payload is empty, and
 `expected_revision` is its nonzero published revision. This owner-backed read
