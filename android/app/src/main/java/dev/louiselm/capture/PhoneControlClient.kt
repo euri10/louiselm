@@ -24,6 +24,8 @@ internal data class PhoneControlTarget(val controllerId: String, val subjectId: 
     }
 }
 
+internal data class PhoneSendAttempt(val pending: PendingPhoneAction, val outcome: PhoneControlOutcome?)
+
 internal sealed class PhoneControlResult<out T> {
     data class Value<T>(val value: T) : PhoneControlResult<T>()
     data class Failure(val outcome: PhoneControlOutcome) : PhoneControlResult<Nothing>()
@@ -260,6 +262,45 @@ internal class PhoneControlClient(
         val currentConfig = pairingStore.load() ?: return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         if (currentGrant(currentConfig) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         return PhoneControlResult.Value(reply to operationId)
+    }
+
+    /** Reserve the exact explicit Send before transport; a reply alone never proves owner admission. */
+    fun sendPrompt(
+        period: PhoneControlPeriod,
+        target: PhoneControlTarget,
+        expectedRevision: Long,
+        text: String,
+        pendingStore: PendingPhoneActionStore,
+        nowMs: Long,
+        maySend: () -> Boolean,
+    ): PhoneControlResult<PhoneSendAttempt> = guarded {
+        if (!period.isActive(nowMs)) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend()) return@guarded unavailable()
+        val config = pairingStore.load() ?: return@guarded unavailable()
+        if (currentGrant(config) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
+        val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
+            period.grant.receiverIdentity, target.controllerId, target.subjectId, phoneControlSendPayload(text),
+            operationId, expectedRevision, true, action = 3)
+        val signature = period.sign(request, nowMs) ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
+        if (pendingStore.reserve(request) != PendingReservation.NEW) return@guarded unavailable()
+        val pending = PendingPhoneAction(request.operationId, request.receiverIdentity, request.controllerId,
+            request.subjectId, request.action, request.payloadHash, request.grantId, request.grantRevision,
+            request.periodId, request.expectedRevision)
+        val attempt = PhoneSendAttempt(pending, PhoneControlOutcome.UNAVAILABLE)
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded PhoneControlResult.Value(attempt)
+        val currentConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Value(attempt)
+        if (currentGrant(currentConfig) != period.grant) return@guarded PhoneControlResult.Value(attempt.copy(outcome = PhoneControlOutcome.REVOKED))
+        val reply = transport(currentConfig, "request", message("request").put("request", request.json(signature))) {
+            maySend() && period.isActive(SystemClock.elapsedRealtime())
+        }
+        if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded PhoneControlResult.Value(attempt)
+        val finalConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Value(attempt)
+        if (currentGrant(finalConfig) != period.grant) return@guarded PhoneControlResult.Value(attempt.copy(outcome = PhoneControlOutcome.REVOKED))
+        val outcome = (reply as? PhoneControlReply.Failure)?.outcome
+        if (reply is PhoneControlReply.Failure) refusal(reply)
+        PhoneControlResult.Value(PhoneSendAttempt(pending, outcome))
     }
 
     /** Inspect the original operation under current read authority without renewing the period. */
