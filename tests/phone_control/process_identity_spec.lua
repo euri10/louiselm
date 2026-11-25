@@ -2,6 +2,7 @@ local MiniTest = require("mini.test")
 ---@diagnostic disable-next-line: undefined-global -- Neovim test runtime.
 local nvim = vim
 local ProcessIdentity = require("louiselm.phone_control.process_identity")
+local namespace = assert(nvim.uv.fs_readlink("/proc/self/ns/pid"))
 
 local T = MiniTest.new_set()
 
@@ -10,7 +11,7 @@ T["an open process identity observes stop and death"] = function()
   local child = nvim.system({ "sleep", "30" }, {}, function()
     exited = true
   end)
-  local identity = assert(ProcessIdentity.new(child.pid))
+  local identity = assert(ProcessIdentity.new(child.pid, namespace))
   MiniTest.finally(function()
     identity:dispose()
     if not exited then
@@ -50,10 +51,30 @@ end
 
 T["invalid process identities fail closed"] = function()
   for _, pid in ipairs({ 0, -1, 1.5, 2147483648, "1" }) do
-    local identity, err = ProcessIdentity.new(pid)
+    local identity, err = ProcessIdentity.new(pid, namespace)
     MiniTest.expect.equality(identity, nil)
     MiniTest.expect.equality(err, "unavailable")
   end
+  local identity, err = ProcessIdentity.new(nvim.uv.os_getpid(), "not-a-namespace")
+  MiniTest.expect.equality(identity, nil)
+  MiniTest.expect.equality(err, "unavailable")
+end
+
+T["a peer in a different PID namespace is unavailable"] = function()
+  local other = namespace == "pid:[1]" and "pid:[2]" or "pid:[1]"
+  local identity = assert(ProcessIdentity.new(nvim.uv.os_getpid(), other))
+  MiniTest.finally(function()
+    identity:dispose()
+  end)
+  local opened
+  identity:open(function(ok)
+    opened = ok
+  end)
+  assert(nvim.wait(5000, function()
+    return opened ~= nil
+  end))
+  MiniTest.expect.equality(opened, false)
+  MiniTest.expect.equality(identity:alive(), false)
 end
 
 T["a live duplicate socket does not disguise the original process death"] = function()
@@ -94,7 +115,7 @@ T["a live duplicate socket does not disguise the original process death"] = func
     process:close()
   end)
   assert(process and pid)
-  identity = assert(ProcessIdentity.new(pid))
+  identity = assert(ProcessIdentity.new(pid, namespace))
   local opened
   identity:open(function(ok)
     opened = ok

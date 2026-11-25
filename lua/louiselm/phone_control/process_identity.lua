@@ -22,18 +22,54 @@ function Identity:open(callback)
   end
   self.state = "opening"
   ProcFile.open("/proc/" .. self.pid .. "/stat", function(fd, err)
-    if self.state == "disposed" then
-      if fd ~= nil then
-        local closed, cause = nvim.uv.fs_close(fd)
-        if not closed then
-          self.error = cause
-        end
+    if fd == nil then
+      if self.state ~= "disposed" then
+        self.state = "failed"
+        callback(false, err or "unavailable")
       end
       return
     end
-    self.fd = fd
-    self.state = fd and "open" or "failed"
-    callback(fd ~= nil, fd == nil and (err or "unavailable") or nil)
+    local function finish(valid, cause)
+      if self.state == "disposed" or not valid then
+        local closed, close_error = nvim.uv.fs_close(fd)
+        if not closed then
+          self.error = close_error
+        end
+        if self.state ~= "disposed" then
+          self.state = "failed"
+          callback(false, cause or "unavailable")
+        end
+        return
+      end
+      self.fd, self.state = fd, "open"
+      callback(true)
+    end
+    if self.state == "disposed" then
+      finish(false)
+      return
+    end
+    ProcFile.open("/proc/self/status", function(status_fd, status_error)
+      if status_fd == nil then
+        finish(false, status_error)
+        return
+      end
+      nvim.uv.fs_read(status_fd, 65537, 0, function(read_error, status)
+        nvim.uv.fs_close(status_fd, function(close_error)
+          nvim.schedule(function()
+            local numbers = type(status) == "string" and #status <= 65536 and status:match("\nNSpid:%s*([^\n]+)") or nil
+            local only_pid = numbers and numbers:match("^(%d+)%s*$") or nil
+            local own_namespace = nvim.uv.fs_readlink("/proc/self/ns/pid")
+            local peer_namespace = nvim.uv.fs_readlink("/proc/" .. self.pid .. "/ns/pid")
+            local valid = read_error == nil
+              and close_error == nil
+              and tonumber(only_pid) == nvim.uv.os_getpid()
+              and own_namespace == self.namespace
+              and peer_namespace == self.namespace
+            finish(valid)
+          end)
+        end)
+      end)
+    end)
   end)
 end
 
@@ -75,13 +111,21 @@ end
 
 ---Create an unopened process identity. This performs no I/O.
 ---@param pid integer PID in this process's proc namespace.
+---@param namespace string PID namespace reported by the peer on its original connection.
 ---@return table? identity
 ---@return string? error_message
-function M.new(pid)
-  if type(pid) ~= "number" or pid < 1 or pid > 2147483647 or pid % 1 ~= 0 then
+function M.new(pid, namespace)
+  if
+    type(pid) ~= "number"
+    or pid < 1
+    or pid > 2147483647
+    or pid % 1 ~= 0
+    or type(namespace) ~= "string"
+    or namespace:match("^pid:%[%d+%]$") == nil
+  then
     return nil, "unavailable"
   end
-  return setmetatable({ pid = pid, state = "new" }, Identity), nil
+  return setmetatable({ pid = pid, namespace = namespace, state = "new" }, Identity), nil
 end
 
 return M
