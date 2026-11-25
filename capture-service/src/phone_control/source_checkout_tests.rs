@@ -15,7 +15,7 @@ use crate::{PhoneProjectStore, hex::lower_hex};
 
 const RUN: &str = "11111111-1111-4111-8111-111111111111";
 
-fn setup() -> (tempfile::TempDir, PhoneSourceStore, String) {
+pub(super) fn setup() -> (tempfile::TempDir, PhoneSourceStore, String) {
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let project = root.path().join("project");
@@ -57,7 +57,7 @@ fn setup() -> (tempfile::TempDir, PhoneSourceStore, String) {
     (root, sources, proof.source_id)
 }
 
-fn materialize(
+pub(super) fn materialize(
     _: &Path,
     _: &str,
     output: &Path,
@@ -110,6 +110,44 @@ fn checkout_is_bound_to_exact_source_and_remains_unreviewed() {
             .read_checkout(RUN)
             .unwrap(),
         proof
+    );
+}
+
+#[test]
+fn current_checkout_guard_requires_exact_source_and_checkout_identities() {
+    let (root, sources, source_id) = setup();
+    let proof = sources
+        .prepare_checkout_with(RUN, &source_id, &root.path().join("checkout"), materialize)
+        .unwrap();
+    let value = sources
+        .with_current_checkout_by(
+            RUN,
+            &source_id,
+            &proof.checkout_id,
+            |_| Ok(()),
+            |source, checkout| {
+                assert_eq!(source.project_id, checkout.project_id);
+                assert_eq!(source.source_id, checkout.source_id);
+                42
+            },
+        )
+        .unwrap();
+    assert_eq!(value, 42);
+    assert!(
+        sources
+            .with_current_checkout_by(
+                RUN,
+                &"ff".repeat(16),
+                &proof.checkout_id,
+                |_| Ok(()),
+                |_, _| ()
+            )
+            .is_err()
+    );
+    assert!(
+        sources
+            .with_current_checkout_by(RUN, &source_id, &"ee".repeat(16), |_| Ok(()), |_, _| ())
+            .is_err()
     );
 }
 
@@ -269,6 +307,15 @@ fn installed_integration_materializes_the_exact_frozen_source() {
     assert_eq!(proof.source_id, source.source_id);
     assert!(!proof.reviewed);
     assert_eq!(store.read_checkout(RUN).unwrap(), proof);
+    store
+        .with_current_checkout(RUN, &source.source_id, &proof.checkout_id, |_, _| ())
+        .unwrap();
+    std::fs::write(checkout.join("source"), "unreviewed replacement").unwrap();
+    assert!(
+        store
+            .with_current_checkout(RUN, &source.source_id, &proof.checkout_id, |_, _| ())
+            .is_err()
+    );
     let branch = Command::new("/usr/bin/git")
         .arg("-C")
         .arg(&checkout)

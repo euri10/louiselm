@@ -82,6 +82,37 @@ pub(super) enum PhoneControl {
     Verify,
     /// Persist an exact native-owner action reservation or outcome.
     OwnerJournal,
+    /// Make one exact, reviewed private selection available for phone reads.
+    PublishPrepared {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        source_id: String,
+        #[arg(long)]
+        checkout_id: String,
+        #[arg(long)]
+        selection: String,
+        #[arg(long, requires = "expected_revision")]
+        registration_id: Option<String>,
+        #[arg(long, requires = "registration_id", value_parser = clap::value_parser!(u64).range(1..))]
+        expected_revision: Option<u64>,
+    },
+    /// List owner-local, explicitly published prepared Run identities.
+    ListPrepared,
+    /// Inspect one retained private selection revision locally.
+    InspectPrepared {
+        #[arg(long)]
+        registration_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        revision: u64,
+    },
+    /// Remove one exact revision from phone discovery without deleting it.
+    UnpublishPrepared {
+        #[arg(long)]
+        registration_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        expected_revision: u64,
+    },
     /// Freeze a selected original project for a future phone-bound Run.
     FreezeRunSource {
         #[arg(long)]

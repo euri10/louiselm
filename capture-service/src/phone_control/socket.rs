@@ -22,7 +22,10 @@ use tokio::{
 use super::{
     MAX_FRAME, MAX_INTEGER, Request,
     authority::{Authority, EnrollmentStatus, Refusal, Scope, random_hex},
-    fixed, valid_string,
+    fixed,
+    prepared_owner::{OwnerPreparedError, PreparedOwner, Publication},
+    source::PhoneSourceError,
+    valid_string,
 };
 use crate::{
     PairingRegistry,
@@ -548,6 +551,7 @@ pub(super) struct AdminSocket {
     socket: LockedListener,
     authority: Arc<Authority>,
     pairing: Arc<PairingRegistry>,
+    prepared: Option<PreparedOwner>,
 }
 
 impl AdminSocket {
@@ -561,7 +565,13 @@ impl AdminSocket {
             socket: LockedListener::bind(path, capability).await?,
             authority,
             pairing,
+            prepared: None,
         })
+    }
+
+    pub(super) fn with_prepared(mut self, prepared: Option<PreparedOwner>) -> Self {
+        self.prepared = prepared;
+        self
     }
 
     pub(super) async fn serve(self) -> io::Result<()> {
@@ -573,8 +583,9 @@ impl AdminSocket {
                     if clients.len() >= 64 { continue; }
                     let authority = self.authority.clone();
                     let pairing = self.pairing.clone();
+                    let prepared = self.prepared.clone();
                     let hash = self.socket.operator_hash.clone();
-                    clients.spawn(async move { serve_admin(stream, authority, pairing, &hash).await });
+                    clients.spawn(async move { serve_admin(stream, authority, pairing, prepared, &hash).await });
                 }
                 Some(_) = clients.join_next(), if !clients.is_empty() => {}
             }
@@ -585,6 +596,32 @@ impl AdminSocket {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum AdminRequest {
+    PublishPrepared {
+        v: u64,
+        capability: String,
+        run_id: String,
+        source_id: String,
+        checkout_id: String,
+        selection: String,
+        registration_id: String,
+        expected_revision: u64,
+    },
+    ListPrepared {
+        v: u64,
+        capability: String,
+    },
+    InspectPrepared {
+        v: u64,
+        capability: String,
+        registration_id: String,
+        revision: u64,
+    },
+    UnpublishPrepared {
+        v: u64,
+        capability: String,
+        registration_id: String,
+        expected_revision: u64,
+    },
     PrepareRunCheckout {
         v: u64,
         capability: String,
@@ -699,7 +736,11 @@ impl AdminRequest {
 
     fn common(&self) -> (u64, &str, Option<&str>) {
         match self {
-            Self::PrepareRunCheckout { v, capability, .. }
+            Self::PublishPrepared { v, capability, .. }
+            | Self::ListPrepared { v, capability, .. }
+            | Self::InspectPrepared { v, capability, .. }
+            | Self::UnpublishPrepared { v, capability, .. }
+            | Self::PrepareRunCheckout { v, capability, .. }
             | Self::InspectRunCheckout { v, capability, .. }
             | Self::FreezeRunSource { v, capability, .. }
             | Self::InspectRunSource { v, capability, .. }
@@ -788,6 +829,7 @@ async fn serve_admin(
     stream: UnixStream,
     authority: Arc<Authority>,
     pairing: Arc<PairingRegistry>,
+    prepared: Option<PreparedOwner>,
     hash: &str,
 ) -> io::Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -810,9 +852,11 @@ async fn serve_admin(
             }) {
                 Err(Refusal::Malformed)
             } else {
-                tokio::task::spawn_blocking(move || process_admin(&authority, &pairing, request))
-                    .await
-                    .unwrap_or(Err(Refusal::Unavailable))
+                tokio::task::spawn_blocking(move || {
+                    process_admin(&authority, &pairing, prepared.as_ref(), request)
+                })
+                .await
+                .unwrap_or(Err(Refusal::Unavailable))
             }
         }
         Err(_) => Err(Refusal::Malformed),
@@ -826,6 +870,7 @@ async fn serve_admin(
 fn process_admin(
     authority: &Authority,
     pairing: &PairingRegistry,
+    prepared: Option<&PreparedOwner>,
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
     let (_, _, device) = request.common();
@@ -840,6 +885,12 @@ fn process_admin(
         return Err(Refusal::Unauthenticated);
     }
     match request {
+        request @ (AdminRequest::PublishPrepared { .. }
+        | AdminRequest::ListPrepared { .. }
+        | AdminRequest::InspectPrepared { .. }
+        | AdminRequest::UnpublishPrepared { .. }) => {
+            process_prepared_admin(prepared.ok_or(Refusal::Unsupported)?, request)
+        }
         request @ (AdminRequest::PrepareRunCheckout { .. }
         | AdminRequest::InspectRunCheckout { .. }
         | AdminRequest::FreezeRunSource { .. }
@@ -913,6 +964,95 @@ fn process_admin(
             authority.forget(pairing, &device_id)?;
             Ok(json!({"v":1,"type":"forgotten","device_id":device_id}))
         }
+    }
+}
+
+fn process_prepared_admin(owner: &PreparedOwner, request: AdminRequest) -> Result<Value, Refusal> {
+    match request {
+        AdminRequest::PublishPrepared {
+            run_id,
+            source_id,
+            checkout_id,
+            selection,
+            registration_id,
+            expected_revision,
+            ..
+        } => {
+            let previous = match (registration_id.is_empty(), expected_revision) {
+                (true, 0) => None,
+                (false, 1..=MAX_INTEGER) => Some((registration_id.as_str(), expected_revision)),
+                _ => return Err(Refusal::Malformed),
+            };
+            let request = Publication {
+                run_id: &run_id,
+                source_id: &source_id,
+                checkout_id: &checkout_id,
+                selection: Path::new(&selection),
+                previous,
+            };
+            let summary = owner
+                .publish(&request)
+                .map_err(|error| prepared_refusal(&error))?;
+            Ok(
+                json!({"v":1,"type":"prepared_registered","registration_id":summary.id,"run_id":summary.run_id,"revision":summary.revision}),
+            )
+        }
+        AdminRequest::ListPrepared { .. } => {
+            let items = owner.list().map_err(|error| prepared_refusal(&error))?;
+            Ok(json!({"v":1,"type":"prepared_list","items":items}))
+        }
+        AdminRequest::InspectPrepared {
+            registration_id,
+            revision,
+            ..
+        } => {
+            if revision == 0 || revision > MAX_INTEGER {
+                return Err(Refusal::Malformed);
+            }
+            let registration = owner
+                .inspect(&registration_id)
+                .map_err(|error| prepared_refusal(&error))?;
+            let saved = registration
+                .revisions
+                .iter()
+                .find(|saved| saved.revision == revision)
+                .ok_or(Refusal::StaleSubject)?;
+            Ok(
+                json!({"v":1,"type":"prepared_inspection","registration_id":registration.id,"published":registration.published,"revision":saved.revision,"binding":saved.binding,"selection":saved.selection}),
+            )
+        }
+        AdminRequest::UnpublishPrepared {
+            registration_id,
+            expected_revision,
+            ..
+        } => {
+            if expected_revision == 0 || expected_revision > MAX_INTEGER {
+                return Err(Refusal::Malformed);
+            }
+            owner
+                .unpublish(&registration_id, expected_revision)
+                .map_err(|error| prepared_refusal(&error))?;
+            Ok(
+                json!({"v":1,"type":"prepared_unpublished","registration_id":registration_id,"revision":expected_revision}),
+            )
+        }
+        _ => Err(Refusal::Malformed),
+    }
+}
+
+fn prepared_refusal(error: &OwnerPreparedError) -> Refusal {
+    match error {
+        OwnerPreparedError::Source(PhoneSourceError::Unsupported) => Refusal::Unsupported,
+        OwnerPreparedError::Source(
+            PhoneSourceError::Conflict
+            | PhoneSourceError::Invalid("source or checkout identity is stale"),
+        )
+        | OwnerPreparedError::Run(crate::RunStoreError::Invalid(_))
+        | OwnerPreparedError::Prepared(crate::PreparedRunError::Invalid(_)) => {
+            Refusal::StaleSubject
+        }
+        OwnerPreparedError::Invalid(_) | OwnerPreparedError::Json(_) => Refusal::Malformed,
+        _ => Refusal::Unavailable,
     }
 }
 
@@ -1176,6 +1316,35 @@ mod tests {
         assert_eq!(absent["code"], "unavailable");
     }
 
+    #[tokio::test]
+    async fn prepared_owner_requires_authentication_and_explicit_run_support() {
+        let root = tempfile::tempdir().unwrap();
+        let authority =
+            Arc::new(Authority::open(&root.path().join("grants/state"), &"01".repeat(32)).unwrap());
+        let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
+        let path = root.path().join("operator.sock");
+        let capability = root.path().join("operator-capability");
+        let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
+            .await
+            .unwrap();
+        let token = std::fs::read_to_string(&capability).unwrap();
+        let task = tokio::spawn(server.serve());
+        let denied = exchange(
+            &path,
+            json!({"v":1,"type":"list_prepared","capability":"wrong"}),
+        )
+        .await;
+        assert_eq!(denied["code"], "unauthenticated");
+        let absent = exchange(
+            &path,
+            json!({"v":1,"type":"list_prepared","capability":token}),
+        )
+        .await;
+        assert_eq!(absent["code"], "unsupported");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
     async fn assert_checkout_admin(
         path: &std::path::Path,
         root: &std::path::Path,
@@ -1302,6 +1471,8 @@ mod tests {
         assert!(task.await.unwrap_err().is_cancelled());
         std::fs::rename(&project, root.path().join("moved-project")).unwrap();
         let authority = Arc::new(Authority::open(&grants, &"01".repeat(32)).unwrap());
+        let runs = crate::RunStore::new(root.path().join("runs")).unwrap();
+        let prepared = super::PreparedOwner::new(root.path().join("grants"), runs.clone());
         let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
             .await
             .unwrap();
@@ -1320,7 +1491,8 @@ mod tests {
         let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
         let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
             .await
-            .unwrap();
+            .unwrap()
+            .with_prepared(Some(prepared));
         let task = tokio::spawn(server.serve());
         let restored_checkout = exchange(
             &path,
@@ -1329,6 +1501,62 @@ mod tests {
         )
         .await;
         assert_eq!(restored_checkout, checkout);
+        let selection_path = root.path().join("selection.json");
+        let selection = super::super::prepared_owner_tests::selection(
+            root.path(),
+            checkout["head"].as_str().unwrap(),
+            "private instructions",
+        );
+        std::fs::write(&selection_path, &selection).unwrap();
+        std::fs::set_permissions(&selection_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let request = |capability: &str| {
+            json!({"v":1,"type":"publish_prepared","capability":capability,
+            "run_id":run_id,"source_id":restored["source_id"],"checkout_id":checkout["checkout_id"],
+            "selection":selection_path.to_str().unwrap(),"registration_id":"","expected_revision":0})
+        };
+        assert_eq!(
+            exchange(&path, request("wrong")).await["code"],
+            "unauthenticated"
+        );
+        std::fs::write(root.path().join("checkout/source"), "dirty").unwrap();
+        assert_eq!(
+            exchange(&path, request(&token)).await["code"],
+            "unavailable"
+        );
+        std::fs::write(root.path().join("checkout/source"), "original").unwrap();
+        let registration = exchange(&path, request(&token)).await;
+        assert_eq!(registration["type"], "prepared_registered");
+        assert!(runs.run(run_id).is_err());
+        let list = exchange(
+            &path,
+            json!({"v":1,"type":"list_prepared","capability":token}),
+        )
+        .await;
+        assert_eq!(list["items"].as_array().unwrap().len(), 1);
+        assert!(!list.to_string().contains("private instructions"));
+        assert!(!list.to_string().contains(selection_path.to_str().unwrap()));
+        std::fs::remove_file(&selection_path).unwrap();
+        let inspect = || {
+            json!({"v":1,"type":"inspect_prepared","capability":token,
+            "registration_id":registration["registration_id"],"revision":registration["revision"]})
+        };
+        let saved = exchange(&path, inspect()).await;
+        assert_eq!(saved["selection"], selection);
+        let removed = exchange(&path, json!({"v":1,"type":"unpublish_prepared","capability":token,
+            "registration_id":registration["registration_id"],"expected_revision":registration["revision"]})).await;
+        assert_eq!(removed["type"], "prepared_unpublished");
+        assert_eq!(exchange(&path, inspect()).await["selection"], selection);
+        assert_eq!(
+            exchange(
+                &path,
+                json!({"v":1,"type":"list_prepared","capability":token})
+            )
+            .await["items"]
+                .as_array()
+                .unwrap()
+                .as_slice(),
+            &[] as &[Value]
+        );
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
     }

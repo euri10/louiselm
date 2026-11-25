@@ -255,6 +255,8 @@ async fn phone_control_admin_stream(
         PhoneControl::FreezeRunSource { .. } | PhoneControl::PrepareRunCheckout { .. }
     ) {
         std::time::Duration::from_secs(195)
+    } else if matches!(&command, PhoneControl::PublishPrepared { .. }) {
+        std::time::Duration::from_secs(45)
     } else {
         std::time::Duration::from_secs(5)
     };
@@ -281,6 +283,37 @@ fn phone_control_admin_request(
     capability: &str,
 ) -> Result<(serde_json::Value, &'static str), CliError> {
     Ok(match command {
+        PhoneControl::PublishPrepared {
+            run_id,
+            source_id,
+            checkout_id,
+            selection,
+            registration_id,
+            expected_revision,
+        } => (
+            serde_json::json!({"v":1,"type":"publish_prepared","capability":capability,
+                "run_id":run_id,"source_id":source_id,"checkout_id":checkout_id,"selection":selection,
+                "registration_id":registration_id.unwrap_or_default(),"expected_revision":expected_revision.unwrap_or_default()}),
+            "prepared_registered",
+        ),
+        PhoneControl::ListPrepared => (
+            serde_json::json!({"v":1,"type":"list_prepared","capability":capability}),
+            "prepared_list",
+        ),
+        PhoneControl::InspectPrepared {
+            registration_id,
+            revision,
+        } => (
+            serde_json::json!({"v":1,"type":"inspect_prepared","capability":capability,"registration_id":registration_id,"revision":revision}),
+            "prepared_inspection",
+        ),
+        PhoneControl::UnpublishPrepared {
+            registration_id,
+            expected_revision,
+        } => (
+            serde_json::json!({"v":1,"type":"unpublish_prepared","capability":capability,"registration_id":registration_id,"expected_revision":expected_revision}),
+            "prepared_unpublished",
+        ),
         PhoneControl::PrepareRunCheckout {
             run_id,
             source_id,
@@ -1022,6 +1055,46 @@ fn configured_root(
 mod tests {
     use super::*;
     use crate::Transcriber;
+
+    #[test]
+    fn prepared_publication_cli_requires_an_exact_revision_pair() {
+        let base = [
+            "louiselm-capture",
+            "phone-control",
+            "publish-prepared",
+            "--run-id",
+            "run",
+            "--source-id",
+            "source",
+            "--checkout-id",
+            "checkout",
+            "--selection",
+            "/private/selection",
+        ];
+        let parsed = Cli::try_parse_from(base).expect("new registration");
+        assert!(matches!(
+            &parsed.command,
+            Some(Command::PhoneControl { .. })
+        ));
+        if let Some(Command::PhoneControl { command }) = parsed.command {
+            let (request, expected) =
+                phone_control_admin_request(command, "capability").expect("request");
+            assert_eq!(request["registration_id"], "");
+            assert_eq!(request["expected_revision"], 0);
+            assert_eq!(expected, "prepared_registered");
+        }
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--registration-id", "id"])).is_err());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--expected-revision", "1"])).is_err());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--registration-id",
+                "id",
+                "--expected-revision",
+                "1"
+            ]))
+            .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn phone_control_admin_uses_the_authenticated_local_socket() {

@@ -5,6 +5,9 @@ mod discovery;
 mod evidence;
 mod http;
 pub(crate) mod owner_journal;
+mod prepared_owner;
+#[cfg(test)]
+mod prepared_owner_tests;
 mod socket;
 mod source;
 mod source_checkout;
@@ -18,20 +21,27 @@ pub use evidence::{
     ActionReservation,
 };
 
-use std::{collections::HashSet, io, path::Path, sync::Arc};
+use std::{
+    collections::HashSet,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1, ParsedPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::PairingRegistry;
+use crate::{PairingRegistry, RunStore};
 
 pub(crate) struct Service {
     authority: Arc<authority::Authority>,
     pairing: Arc<PairingRegistry>,
     controllers: Arc<socket::ControllerRegistry>,
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
+    state_root: PathBuf,
+    prepared: Option<prepared_owner::PreparedOwner>,
 }
 
 impl Service {
@@ -42,16 +52,24 @@ impl Service {
     ) -> Result<Self, io::Error> {
         let authority = authority::Authority::open(path, receiver)
             .map_err(|_| io::Error::other("phone-control authority is unavailable"))?;
-        let evidence_path = path
+        let state_root = path
             .parent()
-            .ok_or_else(|| io::Error::other("phone-control state has no parent"))?
-            .join("action-evidence");
+            .ok_or_else(|| io::Error::other("phone-control state has no parent"))?;
+        let evidence_path = state_root.join("action-evidence");
         Ok(Self {
             authority: Arc::new(authority),
             pairing,
             controllers: Arc::default(),
             evidence: Arc::new(ActionEvidenceStore::open(evidence_path)),
+            state_root: state_root.to_owned(),
+            prepared: None,
         })
+    }
+
+    pub(crate) fn with_runs(mut self, runs: Option<RunStore>) -> Self {
+        self.prepared =
+            runs.map(|runs| prepared_owner::PreparedOwner::new(self.state_root.clone(), runs));
+        self
     }
 
     pub(crate) fn router(&self) -> axum::Router {
@@ -75,7 +93,8 @@ impl Service {
             self.authority.clone(),
             self.pairing.clone(),
         )
-        .await?;
+        .await?
+        .with_prepared(self.prepared.clone());
         let controller =
             socket::ControllerSocket::bind(controller_path, capability, self.controllers.clone())
                 .await?;

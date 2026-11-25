@@ -29,6 +29,10 @@ const MAX_SNAPSHOT: u64 = 8 * 1024 * 1024;
 const MAX_PREVIEW: usize = 16 * 1024 * 1024;
 const SKILLS: &str = "/usr/local/lib/louiselm/current/bin/louiselm-skills";
 
+pub(super) fn require_installed_skills() -> Result<(), PhoneSourceError> {
+    trusted_executable(Path::new(SKILLS)).map(|_| ())
+}
+
 #[derive(Debug, Error)]
 pub(super) enum PhoneSourceError {
     #[error("source freeze refused: {0}")]

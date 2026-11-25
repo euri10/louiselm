@@ -88,6 +88,10 @@ phone-control freeze-run-source --project-id HEX16 --run-id UUID --snapshot /pri
 phone-control inspect-run-source --run-id UUID
 phone-control prepare-run-checkout --run-id UUID --source-id HEX16 --checkout /private/new-checkout
 phone-control inspect-run-checkout --run-id UUID
+phone-control publish-prepared --run-id UUID --source-id HEX16 --checkout-id HEX16 --selection /private/selection.json [--registration-id HEX16 --expected-revision N]
+phone-control list-prepared
+phone-control inspect-prepared --registration-id HEX16 --revision N
+phone-control unpublish-prepared --registration-id HEX16 --expected-revision N
 phone-control inspect-grant --device-id DEVICE_UUID
 phone-control confirm-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16
 phone-control disable --device-id DEVICE_UUID
@@ -130,6 +134,13 @@ It remains explicitly unreviewed: the operator must review the exact checkout
 and selection before any later publication. Inspection after restart reports
 the retained creation record, not whether the checkout is still present or
 unchanged. An uncertain result must be inspected before trying again.
+After reviewing the selection and checkout, the operator can explicitly
+`publish-prepared` a private mode-0600 selection. It snapshots the file and
+retains its exact revision even if that file is later changed or deleted.
+Republication requires the current registration ID and revision; unpublication
+hides it while retaining the private snapshot. Inspection can print sensitive
+instructions and paths to the local terminal. These owner-only primitives do
+not yet provide a phone read route, start a Run, or open a waiting controller.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver

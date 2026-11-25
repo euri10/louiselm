@@ -34,13 +34,58 @@ pub(super) struct CheckoutProof {
     pub(super) source_id: String,
     pub(super) checkout_id: String,
     pub(super) snapshot_digest: String,
-    checkout: Directory,
+    pub(super) checkout: Directory,
     pub(super) head: String,
     pub(super) reviewed: bool,
     sha256: String,
 }
 
 impl PhoneSourceStore {
+    #[cfg(test)]
+    pub(super) fn with_current_checkout<T>(
+        &self,
+        run_id: &str,
+        source_id: &str,
+        checkout_id: &str,
+        action: impl FnOnce(&SourceProof, &CheckoutProof) -> T,
+    ) -> Result<T, PhoneSourceError> {
+        self.with_current_checkout_by(run_id, source_id, checkout_id, verify_checkout, action)
+    }
+
+    pub(super) fn with_current_checkout_by<T>(
+        &self,
+        run_id: &str,
+        source_id: &str,
+        checkout_id: &str,
+        verify: impl FnOnce(&CheckoutProof) -> Result<(), PhoneSourceError>,
+        action: impl FnOnce(&SourceProof, &CheckoutProof) -> T,
+    ) -> Result<T, PhoneSourceError> {
+        if !valid_id(source_id) || !valid_id(checkout_id) {
+            return Err(PhoneSourceError::Invalid(
+                "invalid source or checkout identity",
+            ));
+        }
+        self.locked(run_id, |_| {
+            let source = self.load(run_id)?;
+            let checkout = self.load_checkout(run_id)?;
+            if source.source_id != source_id
+                || checkout.source_id != source_id
+                || checkout.checkout_id != checkout_id
+                || checkout.project_id != source.project_id
+                || checkout.snapshot_digest != source.snapshot_digest
+            {
+                return Err(PhoneSourceError::Invalid(
+                    "source or checkout identity is stale",
+                ));
+            }
+            let expected = source_preview(&source);
+            self.check_snapshot(&source, &expected)?;
+            verify(&checkout)?;
+            self.check_snapshot(&source, &expected)?;
+            Ok(action(&source, &checkout))
+        })
+    }
+
     pub(super) fn read_checkout(&self, run_id: &str) -> Result<CheckoutProof, PhoneSourceError> {
         self.locked(run_id, |_| self.load_checkout(run_id))
     }
@@ -220,8 +265,10 @@ fn checkout_directory(path: &Path) -> Result<Directory, PhoneSourceError> {
     let parent = path
         .parent()
         .ok_or(PhoneSourceError::Invalid("checkout has no parent"))?;
+    let parent_metadata = fs::metadata(parent)?;
     if Path::new(&selected.path) != path
-        || metadata.uid() != fs::metadata(parent)?.uid()
+        || metadata.uid() != parent_metadata.uid()
+        || parent_metadata.mode() & 0o022 != 0
         || metadata.mode() & 0o077 != 0
     {
         return Err(PhoneSourceError::Invalid(
@@ -229,6 +276,24 @@ fn checkout_directory(path: &Path) -> Result<Directory, PhoneSourceError> {
         ));
     }
     Ok(selected)
+}
+
+pub(super) fn verify_checkout(proof: &CheckoutProof) -> Result<(), PhoneSourceError> {
+    let path = Path::new(&proof.checkout.path);
+    if checkout_directory(path)? != proof.checkout
+        || git(path, &["rev-parse", "--verify", "HEAD"])? != format!("{}\n", proof.head).as_bytes()
+        || git(path, &["symbolic-ref", "--quiet", "HEAD"])?
+            != format!("refs/heads/run/{}\n", proof.run_id).as_bytes()
+        || !git(
+            path,
+            &["status", "--porcelain=v1", "--untracked-files=all", "-z"],
+        )?
+        .is_empty()
+        || checkout_directory(path)? != proof.checkout
+    {
+        return Err(PhoneSourceError::Invalid("checkout changed since creation"));
+    }
+    Ok(())
 }
 
 fn git(checkout: &Path, args: &[&str]) -> Result<Vec<u8>, PhoneSourceError> {

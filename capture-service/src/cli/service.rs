@@ -145,7 +145,8 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 &paths.phone_control_store(),
                 identity.public_key_sha256(),
                 pairing.clone(),
-            )?;
+            )?
+            .with_runs(runs.clone());
             let receiver = receiver.with_phone_control(service.router());
             phone_control = Some(service);
             receiver

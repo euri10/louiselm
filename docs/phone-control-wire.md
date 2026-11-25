@@ -141,6 +141,31 @@ Run execution authority. Root and project IDs are private `hex16` identities.
 - `{v:1,type:"inspect_run_checkout",capability:string,run_id:uuid}` returns the
   retained `run_checkout` record, not a claim that its checkout remains current
   or reviewed. Neither request is a phone endpoint.
+- `{v:1,type:"publish_prepared",capability:string,run_id:uuid,source_id:hex16,checkout_id:hex16,selection:string,registration_id:hex16-or-empty-string,expected_revision:integer}`
+  explicitly publishes one reviewed, owner-private selection. A new item uses an
+  empty registration ID and revision zero; republication names the exact ID and
+  current nonzero revision. Success is
+  `{v:1,type:"prepared_registered",registration_id:hex16,run_id:uuid,revision:integer}`.
+  The owner rechecks the retained source and clean checkout, snapshots the exact
+  private file, and checks that the Run UUID has not already been admitted.
+  Publication does not reserve that UUID, Start a Run, approve a capability or
+  make the snapshot phone-readable by itself.
+- `{v:1,type:"list_prepared",capability:string}` returns
+  `{v:1,type:"prepared_list",items:[{id:hex16,run_id:uuid,revision:integer}]}`.
+  This local-only listing is bounded to 50 items and contains no instructions or
+  paths. It is not a phone authorization decision.
+- `{v:1,type:"inspect_prepared",capability:string,registration_id:hex16,revision:integer}`
+  returns `{v:1,type:"prepared_inspection",registration_id:hex16,published:boolean,revision:integer,binding:RunBinding,selection:string}`
+  for the exact retained revision, including after unpublication. `RunBinding`
+  is `{run_id:uuid,project_id:hex16,source_id:hex16,checkout_id:hex16,agents:[string]}`.
+  The selection is the private exact UTF-8 snapshot and may contain instructions
+  and local paths. This endpoint is desktop-only, not a protected phone detail.
+- `{v:1,type:"unpublish_prepared",capability:string,registration_id:hex16,expected_revision:integer}`
+  returns `{v:1,type:"prepared_unpublished",registration_id:hex16,revision:integer}`
+  only for the current published revision. It retains all private revisions and
+  does not cancel an admitted Run. These owner operations require Run support;
+  publishing, listing and inspection also return `unsupported` if the optional
+  skills integration is absent. None opens a controller or changes an Attention.
 - `{v:1,type:"register_root",capability:string,path:string}` returns
   `{v:1,type:"root_registered",root_id:hex16}`. This explicitly records a
   fresh local root identity without granting any phone access.
