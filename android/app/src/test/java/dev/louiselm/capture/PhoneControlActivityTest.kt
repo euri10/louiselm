@@ -47,6 +47,7 @@ private object PhoneScreenFixture {
     var reads = 0
     var lastTarget: PhoneControlTarget? = null
     var sessionRows = emptyList<PhoneControlSessionSummary>()
+    var staleRead = false
     var actionHistoryReads = 0
     var moreActionHistory = false
     val actionHistoryCursors = mutableListOf<String?>()
@@ -60,7 +61,7 @@ private object PhoneScreenFixture {
     var pairingBinding: String? = "fixture"
     fun reset() {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
-        loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); pairingBinding = "fixture"
+        loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
@@ -127,6 +128,7 @@ class PhoneScreenClientFixture {
         if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
         PhoneScreenFixture.reads++
         PhoneScreenFixture.lastTarget = target
+        if (PhoneScreenFixture.staleRead) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
         PhoneScreenFixture.readRequests += Triple(before, expectedRevision, interaction)
         if (before != 0L && PhoneScreenFixture.staleOlder) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
         if (before != 0L && PhoneScreenFixture.olderOutcome != null) return PhoneControlResult.Failure(requireNotNull(PhoneScreenFixture.olderOutcome))
@@ -297,6 +299,27 @@ class PhoneControlActivityTest {
         assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
         screenOff()
         assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun staleSessionRowExplainsHowToRefreshTheSessionList() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.sessionRows = listOf(
+            PhoneControlSessionSummary("01".repeat(16), "stale row", "mock", "/work", "ready", false),
+        )
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(3) { drain() }
+        PhoneScreenFixture.staleRead = true
+        views(activity.window.decorView).filterIsInstance<Button>()
+            .single { it.text.toString().contains("stale row") }.performClick()
+        drain()
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any {
+            it.text.toString() == "This Session is unavailable. Refresh Sessions or the Attention inbox."
+        })
     }
 
     @Test

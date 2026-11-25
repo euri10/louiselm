@@ -61,7 +61,14 @@ class PhoneControlBrowseEndToEndTest {
             val rows = views(activity.window.decorView).filterIsInstance<Button>()
                 .filter { it.text.toString().contains("same") }.toList()
             assertEquals(2, rows.size)
-            rows.single { it.text.toString().contains(subject) }.performClick()
+            screen.pause().stop()
+            assertTrue(rows.none { it.isShown })
+            screen.restart().start().resume()
+            repeat(3) { drain() }
+            val refreshed = views(activity.window.decorView).filterIsInstance<Button>()
+                .filter { it.text.toString().contains("same") }.toList()
+            assertEquals(2, refreshed.size)
+            refreshed.single { it.text.toString().contains(subject) }.performClick()
             repeat(2) { drain() }
             assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
                 .any { it.text.toString() == "You: other fixture request" })

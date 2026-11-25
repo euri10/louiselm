@@ -65,6 +65,8 @@ end
 T["lists only scoped live Sessions with exact incarnation identities"] = function()
   local controller, owner, add, request, root = fixture()
   local first, first_id = add("session-1", "mock", root, "same")
+  first.state.staged_context = { "private desktop context" }
+  first.state.unsent_draft = "private desktop draft"
   local _, second_id = add("session-2", "mock", root, "same")
   add("session-3", "other", root, "hidden agent")
   add("session-4", "mock", "/tmp", "hidden project")
@@ -81,6 +83,7 @@ T["lists only scoped live Sessions with exact incarnation identities"] = functio
   MiniTest.expect.equality(by_id[first_id].agent, "mock")
   MiniTest.expect.equality(by_id[first_id].project, root)
   MiniTest.expect.equality(by_id[first_id].status, "ready")
+  MiniTest.expect.equality(nvim.json.encode(page):find("private desktop", 1, true), nil)
   owner.sessions[first.state.id] = nil
   page = read(controller, request)
   MiniTest.expect.equality(#page.sessions, 1)

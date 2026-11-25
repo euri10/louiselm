@@ -816,7 +816,7 @@ mod tests {
                 .iter()
                 .any(|entry| entry["text"] == "fixture request")
         );
-        assert!(attention.snapshot().unwrap().items.is_empty());
+        assert_eq!(attention.snapshot().unwrap().items, Vec::new());
         if std::env::var("LOUISELM_TEST_ANDROID").as_deref() == Ok("1") {
             let android = project.join("android");
             let url = format!("https://localhost:{}", address.port());
