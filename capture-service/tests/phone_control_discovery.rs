@@ -50,13 +50,21 @@ fn frame(action: u8) -> (Value, String) {
     fields.remove("signature_raw");
     fields.remove("transcript");
     let receiver = proof["receiver_identity"].as_str().unwrap().to_owned();
-    let controller = if action == 48 {
+    let controller = if matches!(action, 48 | 80) {
         "00".repeat(16)
     } else {
         "22".repeat(16)
     };
-    let subject = "00".repeat(16);
-    let payload = format!("{}32", "00".repeat(16));
+    let subject = if action == 80 {
+        "11".repeat(16)
+    } else {
+        "00".repeat(16)
+    };
+    let payload = if action == 80 {
+        format!("0106726573756c74{}", "00".repeat(41))
+    } else {
+        format!("{}32", "00".repeat(16))
+    };
     let digest = hex(&Sha256::digest(unhex(&payload)));
     let request = &fixture["request"];
     let mut transcript = b"louiselm-phone-control\0\x01\x02".to_vec();
@@ -78,7 +86,7 @@ fn frame(action: u8) -> (Value, String) {
     .unwrap();
     let signature = key.sign(&SystemRandom::new(), &transcript).unwrap();
     (
-        json!({"v":1,"type":if action == 48 { "list_controllers" } else { "list_sessions" },
+        json!({"v":1,"type":match action { 48 => "list_controllers", 80 => "read_saved_review", _ => "list_sessions" },
             "controller_id":controller,
             "grant":{"grant_id":proof["grant_id"],"grant_revision":7,
                 "enrolled_key":fixture["keys"]["enrolled"]["sec1"],
@@ -93,6 +101,19 @@ fn frame(action: u8) -> (Value, String) {
         }),
         receiver,
     )
+}
+
+#[test]
+fn saved_review_verifies_exact_signed_run_and_result() {
+    let (mut value, receiver) = frame(80);
+    let verify =
+        |value: &Value| verify_phone_control_frame(&serde_json::to_vec(value).unwrap(), &receiver);
+    assert_eq!(verify(&value), Ok(()));
+    value["request"]["subject_id"] = json!("22".repeat(16));
+    assert_eq!(verify(&value), Err(PhoneControlError::Unauthenticated));
+    let (mut value, _) = frame(80);
+    value["request"]["payload"] = json!("01062e2e2f626164");
+    assert_eq!(verify(&value), Err(PhoneControlError::Malformed));
 }
 
 #[test]

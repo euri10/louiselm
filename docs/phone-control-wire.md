@@ -414,6 +414,34 @@ worker checkout need not itself be a separately approved project. A stale owner,
 Session, Run revision or controller is refused; an old target is never resolved
 through an ACP ID. Reading grants no control authority.
 
+Action `80`, `read_saved_review`, requires `read`. The controller is zero and
+the subject is the exact Run UUID bytes; `expected_revision` is zero. The
+payload is `01 | result_length:u8 | result_id:ascii | revision[32] | file:u32 |
+side:u8 | offset:u32`, with big-endian integers. The result ID has 1–128 ASCII
+letters, digits, `_` or `-`. Side is 0 for before and 1 for after. File is at
+most 10,000 and offset at most 128 MiB. The first request has an all-zero
+revision and cursor; continuation uses the preceding page's nonzero revision
+and exact next cursor. A page contains at most 4,096 UTF-8 content bytes.
+
+Success is `{v:1,type:"saved_review",request_id:hex16,run_id:uuid,result_id:string,revision:hex32,producer_agent:string,agents:[string],destination:string,base_commit:string,verification_digest:string,plan_digest:string,verifier_inputs_digest:string,result_digest:string,commands_passed:integer,current_verification:string,current_provenance:string,file:ReviewFile-or-null,next:ReviewCursor-or-null}`.
+`ReviewFile` is `{path:string,change:string,side:string,offset:integer,text:string,binary:boolean,executable:boolean}`;
+change is `added`, `modified` or `deleted`, and side is `before` or `after`.
+`ReviewCursor` is `{file:integer,side:string,offset:integer}`. Current
+verification is `matching`, `changed`, `quarantined` or `unavailable`; current
+provenance is `untainted`, `session_output_tainted` or `unknown`. These are
+broker observations, not proof that current tools, rules, destination/base,
+or action authority are valid. The nullable file and next fields are the only
+nulls in this response.
+
+The exact native result owner verifies the Run/result and current revision and
+checks its pinned destination's canonical path and device/inode. Delivery also
+requires the retained original-project/source/checkout chain, the same retained
+checkout identity, the complete current contributing-Agent scope, and current
+pairing, Read grant and working period. No live controller or unexpired Run is
+required. Missing integration is `unsupported`; missing, changed or corrupt
+evidence is explicit. Reads never change Attention or grant saved-result action
+authority. Content is protected, bounded and inert, never push or log content.
+
 Action `2`, `read_action_history`, also requires `read`. Its decoded payload is
 one of `00 | operation_id[16]` (one record), `01 | limit:u8` (first page), or
 `02 | after_operation_id[16] | limit:u8` (next page), with limit 1–50. For one

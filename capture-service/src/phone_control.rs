@@ -253,7 +253,8 @@ pub fn verify_phone_control_frame(
         Some(kind) if !valid_string(kind) => return Err(Malformed),
         Some(
             "read_session" | "send_prompt" | "list_controllers" | "list_sessions" | "list_prepared"
-            | "read_prepared" | "list_runs" | "read_run" | "read_run_live" | "read_run_session",
+            | "read_prepared" | "list_runs" | "read_run" | "read_run_live" | "read_run_session"
+            | "read_saved_review",
         ) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
@@ -275,6 +276,7 @@ pub fn verify_phone_control_frame(
                 | ("read_run", 55)
                 | ("read_run_live", 56)
                 | ("read_run_session", 57)
+                | ("read_saved_review", 80)
         )
     {
         return Err(Unsupported);
@@ -303,6 +305,7 @@ impl Frame {
             57 => {
                 run_session_query(request)?;
             }
+            80 => validate_saved_review_request_shape(request)?,
             _ => return Err(Unsupported),
         }
         for number in [
@@ -505,6 +508,50 @@ fn validate_run_request_shape(request: &Request) -> Result<(), PhoneControlError
         return Err(PhoneControlError::Unsupported);
     }
     if fixed::<16>(&request.controller_id)? != [0; 16] || !request.payload.is_empty() {
+        return Err(PhoneControlError::Malformed);
+    }
+    Ok(())
+}
+
+fn validate_saved_review_request_shape(request: &Request) -> Result<(), PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.action != 80 || request.interaction > 1 {
+        return Err(PhoneControlError::Unsupported);
+    }
+    if fixed::<16>(&request.controller_id)? != [0; 16]
+        || fixed::<16>(&request.subject_id)? == [0; 16]
+        || request.expected_revision != 0
+        || !(88..=342).contains(&request.payload.len())
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    let payload = decode_hex(&request.payload)?;
+    let name_len = usize::from(payload[1]);
+    if payload[0] != 1 || !(1..=128).contains(&name_len) || payload.len() != 43 + name_len {
+        return Err(PhoneControlError::Malformed);
+    }
+    if !payload[2..2 + name_len]
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(PhoneControlError::Malformed);
+    }
+    let cursor = &payload[2 + name_len..];
+    let file = u32::from_be_bytes(
+        cursor[32..36]
+            .try_into()
+            .map_err(|_| PhoneControlError::Malformed)?,
+    );
+    let offset = u32::from_be_bytes(
+        cursor[37..41]
+            .try_into()
+            .map_err(|_| PhoneControlError::Malformed)?,
+    );
+    if file > 10_000
+        || cursor[36] > 1
+        || offset > 128 * 1024 * 1024
+        || (cursor[..32] == [0; 32] && cursor[32..] != [0; 9])
+    {
         return Err(PhoneControlError::Malformed);
     }
     Ok(())
