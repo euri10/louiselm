@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use crate::hex::lower_hex;
 use crate::phone_control::barrier::Barrier;
 use crate::phone_control::evidence::{
-    phase_evidence, receiver_barrier_binding, same_identity, validate_identity,
+    phase_evidence, receiver_barrier_binding, receiver_barrier_state, same_identity,
+    validate_identity,
 };
 use crate::phone_control::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
@@ -140,8 +141,17 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
                 at_ms,
                 ..
             } => {
-                let journal = OwnerJournal::open(path)?;
-                journal.report(&identity, &outcome, at_ms)?;
+                let tls = tls_directory(path)?;
+                let receiver = crate::TlsIdentity::existing_public_key_sha256(&tls)
+                    .map_err(|_| ActionEvidenceError::Unavailable)?;
+                let (generation, _) = receiver_barrier_state(
+                    &tls.join("phone-action-owner.json"),
+                    &receiver,
+                    super::ActionEvidenceKind::Owner,
+                )?;
+                with_generation(path, &generation, |journal| {
+                    journal.report(&identity, &outcome, at_ms)
+                })?;
                 Ok(json!({"v":1,"type":"recorded"}))
             }
         }
@@ -283,7 +293,7 @@ impl OwnerJournal {
         outcome: &ActionOutcome,
         at_ms: u64,
     ) -> Result<(), ActionEvidenceError> {
-        self.store.report(identity, outcome, at_ms)
+        self.store.report_under_barrier(identity, outcome, at_ms)
     }
 
     pub(super) fn fence(
@@ -311,7 +321,7 @@ impl OwnerJournal {
                 digest.update(b"louiselm-phone-owner-fence-v1\0");
                 digest.update(bytes);
                 let evidence = lower_hex(&digest.finalize());
-                self.store.report(
+                self.store.report_under_barrier(
                     identity,
                     &ActionOutcome::FencedNoEffect {
                         evidence: evidence.clone(),

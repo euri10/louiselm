@@ -386,6 +386,56 @@ fn barrier_owner_death_releases_lock_with_a_surviving_duplicate() {
 }
 
 #[test]
+fn owner_report_waits_for_the_generation_barrier_before_writing() {
+    const HOLD: &str = r"
+import fcntl, socket, sys
+peer = socket.socket(socket.AF_UNIX)
+peer.connect(sys.argv[1])
+with open(sys.argv[2], 'r+') as lock:
+    fcntl.lockf(lock, fcntl.LOCK_EX)
+    peer.sendall(b'R')
+    assert peer.recv(1) == b'S'
+";
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let request = identity(temp.path(), 26);
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    assert_eq!(invoke_bounded(temp.path(), &begin)["type"], "begun");
+    let report = serde_json::json!({
+        "v":1,"type":"report","identity":request,
+        "outcome":{"accepted":{"evidence":"0a".repeat(32)}},"at_ms":2000
+    });
+    let snapshot = temp
+        .path()
+        .join("louiselm/workflow/phone-action-owner/actions.json");
+    let before = fs::read(&snapshot).unwrap();
+    let socket = temp.path().join("hold.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut holder = OwnedChild(
+        Command::new("python3")
+            .args(["-c", HOLD])
+            .arg(&socket)
+            .arg(
+                temp.path()
+                    .join("louiselm/capture/tls/phone-admission-barrier.lock"),
+            )
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut peer = accept_child(&listener, &mut holder);
+    let mut ready = [0];
+    peer.read_exact(&mut ready).unwrap();
+    assert_eq!(ready, *b"R");
+    assert_eq!(invoke_bounded(temp.path(), &report)["code"], "unavailable");
+    assert_eq!(fs::read(&snapshot).unwrap(), before);
+    peer.write_all(b"S").unwrap();
+    assert!(holder.0.wait().unwrap().success());
+    assert_eq!(invoke_bounded(temp.path(), &report)["type"], "recorded");
+}
+
+#[test]
 fn real_generation_change_and_durable_begin_are_exclusive() {
     const RESET: &str = r"
 import fcntl, hashlib, json, os, socket, sys

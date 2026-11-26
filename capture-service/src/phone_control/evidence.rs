@@ -642,6 +642,7 @@ impl ActionEvidenceStore {
     }
 
     /// Durably archive the exact native owner's report for a reserved action.
+    /// The archive's bound generation remains locked through the write.
     ///
     /// The caller must authenticate and serialize the native owner. In
     /// particular, it may report a fence only after that owner has proved no
@@ -652,6 +653,32 @@ impl ActionEvidenceStore {
     ///
     /// Returns a malformed, conflicting, or unavailable refusal.
     pub fn report(
+        &self,
+        identity: &ActionIdentity,
+        outcome: &ActionOutcome,
+        at_ms: u64,
+    ) -> Result<(), ActionEvidenceError> {
+        let guard = self
+            .guard
+            .as_ref()
+            .ok_or(ActionEvidenceError::Unavailable)?;
+        self.with_archive_generation(&guard.generation, || {
+            self.report_under_barrier(identity, outcome, at_ms)
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn report_fixture(
+        &self,
+        identity: &ActionIdentity,
+        outcome: &ActionOutcome,
+        at_ms: u64,
+    ) -> Result<(), ActionEvidenceError> {
+        self.report_under_barrier(identity, outcome, at_ms)
+    }
+
+    // The caller holds the owner or archive generation barrier through the write.
+    pub(super) fn report_under_barrier(
         &self,
         identity: &ActionIdentity,
         outcome: &ActionOutcome,
@@ -1295,6 +1322,36 @@ mod tests {
             store.lookup(&identity.operation_id).unwrap().outcome,
             ActionOutcome::Unknown
         );
+        let accepted = ActionOutcome::Accepted {
+            evidence: "0a".repeat(32),
+        };
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            barrier
+                .with_generation(&generation, || {
+                    scope.spawn(|| {
+                        started_tx.send(()).unwrap();
+                        result_tx
+                            .send(store.report(&identity, &accepted, 2))
+                            .unwrap();
+                    });
+                    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                    assert_eq!(
+                        result_rx.recv_timeout(Duration::from_millis(100)),
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                    );
+                })
+                .unwrap();
+            assert_eq!(
+                result_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Ok(())
+            );
+        });
+        assert_eq!(
+            store.lookup(&identity.operation_id).unwrap().outcome,
+            accepted
+        );
         let mut next = identity.clone();
         next.operation_id = "02".repeat(16);
         std::fs::remove_file(tls.join("phone-admission-cutoff.json")).unwrap();
@@ -1308,6 +1365,16 @@ mod tests {
         );
         assert_eq!(
             store.lookup(&next.operation_id),
+            Err(ActionEvidenceError::Unavailable)
+        );
+        assert_eq!(
+            store.report(
+                &identity,
+                &ActionOutcome::Dispatched {
+                    evidence: "0b".repeat(32),
+                },
+                3,
+            ),
             Err(ActionEvidenceError::Unavailable)
         );
         drop(registrar);
@@ -1421,7 +1488,7 @@ mod tests {
             Ok(ActionReservation::New)
         );
         store
-            .report(
+            .report_fixture(
                 &first,
                 &ActionOutcome::FencedNoEffect {
                     evidence: "0a".repeat(32),

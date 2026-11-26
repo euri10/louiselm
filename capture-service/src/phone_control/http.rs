@@ -2236,7 +2236,7 @@ mod tests {
         let store = service.evidence.as_ref().as_ref().unwrap();
         store.reserve_fixture(&original).unwrap();
         store
-            .report(
+            .report_fixture(
                 &original,
                 &ActionOutcome::Accepted {
                     evidence: "14".repeat(32),
@@ -2293,7 +2293,7 @@ mod tests {
                     evidence: evidence.repeat(32),
                 }
             };
-            store.report(&original, &outcome, time).unwrap();
+            store.report_fixture(&original, &outcome, time).unwrap();
             let request = signed_history(&fixture, &grant, &period, &original, operation);
             let (status, history) = post(
                 app.clone(),
