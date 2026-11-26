@@ -1,5 +1,9 @@
 //! Payload-free, durable evidence for phone actions.
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "evidence_lock_tests.rs"]
+mod lock_tests;
+
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{

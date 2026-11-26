@@ -107,6 +107,19 @@ fn losing_journal_and_lock_never_reopens_the_same_action() {
 }
 
 #[test]
+#[ignore = "registration barrier is not yet implemented"]
+fn established_receiver_without_a_registration_barrier_refuses_begin() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let request = identity(temp.path(), 16);
+    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+
+    let response = invoke(temp.path(), &begin);
+    assert_eq!(response["type"], "error");
+    assert_eq!(response["code"], "unavailable");
+}
+
+#[test]
 fn owner_commands_refuse_a_missing_or_corrupt_receiver_guard() {
     let temp = tempfile::tempdir().unwrap();
     initialize(temp.path());

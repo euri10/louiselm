@@ -19,6 +19,37 @@ use fs2::FileExt;
 use louiselm_capture::PairingRegistry;
 
 #[test]
+#[ignore = "offline cutoff proof is not yet implemented"]
+fn offline_forget_without_a_provable_cutoff_is_unconfirmed() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let pairing = state.join("louiselm/capture/pairing");
+    let registry = PairingRegistry::open(&pairing).unwrap();
+    let offer = registry
+        .issue("https://192.0.2.1:7391", &"a".repeat(64), 1_000, 5_000)
+        .unwrap();
+    let phone = registry.consume(&offer.token, "phone", 2_000).unwrap();
+    drop(registry);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
+        .env("LOUISELM_CAPTURE_DATA_DIR", root.path().join("data"))
+        .env("LOUISELM_CAPTURE_STATE_DIR", &state)
+        .env("LOUISELM_CAPTURE_CONFIG_DIR", &state)
+        .args(["revoke-device", &phone.device_id])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unconfirmed"));
+    assert_eq!(
+        PairingRegistry::open(pairing)
+            .unwrap()
+            .authenticate_device(&phone.credential)
+            .unwrap(),
+        Some(phone.device_id)
+    );
+}
+
+#[test]
 fn offline_forget_refuses_a_live_lock_within_a_bound() {
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("state");
