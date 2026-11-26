@@ -6,6 +6,10 @@
     <string name="phone_voice_archive_review">Review transcript</string>
     <string name="phone_voice_archive_next">More archived recordings</string>
     <string name="phone_voice_archive_original">Original Session: %1$s · %2$s\nController %3$s · Session %4$s</string>
+    <string name="phone_voice_archive_page">Bytes %1$d–%2$d of %3$d</string>
+    <string name="phone_voice_archive_first_page">First transcript page</string>
+    <string name="phone_voice_archive_next_page">Next transcript page</string>
+    <string name="phone_voice_archive_limit">The entire transcript cannot fit in draft storage. The existing draft and original are unchanged.</string>
     <string name="phone_voice_archive_filled">The untouched original draft was filled. Review and edit it before any Send.</string>
     <string name="phone_voice_archive_preserved">The original draft was changed, discarded, or is unavailable. Choose a current Session and Insert or Replace explicitly.</string>
     <string name="phone_voice_archive_choose">Choose destination Session</string>

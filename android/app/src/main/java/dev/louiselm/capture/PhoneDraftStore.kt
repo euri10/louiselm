@@ -298,13 +298,13 @@ internal class PhoneDraftStore(private val root: File) {
         require(listOf(source.name, source.agent, source.project).all { '\u0000' !in it && it.toByteArray(Charsets.UTF_8).size <= 512 })
     }
 
-    private companion object {
-        const val MAX_DRAFTS = 128
+    companion object {
         const val MAX_DRAFT_BYTES = 8 * 1024 * 1024
-        const val MAX_TOTAL_BYTES = 64L * 1024 * 1024
+        private const val MAX_DRAFTS = 128
+        private const val MAX_TOTAL_BYTES = 64L * 1024 * 1024
         // Even the shortest encoded selection exceeds 32 bytes; the byte quota is tighter.
-        const val MAX_SELECTIONS = MAX_DRAFT_BYTES / 32
-        const val NONCE_BYTES = 12
-        const val OVERHEAD = NONCE_BYTES + 16
+        private const val MAX_SELECTIONS = MAX_DRAFT_BYTES / 32
+        private const val NONCE_BYTES = 12
+        private const val OVERHEAD = NONCE_BYTES + 16
     }
 }

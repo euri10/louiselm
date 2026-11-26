@@ -389,37 +389,52 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
-    /** Fetch one immutable result in bounded pages, retaining its exact recorded association. */
+    /** Read the first page and, when it can fit, the whole immutable result for draft use. */
     fun voiceResult(period: PhoneControlPeriod, row: PhoneVoiceRow, nowMs: Long,
         maySend: () -> Boolean): PhoneControlResult<PhoneVoiceTranscript> = guarded {
         if (!row.hasResult) return@guarded unavailable()
-        var offset = 0
-        var identity: PhoneControlReply.VoiceResult? = null
-        val text = StringBuilder()
-        while (true) {
-            val result = ownerRead(period, if (offset == 0) nowMs else SystemClock.elapsedRealtime(), row.target.subjectId,
-                phoneVoiceResultPayload(row.id, offset), 0, 82, offset == 0, maySend, row.target.controllerId)
+        val initial = readVoicePage(period, row, 0, nowMs, true, null, maySend)
+        if (initial !is PhoneControlResult.Value) return@guarded initial as PhoneControlResult.Failure
+        val first = initial.value
+        val transcript = PhoneVoiceTranscript(row, first.receiver, first.draft, first.revision, first.totalBytes,
+            null, PhoneVoicePage(first.offset, first.nextOffset, first.text))
+        // The draft's encrypted record also needs metadata and authentication overhead.
+        if (first.totalBytes >= PhoneDraftStore.MAX_DRAFT_BYTES) return@guarded PhoneControlResult.Value(transcript)
+        val text = StringBuilder(first.text)
+        var next = first.nextOffset
+        while (next != 0) {
+            val result = readVoicePage(period, row, next, SystemClock.elapsedRealtime(), false, transcript, maySend)
             if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
-            val (reply, operationId) = result.value
-            if (reply !is PhoneControlReply.VoiceResult) return@guarded refusal(reply)
-            val prior = identity
-            if (reply.requestId != operationId || reply.id != row.id || reply.target != row.target ||
-                reply.receiver != period.grant.receiverIdentity || reply.project != row.project || reply.agent != row.agent ||
-                reply.offset != offset || prior != null && (prior.draft != reply.draft || prior.revision != reply.revision)) {
-                return@guarded malformed()
-            }
-            val next = offset + reply.text.toByteArray(Charsets.UTF_8).size
-            if (next > 8 * 1024 * 1024 || reply.nextOffset != 0 && (reply.nextOffset != next || next <= offset)) {
-                return@guarded malformed()
-            }
-            text.append(reply.text)
-            if (reply.nextOffset == 0) return@guarded PhoneControlResult.Value(
-                PhoneVoiceTranscript(row, reply.receiver, reply.draft, reply.revision, text.toString()))
-            identity = reply
-            offset = next
+            text.append(result.value.text)
+            next = result.value.nextOffset
         }
-        @Suppress("UNREACHABLE_CODE") // The loop returns on completion or refusal.
-        unavailable()
+        PhoneControlResult.Value(transcript.copy(text = text.toString()))
+    }
+
+    /** Fetch a review page under current Read authority, matching the original association. */
+    fun voiceResultPage(period: PhoneControlPeriod, transcript: PhoneVoiceTranscript, offset: Int, nowMs: Long,
+        maySend: () -> Boolean): PhoneControlResult<PhoneVoicePage> = guarded {
+        val result = readVoicePage(period, transcript.row, offset, nowMs, true, transcript, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val page = result.value
+        PhoneControlResult.Value(PhoneVoicePage(page.offset, page.nextOffset, page.text))
+    }
+
+    private fun readVoicePage(period: PhoneControlPeriod, row: PhoneVoiceRow, offset: Int, nowMs: Long,
+        interaction: Boolean, expected: PhoneVoiceTranscript?, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.VoiceResult> {
+        val result = ownerRead(period, nowMs, row.target.subjectId, phoneVoiceResultPayload(row.id, offset),
+            0, 82, interaction, maySend, row.target.controllerId)
+        if (result !is PhoneControlResult.Value) return result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.VoiceResult) return refusal(reply)
+        if (reply.requestId != operationId || reply.id != row.id || reply.target != row.target ||
+            reply.receiver != period.grant.receiverIdentity || reply.project != row.project || reply.agent != row.agent ||
+            reply.offset != offset || expected != null && (expected.draft != reply.draft || expected.revision != reply.revision ||
+                expected.totalBytes != reply.totalBytes)) return malformed()
+        val end = offset.toLong() + reply.text.toByteArray(Charsets.UTF_8).size
+        if (end > reply.totalBytes || (end == reply.totalBytes.toLong() && reply.nextOffset != 0) ||
+            (end < reply.totalBytes && (reply.nextOffset.toLong() != end || end <= offset))) return malformed()
+        return PhoneControlResult.Value(reply)
     }
 
     private fun ownerRead(period: PhoneControlPeriod, nowMs: Long, subject: String, payload: ByteArray,

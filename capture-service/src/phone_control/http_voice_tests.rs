@@ -43,6 +43,19 @@ impl Transcriber for SyntheticVoice {
     }
 }
 
+struct LargeSyntheticVoice;
+impl Transcriber for LargeSyntheticVoice {
+    fn name(&self) -> &'static str {
+        "fixture"
+    }
+    fn model(&self) -> &'static str {
+        "fixture"
+    }
+    fn transcribe(&self, _: TranscriptRequest<'_>) -> Result<String, TranscriptionError> {
+        Ok(format!("BEGIN:x{}:END", "é".repeat(4 * 1024 * 1024)))
+    }
+}
+
 #[tokio::test]
 async fn voice_history_page_fits_the_phone_response_bound() {
     let root = tempfile::tempdir().unwrap();
@@ -144,10 +157,11 @@ fn signed_result(
     period: &str,
     association: &VoiceAssociation,
     id: &str,
+    offset: u32,
     operation: u128,
 ) -> Value {
     let mut payload = uuid::Uuid::parse_str(id).unwrap().as_bytes().to_vec();
-    payload.extend(0_u32.to_be_bytes());
+    payload.extend(offset.to_be_bytes());
     let hash = lower_hex(&Sha256::digest(&payload));
     let operation = format!("{operation:032x}");
     let mut bytes = prefix(2);
@@ -293,7 +307,7 @@ async fn voice_history_filters_before_delivery_and_survives_source_end() {
     assert_eq!(page["records"][0]["id"], second);
     assert_eq!(page["next_after"], "");
 
-    let result = signed_result(&fixture, &grant, &period, &association, id, 1003);
+    let result = signed_result(&fixture, &grant, &period, &association, id, 0, 1003);
     let (_, response) = post(
         app.clone(),
         "/v1/phone-control/request",
@@ -302,10 +316,14 @@ async fn voice_history_filters_before_delivery_and_survives_source_end() {
     )
     .await;
     assert_eq!(response["text"], "synthetic archived transcript");
+    assert_eq!(
+        response["total_bytes"],
+        "synthetic archived transcript".len()
+    );
     assert_eq!(response["revision"], association.revision);
     let mut wrong_subject = association.clone();
     wrong_subject.subject = "aa".repeat(16);
-    let wrong = signed_result(&fixture, &grant, &period, &wrong_subject, id, 1004);
+    let wrong = signed_result(&fixture, &grant, &period, &wrong_subject, id, 0, 1004);
     let (_, response) = post(
         app.clone(),
         "/v1/phone-control/request",
@@ -320,6 +338,7 @@ async fn voice_history_filters_before_delivery_and_survives_source_end() {
         &period,
         &wrong_agent,
         "22222222-2222-4222-8222-222222222222",
+        0,
         1005,
     );
     let (_, response) = post(
@@ -343,7 +362,7 @@ async fn voice_history_filters_before_delivery_and_survives_source_end() {
     .with_voice_root(root.path().join("voice"));
     let app = service.router();
     let restarted = history_period(&app, &phone, &fixture, &grant).await;
-    let request = signed_result(&fixture, &grant, &restarted, &association, id, 1006);
+    let request = signed_result(&fixture, &grant, &restarted, &association, id, 1, 1006);
     let (_, response) = post(
         app.clone(),
         "/v1/phone-control/request",
@@ -351,7 +370,12 @@ async fn voice_history_filters_before_delivery_and_survives_source_end() {
         &request.to_string(),
     )
     .await;
-    assert_eq!(response["text"], "synthetic archived transcript");
+    assert_eq!(response["text"], "ynthetic archived transcript");
+    assert_eq!(response["offset"], 1);
+    assert_eq!(
+        response["total_bytes"],
+        "synthetic archived transcript".len()
+    );
 
     // A valid all-zero UUID must not be confused with the start-of-history cursor.
     let nil = "00000000-0000-0000-0000-000000000000";
@@ -397,7 +421,7 @@ async fn voice_history_filters_before_delivery_and_survives_source_end() {
     assert_eq!(page["records"][0]["id"], id);
 
     // Revocation between admission and delivery prevents the retained result from escaping.
-    let request = signed_result(&fixture, &grant, &restarted, &association, id, 1007);
+    let request = signed_result(&fixture, &grant, &restarted, &association, id, 1, 1007);
     let request: Request = serde_json::from_value(request["request"].clone()).unwrap();
     assert!(matches!(
         service.authority.begin_read(
@@ -466,6 +490,7 @@ async fn voice_history_filters_before_delivery_and_survives_source_end() {
         &other_period,
         &association,
         id,
+        0,
         1011,
     );
     let (_, response) = post(
@@ -518,6 +543,7 @@ async fn pinned_receiver_and_android_review_archived_voice() {
         .consume(&offer.token, "fixture phone", 1_001)
         .unwrap();
     let voice_root = root.path().join("voice");
+    let retained_voice_root = voice_root.clone();
     let service = Service::open(
         &root.path().join("phone/grants"),
         tls.public_key_sha256(),
@@ -640,6 +666,22 @@ async fn pinned_receiver_and_android_review_archived_voice() {
             VoiceTranscriptionWorker::new(&archive, &SyntheticVoice)
                 .process_ready(1_000)
                 .unwrap();
+            admit(
+                &archive,
+                "44444444-4444-4444-8444-444444444444",
+                &association,
+            );
+            VoiceTranscriptionWorker::new(&archive, &LargeSyntheticVoice)
+                .process_ready(1_001)
+                .unwrap();
+            assert!(
+                archive
+                    .transcript("44444444-4444-4444-8444-444444444444")
+                    .unwrap()
+                    .text
+                    .len()
+                    > 8 * 1024 * 1024
+            );
         })
         .await
         .unwrap();
@@ -678,6 +720,23 @@ async fn pinned_receiver_and_android_review_archived_voice() {
     }).await.unwrap();
     assert!(status.success());
     seed_task.await.unwrap();
+    let retained = VoiceArchive::new(retained_voice_root).unwrap();
+    let large_id = "44444444-4444-4444-8444-444444444444";
+    let original = retained.transcript(large_id).unwrap();
+    let mut expected = Sha256::new();
+    expected.update(b"BEGIN:x");
+    for _ in 0..1024 {
+        expected.update("é".repeat(4096).as_bytes());
+    }
+    expected.update(b":END");
+    assert_eq!(
+        Sha256::digest(original.text.as_bytes()),
+        expected.finalize()
+    );
+    assert_eq!(
+        std::fs::read(retained.capture(large_id).unwrap().audio_path).unwrap(),
+        b"synthetic audio"
+    );
     assert_eq!(ordinary.list().unwrap().len(), 1);
     assert_eq!(
         std::fs::read(ordinary.capture(ordinary_id).unwrap().audio_path).unwrap(),

@@ -42,14 +42,16 @@ internal sealed class PhoneControlReply {
     data class VoiceHistory(val requestId: String, val records: List<PhoneVoiceRow>, val nextAfter: String) : PhoneControlReply()
     data class VoiceResult(val requestId: String, val id: String, val receiver: String, val target: PhoneControlTarget,
         val project: String, val agent: String, val draft: String, val revision: String,
-        val offset: Int, val nextOffset: Int, val text: String) : PhoneControlReply()
+        val offset: Int, val nextOffset: Int, val totalBytes: Int, val text: String) : PhoneControlReply()
 }
 
 internal data class PhoneVoiceRow(val id: String, val target: PhoneControlTarget, val project: String,
     val agent: String, val hasResult: Boolean)
 
 internal data class PhoneVoiceTranscript(val row: PhoneVoiceRow, val receiver: String,
-    val draft: String, val revision: String, val text: String)
+    val draft: String, val revision: String, val totalBytes: Int, val text: String?, val firstPage: PhoneVoicePage)
+
+internal data class PhoneVoicePage(val offset: Int, val nextOffset: Int, val text: String)
 
 internal data class PhoneControlSessionSummary(
     val subjectId: String, val name: String, val agent: String, val project: String,
@@ -234,16 +236,17 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 PhoneControlReply.VoiceHistory(hex("operation_id", 16), rows, next)
             }
             "voice_result" -> {
-                keys("operation_id", "id", "receiver", "controller", "subject", "project", "agent", "draft", "revision", "offset", "next_offset", "text")
+                keys("operation_id", "id", "receiver", "controller", "subject", "project", "agent", "draft", "revision", "offset", "next_offset", "total_bytes", "text")
                 val id = string("id").also { phoneControlRunIdBytes(it) }
                 val target = PhoneControlTarget(hex("controller", 16), hex("subject", 16))
                 require(target.controllerId != "00".repeat(16) && target.subjectId != "00".repeat(16))
                 val offset = number("offset")
                 val next = number("next_offset")
-                require(offset <= 64L * 1024 * 1024 && next <= 64L * 1024 * 1024)
+                val total = number("total_bytes")
+                require(offset in 0..64L * 1024 * 1024 && next in 0..64L * 1024 * 1024 && total in 1..64L * 1024 * 1024)
                 PhoneControlReply.VoiceResult(hex("operation_id", 16), id, hex("receiver", 32), target,
                     fields.wireString("project", 512), fields.wireString("agent", 512), hex("draft", 32), hex("revision", 32),
-                    offset.toInt(), next.toInt(), fields.wireString("text", 32 * 1024))
+                    offset.toInt(), next.toInt(), total.toInt(), fields.wireString("text", 32 * 1024))
             }
             "error" -> {
                 keys("code")

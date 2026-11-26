@@ -370,7 +370,8 @@ controller and subject. Its payload is `recording_uuid[16] | offset:u32`, and
 `expected_revision` is zero. The closed reply is `{v:1,type:"voice_result",
 operation_id:hex16,id:uuid,receiver:hex32,controller:hex16,subject:hex16,
 project:string,agent:string,draft:hex32,revision:hex32,offset:integer,
-next_offset:integer,text:string}`. `text` contains at most 32 KiB of UTF-8
+next_offset:integer,total_bytes:integer,text:string}`. `total_bytes` is the
+complete original's UTF-8 byte length. `text` contains at most 32 KiB of UTF-8
 without splitting a character; offsets count UTF-8 bytes and zero `next_offset`
 means complete. Every page is independently signed and checked against the
 current grant and pairing. The association identifies an original recording and

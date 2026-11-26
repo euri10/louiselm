@@ -49,6 +49,8 @@ private object VoiceScreenFixture {
     val material = ByteArray(32) { 7 }
     var sends = 0
     var archive: PhoneVoiceTranscript? = null
+    var nextArchivePage: PhoneVoicePage? = null
+    var archivePageFailure: PhoneControlOutcome? = null
 }
 
 @Implements(PhoneControlClient::class, isInAndroidSdk = false)
@@ -65,6 +67,15 @@ class VoiceScreenClient {
         maySend: () -> Boolean): PhoneControlResult<PhoneVoiceTranscript> {
         if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
         return VoiceScreenFixture.archive?.takeIf { it.row == row }?.let { PhoneControlResult.Value(it) }
+            ?: PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+    }
+
+    @Implementation(methodName = "voiceResultPage")
+    internal fun voiceResultPage(period: PhoneControlPeriod, transcript: PhoneVoiceTranscript, offset: Int, now: Long,
+        maySend: () -> Boolean): PhoneControlResult<PhoneVoicePage> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        VoiceScreenFixture.archivePageFailure?.let { return PhoneControlResult.Failure(it) }
+        return VoiceScreenFixture.nextArchivePage?.takeIf { it.offset == offset }?.let { PhoneControlResult.Value(it) }
             ?: PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
     }
 
@@ -188,6 +199,8 @@ class PhoneVoiceActivityTest {
         val app = RuntimeEnvironment.getApplication()
         VoiceScreenFixture.sends = 0
         VoiceScreenFixture.archive = null
+        VoiceScreenFixture.nextArchivePage = null
+        VoiceScreenFixture.archivePageFailure = null
         VoiceScreenFixture.browsedTarget = VoiceScreenFixture.target
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_LOCAL_NETWORK,
             "${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
@@ -602,6 +615,71 @@ class PhoneVoiceActivityTest {
         assertEquals(0, VoiceScreenFixture.sends)
     }
 
+    @Test fun lockingBeforeAPageIsDeliveredCannotRestoreProtectedText() {
+        val store = prepareArchivedEmptyDraft()
+        val original = requireNotNull(VoiceScreenFixture.archive)
+        VoiceScreenFixture.archive = original.copy(totalBytes = 8 * 1024 * 1024 + 1, text = null,
+            firstPage = PhoneVoicePage(0, 5, "first"))
+        VoiceScreenFixture.nextArchivePage = PhoneVoicePage(5, 0, "protected second")
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        drain()
+        button("Next transcript page").performClick()
+        executor.runQueued()
+        button("Lock workspace").performClick()
+        drain()
+        assertTrue(views().filterIsInstance<TextView>().none { it.isShown && it.text.toString().contains("protected second") })
+        assertEquals("", store.list(SecretKeySpec(VoiceScreenFixture.material, "AES")).drafts.single().text)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun lostReadScopeCannotDisplayAnotherPageOrChangeTheDraft() {
+        val store = prepareArchivedEmptyDraft()
+        val original = requireNotNull(VoiceScreenFixture.archive)
+        VoiceScreenFixture.archive = original.copy(totalBytes = 8 * 1024 * 1024 + 1, text = null,
+            firstPage = PhoneVoicePage(0, 5, "first"))
+        VoiceScreenFixture.archivePageFailure = PhoneControlOutcome.OUT_OF_SCOPE
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        drain()
+        button("Next transcript page").performClick()
+        drain()
+        assertTrue(views().filterIsInstance<TextView>().none { it.isShown && it.text.toString() == "first" })
+        assertEquals("", store.list(SecretKeySpec(VoiceScreenFixture.material, "AES")).drafts.single().text)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun insertReportsTheWholeDraftLimitAndReplaceStillFits() {
+        val store = prepareArchivedEmptyDraft()
+        val original = requireNotNull(VoiceScreenFixture.archive)
+        val transcript = "y".repeat(64 * 1024)
+        VoiceScreenFixture.archive = original.copy(totalBytes = transcript.length, text = transcript,
+            firstPage = PhoneVoicePage(0, 32 * 1024, transcript.take(32 * 1024)))
+        val prior = "x".repeat(8 * 1024 * 1024 - 32 * 1024)
+        views().filterIsInstance<android.widget.EditText>().single().setText(prior)
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        assertTrue(store.list(key).drafts.single().text == prior)
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        drain()
+        button("Choose destination Session").performClick()
+        drain()
+        views().filterIsInstance<Button>().single { it.text.toString().contains("named session") }.performClick()
+        drain()
+        button("Insert transcript").performClick()
+        drain()
+        assertTrue(views().filterIsInstance<TextView>().any { it.isShown && it.text.toString().contains("entire transcript cannot fit") })
+        assertTrue(store.list(key).drafts.single().text == prior)
+        button("Replace draft with transcript").performClick()
+        drain()
+        assertEquals(transcript, store.list(key).drafts.single().text)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
     private fun prepareArchivedEmptyDraft(): PhoneDraftStore {
         button("Sessions").performClick()
         drain()
@@ -616,8 +694,9 @@ class PhoneVoiceActivityTest {
         val draft = store.list(key).drafts.single()
         val row = PhoneVoiceRow("11111111-1111-4111-8111-111111111111", draft.source.target,
             draft.source.project, draft.source.agent, true)
+        val text = "synthetic transcript"
         VoiceScreenFixture.archive = PhoneVoiceTranscript(row, draft.source.receiver, store.id(draft.source),
-            requireNotNull(store.revision(draft, key)), "synthetic transcript")
+            requireNotNull(store.revision(draft, key)), text.toByteArray().size, text, PhoneVoicePage(0, 0, text))
         return store
     }
 

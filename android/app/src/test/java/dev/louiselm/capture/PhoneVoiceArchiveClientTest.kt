@@ -35,6 +35,8 @@ class PhoneVoiceArchiveClientTest {
             "/project", "codex", true)
         var mismatch = ""
         var mayDeliver = true
+        var large = false
+        var requests = 0
         val transport: PhoneControlTransport = { _, _, body, _ ->
             val wire = body.getJSONObject("request")
             val payload = phoneControlHex(wire.getString("payload"))
@@ -48,25 +50,55 @@ class PhoneVoiceArchiveClientTest {
             if (request.action == 81) PhoneControlReply.VoiceHistory(operation, listOf(row), "")
             else {
                 assertEquals(82, request.action)
+                requests++
                 val offset = ByteBuffer.wrap(payload, 16, 4).int
                 if (mismatch == "late") mayDeliver = false
+                if (mismatch == "revoke") PhoneControlStore(context).clear()
+                val text = if (large) { if (offset == 0) "é".repeat(16 * 1024) else "ok" }
+                    else if (offset == 0) "é" else "done"
+                val next = if (large) offset + text.toByteArray(Charsets.UTF_8).size else if (offset == 0) 2 else 0
+                val total = if (large) 8 * 1024 * 1024 + 10 else 6
                 PhoneControlReply.VoiceResult(if (mismatch == "operation") "99".repeat(16) else operation,
                     row.id, if (mismatch == "receiver") "ff".repeat(32) else grant.receiverIdentity,
                     if (mismatch == "target") row.target.copy(subjectId = "55".repeat(16)) else row.target,
                     row.project, row.agent, "66".repeat(32), if (offset > 0 && mismatch == "revision") "88".repeat(32) else "77".repeat(32),
-                    offset, if (offset == 0) 2 else 0, if (offset == 0) "é" else "done")
+                    offset, next, if (offset > 0 && mismatch == "total") total + 1 else total, text)
             }
         }
         val client = PhoneControlClient(context, keys, transport)
         assertEquals(listOf(row), (client.voiceHistory(period, 1) { true } as PhoneControlResult.Value).value.records)
         val result = client.voiceResult(period, row, 1) { mayDeliver } as PhoneControlResult.Value
         assertEquals("édone", result.value.text)
-        for (kind in listOf("operation", "receiver", "target", "revision")) {
+        for (kind in listOf("operation", "receiver", "target", "revision", "total")) {
             mismatch = kind
             assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED), client.voiceResult(period, row, 1) { true })
         }
         mismatch = "late"
         assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE), client.voiceResult(period, row, 1) { mayDeliver })
+        mayDeliver = true
+        mismatch = ""
+        large = true
+        requests = 0
+        val largeResult = (client.voiceResult(period, row, 1) { true } as PhoneControlResult.Value).value
+        assertEquals(null, largeResult.text)
+        assertEquals(1, requests)
+        assertEquals(32 * 1024, largeResult.firstPage.nextOffset)
+        val next = client.voiceResultPage(period, largeResult, largeResult.firstPage.nextOffset, 1) { true } as PhoneControlResult.Value
+        assertEquals("ok", next.value.text)
+        mismatch = "revision"
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
+            client.voiceResultPage(period, largeResult, largeResult.firstPage.nextOffset, 1) { true })
+        mismatch = "total"
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
+            client.voiceResultPage(period, largeResult, largeResult.firstPage.nextOffset, 1) { true })
+        mismatch = "late"
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE),
+            client.voiceResultPage(period, largeResult, largeResult.firstPage.nextOffset, 1) { mayDeliver })
+        mayDeliver = true
+        mismatch = "revoke"
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.REVOKED),
+            client.voiceResultPage(period, largeResult, largeResult.firstPage.nextOffset, 1) { true })
+        PhoneControlStore(context).saveGrant(grant)
         period.lock()
         assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED), client.voiceResult(period, row, 1) { true })
     }

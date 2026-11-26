@@ -182,6 +182,7 @@ class PhoneControlActivity : Activity() {
     @Volatile private var showingVoice = false
     @Volatile private var showingVoiceArchive = false
     private var voiceReview: PhoneVoiceTranscript? = null
+    private var voicePage: PhoneVoicePage? = null
     private var voiceDestination: PhoneSessionRow? = null
     private var voiceReviewedDraft: PhoneOfflineSource? = null
     private var voiceApplying = false
@@ -987,9 +988,7 @@ class PhoneControlActivity : Activity() {
         stopVoicePlayback()
         showingVoice = true
         showingVoiceArchive = false
-        voiceReview = null
-        voiceDestination = null
-        voiceReviewedDraft = null
+        clearVoiceReview()
         showingDrafts = false
         showingOffline = false
         handler.removeCallbacks(refreshPoll)
@@ -1060,9 +1059,7 @@ class PhoneControlActivity : Activity() {
         showingActionHistory = false
         showingPrepared = false
         showingRuns = false
-        voiceReview = null
-        voiceDestination = null
-        voiceReviewedDraft = null
+        clearVoiceReview()
         handler.removeCallbacks(refreshPoll)
         task({ maySend -> client.voiceHistory(online, SystemClock.elapsedRealtime(), after) {
             foreground && maySend() && pairing.binding() == binding && online.isActive(SystemClock.elapsedRealtime()) &&
@@ -1107,8 +1104,14 @@ class PhoneControlActivity : Activity() {
                 !online.confirmInteraction(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime()) ||
                 pairing.binding() != binding) return@task
             voiceReview = result
+            voicePage = result.firstPage
             voiceDestination = null
             voiceReviewedDraft = null
+            val text = result.text
+            if (text == null) {
+                displayVoiceReview(R.string.phone_voice_archive_limit)
+                return@task
+            }
             val key = result.receiver to result.row.target
             val source = draftSources[key]
             val saved = savedDrafts[key]
@@ -1124,7 +1127,7 @@ class PhoneControlActivity : Activity() {
             voiceApplying = true
             task({ mayCommit -> offlineResult {
                 val secret = local.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
-                PhoneControlResult.Value(draftStore.fillVoiceTranscript(source, result.revision, result.text, secret) {
+                PhoneControlResult.Value(draftStore.fillVoiceTranscript(source, result.revision, text, secret) {
                     foreground && showingVoice && showingVoiceArchive && mayCommit() && draftMutation.get() == mutation && draftGeneration.get() == generationAtStart &&
                         pairing.binding() == binding && online.isActive(SystemClock.elapsedRealtime()) && local.isActive(SystemClock.elapsedRealtime())
                 })
@@ -1137,18 +1140,27 @@ class PhoneControlActivity : Activity() {
                 if (!foreground || !showingVoice || !showingVoiceArchive || voiceReview !== result || period !== online || draftPeriod !== local ||
                     !online.isActive(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime())) return@task
                 if (outcome == PhoneDraftSave.SAVED && draftMutation.get() == mutation) {
-                    val filled = saved.copy(text = result.text)
+                    val filled = saved.copy(text = text)
                     drafts[key] = filled.text
                     savedDrafts[key] = filled
                     voiceReviewedDraft = source
                 }
-                displayVoiceReview()
+                displayVoiceReview(if (outcome == PhoneDraftSave.BYTE_LIMIT || outcome == PhoneDraftSave.COUNT_LIMIT)
+                    R.string.phone_voice_archive_limit else null)
             }
         }
     }
 
+    private fun clearVoiceReview() {
+        voiceReview = null
+        voicePage = null
+        voiceDestination = null
+        voiceReviewedDraft = null
+    }
+
     private fun displayVoiceReview(message: Int? = null) {
         val result = voiceReview ?: return
+        val page = voicePage ?: return
         if (!foreground || !showingVoice || !showingVoiceArchive || period?.isActive(SystemClock.elapsedRealtime()) != true ||
             draftPeriod?.isActive(SystemClock.elapsedRealtime()) != true) return
         render()
@@ -1158,9 +1170,25 @@ class PhoneControlActivity : Activity() {
             text = getString(R.string.phone_voice_archive_original, result.row.agent, result.row.project,
                 result.row.target.controllerId, result.row.target.subjectId)
         })
-        conversation.addView(TextView(this).apply { text = result.text; setTextIsSelectable(true) })
         conversation.addView(TextView(this).apply {
-            setText(message ?: if (voiceReviewedDraft != null) R.string.phone_voice_archive_filled else R.string.phone_voice_archive_preserved)
+            text = getString(R.string.phone_voice_archive_page, page.offset + 1,
+                page.offset + page.text.toByteArray(Charsets.UTF_8).size, result.totalBytes)
+        })
+        conversation.addView(TextView(this).apply { text = page.text; setTextIsSelectable(true) })
+        if (page.offset > 0) conversation.addView(Button(this).apply {
+            setText(R.string.phone_voice_archive_first_page)
+            setOnClickListener { readVoiceReviewPage(0) }
+        })
+        if (page.nextOffset != 0) conversation.addView(Button(this).apply {
+            setText(R.string.phone_voice_archive_next_page)
+            setOnClickListener { readVoiceReviewPage(page.nextOffset) }
+        })
+        conversation.addView(TextView(this).apply {
+            setText(message ?: when {
+                result.text == null -> R.string.phone_voice_archive_limit
+                voiceReviewedDraft != null -> R.string.phone_voice_archive_filled
+                else -> R.string.phone_voice_archive_preserved
+            })
         })
         voiceReviewedDraft?.let { source -> conversation.addView(Button(this).apply {
             setText(R.string.phone_voice_archive_open)
@@ -1184,6 +1212,29 @@ class PhoneControlActivity : Activity() {
             })
             conversation.addView(Button(this).apply { setText(R.string.phone_voice_archive_insert); setOnClickListener { applyVoiceReview(false) } })
             conversation.addView(Button(this).apply { setText(R.string.phone_voice_archive_replace); setOnClickListener { applyVoiceReview(true) } })
+        }
+    }
+
+    private fun readVoiceReviewPage(offset: Int) {
+        val online = period ?: return
+        val local = draftPeriod ?: return
+        val result = voiceReview ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        task({ maySend -> client.voiceResultPage(online, result, offset, SystemClock.elapsedRealtime()) {
+            foreground && maySend() && pairing.binding() == binding && online.isActive(SystemClock.elapsedRealtime()) &&
+                local.isActive(SystemClock.elapsedRealtime())
+        } }, { outcome ->
+            if (outcome == PhoneControlOutcome.OUT_OF_SCOPE) clearVoiceReview()
+            if (foreground) showFailure(outcome)
+        }) { page, _ ->
+            busy = false
+            if (!foreground || !showingVoice || !showingVoiceArchive || voiceReview !== result || period !== online || draftPeriod !== local ||
+                !online.confirmInteraction(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime()) ||
+                pairing.binding() != binding) return@task
+            voicePage = page
+            scheduleExpiry()
+            displayVoiceReview()
         }
     }
 
@@ -1234,7 +1285,12 @@ class PhoneControlActivity : Activity() {
             displayVoiceReview(R.string.phone_voice_archive_conflict)
             return
         }
-        val text = if (replace) result.text else (previous?.text ?: "") + result.text
+        val original = result.text
+        if (original == null) {
+            displayVoiceReview(R.string.phone_voice_archive_limit)
+            return
+        }
+        val text = if (replace) original else (previous?.text ?: "") + original
         val mutation = draftMutation.get()
         val generationAtStart = draftGeneration.get()
         voiceApplying = true
@@ -1262,7 +1318,8 @@ class PhoneControlActivity : Activity() {
                 savedDrafts[key] = draft
                 voiceReviewedDraft = source
                 displayVoiceReview(R.string.phone_voice_archive_saved)
-            } else displayVoiceReview(R.string.phone_voice_archive_conflict)
+            } else displayVoiceReview(if (saved == PhoneDraftSave.BYTE_LIMIT || saved == PhoneDraftSave.COUNT_LIMIT)
+                R.string.phone_voice_archive_limit else R.string.phone_voice_archive_conflict)
         }
     }
 
@@ -1390,9 +1447,7 @@ class PhoneControlActivity : Activity() {
         showingDrafts = false
         showingVoice = false
         showingVoiceArchive = false
-        voiceReview = null
-        voiceDestination = null
-        voiceReviewedDraft = null
+        clearVoiceReview()
         voiceApplying = false
         draftSaveNotice = null
         handler.removeCallbacks(draftExpiryCheck)
@@ -2846,6 +2901,8 @@ class PhoneControlActivity : Activity() {
         !getSystemService(KeyguardManager::class.java).isDeviceLocked
 
     private fun showFailure(outcome: PhoneControlOutcome) {
+        if (outcome in setOf(PhoneControlOutcome.EXPIRED, PhoneControlOutcome.REVOKED,
+                PhoneControlOutcome.UNAUTHENTICATED)) clearVoiceReview()
         if (outcome == PhoneControlOutcome.EXPIRED || outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED) {
             if (voiceRecorder != null) stopVoice(false)
             cancelVoicePreparation()
@@ -2940,6 +2997,7 @@ class PhoneControlActivity : Activity() {
         handler.removeCallbacks(expiryCheck)
         val remaining = period?.remainingMs(SystemClock.elapsedRealtime()) ?: return
         if (remaining == 0L) {
+            clearVoiceReview()
             if (voiceRecorder != null) stopVoice(false)
             cancelVoicePreparation()
             period?.lock()

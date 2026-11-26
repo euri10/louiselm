@@ -83,7 +83,7 @@ impl Authority {
                     json!({"v":1, "type":"voice_result", "operation_id":request.operation_id, "id":id,
                         "receiver":association.receiver, "controller":association.controller, "subject":association.subject,
                         "project":association.project, "agent":association.agent, "draft":association.draft,
-                        "revision":association.revision, "offset":offset, "next_offset":next,
+                        "revision":association.revision, "offset":offset, "next_offset":next, "total_bytes":transcript.text.len(),
                         "text":&transcript.text[offset..end]})
                 }
             };

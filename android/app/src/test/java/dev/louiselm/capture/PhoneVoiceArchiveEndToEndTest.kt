@@ -10,6 +10,7 @@ import android.widget.EditText
 import android.widget.TextView
 import java.io.File
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ExecutorService
@@ -113,7 +114,7 @@ class PhoneVoiceArchiveEndToEndTest {
             drain()
             button("Desktop voice history").performClick()
             drain()
-            views().filterIsInstance<Button>().filter { it.isShown && it.text.toString() == "Review transcript" }.last().performClick()
+            views().filterIsInstance<Button>().filter { it.isShown && it.text.toString() == "Review transcript" }.elementAt(1).performClick()
             drain()
             assertEquals("locally edited", store.list(localKey).drafts.single().text)
             button("Choose destination Session").performClick()
@@ -127,6 +128,58 @@ class PhoneVoiceArchiveEndToEndTest {
             assertEquals("locally edited", drafts[subject]?.text)
             assertEquals("synthetic archived transcript", drafts[other]?.text)
             assertTrue(views().filterIsInstance<TextView>().any { it.isShown && it.text.toString().contains("device-local draft") })
+
+            button("Desktop voice history").performClick()
+            drain()
+            views().filterIsInstance<Button>().filter { it.isShown && it.text.toString() == "Review transcript" }.last().performClick()
+            drain()
+            val visible = views().filterIsInstance<TextView>().filter { it.isShown }.map { it.text.toString().take(120) }.toList()
+            assertTrue("large original opens for review; visible: $visible", views().filterIsInstance<TextView>().any {
+                it.isShown && it.text.toString().startsWith("BEGIN:")
+            })
+            assertEquals("locally edited", store.list(localKey).drafts.single { it.source.target.subjectId == subject }.text)
+            button("Choose destination Session").performClick()
+            drain()
+            views().filterIsInstance<Button>().single { it.isShown && it.text.toString().contains(other) }.performClick()
+            drain()
+            for (label in listOf("Insert transcript", "Replace draft with transcript")) {
+                button(label).performClick()
+                drain()
+                assertTrue(views().filterIsInstance<TextView>().any {
+                    it.isShown && it.text.toString().contains("entire transcript cannot fit")
+                })
+                assertEquals("synthetic archived transcript", store.list(localKey).drafts.single { it.source.target.subjectId == other }.text)
+            }
+            val digest = MessageDigest.getInstance("SHA-256")
+            var pages = 0
+            while (true) {
+                val text = views().filterIsInstance<TextView>().single {
+                    it.isShown && (it.text.toString().startsWith("BEGIN:") || it.text.toString().startsWith("é"))
+                }.text.toString()
+                val bytes = text.toByteArray(Charsets.UTF_8)
+                assertTrue(bytes.size <= 32 * 1024)
+                digest.update(bytes)
+                pages++
+                assertTrue("paging terminates", pages < 1000)
+                val next = views().filterIsInstance<Button>().singleOrNull { it.isShown && it.text.toString() == "Next transcript page" }
+                    ?: break
+                next.performClick()
+                drain()
+                assertTrue("destination survives navigation", views().filterIsInstance<TextView>().any {
+                    it.isShown && it.text.toString().contains(other)
+                })
+            }
+            val expected = MessageDigest.getInstance("SHA-256")
+            expected.update("BEGIN:x".toByteArray())
+            repeat(1024) { expected.update("é".repeat(4096).toByteArray()) }
+            expected.update(":END".toByteArray())
+            assertTrue("all original bytes are presented in order", digest.digest().contentEquals(expected.digest()))
+            assertTrue(pages > 1)
+            assertEquals("synthetic archived transcript", store.list(localKey).drafts.single { it.source.target.subjectId == other }.text)
+            button("First transcript page").performClick()
+            drain()
+            assertTrue(views().filterIsInstance<TextView>().any { it.isShown && it.text.toString().startsWith("BEGIN:x") })
+            assertTrue(views().filterIsInstance<TextView>().any { it.isShown && it.text.toString().contains(other) })
         } finally {
             screen.close()
             executor.runQueued()

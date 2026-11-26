@@ -22,4 +22,17 @@ class PhoneVoiceArchiveReplyTest {
         assertEquals(1, next[0].toInt())
         assertArrayEquals(first.copyOfRange(1, 18), next.copyOfRange(1, 18))
     }
+
+    @Test fun resultLengthIsRequiredAndBounded() {
+        val body = """{"v":1,"type":"voice_result","operation_id":"${"11".repeat(16)}",
+            "id":"11111111-1111-4111-8111-111111111111","receiver":"${"22".repeat(32)}",
+            "controller":"${"33".repeat(16)}","subject":"${"44".repeat(16)}","project":"/project","agent":"codex",
+            "draft":"${"55".repeat(32)}","revision":"${"66".repeat(32)}","offset":0,"next_offset":0,"total_bytes":2,"text":"é"}"""
+        val result = parsePhoneControlReply(body.toByteArray()) as PhoneControlReply.VoiceResult
+        assertEquals(2, result.totalBytes)
+        for (bad in listOf(body.replace("\"total_bytes\":2,", ""), body.replace("\"total_bytes\":2", "\"total_bytes\":-1"),
+            body.replace("\"total_bytes\":2", "\"total_bytes\":67108865"))) {
+            assertEquals(PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED), parsePhoneControlReply(bad.toByteArray()))
+        }
+    }
 }
