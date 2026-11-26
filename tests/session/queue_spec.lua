@@ -924,7 +924,7 @@ T["Stop-and-send waits for cancellation and keeps ordinary work paused"] = funct
   assert(session:queue_continue(stale.revision, function(ok, failure_message)
     done, changed, err = true, ok, failure_message
   end))
-  release()
+  assert(release)()
   wait_for(function()
     return done
   end)
