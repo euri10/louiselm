@@ -66,10 +66,10 @@ dependencies {
     implementation("androidx.core:core:1.19.1")
     implementation("androidx.work:work-runtime:2.12.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    implementation("com.google.firebase:firebase-messaging:26.0.0")
+    implementation("com.google.firebase:firebase-messaging:26.0.2")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("org.robolectric:robolectric:4.18.1")
     // The Android framework's org.json stubs omit key iteration in local JVM tests.
     testImplementation("org.json:json:20260814")
 }
