@@ -17,7 +17,10 @@ internal fun reconcilePhoneSessionPages(
     readFresh: () -> PhoneControlResult<PhoneControlReply.SessionPage>,
 ): PhoneControlResult<PhoneSessionRefresh> {
     val oldest = previous?.entries?.firstOrNull()?.seq ?: return PhoneControlResult.Value(PhoneSessionRefresh(newest, false))
-    if (previous.revision == newest.revision) return PhoneControlResult.Value(PhoneSessionRefresh(newest, false))
+    if (previous.revision == newest.revision) {
+        if (previous.status != newest.status || previous.settings != newest.settings) return PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)
+        return PhoneControlResult.Value(PhoneSessionRefresh(newest, false))
+    }
     var entries = newest.entries
     var cursor = newest.nextBefore
     var complete = newest.complete
@@ -37,7 +40,7 @@ internal fun reconcilePhoneSessionPages(
             is PhoneControlResult.Value -> {
                 val older = result.value
                 if (older.controllerId != newest.controllerId || older.subjectId != newest.subjectId ||
-                    older.revision != newest.revision || older.status != newest.status ||
+                    older.revision != newest.revision || older.status != newest.status || older.settings != newest.settings ||
                     older.entries.any { it.seq >= cursor } || (older.nextBefore != 0L && older.nextBefore >= cursor) ||
                     (older.entries.isNotEmpty() && entries.isNotEmpty() && older.entries.last().seq >= entries.first().seq)) {
                     return PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)

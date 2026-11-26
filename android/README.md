@@ -137,6 +137,9 @@ state and offers **Load older messages** for available history. Updates refresh
 the snapshot and recover the visible range when possible; the screen reports
 when older messages must be loaded again. It keeps at most 500 entries at once
 and offers Refresh to return to the newest messages.
+The selected live Session also shows the Agent-confirmed Model, reasoning effort
+and access mode when advertised. Unavailable values are identified as such;
+these labels do not change Agent settings or LouiseLM permission policy.
 Background refresh does not extend the working period.
 Opening a card does not clear or answer Attention. Old cards may no longer
 point to a live Session; refresh the inbox instead of assuming the condition

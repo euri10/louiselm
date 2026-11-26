@@ -182,11 +182,29 @@ enum ReadResponse {
         operation_id: String,
         revision: u64,
         status: String,
+        #[serde(default)]
+        settings: ReadSettings,
         entries: Vec<ReadEntry>,
         next_before: u64,
         complete: bool,
         source: HistorySource,
     },
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadSettings {
+    model: String,
+    effort: String,
+    mode: String,
+}
+
+impl ReadSettings {
+    fn valid(&self) -> bool {
+        [&self.model, &self.effort, &self.mode]
+            .iter()
+            .all(|value| value.len() <= 256 && !value.chars().any(|c| c.is_ascii_control()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -343,6 +361,7 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             operation_id,
             revision,
             status,
+            settings,
             entries,
             next_before,
             complete,
@@ -373,6 +392,7 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
                 || operation_id != request.operation_id
                 || revision == 0
                 || revision > MAX_INTEGER
+                || !settings.valid()
                 || (request.expected_revision != 0 && revision != request.expected_revision)
                 || entries.len() > limit
                 || (complete
@@ -2422,6 +2442,29 @@ mod tests {
         let _ = task.await;
     }
 
+    fn assert_settings(page: &Value, request: &super::super::Request) {
+        let mut with_settings = page.clone();
+        with_settings["settings"] = json!({"model":"Model A","effort":"High","mode":"Full access"});
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&with_settings).unwrap(), request)
+                .unwrap(),
+            with_settings
+        );
+        for settings in [
+            json!({"model":"A","effort":"High","mode":"Full access","private":"secret"}),
+            json!({"model":"x".repeat(257),"effort":"High","mode":"Full access"}),
+            json!({"model":"A\nB","effort":"High","mode":"Full access"}),
+            json!({"model":"A","effort":true,"mode":"Full access"}),
+        ] {
+            let mut invalid = page.clone();
+            invalid["settings"] = settings;
+            assert_eq!(
+                super::validate_read_response(&serde_json::to_vec(&invalid).unwrap(), request),
+                Err(super::Refusal::Unavailable)
+            );
+        }
+    }
+
     #[test]
     fn controller_reply_must_be_closed_bounded_and_match_the_signed_request() {
         let controller = "01".repeat(16);
@@ -2442,6 +2485,7 @@ mod tests {
             super::validate_read_response(&serde_json::to_vec(&page).unwrap(), &request).unwrap(),
             page
         );
+        assert_settings(&page, &request);
         let mut older_request = request.clone();
         older_request.payload = "000000000000000a0032".into();
         older_request.expected_revision = 1;

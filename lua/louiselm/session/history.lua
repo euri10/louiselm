@@ -87,6 +87,7 @@ local MAX_BYTES = 245760
 
 local relevant = {
   state_changed = true,
+  config_options_changed = true,
   prompt_dispatched = true,
   user_chunk = true,
   chunk = true,

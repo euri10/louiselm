@@ -12,6 +12,20 @@ class PhoneControlPagesTest {
     )
 
     @Test
+    fun pagesAtOneRevisionCannotMixDifferentSettings() {
+        val newest = page(2, listOf(5, 6), 5).copy(settings = PhoneSessionSettings("A", "High", "Full access"))
+        val previous = page(1, listOf(1, 2))
+        val mixed = reconcilePhoneSessionPages(newest, previous, 500,
+            { _, _, _ -> PhoneControlResult.Value(page(2, listOf(1, 2))) },
+            { throw AssertionError("unexpected restart") })
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED), mixed)
+        val sameRevision = reconcilePhoneSessionPages(newest, previous.copy(revision = 2), 500,
+            { _, _, _ -> throw AssertionError("unexpected older read") },
+            { throw AssertionError("unexpected restart") })
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED), sameRevision)
+    }
+
+    @Test
     fun refreshRebuildsTheOldRangeAtTheNewRevision() {
         val calls = mutableListOf<Triple<Long, Long, Int>>()
         val result = reconcilePhoneSessionPages(page(2, listOf(5, 6), 5), page(1, listOf(1, 2)), 500,

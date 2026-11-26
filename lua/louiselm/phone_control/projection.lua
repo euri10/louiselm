@@ -51,6 +51,39 @@ local function bounded(value)
   return value:sub(1, index - 1), index <= #value
 end
 
+-- Only these Agent-advertised categories belong in the phone status view.
+local function settings(options)
+  local result = { model = "", effort = "", mode = "" }
+  local categories = { model = "model", thought_level = "effort", mode = "mode" }
+  local seen = {}
+  for _, option in ipairs(options or {}) do
+    local key = categories[option.category]
+    if key ~= nil then
+      if seen[key] then
+        result[key] = ""
+      else
+        seen[key] = true
+        local value
+        if option.type == "select" then
+          for _, choice in ipairs(option.options or {}) do
+            if choice.value == option.current_value then
+              value = choice.name
+              break
+            end
+          end
+        elseif option.type == "boolean" and type(option.current_value) == "boolean" then
+          value = option.name .. ": " .. tostring(option.current_value)
+        end
+        local label, invalid = bounded(value)
+        if not invalid and #label <= 256 and not label:find("%c") then
+          result[key] = label
+        end
+      end
+    end
+  end
+  return result
+end
+
 local function add(self, entry)
   entry.seq = self.next_sequence
   self.next_sequence = self.next_sequence + 1
@@ -242,6 +275,11 @@ end
 ---@param event table Typed Session event.
 function Projection:record(event)
   local data = event.data
+  if event.type == "config_options_changed" then
+    self.settings = settings(type(data) == "table" and data or {})
+    self.revision = self.revision + 1
+    return
+  end
   if event.type == "state_changed" then
     self.revision = self.revision + 1
     return
@@ -321,17 +359,26 @@ function Projection:page(before, limit, expected_revision)
   return {
     revision = self.revision,
     status = status,
+    settings = nvim.deepcopy(self.settings),
     entries = entries,
     next_before = first > 1 and self.entries[first].seq or 0,
     complete = complete,
   }
 end
 
----Create an empty projection with the owning Session's current status accessor.
+---Create an empty projection with the owning Session's current status and confirmed options.
 ---@param status fun(): string Current Session status.
+---@param options? louiselm.session.ConfigOption[] Current Agent-confirmed options.
 ---@return table projection
-function M.new(status)
-  return setmetatable({ status = status, entries = {}, next_sequence = 1, revision = 1, omitted = false }, Projection)
+function M.new(status, options)
+  return setmetatable({
+    status = status,
+    settings = settings(options),
+    entries = {},
+    next_sequence = 1,
+    revision = 1,
+    omitted = false,
+  }, Projection)
 end
 
 return M

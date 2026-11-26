@@ -5,6 +5,130 @@ local Projection = require("louiselm.phone_control.projection")
 
 local T = MiniTest.new_set()
 
+T["projects only confirmed model effort and access labels and invalidates old snapshots"] = function()
+  local options = {
+    {
+      id = "model",
+      category = "model",
+      type = "select",
+      current_value = "m1",
+      options = {
+        { value = "m1", name = "Model One" },
+        { value = "m2", name = "Model Two" },
+      },
+    },
+    {
+      id = "effort",
+      category = "thought_level",
+      type = "select",
+      current_value = "high",
+      options = {
+        { value = "high", name = "High" },
+      },
+    },
+    {
+      id = "access",
+      category = "mode",
+      type = "select",
+      current_value = "full",
+      options = {
+        { value = "full", name = "Full access" },
+      },
+    },
+    {
+      id = "private",
+      category = "other",
+      type = "select",
+      current_value = "secret",
+      options = {
+        { value = "secret", name = "PRIVATE CONFIG" },
+      },
+    },
+  }
+  local projection = Projection.new(function()
+    return "ready"
+  end, options)
+  local first = assert(projection:page(0, 10, 0))
+  MiniTest.expect.equality(first.settings, { model = "Model One", effort = "High", mode = "Full access" })
+  MiniTest.expect.equality(nvim.inspect(first):find("PRIVATE CONFIG", 1, true), nil)
+  options[1].current_value = "m2"
+  MiniTest.expect.equality(assert(projection:page(0, 10, 0)).settings.model, "Model One")
+  projection:record({ type = "config_options_changed", data = options })
+  local _, err = projection:page(0, 10, first.revision)
+  MiniTest.expect.equality(err, "stale_subject")
+  MiniTest.expect.equality(assert(projection:page(0, 10, 0)).settings.model, "Model Two")
+  projection:record({
+    type = "config_options_changed",
+    data = {
+      {
+        id = "model",
+        category = "model",
+        type = "select",
+        current_value = "m",
+        options = {
+          { value = "m", name = "Other model" },
+        },
+      },
+    },
+  })
+  MiniTest.expect.equality(assert(projection:page(0, 10, 0)).settings, {
+    model = "Other model",
+    effort = "",
+    mode = "",
+  })
+end
+
+T["omits ambiguous invalid and oversized setting labels"] = function()
+  local projection = Projection.new(function()
+    return "ready"
+  end, {
+    {
+      id = "a",
+      name = "Model",
+      category = "model",
+      type = "select",
+      current_value = "a",
+      options = { { value = "a", name = "one" } },
+    },
+    {
+      id = "b",
+      name = "Model",
+      category = "model",
+      type = "select",
+      current_value = "b",
+      options = { { value = "b", name = "two" } },
+    },
+    {
+      id = "effort",
+      name = "Effort",
+      category = "thought_level",
+      type = "select",
+      current_value = "a",
+      options = {
+        { value = "a", name = string.rep("x", 257) },
+      },
+    },
+    {
+      id = "mode",
+      name = "Mode",
+      category = "mode",
+      type = "select",
+      current_value = "a",
+      options = { { value = "a", name = "bad\0mode" } },
+    },
+  })
+  MiniTest.expect.equality(assert(projection:page(0, 10, 0)).settings, { model = "", effort = "", mode = "" })
+end
+
+T["reports an advertised boolean option without inventing a mode"] = function()
+  local projection = Projection.new(function()
+    return "ready"
+  end, {
+    { id = "mode", category = "mode", name = "Full access", type = "boolean", current_value = false },
+  })
+  MiniTest.expect.equality(assert(projection:page(0, 10, 0)).settings.mode, "Full access: false")
+end
+
 T["projects only sent conversation and closed interaction fields"] = function()
   local state = { status = "ready" }
   local projection = Projection.new(function()

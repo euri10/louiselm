@@ -415,15 +415,28 @@ end
 function Controller:track(session)
   local subject = self.sessions[session]
   if subject == nil then
-    subject =
-      { session = session, projection = Projection.new(function()
+    local initial = session:inspect()
+    local awaiting_initial = initial.status == "starting"
+    subject = {
+      session = session,
+      projection = Projection.new(function()
         return session:inspect().status
-      end) }
+      end, initial.config_options),
+    }
     subject.projection.revision = session.history.revision
     self.sessions[session] = subject
     if type(session.on) == "function" then
       subject.unsubscribe = session:on(function(event)
-        subject.projection:record(event)
+        if event.type == "config_options_changed" and session:inspect().status == "configuring" then
+          -- An unsolicited update cannot acknowledge an outstanding desktop request.
+          subject.projection:record({ type = "config_options_changed", data = {} })
+        else
+          subject.projection:record(event)
+        end
+        if awaiting_initial and event.type == "state_changed" and event.data.status == "ready" then
+          awaiting_initial = false
+          subject.projection:record({ type = "config_options_changed", data = session:inspect().config_options })
+        end
         subject.projection.revision = session.history.revision
       end)
     end
@@ -778,6 +791,7 @@ function Controller:read(line, callback)
               else
                 subject.history_subject = page.subject
                 page.subject = nil
+                page.settings = nvim.deepcopy(subject.projection.settings)
                 page.v, page.type = 2, "session_page"
                 page.controller_id, page.subject_id, page.operation_id =
                   attached, request.subject_id, request.operation_id

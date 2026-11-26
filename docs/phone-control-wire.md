@@ -631,7 +631,7 @@ This checks the signed bindings only. The controller still checks its own live
 controller, subject, project, Agent and state, and the receiver must still
 check current grant, lease and replay state before delivery or admission.
 
-Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
+Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
 The receiver returns this same closed object over HTTPS after the final authority
 recheck. `revision` is nonzero and increases on any projected state/content
 change within the subject. Status is one of `starting`, `ready`, `admitting`,
@@ -640,6 +640,14 @@ change within the subject. Status is one of `starting`, `ready`, `admitting`,
 instead of a page. `next_before=0` means no older page; otherwise it is the
 exclusive sequence cursor. Sequence values are positive, unique, increasing
 within this subject, and never identify entries of a replacement subject.
+`Settings` is exactly `{model:string,effort:string,mode:string}`. Each is the
+Agent-advertised current value's display name for the `model`, `thought_level`
+or `mode` category, respectively; boolean options show their name and value.
+An empty string (or absent `settings`)
+means unavailable. Labels are at most 256 UTF-8 bytes with no ASCII control
+characters. No other option, choice list or config metadata is projected.
+The owner updates these values from confirmed config events and advances the
+page revision when options change. A mode label is not a permission grant.
 An unknown cursor returns `stale_subject`. To keep a multi-page read on one
 snapshot, use the first page's nonzero revision in subsequent requests.
 `complete=false` means projected content for this page or its current state is

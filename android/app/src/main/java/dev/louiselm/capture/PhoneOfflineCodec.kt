@@ -3,7 +3,7 @@ package dev.louiselm.capture
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Encode a closed owner page and revalidate it with the same bounds as the network reader. */
+/** Encode a closed owner page without live settings, revalidating the network bounds. */
 internal fun encodePhoneOfflinePage(page: PhoneControlReply.SessionPage): ByteArray {
     val entries = JSONArray()
     for (entry in page.entries) {
@@ -31,6 +31,6 @@ internal fun encodePhoneOfflinePage(page: PhoneControlReply.SessionPage): ByteAr
         .put("source", JSONObject().put("replay", source.replay).put("archive", source.archive)
             .put("redaction", source.redaction).put("missing", source.missing).put("truncated", source.truncated))
     val encoded = json.toString().toByteArray(Charsets.UTF_8)
-    require(parsePhoneControlReply(encoded) == page) { "invalid offline Session page" }
+    require(parsePhoneControlReply(encoded) == page.copy(settings = PhoneSessionSettings())) { "invalid offline Session page" }
     return encoded
 }

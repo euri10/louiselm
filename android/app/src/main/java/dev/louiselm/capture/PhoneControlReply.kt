@@ -24,6 +24,7 @@ internal sealed class PhoneControlReply {
         val controllerId: String, val subjectId: String, val operationId: String,
         val revision: Long, val status: String, val entries: List<PhoneControlEntry>,
         val nextBefore: Long, val complete: Boolean, val source: PhoneHistorySource,
+        val settings: PhoneSessionSettings = PhoneSessionSettings(),
     ) : PhoneControlReply()
     data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
     data class SessionList(val controllerId: String, val operationId: String,
@@ -70,6 +71,8 @@ internal data class PhoneControlOption(val label: String, val description: Strin
 internal data class PhoneHistorySource(
     val replay: String, val archive: String, val redaction: String, val missing: Boolean, val truncated: Boolean,
 )
+
+internal data class PhoneSessionSettings(val model: String = "", val effort: String = "", val mode: String = "")
 
 internal sealed class PhoneControlEntry(open val seq: Long, open val truncated: Boolean) {
     data class Message(override val seq: Long, val role: String, val text: String, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
@@ -284,7 +287,16 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 PhoneControlReply.Unlocked(hex("grant_id", 16), revision, hex("period_id", 16), idle, absolute, sendSupported)
             }
             "session_page" -> {
-                keys("controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete", "source")
+                val required = setOf("v", "type", "controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete", "source")
+                require(fields.keys == required || fields.keys == required + "settings")
+                val settings = if ("settings" in fields) {
+                    val values = requireNotNull(fields["settings"]).wireObject()
+                    values.wireKeys("model", "effort", "mode")
+                    fun label(name: String) = values.wireString(name, 256).also {
+                        require(it.none { char -> char.code < 32 || char.code == 127 })
+                    }
+                    PhoneSessionSettings(label("model"), label("effort"), label("mode"))
+                } else PhoneSessionSettings()
                 val revision = number("revision")
                 require(revision > 0)
                 val status = string("status")
@@ -305,7 +317,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 val complete = fields.wireBoolean("complete")
                 require(!complete || replay == "not_applicable" && redaction == "unknown" && !details.missing && !details.truncated)
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
-                    status, entries, nextBefore, complete, details)
+                    status, entries, nextBefore, complete, details, settings)
             }
             "controller_list" -> {
                 keys("operation_id", "controllers", "next_after")

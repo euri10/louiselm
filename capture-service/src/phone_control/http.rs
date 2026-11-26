@@ -37,6 +37,9 @@ mod run_e2e;
 #[path = "http_run_tests.rs"]
 mod run_tests;
 #[cfg(test)]
+#[path = "http_settings_tests.rs"]
+mod settings_tests;
+#[cfg(test)]
 #[path = "http_voice_tests.rs"]
 mod voice_tests;
 
