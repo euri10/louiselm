@@ -222,6 +222,13 @@ history checks do not renew the working period. Missing or damaged evidence is
 unavailable, not proof that an action was never sent. The first phone write
 still requires the separate Send integration and its native-owner safeguards.
 
+If the phone-admission barrier is missing, damaged, or replaced, preserve the
+receiver state, owner journal, and capture archive. Do not recreate its lock
+files or clear the history. There is currently no supported barrier-recovery
+command. A service restart or an unarmed reboot does not prove a safe cutoff.
+A newly reviewed attempt at affected work requires the native owner to prove
+no effect and durably fence delayed delivery, as well as current authority.
+
 When explicitly enabled, the receiver binds TLS on `127.0.0.1:7391` unless
 configured otherwise, and `pair` refuses while
 that safe, phone-unreachable default is active. Configure exactly one private
