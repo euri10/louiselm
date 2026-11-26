@@ -354,6 +354,29 @@ rechecks pairing, grant, period and controller before protected delivery.
 For either action `interaction` may be one only for an explicit phone action;
 automatic page continuation and background reads use zero.
 
+Action `81`, `voice_history`, requires `read`. Both signed subject fields and
+`expected_revision` are zero. The payload is `has_cursor:u8 | uuid[16] |
+limit:u8`: a zero marker requires zero UUID bytes and starts the list; a one
+marker uses the exact exclusive UUID, including the all-zero UUID. Limit is
+1–50, with at most 20 rows returned per page to bound JSON escaping. The closed reply is `{v:1,type:"voice_history",operation_id:hex16,
+records:[{id:uuid,controller:hex16,subject:hex16,project:string,agent:string,
+has_result:boolean}],next_after:uuid-or-empty-string}`. Rows and cursor are
+filtered before delivery by the current receiver, Read grant, approved project
+roots and Agent scope. IDs retain the original Session incarnation; an ended
+controller need not reconnect. A cursor never conveys authority.
+
+Action `82`, `voice_result`, requires `read` and the exact nonzero original
+controller and subject. Its payload is `recording_uuid[16] | offset:u32`, and
+`expected_revision` is zero. The closed reply is `{v:1,type:"voice_result",
+operation_id:hex16,id:uuid,receiver:hex32,controller:hex16,subject:hex16,
+project:string,agent:string,draft:hex32,revision:hex32,offset:integer,
+next_offset:integer,text:string}`. `text` contains at most 32 KiB of UTF-8
+without splitting a character; offsets count UTF-8 bytes and zero `next_offset`
+means complete. Every page is independently signed and checked against the
+current grant and pairing. The association identifies an original recording and
+draft revision, not permission to write or send. Neither read starts a job or
+submits a Session prompt.
+
 Action `52`, `list_prepared`, requires `read`. The controller and subject IDs
 are all zeroes; `expected_revision` is zero. Its payload is exactly the
 16-byte exclusive registration-ID cursor; zero starts from the beginning.

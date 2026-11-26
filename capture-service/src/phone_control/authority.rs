@@ -6,6 +6,8 @@ mod prepared;
 mod run;
 #[path = "sleep_clock.rs"]
 mod sleep_clock;
+#[path = "authority_voice.rs"]
+mod voice;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -904,6 +906,10 @@ impl Authority {
         Ok(public)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one admission checks the signed frame, period, scope and replay together"
+    )]
     pub(super) fn begin_read(
         &self,
         device: &str,
@@ -923,6 +929,9 @@ impl Authority {
             }
             80 => {
                 super::saved_review_query(request).map_err(refusal)?;
+            }
+            81 | 82 => {
+                super::voice_query(request).map_err(refusal)?;
             }
             _ => super::validate_discovery_request_shape(request).map_err(refusal)?,
         }
@@ -960,6 +969,8 @@ impl Authority {
                 56 => "read_run_live",
                 57 => "read_run_session",
                 80 => "read_saved_review",
+                81 => "voice_history",
+                82 => "voice_result",
                 _ => return Err(Refusal::Unsupported),
             }
             .into(),

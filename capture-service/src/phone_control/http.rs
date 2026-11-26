@@ -1,6 +1,6 @@
 //! Private HTTP wire boundary for phone-control requests.
 
-use std::{sync::Arc, time::Instant};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -36,6 +36,9 @@ mod run_e2e;
 #[cfg(test)]
 #[path = "http_run_tests.rs"]
 mod run_tests;
+#[cfg(test)]
+#[path = "http_voice_tests.rs"]
+mod voice_tests;
 
 #[derive(Clone)]
 struct HttpState {
@@ -44,6 +47,7 @@ struct HttpState {
     controllers: Arc<ControllerRegistry>,
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
     prepared: Option<OwnerRunReader>,
+    voice_root: Option<PathBuf>,
 }
 
 pub(super) fn router(
@@ -52,6 +56,7 @@ pub(super) fn router(
     controllers: Arc<ControllerRegistry>,
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
     prepared: Option<OwnerRunReader>,
+    voice_root: Option<PathBuf>,
 ) -> Router {
     Router::new()
         .route("/v1/phone-control/enrollment/offer", post(handle))
@@ -67,6 +72,7 @@ pub(super) fn router(
             controllers,
             evidence,
             prepared,
+            voice_root,
         })
 }
 
@@ -202,7 +208,7 @@ async fn process_http(
             let signed: SignedRequest = decode(&body, "request")?;
             if matches!(
                 signed.request.action,
-                1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57 | 80
+                1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57 | 80 | 81 | 82
             ) {
                 let permit =
                     initial_state
@@ -230,6 +236,7 @@ async fn process_http(
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
             match request.action {
+                81 | 82 => return finish_voice(state, credential, *permit).await,
                 80 => return finish_saved_review(state, credential, *permit, &request).await,
                 57 => return finish_run_session(state, credential, *permit, &request).await,
                 56 => return finish_live_run(state, credential, *permit, &request).await,
@@ -286,6 +293,22 @@ async fn process_http(
         }
         Err(error) => Err(error),
     }
+}
+
+async fn finish_voice(
+    state: HttpState,
+    credential: String,
+    permit: ReadPermit,
+) -> Result<Value, Refusal> {
+    tokio::task::spawn_blocking(move || {
+        let root = state.voice_root.ok_or(Refusal::Unsupported)?;
+        let archive = crate::VoiceArchive::new(root).map_err(|_| Refusal::Unavailable)?;
+        state
+            .authority
+            .finish_voice_delivery(&permit, &state.pairing, &credential, &archive)
+    })
+    .await
+    .unwrap_or(Err(Refusal::Unavailable))
 }
 
 async fn finish_saved_review(
@@ -1631,6 +1654,7 @@ mod tests {
             Arc::default(),
             Arc::new(evidence),
             None,
+            None,
         );
         let (_, denied) = post(
             app.clone(),
@@ -1687,6 +1711,7 @@ mod tests {
             pairing,
             Arc::default(),
             Arc::new(evidence),
+            None,
             None,
         );
         let now = Instant::now();

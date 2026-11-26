@@ -81,6 +81,7 @@ pub(crate) struct Service {
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
     state_root: PathBuf,
     prepared: Option<prepared_owner::PreparedOwner>,
+    voice_root: Option<PathBuf>,
     authority_available: bool,
 }
 
@@ -144,6 +145,7 @@ impl Service {
             evidence: Arc::new(evidence),
             state_root: state_root.to_owned(),
             prepared: None,
+            voice_root: None,
             authority_available,
         })
     }
@@ -158,6 +160,11 @@ impl Service {
         self
     }
 
+    pub(crate) fn with_voice_root(mut self, root: PathBuf) -> Self {
+        self.voice_root = Some(root);
+        self
+    }
+
     pub(crate) fn router(&self) -> axum::Router {
         http::router(
             self.authority.clone(),
@@ -167,6 +174,7 @@ impl Service {
             self.prepared
                 .as_ref()
                 .map(prepared_owner::PreparedOwner::reader),
+            self.voice_root.clone(),
         )
     }
 
@@ -330,7 +338,7 @@ pub fn verify_phone_control_frame(
         Some(
             "read_session" | "send_prompt" | "list_controllers" | "list_sessions" | "list_prepared"
             | "read_prepared" | "list_runs" | "read_run" | "read_run_live" | "read_run_session"
-            | "read_saved_review",
+            | "read_saved_review" | "voice_history" | "voice_result",
         ) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
@@ -353,6 +361,8 @@ pub fn verify_phone_control_frame(
                 | ("read_run_live", 56)
                 | ("read_run_session", 57)
                 | ("read_saved_review", 80)
+                | ("voice_history", 81)
+                | ("voice_result", 82)
         )
     {
         return Err(Unsupported);
@@ -383,6 +393,9 @@ impl Frame {
             }
             80 => {
                 saved_review_query(request)?;
+            }
+            81 | 82 => {
+                voice_query(request)?;
             }
             _ => return Err(Unsupported),
         }
@@ -531,6 +544,56 @@ fn validate_discovery_request_shape(request: &Request) -> Result<(), PhoneContro
         return Err(PhoneControlError::Malformed);
     }
     Ok(())
+}
+
+enum VoiceQuery {
+    History { after: String, limit: usize },
+    Result { id: String, offset: usize },
+}
+
+fn voice_query(request: &Request) -> Result<VoiceQuery, PhoneControlError> {
+    validate_common_request_shape(request)?;
+    if request.expected_revision != 0 || request.interaction > 1 {
+        return Err(PhoneControlError::Malformed);
+    }
+    let controller = fixed::<16>(&request.controller_id)?;
+    let subject = fixed::<16>(&request.subject_id)?;
+    match request.action {
+        81 if controller == [0; 16] && subject == [0; 16] => {
+            let cursor = fixed::<18>(&request.payload)?;
+            if cursor[0] > 1
+                || !(1..=50).contains(&cursor[17])
+                || (cursor[0] == 0 && cursor[1..17] != [0; 16])
+            {
+                return Err(PhoneControlError::Malformed);
+            }
+            let id =
+                <[u8; 16]>::try_from(&cursor[1..17]).map_err(|_| PhoneControlError::Malformed)?;
+            Ok(VoiceQuery::History {
+                after: if cursor[0] == 0 {
+                    String::new()
+                } else {
+                    uuid::Uuid::from_bytes(id).to_string()
+                },
+                limit: usize::from(cursor[17]),
+            })
+        }
+        82 if controller != [0; 16] && subject != [0; 16] => {
+            let payload = fixed::<20>(&request.payload)?;
+            let id =
+                <[u8; 16]>::try_from(&payload[..16]).map_err(|_| PhoneControlError::Malformed)?;
+            let offset = u32::from_be_bytes(
+                payload[16..]
+                    .try_into()
+                    .map_err(|_| PhoneControlError::Malformed)?,
+            );
+            Ok(VoiceQuery::Result {
+                id: uuid::Uuid::from_bytes(id).to_string(),
+                offset: usize::try_from(offset).map_err(|_| PhoneControlError::Malformed)?,
+            })
+        }
+        _ => Err(PhoneControlError::Malformed),
+    }
 }
 
 fn validate_prepared_request_shape(request: &Request) -> Result<(), PhoneControlError> {

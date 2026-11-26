@@ -376,15 +376,62 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
+    /** Read only currently authorized archived voice metadata. */
+    fun voiceHistory(period: PhoneControlPeriod, nowMs: Long, after: String? = null,
+        interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.VoiceHistory> = guarded {
+        val result = ownerRead(period, nowMs, "00".repeat(16), phoneVoiceHistoryPayload(after, 20), 0, 81, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.VoiceHistory) return@guarded refusal(reply)
+        if (reply.requestId != operationId || reply.records.size > 20 ||
+            reply.records.any { after != null && it.id <= after } ||
+            (reply.nextAfter.isNotEmpty() && reply.records.size != 20)) return@guarded malformed()
+        PhoneControlResult.Value(reply)
+    }
+
+    /** Fetch one immutable result in bounded pages, retaining its exact recorded association. */
+    fun voiceResult(period: PhoneControlPeriod, row: PhoneVoiceRow, nowMs: Long,
+        maySend: () -> Boolean): PhoneControlResult<PhoneVoiceTranscript> = guarded {
+        if (!row.hasResult) return@guarded unavailable()
+        var offset = 0
+        var identity: PhoneControlReply.VoiceResult? = null
+        val text = StringBuilder()
+        while (true) {
+            val result = ownerRead(period, if (offset == 0) nowMs else SystemClock.elapsedRealtime(), row.target.subjectId,
+                phoneVoiceResultPayload(row.id, offset), 0, 82, offset == 0, maySend, row.target.controllerId)
+            if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+            val (reply, operationId) = result.value
+            if (reply !is PhoneControlReply.VoiceResult) return@guarded refusal(reply)
+            val prior = identity
+            if (reply.requestId != operationId || reply.id != row.id || reply.target != row.target ||
+                reply.receiver != period.grant.receiverIdentity || reply.project != row.project || reply.agent != row.agent ||
+                reply.offset != offset || prior != null && (prior.draft != reply.draft || prior.revision != reply.revision)) {
+                return@guarded malformed()
+            }
+            val next = offset + reply.text.toByteArray(Charsets.UTF_8).size
+            if (next > 8 * 1024 * 1024 || reply.nextOffset != 0 && (reply.nextOffset != next || next <= offset)) {
+                return@guarded malformed()
+            }
+            text.append(reply.text)
+            if (reply.nextOffset == 0) return@guarded PhoneControlResult.Value(
+                PhoneVoiceTranscript(row, reply.receiver, reply.draft, reply.revision, text.toString()))
+            identity = reply
+            offset = next
+        }
+        @Suppress("UNREACHABLE_CODE") // The loop returns on completion or refusal.
+        unavailable()
+    }
+
     private fun ownerRead(period: PhoneControlPeriod, nowMs: Long, subject: String, payload: ByteArray,
-        revision: Long, action: Int, interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<Pair<PhoneControlReply, String>> {
+        revision: Long, action: Int, interaction: Boolean, maySend: () -> Boolean,
+        controller: String = "00".repeat(16)): PhoneControlResult<Pair<PhoneControlReply, String>> {
         if (!period.isActive(nowMs)) return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
         if (!maySend()) return unavailable()
         val config = pairingStore.load() ?: return unavailable()
         if (currentGrant(config) != period.grant) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
         val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
-            period.grant.receiverIdentity, "00".repeat(16), subject, payload, operationId, revision, interaction, action = action)
+            period.grant.receiverIdentity, controller, subject, payload, operationId, revision, interaction, action = action)
         val signature = period.sign(request, nowMs) ?: return PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
         val reply = transport(config, "request", message("request").put("request", request.json(signature)), maySend)
         if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return unavailable()

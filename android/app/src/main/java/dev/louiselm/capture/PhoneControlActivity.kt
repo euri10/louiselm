@@ -102,6 +102,7 @@ class PhoneControlActivity : Activity() {
     private lateinit var voiceStatus: TextView
     private lateinit var voiceButton: Button
     private lateinit var voiceListButton: Button
+    private lateinit var voiceArchiveButton: Button
     private lateinit var voicePlaybackStop: Button
     private lateinit var offlineCopiesButton: Button
     private lateinit var offlineKeepButton: Button
@@ -166,6 +167,7 @@ class PhoneControlActivity : Activity() {
     private val savedDrafts = mutableMapOf<Pair<String, PhoneControlTarget>, PhoneDraft>()
     private val dirtyDrafts = linkedMapOf<Pair<String, PhoneControlTarget>, PhoneDraft>()
     private val draftGeneration = AtomicLong()
+    private val draftMutation = AtomicLong()
     private var savingDraft = false
     private var pendingDraftSave: AtomicReference<PhoneDraft?>? = null
     private var discardingDraft: Pair<String, PhoneControlTarget>? = null
@@ -177,7 +179,12 @@ class PhoneControlActivity : Activity() {
     private var voiceRecorder: MediaRecorder? = null
     private var voicePending: PendingPhoneVoice? = null
     private var voiceStartedAt = 0L
-    private var showingVoice = false
+    @Volatile private var showingVoice = false
+    @Volatile private var showingVoiceArchive = false
+    private var voiceReview: PhoneVoiceTranscript? = null
+    private var voiceDestination: PhoneSessionRow? = null
+    private var voiceReviewedDraft: PhoneOfflineSource? = null
+    private var voiceApplying = false
     private var voicePlayer: MediaPlayer? = null
     private var voicePlaybackPreparing = false
     private var voicePlaybackEpoch = 0L
@@ -272,7 +279,8 @@ class PhoneControlActivity : Activity() {
         }
         schedulePinRefresh()
         if (showingVoice && draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true) {
-            showVoiceRecordings()
+            if (showingVoiceArchive && period?.isActive(SystemClock.elapsedRealtime()) == true) showVoiceArchive()
+            else showVoiceRecordings()
             return
         }
         if (showingDrafts && draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true) {
@@ -344,6 +352,7 @@ class PhoneControlActivity : Activity() {
         voiceStatus.visibility = View.GONE
         voiceButton.visibility = View.GONE
         voiceListButton.visibility = View.GONE
+        voiceArchiveButton.visibility = View.GONE
         voicePlaybackStop.visibility = View.GONE
         super.onPause()
     }
@@ -442,6 +451,8 @@ class PhoneControlActivity : Activity() {
         add(draftListButton)
         voiceListButton = Button(this).apply { text = getString(R.string.phone_voice_list); setOnClickListener { showVoiceRecordings() } }
         add(voiceListButton)
+        voiceArchiveButton = Button(this).apply { setText(R.string.phone_voice_archive); setOnClickListener { withNetwork { showVoiceArchive() } } }
+        add(voiceArchiveButton)
         voicePlaybackStop = Button(this).apply { text = getString(R.string.phone_voice_stop_playback); setOnClickListener { stopVoicePlayback(); render() } }
         add(voicePlaybackStop)
         lockButton = Button(this).apply { text = getString(R.string.phone_lock); setOnClickListener { lockWorkspace() } }
@@ -621,6 +632,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun queueDraftSave(key: Pair<String, PhoneControlTarget>) {
+        draftMutation.incrementAndGet()
         val source = draftSources[key] ?: return
         dirtyDrafts[key] = PhoneDraft(source, drafts[key].orEmpty(), draftContexts[key].orEmpty().toList())
         draftSaveNotice = R.string.phone_draft_saving
@@ -796,6 +808,7 @@ class PhoneControlActivity : Activity() {
         AlertDialog.Builder(this).setTitle(R.string.phone_draft_discard_title).setMessage(R.string.phone_draft_discard_warning)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.phone_draft_discard) { _, _ ->
+                draftMutation.incrementAndGet()
                 dirtyDrafts.remove(key)
                 discardingDraft = key
                 task({ mayContinue -> offlineResult {
@@ -973,6 +986,10 @@ class PhoneControlActivity : Activity() {
         val local = draftPeriod ?: return
         stopVoicePlayback()
         showingVoice = true
+        showingVoiceArchive = false
+        voiceReview = null
+        voiceDestination = null
+        voiceReviewedDraft = null
         showingDrafts = false
         showingOffline = false
         handler.removeCallbacks(refreshPoll)
@@ -1027,6 +1044,225 @@ class PhoneControlActivity : Activity() {
                 setText(R.string.phone_voice_next)
                 setOnClickListener { showVoiceRecordings(cursor) }
             }) }
+        }
+    }
+
+    private fun showVoiceArchive(after: String? = null) {
+        val online = period ?: return
+        val local = draftPeriod ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        stopVoicePlayback()
+        showingVoice = true
+        showingVoiceArchive = true
+        showingDrafts = false
+        showingOffline = false
+        showingActionHistory = false
+        showingPrepared = false
+        showingRuns = false
+        voiceReview = null
+        voiceDestination = null
+        voiceReviewedDraft = null
+        handler.removeCallbacks(refreshPoll)
+        task({ maySend -> client.voiceHistory(online, SystemClock.elapsedRealtime(), after) {
+            foreground && maySend() && pairing.binding() == binding && online.isActive(SystemClock.elapsedRealtime()) &&
+                local.isActive(SystemClock.elapsedRealtime())
+        } }, { outcome -> if (foreground) showFailure(outcome) }) { page, _ ->
+            busy = false
+            if (!foreground || period !== online || draftPeriod !== local || !online.confirmInteraction(SystemClock.elapsedRealtime()) ||
+                !local.isActive(SystemClock.elapsedRealtime()) || pairing.binding() != binding || !showingVoice || !showingVoiceArchive) return@task
+            scheduleExpiry()
+            render()
+            conversation.removeAllViews()
+            conversation.visibility = View.VISIBLE
+            if (page.records.isEmpty()) conversation.addView(TextView(this).apply { setText(R.string.phone_voice_archive_empty) })
+            for (row in page.records) {
+                conversation.addView(TextView(this).apply {
+                    text = getString(R.string.phone_voice_archive_row, row.agent, row.project,
+                        row.target.controllerId, row.target.subjectId, row.id)
+                })
+                if (row.hasResult) conversation.addView(Button(this).apply {
+                    setText(R.string.phone_voice_archive_review)
+                    setOnClickListener { reviewArchivedVoice(row) }
+                }) else conversation.addView(TextView(this).apply { setText(R.string.phone_voice_archive_pending) })
+            }
+            if (page.nextAfter.isNotEmpty()) conversation.addView(Button(this).apply {
+                setText(R.string.phone_voice_archive_next)
+                setOnClickListener { showVoiceArchive(page.nextAfter) }
+            })
+        }
+    }
+
+    private fun reviewArchivedVoice(row: PhoneVoiceRow) {
+        val online = period ?: return
+        val local = draftPeriod ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        task({ maySend -> client.voiceResult(online, row, SystemClock.elapsedRealtime()) {
+            foreground && maySend() && pairing.binding() == binding && online.isActive(SystemClock.elapsedRealtime()) &&
+                local.isActive(SystemClock.elapsedRealtime())
+        } }, { outcome -> if (foreground) showFailure(outcome) }) { result, _ ->
+            busy = false
+            if (!foreground || period !== online || draftPeriod !== local || !showingVoice || !showingVoiceArchive ||
+                !online.confirmInteraction(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime()) ||
+                pairing.binding() != binding) return@task
+            voiceReview = result
+            voiceDestination = null
+            voiceReviewedDraft = null
+            val key = result.receiver to result.row.target
+            val source = draftSources[key]
+            val saved = savedDrafts[key]
+            if (source == null || saved == null || source.project != row.project || source.agent != row.agent ||
+                draftStore.id(source) != result.draft || saved.source != source || saved.text.isNotEmpty() ||
+                drafts[key] != saved.text || draftContexts[key].orEmpty() != saved.context ||
+                savingDraft || dirtyDrafts.isNotEmpty() || discardingDraft != null) {
+                displayVoiceReview()
+                return@task
+            }
+            val mutation = draftMutation.get()
+            val generationAtStart = draftGeneration.get()
+            voiceApplying = true
+            task({ mayCommit -> offlineResult {
+                val secret = local.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                PhoneControlResult.Value(draftStore.fillVoiceTranscript(source, result.revision, result.text, secret) {
+                    foreground && showingVoice && showingVoiceArchive && mayCommit() && draftMutation.get() == mutation && draftGeneration.get() == generationAtStart &&
+                        pairing.binding() == binding && online.isActive(SystemClock.elapsedRealtime()) && local.isActive(SystemClock.elapsedRealtime())
+                })
+            } }, { outcome ->
+                voiceApplying = false
+                if (foreground) showFailure(outcome)
+            }, { voiceApplying = false }) { outcome, _ ->
+                voiceApplying = false
+                busy = false
+                if (!foreground || !showingVoice || !showingVoiceArchive || voiceReview !== result || period !== online || draftPeriod !== local ||
+                    !online.isActive(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime())) return@task
+                if (outcome == PhoneDraftSave.SAVED && draftMutation.get() == mutation) {
+                    val filled = saved.copy(text = result.text)
+                    drafts[key] = filled.text
+                    savedDrafts[key] = filled
+                    voiceReviewedDraft = source
+                }
+                displayVoiceReview()
+            }
+        }
+    }
+
+    private fun displayVoiceReview(message: Int? = null) {
+        val result = voiceReview ?: return
+        if (!foreground || !showingVoice || !showingVoiceArchive || period?.isActive(SystemClock.elapsedRealtime()) != true ||
+            draftPeriod?.isActive(SystemClock.elapsedRealtime()) != true) return
+        render()
+        conversation.removeAllViews()
+        conversation.visibility = View.VISIBLE
+        conversation.addView(TextView(this).apply {
+            text = getString(R.string.phone_voice_archive_original, result.row.agent, result.row.project,
+                result.row.target.controllerId, result.row.target.subjectId)
+        })
+        conversation.addView(TextView(this).apply { text = result.text; setTextIsSelectable(true) })
+        conversation.addView(TextView(this).apply {
+            setText(message ?: if (voiceReviewedDraft != null) R.string.phone_voice_archive_filled else R.string.phone_voice_archive_preserved)
+        })
+        voiceReviewedDraft?.let { source -> conversation.addView(Button(this).apply {
+            setText(R.string.phone_voice_archive_open)
+            setOnClickListener {
+                showingVoice = false
+                showingVoiceArchive = false
+                showingDrafts = true
+                selectedDraft = source
+                conversation.removeAllViews()
+                render()
+            }
+        }) }
+        conversation.addView(Button(this).apply {
+            setText(R.string.phone_voice_archive_choose)
+            setOnClickListener { chooseVoiceDestination() }
+        })
+        voiceDestination?.let { destination ->
+            conversation.addView(TextView(this).apply {
+                text = getString(R.string.phone_voice_archive_destination, destination.summary.name, destination.summary.agent,
+                    destination.summary.project, destination.target.controllerId, destination.target.subjectId)
+            })
+            conversation.addView(Button(this).apply { setText(R.string.phone_voice_archive_insert); setOnClickListener { applyVoiceReview(false) } })
+            conversation.addView(Button(this).apply { setText(R.string.phone_voice_archive_replace); setOnClickListener { applyVoiceReview(true) } })
+        }
+    }
+
+    private fun chooseVoiceDestination(cursor: PhoneBrowseCursor? = null) {
+        val online = period ?: return
+        val local = draftPeriod ?: return
+        val result = voiceReview ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        task({ maySend -> PhoneControlBrowser(client).page(online, cursor, true) {
+            foreground && maySend() && pairing.binding() == binding && online.isActive(SystemClock.elapsedRealtime()) &&
+                local.isActive(SystemClock.elapsedRealtime())
+        } }, { outcome -> if (foreground) showFailure(outcome) }) { page, _ ->
+            busy = false
+            if (!foreground || !showingVoice || !showingVoiceArchive || period !== online || draftPeriod !== local || voiceReview !== result ||
+                !online.confirmInteraction(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime()) ||
+                pairing.binding() != binding) return@task
+            render()
+            conversation.removeAllViews()
+            conversation.visibility = View.VISIBLE
+            if (page.rows.isEmpty()) conversation.addView(TextView(this).apply { setText(R.string.phone_no_sessions) })
+            for (row in page.rows.filterNot { it.summary.truncated }) conversation.addView(Button(this).apply {
+                text = getString(R.string.phone_session_row, row.summary.name, row.summary.agent, row.summary.project,
+                    sessionState(row.summary.status), row.target.controllerId, row.target.subjectId, "")
+                setOnClickListener { voiceDestination = row; displayVoiceReview() }
+            })
+            page.next?.let { next -> conversation.addView(Button(this).apply {
+                setText(R.string.phone_more_sessions)
+                setOnClickListener { chooseVoiceDestination(next) }
+            }) }
+        }
+    }
+
+    private fun applyVoiceReview(replace: Boolean) {
+        val online = period ?: return
+        val local = draftPeriod ?: return
+        val result = voiceReview ?: return
+        val destination = voiceDestination ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        val key = online.grant.receiverIdentity to destination.target
+        val source = draftSources[key] ?: PhoneOfflineSource(key.first, key.second, destination.summary.name,
+            destination.summary.agent, destination.summary.project)
+        val previous = savedDrafts[key]
+        if (source.agent != destination.summary.agent || source.project != destination.summary.project ||
+            savingDraft || dirtyDrafts.isNotEmpty() || discardingDraft != null ||
+            (key in drafts && (previous == null || previous.text != drafts[key] || previous.context != draftContexts[key].orEmpty()))) {
+            displayVoiceReview(R.string.phone_voice_archive_conflict)
+            return
+        }
+        val text = if (replace) result.text else (previous?.text ?: "") + result.text
+        val mutation = draftMutation.get()
+        val generationAtStart = draftGeneration.get()
+        voiceApplying = true
+        task({ maySend ->
+            val permitted = { foreground && showingVoice && showingVoiceArchive && maySend() && pairing.binding() == binding &&
+                online.isActive(SystemClock.elapsedRealtime()) && local.isActive(SystemClock.elapsedRealtime()) &&
+                draftMutation.get() == mutation && draftGeneration.get() == generationAtStart }
+            when (val read = client.readSession(online, destination.target, SystemClock.elapsedRealtime(), maySend = permitted)) {
+                is PhoneControlResult.Failure -> read
+                is PhoneControlResult.Value -> offlineResult {
+                    val secret = local.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                    PhoneControlResult.Value(draftStore.editVoiceTranscript(source, previous, text, secret, permitted))
+                }
+            }
+        }, { outcome -> voiceApplying = false; if (foreground) showFailure(outcome) }, { voiceApplying = false }) { saved, _ ->
+            voiceApplying = false
+            busy = false
+            if (!foreground || !showingVoice || !showingVoiceArchive || voiceReview !== result || period !== online || draftPeriod !== local ||
+                !online.isActive(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime())) return@task
+            if (saved == PhoneDraftSave.SAVED && draftMutation.get() == mutation) {
+                val draft = PhoneDraft(source, text, previous?.context.orEmpty())
+                drafts[key] = text
+                draftSources[key] = source
+                draftContexts[key] = draft.context
+                savedDrafts[key] = draft
+                voiceReviewedDraft = source
+                displayVoiceReview(R.string.phone_voice_archive_saved)
+            } else displayVoiceReview(R.string.phone_voice_archive_conflict)
         }
     }
 
@@ -1132,6 +1368,7 @@ class PhoneControlActivity : Activity() {
         cancelVoicePreparation()
         voicePermission = null
         draftGeneration.incrementAndGet()
+        draftMutation.incrementAndGet()
         draftPeriod?.lock()
         draftPeriod = null
         draftsReady = false
@@ -1152,6 +1389,11 @@ class PhoneControlActivity : Activity() {
         selectedDraft = null
         showingDrafts = false
         showingVoice = false
+        showingVoiceArchive = false
+        voiceReview = null
+        voiceDestination = null
+        voiceReviewedDraft = null
+        voiceApplying = false
         draftSaveNotice = null
         handler.removeCallbacks(draftExpiryCheck)
         changingDraft = true
@@ -1216,7 +1458,7 @@ class PhoneControlActivity : Activity() {
         val showComposer = foreground && draftUnlocked && draftSource != null
         sendInput.visibility = if (showComposer) View.VISIBLE else View.GONE
         val currentDraftKey = if (draftReceiver != null && draftTarget != null) requireNotNull(draftReceiver) to requireNotNull(draftTarget) else null
-        sendInput.isEnabled = !voicePreparing && (currentDraftKey == null || currentDraftKey != discardingDraft)
+        sendInput.isEnabled = !voicePreparing && !voiceApplying && (currentDraftKey == null || currentDraftKey != discardingDraft)
         val saved = currentDraftKey != null && draftSource != null && savedDrafts[currentDraftKey] ==
             PhoneDraft(requireNotNull(draftSource), drafts[currentDraftKey].orEmpty(), draftContexts[currentDraftKey].orEmpty())
         sendButton.visibility = if (showComposer) View.VISIBLE else View.GONE
@@ -1263,6 +1505,8 @@ class PhoneControlActivity : Activity() {
         draftListButton.isEnabled = !busy
         voiceListButton.visibility = if (foreground && draftUnlocked) View.VISIBLE else View.GONE
         voiceListButton.isEnabled = !busy && voiceRecorder == null && !voiceSaving && !voicePreparing
+        voiceArchiveButton.visibility = if (foreground && draftUnlocked && unlocked) View.VISIBLE else View.GONE
+        voiceArchiveButton.isEnabled = !busy && voiceRecorder == null && !voiceSaving && !voicePreparing
         voicePlaybackStop.visibility = if (foreground && showingVoice && voicePlayer != null) View.VISIBLE else View.GONE
         val eligibleVoice = voiceEligible()
         voiceDisclosure.visibility = if (foreground && (eligibleVoice || voiceRecorder != null)) View.VISIBLE else View.GONE

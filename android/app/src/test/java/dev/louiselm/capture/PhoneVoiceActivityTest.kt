@@ -3,6 +3,7 @@ package dev.louiselm.capture
 import android.Manifest
 import android.app.KeyguardManager
 import android.content.Intent
+import android.content.DialogInterface
 import android.os.CancellationSignal
 import android.os.Looper
 import android.os.PowerManager
@@ -37,6 +38,7 @@ import org.robolectric.annotation.Implements
 import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
 import org.robolectric.shadows.ShadowMediaPlayer
+import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.shadows.util.DataSource
 
 private object VoiceScreenFixture {
@@ -46,10 +48,26 @@ private object VoiceScreenFixture {
     val working = phoneControlWorkingKey()
     val material = ByteArray(32) { 7 }
     var sends = 0
+    var archive: PhoneVoiceTranscript? = null
 }
 
 @Implements(PhoneControlClient::class, isInAndroidSdk = false)
 class VoiceScreenClient {
+    @Implementation(methodName = "voiceHistory")
+    internal fun voiceHistory(period: PhoneControlPeriod, now: Long, after: String?, interaction: Boolean,
+        maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.VoiceHistory> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        return PhoneControlResult.Value(PhoneControlReply.VoiceHistory("99".repeat(16), listOfNotNull(VoiceScreenFixture.archive?.row), ""))
+    }
+
+    @Implementation(methodName = "voiceResult")
+    internal fun voiceResult(period: PhoneControlPeriod, row: PhoneVoiceRow, now: Long,
+        maySend: () -> Boolean): PhoneControlResult<PhoneVoiceTranscript> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        return VoiceScreenFixture.archive?.takeIf { it.row == row }?.let { PhoneControlResult.Value(it) }
+            ?: PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+    }
+
     @Implementation(methodName = "status")
     internal fun status(): PhoneControlResult<PhoneControlStatus> = PhoneControlResult.Value(PhoneControlStatus.Granted(VoiceScreenFixture.grant))
 
@@ -169,6 +187,7 @@ class PhoneVoiceActivityTest {
     @Before fun setup() {
         val app = RuntimeEnvironment.getApplication()
         VoiceScreenFixture.sends = 0
+        VoiceScreenFixture.archive = null
         VoiceScreenFixture.browsedTarget = VoiceScreenFixture.target
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_LOCAL_NETWORK,
             "${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
@@ -481,6 +500,125 @@ class PhoneVoiceActivityTest {
         assertTrue(recordings().isEmpty())
         assertTrue(views().filterIsInstance<TextView>().any { it.isShown && it.text.toString().contains("changed elsewhere") })
         assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun archivedResultFillsOnlyTheExactUntouchedOriginalDraft() {
+        val store = prepareArchivedEmptyDraft()
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        assertEquals("synthetic transcript", store.list(key).drafts.single().text)
+        assertTrue(views().filterIsInstance<TextView>().any { it.isShown && it.text.toString().contains("synthetic transcript") })
+        button("Open reviewed draft").performClick()
+        drain()
+        assertEquals("synthetic transcript", views().filterIsInstance<android.widget.EditText>().single().text.toString())
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun changedOriginalNeedsAnExplicitCurrentDestinationAndInsert() {
+        val store = prepareArchivedEmptyDraft()
+        views().filterIsInstance<android.widget.EditText>().single().setText("newer draft")
+        drain()
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        assertEquals("newer draft", store.list(key).drafts.single().text)
+        button("Choose destination Session").performClick()
+        drain()
+        views().filterIsInstance<Button>().single { it.text.toString().contains("named session") }.performClick()
+        drain()
+        assertEquals("newer draft", store.list(key).drafts.single().text)
+        button("Insert transcript").performClick()
+        drain()
+        assertEquals("newer draftsynthetic transcript", store.list(key).drafts.single().text)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun discardedOriginalIsNotRecreatedUntilExplicitReplace() {
+        val store = prepareArchivedEmptyDraft()
+        button("Discard draft").performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        assertTrue(store.list(key).drafts.isEmpty())
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        drain()
+        assertTrue(store.list(key).drafts.isEmpty())
+        button("Choose destination Session").performClick()
+        drain()
+        views().filterIsInstance<Button>().single { it.text.toString().contains("named session") }.performClick()
+        drain()
+        button("Replace draft with transcript").performClick()
+        drain()
+        assertEquals("synthetic transcript", store.list(key).drafts.single().text)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun aConcurrentSavedEditBeatsALateArchivedResult() {
+        val store = prepareArchivedEmptyDraft()
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        executor.runQueued() // Deliver the read only after another owner changes the durable draft.
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        val original = store.list(key).drafts.single()
+        assertEquals(PhoneDraftSave.SAVED, store.save(original.copy(text = "concurrent edit"), key) { true })
+        drain()
+        assertEquals("concurrent edit", store.list(key).drafts.single().text)
+        assertTrue(views().filterIsInstance<TextView>().any { it.isShown && it.text.toString().contains("changed, discarded") })
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun destroyedActivityCannotDisplayOrFillALateResult() {
+        val store = prepareArchivedEmptyDraft()
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        executor.runQueued()
+        screen.pause().stop().destroy()
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        assertEquals("", store.list(key).drafts.single().text)
+        assertTrue(views().filterIsInstance<TextView>().none { it.isShown && it.text.toString().contains("synthetic transcript") })
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun expiryBeforeAnArchivedReadCannotDisplayOrFillTheResult() {
+        val store = prepareArchivedEmptyDraft()
+        button("Desktop voice history").performClick()
+        drain()
+        button("Review transcript").performClick()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(6))
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        assertEquals("", store.list(key).drafts.single().text)
+        assertTrue(views().filterIsInstance<TextView>().none { it.isShown && it.text.toString().contains("synthetic transcript") })
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    private fun prepareArchivedEmptyDraft(): PhoneDraftStore {
+        button("Sessions").performClick()
+        drain()
+        views().filterIsInstance<Button>().single { it.text.toString().contains("named session") }.performClick()
+        drain()
+        val input = views().filterIsInstance<android.widget.EditText>().single()
+        input.setText("temporary")
+        input.setText("")
+        drain()
+        val store = PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1"))
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        val draft = store.list(key).drafts.single()
+        val row = PhoneVoiceRow("11111111-1111-4111-8111-111111111111", draft.source.target,
+            draft.source.project, draft.source.agent, true)
+        VoiceScreenFixture.archive = PhoneVoiceTranscript(row, draft.source.receiver, store.id(draft.source),
+            requireNotNull(store.revision(draft, key)), "synthetic transcript")
+        return store
     }
 
     private fun beginWithDummyAudio(): String {

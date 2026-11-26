@@ -146,7 +146,8 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 identity.public_key_sha256(),
                 pairing.clone(),
             )?
-            .with_runs(runs.clone());
+            .with_runs(runs.clone())
+            .with_voice_root(paths.voice_captures());
             if !service.authority_available() {
                 eprintln!(
                     "phone-control authority is unavailable; capture remains available; inspect the grant store and see the capture-service re-approval instructions"

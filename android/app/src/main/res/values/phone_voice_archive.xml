@@ -1,0 +1,18 @@
+<resources>
+    <string name="phone_voice_archive">Desktop voice history</string>
+    <string name="phone_voice_archive_empty">No authorized archived voice recordings.</string>
+    <string name="phone_voice_archive_row">Original Session: %1$s · %2$s\nController %3$s · Session %4$s\nRecording %5$s</string>
+    <string name="phone_voice_archive_pending">Transcript is not available.</string>
+    <string name="phone_voice_archive_review">Review transcript</string>
+    <string name="phone_voice_archive_next">More archived recordings</string>
+    <string name="phone_voice_archive_original">Original Session: %1$s · %2$s\nController %3$s · Session %4$s</string>
+    <string name="phone_voice_archive_filled">The untouched original draft was filled. Review and edit it before any Send.</string>
+    <string name="phone_voice_archive_preserved">The original draft was changed, discarded, or is unavailable. Choose a current Session and Insert or Replace explicitly.</string>
+    <string name="phone_voice_archive_choose">Choose destination Session</string>
+    <string name="phone_voice_archive_destination">Destination: %1$s · %2$s · %3$s\nController %4$s · Session %5$s</string>
+    <string name="phone_voice_archive_insert">Insert transcript</string>
+    <string name="phone_voice_archive_replace">Replace draft with transcript</string>
+    <string name="phone_voice_archive_open">Open reviewed draft</string>
+    <string name="phone_voice_archive_saved">Transcript saved to the selected device-local draft. Review and edit it before any Send.</string>
+    <string name="phone_voice_archive_conflict">The draft or authorization changed. Choose the destination again and retry.</string>
+</resources>

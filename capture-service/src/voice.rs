@@ -1,6 +1,7 @@
 //! Separate, durable voice jobs. This module does not grant phone authority.
 
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -88,6 +89,17 @@ pub struct VoiceJob {
 pub struct VoiceArchive {
     root: PathBuf,
     captures: Store,
+}
+
+pub(crate) struct VoiceHistoryRecord {
+    pub(crate) id: String,
+    pub(crate) association: VoiceAssociation,
+    pub(crate) has_result: bool,
+}
+
+pub(crate) struct VoiceHistoryPage {
+    pub(crate) records: Vec<VoiceHistoryRecord>,
+    pub(crate) next_after: Option<String>,
 }
 
 impl VoiceArchive {
@@ -181,6 +193,66 @@ impl VoiceArchive {
     /// Returns invalid identifiers, missing or malformed results and I/O failures.
     pub fn transcript(&self, id: &str) -> Result<Transcript, StoreError> {
         self.locked(|| self.read_transcript(id))
+    }
+
+    // The caller holds current read authority; filtering occurs before any row or cursor leaves it.
+    pub(crate) fn page_after(
+        &self,
+        after: &str,
+        limit: usize,
+        allowed: impl Fn(&VoiceAssociation) -> bool,
+    ) -> Result<VoiceHistoryPage, StoreError> {
+        self.locked(|| {
+            let mut rows = BTreeMap::new();
+            for entry in fs::read_dir(&self.root)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let Some(id) = name.to_str() else { continue };
+                if id <= after || validate_id(id).is_err() || !entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let path = self.job_path(id)?;
+                // An interrupted admission can leave audio before its job is published.
+                if !path.exists() {
+                    continue;
+                }
+                let job = read_job(&path)?;
+                if !allowed(&job.association) {
+                    continue;
+                }
+                let result = self.result_path(id)?;
+                let has_result = match fs::symlink_metadata(result) {
+                    Ok(metadata) if metadata.is_file() => true,
+                    Ok(_) => {
+                        return Err(StoreError::InvalidCapture("voice result is invalid".into()));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => return Err(error.into()),
+                };
+                rows.insert(id.to_owned(), (job, has_result));
+                if rows.len() > limit + 1 {
+                    rows.pop_last();
+                }
+            }
+            let has_more = rows.len() > limit;
+            if has_more {
+                rows.pop_last();
+            }
+            let next = has_more
+                .then(|| rows.last_key_value().map(|(id, _)| id.clone()))
+                .flatten();
+            Ok(VoiceHistoryPage {
+                records: rows
+                    .into_iter()
+                    .map(|(id, (job, has_result))| VoiceHistoryRecord {
+                        id,
+                        association: job.association,
+                        has_result,
+                    })
+                    .collect(),
+                next_after: next,
+            })
+        })
     }
 
     /// Fence a job against future calls; an in-flight result remains archival.

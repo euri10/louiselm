@@ -198,8 +198,19 @@ local collection, outside ordinary thought uploads and draft/cache quotas. Their
 associated source and draft revision are encrypted with an independent device-only
 key, so resetting a lost draft key does not delete the recording association.
 The local draft unlock controls presentation; it grants no workspace authority.
-The eventual transcription, review and explicit Send path remains
-`louiselm-qbr.12.13.2`.
+
+While workspace and phone drafts are unlocked, **Desktop voice history** reads
+already archived recordings within the current Read content grant. It labels
+the original controller, Session, project and Agent, even if that Session has
+ended. A result fills its original draft only if the exact recorded revision is
+still present, empty and untouched. Otherwise choose a currently authorized
+Session and explicitly **Insert transcript** or **Replace draft with
+transcript**. Review and edit the device-local draft before any Send; the
+archived audio and original transcript remain unchanged. History requires an
+online receiver and is unavailable when the read grant or working period ends.
+The display accepts transcripts up to 8 MiB; draft and selected-context limits
+may be smaller. Job submission and explicit reviewed Send remain separate work
+in `louiselm-qbr.12.13.3` and `louiselm-qbr.12.13.2`.
 
 ### Runs and prepared selections
 

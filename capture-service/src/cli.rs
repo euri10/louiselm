@@ -1093,6 +1093,10 @@ impl Paths {
         self.data.join("louiselm/captures")
     }
 
+    fn voice_captures(&self) -> PathBuf {
+        self.data.join("louiselm/voice-captures")
+    }
+
     fn network(&self) -> PathBuf {
         self.config.join("louiselm/capture-network.json")
     }

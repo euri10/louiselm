@@ -70,6 +70,15 @@ internal class PhoneDraftStore(private val root: File) {
         return save(original.copy(text = text), key, false, revision, mayCommit)
     }
 
+    /** Apply an explicit choice only to the exact draft the operator reviewed. */
+    fun editVoiceTranscript(source: PhoneOfflineSource, previous: PhoneDraft?, text: String,
+        key: SecretKey, mayCommit: () -> Boolean): PhoneDraftSave {
+        if (previous == null) return save(PhoneDraft(source, text, emptyList()), key, onlyIfAbsentOrSame = true, mayCommit = mayCommit)
+        if (previous.source != source) return PhoneDraftSave.CONFLICT
+        val revision = revision(previous, key) ?: return PhoneDraftSave.CONFLICT
+        return save(previous.copy(text = text), key, false, revision, mayCommit)
+    }
+
     private fun save(draft: PhoneDraft, key: SecretKey, onlyIfAbsentOrSame: Boolean, expectedRevision: String?, mayCommit: () -> Boolean): PhoneDraftSave {
         val id = id(draft.source)
         if (!validText(draft.text)) return PhoneDraftSave.INVALID

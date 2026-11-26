@@ -36,6 +36,16 @@ internal fun phoneControlRunIdBytes(value: String): ByteArray {
     return ByteBuffer.allocate(16).putLong(id.mostSignificantBits).putLong(id.leastSignificantBits).array()
 }
 
+internal fun phoneVoiceHistoryPayload(after: String?, limit: Int): ByteArray {
+    require(limit in 1..50)
+    return (if (after == null) byteArrayOf(0) + ByteArray(16) else byteArrayOf(1) + phoneControlRunIdBytes(after)) + byteArrayOf(limit.toByte())
+}
+
+internal fun phoneVoiceResultPayload(id: String, offset: Int): ByteArray {
+    require(offset in 0..64 * 1024 * 1024)
+    return phoneControlRunIdBytes(id) + ByteBuffer.allocate(4).putInt(offset).array()
+}
+
 internal fun phoneControlRunCursor(after: String?): ByteArray =
     if (after == null) ByteArray(17) else byteArrayOf(1) + phoneControlRunIdBytes(after)
 
@@ -192,6 +202,14 @@ internal class PhoneControlRequest(
                 }
                 validateSavedReviewPayload(this.payload)
             }
+            81 -> require(this.payload.size == 18 && this.payload[0].toInt() in 0..1 &&
+                (this.payload[0].toInt() == 1 || this.payload.slice(1..16).all { it == 0.toByte() }) && this.payload.last().toInt() in 1..50 &&
+                expectedRevision == 0L && controllerId == "00".repeat(16) && subjectId == "00".repeat(16)) {
+                "invalid voice history"
+            }
+            82 -> require(this.payload.size == 20 && expectedRevision == 0L &&
+                controllerId != "00".repeat(16) && subjectId != "00".repeat(16) &&
+                ByteBuffer.wrap(this.payload, 16, 4).int in 0..64 * 1024 * 1024) { "invalid voice result" }
             else -> throw IllegalArgumentException("unsupported action")
         }
     }
