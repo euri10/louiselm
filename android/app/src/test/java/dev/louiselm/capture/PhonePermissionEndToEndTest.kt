@@ -6,6 +6,7 @@ import android.os.PowerManager
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import java.net.Socket
 import java.util.concurrent.ExecutorService
@@ -67,7 +68,12 @@ class PhonePermissionEndToEndTest {
             assertTrue(visible("Offered choice: Allow once"))
             assertTrue(visible("Offered choice: Reject"))
             assertFalse(views(activity.window.decorView).filterIsInstance<Button>().any { it.text.toString().contains("Offered choice:") })
+            val draft = views(activity.window.decorView).filterIsInstance<EditText>().single()
+            draft.setText("Unsent fixture instruction")
+            repeat(3) { drain() }
             assertFalse(button(activity.getString(R.string.phone_send)).isEnabled)
+            draft.setText("")
+            repeat(3) { drain() }
             assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.isShown && it.text.toString().contains("mock.txt") })
             button(activity.getString(R.string.phone_lock)).performClick()
             assertFalse(visible("Current permission request: Edit mock file"))
