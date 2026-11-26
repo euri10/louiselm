@@ -163,8 +163,13 @@ def without_host():
     try:
         result = as_operator("pairing-status", check=False)
         assert result.returncode != 0 and not result.stdout, result.stdout
+        assert "capture service I/O failed" in result.stderr, result.stderr
         host = run("systemctl", "is-failed", HOST_UNIT.name, check=False)
         assert host.stdout.strip() == "failed", host.stdout
+        invocation = run("systemctl", "show", "--value", "-p", "InvocationID", HOST_UNIT.name).stdout.strip()
+        assert invocation, "failed host invocation has no ID"
+        journal = run("journalctl", "--no-pager", "-o", "cat", f"_SYSTEMD_INVOCATION_ID={invocation}").stdout
+        assert "No such file or directory: 'catalog.json'" in journal, journal
         assert len(json.loads(as_operator("list").stdout)) == 1
         json.loads(as_operator("status").stdout)
     finally:
