@@ -120,7 +120,17 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
         .transpose()?;
     let mut phone_control = None;
     let receiver = if features.receiver {
-        let identity = TlsIdentity::load_or_create(paths.tls())?;
+        let (identity, allow_phone_control) = if features.phone_control {
+            match super::receiver_identity(&paths) {
+                Ok(identity) => (identity, true),
+                Err(error) => {
+                    eprintln!("phone-control registration unavailable; capture-only mode: {error}");
+                    (TlsIdentity::load_existing(&paths.tls())?, false)
+                }
+            }
+        } else {
+            (TlsIdentity::load_or_create(paths.tls())?, false)
+        };
         let network = NetworkProfile::load_or_default(&paths.network())?;
         let (Some(store), Some(pairing)) = (&captures, &pairing) else {
             return Err(CliError::Invalid("receiver storage is unavailable".into()));
@@ -140,7 +150,7 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 identity.public_key_sha256(),
             )?,
         };
-        let receiver = if features.phone_control {
+        let receiver = if allow_phone_control {
             let service = crate::phone_control::Service::open(
                 &paths.phone_control_store(),
                 identity.public_key_sha256(),

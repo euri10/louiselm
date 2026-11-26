@@ -56,19 +56,7 @@ fn query_at(root: &Path, socket_path: &Path) -> io::Result<PairingStatus> {
 }
 
 fn query_connection(socket: &UnixStream, root: &File) -> io::Result<PairingStatus> {
-    let rights = [root.as_fd()];
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
-    let mut ancillary = SendAncillaryBuffer::new(&mut space);
-    if !ancillary.push(SendAncillaryMessage::ScmRights(&rights))
-        || net::sendmsg(
-            socket,
-            &[IoSlice::new(b"P")],
-            &mut ancillary,
-            SendFlags::empty(),
-        )? != 1
-    {
-        return Err(io::Error::other("managed pairing request unavailable"));
-    }
+    send_root(socket, root, b'P')?;
     let mut response = Vec::new();
     socket.take(MAX_REPLY + 1).read_to_end(&mut response)?;
     if response.len() as u64 > MAX_REPLY {
@@ -79,6 +67,23 @@ fn query_connection(socket: &UnixStream, root: &File) -> io::Result<PairingStatu
         Reply::RootMismatch {} => Err(io::Error::other("registered root mismatch")),
         Reply::Unavailable {} => Err(io::Error::other("pairing unavailable")),
     }
+}
+
+pub(super) fn send_root(socket: &UnixStream, root: &File, command: u8) -> io::Result<()> {
+    let rights = [root.as_fd()];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut ancillary = SendAncillaryBuffer::new(&mut space);
+    if !ancillary.push(SendAncillaryMessage::ScmRights(&rights))
+        || net::sendmsg(
+            socket,
+            &[IoSlice::new(&[command])],
+            &mut ancillary,
+            SendFlags::empty(),
+        )? != 1
+    {
+        return Err(io::Error::other("managed root request unavailable"));
+    }
+    Ok(())
 }
 
 // These descriptors have manager provenance only in the installed PID 1 unit.

@@ -734,6 +734,20 @@ jobs:
               real_receiver_and_offline_cutoff_share_exclusion
           ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}"
 
+      - name: Test registration consumers in private namespaces
+        run: |
+          sudo unshare --mount --net --propagation private -- /bin/sh -c '
+            set -eu
+            mount -t tmpfs -o mode=0755 tmpfs /run
+            mkdir -m 0700 /run/louiselm-phone-host
+            chown "$1:$2" /run/louiselm-phone-host
+            ip link set lo up
+            exec setpriv --reuid "$1" --regid "$2" --init-groups \
+              env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" LANG=C.UTF-8 cargo test --offline --locked \
+              --test managed_registration_cli -- --ignored --exact \
+              pair_and_serve_consume_registration_without_granting_authority
+          ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}"
+
       - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true

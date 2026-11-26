@@ -20,6 +20,7 @@ mod arguments;
 use arguments::{Attention, Cli, Command, PhoneControl, Run};
 
 mod managed_pairings;
+mod managed_registration;
 #[path = "notification_worker.rs"]
 mod notification_worker;
 mod service;
@@ -207,7 +208,9 @@ async fn execute(command: Command, paths: Paths) -> Result<(), CliError> {
         Command::ConfigureNetwork { profile, bind, url } => {
             configure_network(&paths, &profile, bind, &url)
         }
-        Command::Pair { svg } => pair(&paths, svg.as_deref()),
+        Command::Pair { svg } => tokio::task::spawn_blocking(move || pair(&paths, svg.as_deref()))
+            .await
+            .map_err(std::io::Error::other)?,
         Command::RevokeDevice { id } => revoke_device(&paths, &id).await,
         Command::RetryNotifications => {
             PairingRegistry::open(paths.pairing())?.retry_notifications()?;
@@ -947,7 +950,7 @@ fn pair(paths: &Paths, svg_path: Option<&Path>) -> Result<(), CliError> {
             "phone pairing requires configure-network with one private receiver profile".to_owned(),
         )
     })?;
-    let identity = TlsIdentity::load_or_create(paths.tls())?;
+    let identity = receiver_identity(paths)?;
     let registry = PairingRegistry::open(paths.pairing())?;
     let offer = registry.issue(
         receiver_url,
@@ -970,6 +973,15 @@ fn pair(paths: &Paths, svg_path: Option<&Path>) -> Result<(), CliError> {
     let rendered = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
     println!("{rendered}");
     Ok(())
+}
+
+fn receiver_identity(paths: &Paths) -> Result<TlsIdentity, CliError> {
+    let root = paths.state.join("louiselm/capture");
+    let committed = managed_registration::query(&root)?;
+    Ok(managed_registration::select_identity(
+        &paths.tls(),
+        committed.as_deref(),
+    )?)
 }
 
 fn write_pairing_svg(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
