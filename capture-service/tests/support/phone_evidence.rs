@@ -195,10 +195,10 @@ pub fn open(directory: &Path) -> Result<ActionEvidenceStore, ActionEvidenceError
 }
 
 pub fn initialize_store(directory: &Path) {
-    initialize(
-        directory,
-        &directory.with_extension("guard"),
-        &"02".repeat(32),
-        ActionEvidenceKind::Archive,
-    );
+    let guard = directory.with_extension("guard");
+    let receiver = "02".repeat(32);
+    initialize(directory, &guard, &receiver, ActionEvidenceKind::Archive);
+    let tls = guard.parent().unwrap();
+    initialize_barrier(tls, &receiver);
+    bind_barrier(tls, guard.file_name().unwrap().to_str().unwrap());
 }

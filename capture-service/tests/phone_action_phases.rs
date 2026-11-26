@@ -73,7 +73,7 @@ fn owner_phases_survive_restart_and_late_reports_cannot_downgrade() {
     };
     {
         let store = phone_evidence::open(&path).unwrap();
-        store.reserve(&request).unwrap();
+        store.reserve(&"09".repeat(16), &request).unwrap();
         store.report(&request, &accepted, 2000).unwrap();
         store.report(&request, &dispatched, 3000).unwrap();
         store.report(&request, &completed, 4000).unwrap();
@@ -95,7 +95,7 @@ fn unknown_after_acceptance_preserves_evidence_and_cannot_be_fenced() {
     let accepted = ActionOutcome::Accepted {
         evidence: "11".repeat(32),
     };
-    store.reserve(&request).unwrap();
+    store.reserve(&"09".repeat(16), &request).unwrap();
     store.report(&request, &accepted, 2000).unwrap();
     store
         .report(&request, &ActionOutcome::Unknown, 3000)
@@ -117,11 +117,15 @@ fn unknown_after_acceptance_preserves_evidence_and_cannot_be_fenced() {
     independent.operation_id = "08".repeat(16);
     independent.subject_id = "09".repeat(16);
     assert_eq!(
-        store.reserve_session_prompt(&independent, &[]),
+        store.reserve_session_prompt(&"09".repeat(16), &independent, &[]),
         Err(ActionEvidenceError::Unresolved)
     );
     assert_eq!(
-        store.reserve_session_prompt(&independent, std::slice::from_ref(&request.operation_id)),
+        store.reserve_session_prompt(
+            &"09".repeat(16),
+            &independent,
+            std::slice::from_ref(&request.operation_id)
+        ),
         Ok(ActionReservation::New)
     );
 }

@@ -584,6 +584,17 @@ fn owner_cli_recovers_a_proven_interrupted_update_and_rejects_rollback() {
     previous_guard["pending"] =
         serde_json::json!({"bytes":next_guard["bytes"],"sha256":next_guard["sha256"]});
     fs::write(&guard_path, serde_json::to_vec(&previous_guard).unwrap()).unwrap();
+    let pending_guard = fs::read(&guard_path).unwrap();
+    let cutoff = temp
+        .path()
+        .join("louiselm/capture/tls/phone-admission-cutoff.json");
+    let retained_cutoff = temp.path().join("retained-cutoff");
+    fs::rename(&cutoff, &retained_cutoff).unwrap();
+    let inspect = serde_json::json!({"v":1,"type":"inspect","identity":original});
+    assert_eq!(invoke(temp.path(), &inspect)["code"], "unavailable");
+    assert_eq!(fs::read(&guard_path).unwrap(), pending_guard);
+    assert_eq!(fs::read(path.join("seal.json")).unwrap(), previous_seal);
+    fs::rename(retained_cutoff, cutoff).unwrap();
     assert_eq!(invoke(temp.path(), &command(&original))["type"], "existing");
     assert_eq!(invoke(temp.path(), &command(&second))["type"], "existing");
 

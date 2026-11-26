@@ -46,11 +46,11 @@ local function exercise_phases(initialized)
     return result
   end
   MiniTest.expect.equality(run({ v = 1, type = "inspect_phases", identity = identity }).code, "unavailable")
-  local begun = run({ v = 1, type = "begin", identity = identity })
+  local begun = run({ v = 2, type = "begin", generation = string.rep("09", 16), identity = identity })
   if initialized then
     MiniTest.expect.equality(begun.type, "begun")
   else
-    MiniTest.expect.equality(begun, { v = 1, type = "error", code = "unavailable" })
+    MiniTest.expect.equality(begun, { v = 2, type = "error", code = "unavailable" })
   end
   for index, state in ipairs({ "accepted", "dispatched", "completed" }) do
     local report = {
@@ -112,6 +112,7 @@ local function exercise_detach(initialized)
   end
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()

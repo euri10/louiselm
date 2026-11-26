@@ -39,6 +39,7 @@ T["owner phases remain distinct after the accepted reply"] = function()
   end
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()
@@ -128,6 +129,7 @@ T["phase writes remain ordered when dispatch and completion overtake storage"] =
   end
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()
@@ -218,6 +220,7 @@ T["a failed phase report is retained for retry without confirming acceptance"] =
   end
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()

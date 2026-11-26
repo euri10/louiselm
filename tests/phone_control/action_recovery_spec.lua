@@ -26,6 +26,7 @@ T["detaching a begun unadmitted action persists a fence before recovery"] = func
   end
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()
@@ -100,6 +101,7 @@ T["detaching during admission cannot fence an accepted action"] = function()
   end
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()
@@ -166,6 +168,7 @@ T["a failed fence write cannot confirm safe recovery"] = function()
   local session = {}
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {},
     current = function()
@@ -240,6 +243,7 @@ T["detaching after admission but before its journal reply never fences"] = funct
   end
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()

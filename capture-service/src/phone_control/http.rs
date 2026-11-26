@@ -1719,7 +1719,7 @@ mod tests {
             .as_ref()
             .as_ref()
             .unwrap()
-            .reserve(&original)
+            .reserve_fixture(&original)
             .unwrap();
         drop(app);
         drop(service);
@@ -1803,7 +1803,7 @@ mod tests {
             recorded_at_ms: 1_000,
         };
         let store = service.evidence.as_ref().as_ref().unwrap();
-        store.reserve(&original).unwrap();
+        store.reserve_fixture(&original).unwrap();
         store
             .report(
                 &original,
@@ -1816,10 +1816,10 @@ mod tests {
         let mut hidden = original.clone();
         hidden.operation_id = "15".repeat(16);
         hidden.agent = "other".into();
-        store.reserve(&hidden).unwrap();
+        store.reserve_fixture(&hidden).unwrap();
         let mut second = original.clone();
         second.operation_id = "20".repeat(16);
-        store.reserve(&second).unwrap();
+        store.reserve_fixture(&second).unwrap();
         let (grant, period) = history_grant(
             &service,
             &app,

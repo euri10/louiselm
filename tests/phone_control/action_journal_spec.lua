@@ -11,6 +11,7 @@ local function exercise_journal(initialized)
     MiniTest.skip("set LOUISELM_TEST_CAPTURE to the built capture executable")
   end
   local root = nvim.fn.getcwd()
+  local generation = string.rep("09", 16)
   local directory = nvim.fn.tempname()
   local previous = nvim.env.LOUISELM_CAPTURE_STATE_DIR
   nvim.env.LOUISELM_CAPTURE_STATE_DIR = directory
@@ -47,11 +48,15 @@ local function exercise_journal(initialized)
     return result
   end
   MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }).code, "unavailable")
-  local fenced = call({ v = 1, type = "fence", identity = identity, at_ms = 2000 })
+  local fenced = call({ v = 2, type = "fence", generation = generation, identity = identity, at_ms = 2000 })
   if not initialized then
     local unavailable = { v = 1, type = "error", code = "unavailable" }
-    MiniTest.expect.equality(fenced, unavailable)
-    MiniTest.expect.equality(call({ v = 1, type = "begin", identity = identity }), unavailable)
+    local unavailable_v2 = { v = 2, type = "error", code = "unavailable" }
+    MiniTest.expect.equality(fenced, unavailable_v2)
+    MiniTest.expect.equality(
+      call({ v = 2, type = "begin", generation = generation, identity = identity }),
+      unavailable_v2
+    )
     MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }), unavailable)
     MiniTest.expect.equality(call({ v = 1, type = "inspect_phases", identity = identity }), unavailable)
     MiniTest.expect.equality(
@@ -65,7 +70,10 @@ local function exercise_journal(initialized)
       unavailable
     )
     identity.payload_hash = string.rep("08", 32)
-    MiniTest.expect.equality(call({ v = 1, type = "begin", identity = identity }), unavailable)
+    MiniTest.expect.equality(
+      call({ v = 2, type = "begin", generation = generation, identity = identity }),
+      unavailable_v2
+    )
     MiniTest.expect.equality(nvim.uv.fs_stat(directory .. "/louiselm/workflow/phone-action-owner"), nil)
     MiniTest.expect.equality(nvim.uv.fs_stat(directory .. "/louiselm/capture/tls/phone-action-owner.json.lock"), nil)
     return
@@ -73,12 +81,15 @@ local function exercise_journal(initialized)
   MiniTest.expect.equality(fenced.type, "fenced")
   local inspected = call({ v = 1, type = "inspect", identity = identity })
   MiniTest.expect.equality(inspected.outcome.fenced_no_effect.evidence, fenced.evidence)
-  local late = call({ v = 1, type = "begin", identity = identity })
+  local late = call({ v = 2, type = "begin", generation = generation, identity = identity })
   MiniTest.expect.equality(late.type, "existing")
   MiniTest.expect.equality(late.outcome.fenced_no_effect.evidence, fenced.evidence)
   identity.payload_hash = string.rep("08", 32)
   MiniTest.expect.equality(call({ v = 1, type = "inspect", identity = identity }).code, "conflict")
-  MiniTest.expect.equality(call({ v = 1, type = "begin", identity = identity }).code, "conflict")
+  MiniTest.expect.equality(
+    call({ v = 2, type = "begin", generation = generation, identity = identity }).code,
+    "conflict"
+  )
 end
 
 T["an uninitialized native journal refuses every operation without creating evidence"] = function()
@@ -105,13 +116,23 @@ T["unavailable helpers fail closed and disposal suppresses late callbacks"] = fu
   local journal =
     Journal.new({ service = { "/bin/sh", nvim.fn.getcwd() .. "/tests/fixtures/phone_action_journal_stub.sh" } })
   local begun
-  journal:run({ v = 1, type = "begin" }, function(value)
+  local request = { v = 2, type = "begin", generation = string.rep("09", 16) }
+  journal:run(request, function(value)
     begun = value
   end)
+  request.v = 1
   assert(nvim.wait(5000, function()
     return begun ~= nil
   end))
   MiniTest.expect.equality(begun.type, "begun")
+  local mismatched
+  journal:run({ v = 1, type = "begin" }, function(value)
+    mismatched = value
+  end)
+  assert(nvim.wait(5000, function()
+    return mismatched ~= nil
+  end))
+  MiniTest.expect.equality(mismatched.code, "unavailable")
   local malformed
   journal:run({ v = 1, type = "fence" }, function(value)
     malformed = value

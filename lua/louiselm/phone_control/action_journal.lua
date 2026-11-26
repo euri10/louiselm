@@ -44,7 +44,10 @@ local function outcome_name(outcome)
   return nil
 end
 
-local function parse(output)
+local function parse(output, version)
+  if version ~= 1 and version ~= 2 then
+    return nil
+  end
   if type(output) ~= "string" or #output > 1024 or output:find("\\", 1, true) then
     return nil
   end
@@ -55,11 +58,11 @@ local function parse(output)
     end
     seen[name] = true
   end
-  if not output:match('"v":1[,}]') then
+  if not output:match('"v":' .. version .. "[,}]") then
     return nil
   end
   local ok, value = pcall(nvim.json.decode, output)
-  if not ok or type(value) ~= "table" or value.v ~= 1 then
+  if not ok or type(value) ~= "table" or value.v ~= version then
     return nil
   end
   if value.type == "begun" or value.type == "recorded" or value.type == "uncertain" then
@@ -150,6 +153,7 @@ function Journal:run(message, callback)
   if self.disposed then
     return
   end
+  local version = type(message) == "table" and message.v or nil
   local encoded, input = pcall(nvim.json.encode, message)
   if not encoded or #input + 1 > 262144 then
     nvim.schedule(unavailable)
@@ -170,7 +174,7 @@ function Journal:run(message, callback)
       if self.disposed then
         return
       end
-      local value = response.code == 0 and parse(response.stdout) or nil
+      local value = response.code == 0 and parse(response.stdout, version) or nil
       callback(value or { v = 1, type = "error", code = "unavailable" })
     end)
   end)

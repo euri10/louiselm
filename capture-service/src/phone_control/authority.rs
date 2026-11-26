@@ -2448,7 +2448,7 @@ mod tests {
             agent: "codex".into(),
             recorded_at_ms: 1_000,
         };
-        store.reserve(&original).unwrap();
+        store.reserve_fixture(&original).unwrap();
         let first = signed_history(&grant, &lease, &original, 300);
         assert!(matches!(
             authority.read_history(&store, "phone", &first, now + Duration::from_secs(299)),
@@ -2488,7 +2488,7 @@ mod tests {
             agent: "codex".into(),
             recorded_at_ms: 1_000,
         };
-        store.reserve(&original).unwrap();
+        store.reserve_fixture(&original).unwrap();
         ticks.store(10_000 + 299 * 100, Ordering::SeqCst);
         assert!(matches!(
             authority.read_history(

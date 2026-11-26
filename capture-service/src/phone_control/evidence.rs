@@ -17,7 +17,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::{MAX_INTEGER, barrier::BarrierBinding, fixed, valid_string};
+use super::{
+    MAX_INTEGER,
+    barrier::{Barrier, BarrierBinding},
+    fixed, valid_string,
+};
 use crate::{
     hex::lower_hex,
     permissions::set_private_permissions,
@@ -245,7 +249,54 @@ impl ActionEvidenceStore {
         kind: ActionEvidenceKind,
     ) -> Result<Self, ActionEvidenceError> {
         fixed::<32>(receiver).map_err(|_| ActionEvidenceError::Unavailable)?;
-        let guard_lock_path = guard_lock_path(guard.as_ref());
+        let directory = directory.as_ref();
+        let guard = guard.as_ref();
+        let record = read_guard(guard, receiver, kind)?;
+        if record.pending.is_some() {
+            let binding = record.barrier.ok_or(ActionEvidenceError::Unavailable)?;
+            let tls = guard.parent().ok_or(ActionEvidenceError::Unavailable)?;
+            let barrier = Barrier::existing(tls, receiver, binding.clone()).map_err(unavailable)?;
+            return barrier
+                .with_generation(&record.generation, || {
+                    Self::open_bound_under_barrier(
+                        directory,
+                        guard,
+                        receiver,
+                        kind,
+                        &record.generation,
+                        &binding,
+                    )
+                })
+                .map_err(unavailable)?;
+        }
+        Self::open_bound_inner(directory, guard, receiver, kind, None)
+    }
+
+    pub(super) fn open_bound_under_barrier(
+        directory: &Path,
+        guard: &Path,
+        receiver: &str,
+        kind: ActionEvidenceKind,
+        generation: &str,
+        binding: &BarrierBinding,
+    ) -> Result<Self, ActionEvidenceError> {
+        Self::open_bound_inner(
+            directory,
+            guard,
+            receiver,
+            kind,
+            Some((generation, binding)),
+        )
+    }
+
+    fn open_bound_inner(
+        directory: &Path,
+        guard: &Path,
+        receiver: &str,
+        kind: ActionEvidenceKind,
+        held: Option<(&str, &BarrierBinding)>,
+    ) -> Result<Self, ActionEvidenceError> {
+        let guard_lock_path = guard_lock_path(guard);
         let guard_file = PHONE_LOCKS
             .open_rw(&guard_lock_path, false)
             .map_err(unavailable)?;
@@ -263,12 +314,20 @@ impl ActionEvidenceStore {
                 .acquire(&guard_lock_path, guard_identity, LOCK_TIMEOUT)
                 .map_err(unavailable)?,
         );
-        let mut store = Self::open_inner(directory.as_ref(), false)?;
+        let mut store = Self::open_inner(directory, false)?;
         store.guard_lock = Some(guard_lock);
         store.verify_lock()?;
-        let record = read_guard(guard.as_ref(), receiver, kind)?;
+        let record = read_guard(guard, receiver, kind)?;
+        if held.is_some_and(|(generation, binding)| {
+            record.generation != generation || record.barrier.as_ref() != Some(binding)
+        }) {
+            return Err(ActionEvidenceError::Unavailable);
+        }
         if record.pending.is_some() {
-            recover_update(&store.directory, guard.as_ref(), receiver, record)?;
+            if held.is_none() {
+                return Err(ActionEvidenceError::Unavailable);
+            }
+            recover_update(&store.directory, guard, receiver, record)?;
         }
         let snapshot = load(&store.directory)?;
         if snapshot
@@ -279,9 +338,9 @@ impl ActionEvidenceStore {
             return Err(ActionEvidenceError::Unavailable);
         }
         let bytes = read_bounded(&store.directory.join("actions.json"), MAX_STORE_BYTES)?;
-        let record = verify_guard(guard.as_ref(), receiver, kind, &bytes)?;
+        let record = verify_guard(guard, receiver, kind, &bytes)?;
         store.guard = Some(GuardBinding {
-            path: guard.as_ref().to_owned(),
+            path: guard.to_owned(),
             receiver: receiver.to_owned(),
             generation: record.generation,
             barrier: record.barrier,
@@ -374,16 +433,41 @@ impl ActionEvidenceStore {
         })
     }
 
-    /// Reserve an authenticated action before any forwarding or effect.
+    // The caller holds the owner barrier across this durable reservation.
+    pub(super) fn reserve_owner(
+        &self,
+        identity: &ActionIdentity,
+    ) -> Result<ActionReservation, ActionEvidenceError> {
+        if self
+            .guard
+            .as_ref()
+            .is_some_and(|guard| guard.kind != ActionEvidenceKind::Owner)
+        {
+            return Err(ActionEvidenceError::Unavailable);
+        }
+        self.reserve_inner(identity, None)
+    }
+
+    /// Reserve an authenticated action before forwarding or effect.
     ///
-    /// Existing reservations must never be forwarded again. A changed binding
-    /// for the same operation is a conflict, even under a different grant.
-    /// Callers remain responsible for current authority and native-owner guards.
+    /// `generation` must be bound to the original controller. A Session prompt
+    /// additionally needs the unresolved-action checks in `reserve_session_prompt`.
+    /// Existing reservations must not be forwarded again; changed bindings
+    /// conflict even under a different grant. Callers must check authority.
     ///
     /// # Errors
     ///
     /// Returns a malformed, conflicting, or unavailable refusal.
     pub fn reserve(
+        &self,
+        generation: &str,
+        identity: &ActionIdentity,
+    ) -> Result<ActionReservation, ActionEvidenceError> {
+        self.with_archive_generation(generation, || self.reserve_inner(identity, None))
+    }
+
+    #[cfg(test)]
+    pub(super) fn reserve_fixture(
         &self,
         identity: &ActionIdentity,
     ) -> Result<ActionReservation, ActionEvidenceError> {
@@ -392,7 +476,8 @@ impl ActionEvidenceStore {
 
     /// Reserve a Session prompt only after every unknown action is accounted for.
     ///
-    /// The caller must authenticate the request and resolve the subject's scope
+    /// The caller must supply the generation bound to the original controller,
+    /// authenticate the request and resolve the subject's scope
     /// through the native owner. `independent` contains only operation IDs the
     /// native owner has proved independent of this exact prompt; a different
     /// controller or subject ID alone does not establish independence. This
@@ -402,6 +487,43 @@ impl ActionEvidenceStore {
     ///
     /// Returns an unresolved, malformed, conflicting, or unavailable refusal.
     pub fn reserve_session_prompt(
+        &self,
+        generation: &str,
+        identity: &ActionIdentity,
+        independent: &[String],
+    ) -> Result<ActionReservation, ActionEvidenceError> {
+        self.with_archive_generation(generation, || {
+            self.reserve_session_prompt_inner(identity, independent)
+        })
+    }
+
+    fn with_archive_generation<T>(
+        &self,
+        generation: &str,
+        operation: impl FnOnce() -> Result<T, ActionEvidenceError>,
+    ) -> Result<T, ActionEvidenceError> {
+        let guard = self
+            .guard
+            .as_ref()
+            .ok_or(ActionEvidenceError::Unavailable)?;
+        if guard.kind != ActionEvidenceKind::Archive || guard.generation != generation {
+            return Err(ActionEvidenceError::Unavailable);
+        }
+        let binding = guard
+            .barrier
+            .clone()
+            .ok_or(ActionEvidenceError::Unavailable)?;
+        let tls = guard
+            .path
+            .parent()
+            .ok_or(ActionEvidenceError::Unavailable)?;
+        let barrier = Barrier::existing(tls, &guard.receiver, binding).map_err(unavailable)?;
+        barrier
+            .with_generation(generation, operation)
+            .map_err(unavailable)?
+    }
+
+    fn reserve_session_prompt_inner(
         &self,
         identity: &ActionIdentity,
         independent: &[String],
@@ -1078,6 +1200,120 @@ mod tests {
     };
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The scenario checks the same bound archive before, during, and after barrier loss."
+    )]
+    fn archive_reservation_is_serialized_with_generation_and_refuses_a_lost_barrier() {
+        use std::{sync::mpsc, time::Duration};
+
+        let root = tempfile::tempdir().unwrap();
+        let tls = root.path().join("tls");
+        std::fs::create_dir(&tls).unwrap();
+        let (receiver, generation, registrar) = super::super::barrier::receiver_fixture(&tls);
+        let anchor: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(tls.join("phone-admission-barrier.json")).unwrap(),
+        )
+        .unwrap();
+        let body = &anchor["body"];
+        let binding: super::BarrierBinding = serde_json::from_value(serde_json::json!({
+            "anchor": body["anchor"], "lock": body["lock"], "lock_nonce": body["lock_nonce"],
+            "registrar": body["registrar"], "registrar_nonce": body["registrar_nonce"],
+            "cutoff": body["cutoff"], "cutoff_nonce": body["cutoff_nonce"],
+        }))
+        .unwrap();
+        let barrier = super::Barrier::existing(&tls, &receiver, binding.clone()).unwrap();
+        let directory = root.path().join("actions");
+        let guard = tls.join("phone-action-evidence.json");
+        super::initialize_receiver_fixture(&directory, &guard, &receiver);
+        let bytes = std::fs::read(directory.join("actions.json")).unwrap();
+        super::write_guard(
+            &super::GuardBinding {
+                path: guard.clone(),
+                receiver: receiver.clone(),
+                generation: generation.clone(),
+                barrier: Some(binding),
+                kind: super::ActionEvidenceKind::Archive,
+            },
+            &bytes,
+        )
+        .unwrap();
+        let store = ActionEvidenceStore::open_bound(
+            &directory,
+            &guard,
+            &receiver,
+            super::ActionEvidenceKind::Archive,
+        )
+        .unwrap();
+        let identity = ActionIdentity {
+            operation_id: "01".repeat(16),
+            receiver_identity: receiver,
+            controller_id: "03".repeat(16),
+            subject_id: "04".repeat(16),
+            action: 3,
+            payload_hash: "05".repeat(32),
+            grant_id: "06".repeat(16),
+            grant_revision: 1,
+            period_id: "07".repeat(16),
+            expected_revision: 1,
+            project: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1,
+        };
+        assert_eq!(
+            store.reserve_session_prompt(&"08".repeat(16), &identity, &[]),
+            Err(ActionEvidenceError::Unavailable)
+        );
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            barrier
+                .with_generation(&generation, || {
+                    scope.spawn(|| {
+                        started_tx.send(()).unwrap();
+                        result_tx
+                            .send(store.reserve_session_prompt(&generation, &identity, &[]))
+                            .unwrap();
+                    });
+                    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                    assert_eq!(
+                        result_rx.recv_timeout(Duration::from_millis(100)),
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                    );
+                })
+                .unwrap();
+            assert_eq!(
+                result_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Ok(ActionReservation::New)
+            );
+        });
+        assert_eq!(
+            store.lookup(&identity.operation_id).unwrap().outcome,
+            ActionOutcome::Unknown
+        );
+        let mut next = identity.clone();
+        next.operation_id = "02".repeat(16);
+        std::fs::remove_file(tls.join("phone-admission-cutoff.json")).unwrap();
+        assert_eq!(
+            store.reserve_session_prompt(
+                &generation,
+                &next,
+                std::slice::from_ref(&identity.operation_id)
+            ),
+            Err(ActionEvidenceError::Unavailable)
+        );
+        assert_eq!(
+            store.lookup(&next.operation_id),
+            Err(ActionEvidenceError::Unavailable)
+        );
+        drop(registrar);
+    }
+
+    #[test]
     fn lock_releases_even_when_its_descriptor_was_cloned() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("actions");
@@ -1112,7 +1348,7 @@ mod tests {
             agent: "codex".into(),
             recorded_at_ms: 1,
         };
-        store.reserve(&original).unwrap();
+        store.reserve_fixture(&original).unwrap();
         let result = store.access(|snapshot| {
             for number in 0..2_100 {
                 let mut identity = original.clone();
@@ -1161,24 +1397,27 @@ mod tests {
             recorded_at_ms: 1,
         };
         assert_eq!(
-            store.reserve_session_prompt(&first, &[]),
+            store.reserve_session_prompt_inner(&first, &[]),
             Ok(ActionReservation::New)
         );
         let mut next = first.clone();
         next.operation_id = "08".repeat(16);
         assert_eq!(
-            store.reserve_session_prompt(&next, &[]),
+            store.reserve_session_prompt_inner(&next, &[]),
             Err(ActionEvidenceError::Unresolved)
         );
         let mut independent = next.clone();
         independent.operation_id = "0b".repeat(16);
         independent.subject_id = "09".repeat(16);
         assert_eq!(
-            store.reserve_session_prompt(&independent, &[]),
+            store.reserve_session_prompt_inner(&independent, &[]),
             Err(ActionEvidenceError::Unresolved)
         );
         assert_eq!(
-            store.reserve_session_prompt(&independent, std::slice::from_ref(&first.operation_id)),
+            store.reserve_session_prompt_inner(
+                &independent,
+                std::slice::from_ref(&first.operation_id)
+            ),
             Ok(ActionReservation::New)
         );
         store
@@ -1191,7 +1430,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            store.reserve_session_prompt(&next, std::slice::from_ref(&independent.operation_id)),
+            store.reserve_session_prompt_inner(
+                &next,
+                std::slice::from_ref(&independent.operation_id)
+            ),
             Ok(ActionReservation::New)
         );
     }

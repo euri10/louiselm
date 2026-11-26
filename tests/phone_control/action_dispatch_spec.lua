@@ -9,6 +9,48 @@ local Chat = require("louiselm.ui.chat")
 
 local T = MiniTest.new_set()
 
+T["an action without a bound generation cannot reserve or authorize"] = function()
+  local called = false
+  local session = {}
+  local action = Action.new({
+    journal = {
+      run = function()
+        called = true
+      end,
+    },
+    session = session,
+    projection = {},
+    current = function()
+      return true
+    end,
+    authorize = function()
+      called = true
+    end,
+  })
+  MiniTest.finally(function()
+    action:dispose()
+  end)
+  local text = "phone text"
+  local result
+  action:send(
+    {
+      action = 3,
+      operation_id = string.rep("01", 16),
+      expected_revision = 1,
+      payload_hash = nvim.fn.sha256(string.char(1) .. text),
+    },
+    text,
+    function(value)
+      result = value
+    end
+  )
+  assert(nvim.wait(5000, function()
+    return result ~= nil
+  end))
+  MiniTest.expect.equality(result.code, "unavailable")
+  MiniTest.expect.equality(called, false)
+end
+
 T["a stale Session is durably fenced before the refusal is returned"] = function()
   local calls, released, prompt_count = {}, 0, 0
   local journal = {}
@@ -29,6 +71,7 @@ T["a stale Session is durably fenced before the refusal is returned"] = function
   owner.sessions.s = session
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()
@@ -67,6 +110,8 @@ T["a stale Session is durably fenced before the refusal is returned"] = function
   end))
   MiniTest.expect.equality(result.state, "fenced_no_effect")
   MiniTest.expect.equality(result.code, "stale_subject")
+  MiniTest.expect.equality(calls[1].v, 2)
+  MiniTest.expect.equality(calls[1].generation, string.rep("09", 16))
   MiniTest.expect.equality(calls[2].outcome.fenced_no_effect.evidence, result.evidence)
   MiniTest.expect.equality(prompt_count, 0)
   MiniTest.expect.equality(released, 1)
@@ -101,6 +146,7 @@ T["a lost owner report never confirms or repeats an admitted prompt"] = function
   owner.sessions.s = session
   local action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = {
       page = function()
@@ -210,6 +256,7 @@ local function exercise_real_session(initialized)
   local authorizations, releases = 0, 0
   action = Action.new({
     journal = journal,
+    generation = string.rep("09", 16),
     session = session,
     projection = projection,
     current = function()

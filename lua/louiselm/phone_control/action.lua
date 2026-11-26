@@ -9,6 +9,7 @@ Action.__index = Action
 
 ---@class louiselm.phone_control.ActionOptions
 ---@field journal table
+---@field generation string? Receiver generation bound to this controller.
 ---@field session louiselm.session.Session
 ---@field projection table
 ---@field current fun(): boolean
@@ -45,6 +46,14 @@ end
 ---@param callback fun(result: table) Called at most once on the main loop.
 function Action:send(identity, text, callback)
   if self.disposed or self.pending then
+    nvim.schedule(function()
+      if not self.disposed then
+        callback(failure("unavailable"))
+      end
+    end)
+    return
+  end
+  if type(self.generation) ~= "string" or #self.generation ~= 32 or self.generation:match("^[0-9a-f]+$") == nil then
     nvim.schedule(function()
       if not self.disposed then
         callback(failure("unavailable"))
@@ -140,7 +149,7 @@ function Action:send(identity, text, callback)
       finish(failure("unavailable"))
     end
   end
-  self.journal:run({ v = 1, type = "begin", identity = identity }, function(result)
+  self.journal:run({ v = 2, type = "begin", generation = self.generation, identity = identity }, function(result)
     if began or self.disposed then
       return
     end
@@ -273,6 +282,7 @@ end
 function M.new(options)
   return setmetatable({
     journal = options.journal,
+    generation = options.generation,
     session = options.session,
     projection = options.projection,
     current = options.current,

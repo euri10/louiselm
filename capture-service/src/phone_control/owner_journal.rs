@@ -18,7 +18,7 @@ use crate::phone_control::evidence::{
 };
 use crate::phone_control::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
-    ActionReservation, MAX_FRAME, MAX_INTEGER,
+    ActionReservation, MAX_FRAME, MAX_INTEGER, barrier::BarrierBinding,
 };
 
 #[cfg(test)]
@@ -182,7 +182,7 @@ fn with_generation<T>(
         .map_err(|_| ActionEvidenceError::Unavailable)?;
     barrier
         .with_generation(generation, || {
-            let journal = OwnerJournal::open(path)?;
+            let journal = OwnerJournal::open_for_generation(path, &receiver, generation, &binding)?;
             if journal.store.bound_generation() != Some(generation)
                 || journal.store.bound_barrier() != Some(&binding)
             {
@@ -194,6 +194,36 @@ fn with_generation<T>(
 }
 
 impl OwnerJournal {
+    #[cfg(test)]
+    fn open_for_generation(
+        path: &Path,
+        _receiver: &str,
+        _generation: &str,
+        _binding: &BarrierBinding,
+    ) -> Result<Self, ActionEvidenceError> {
+        Self::open(path)
+    }
+
+    #[cfg(not(test))]
+    fn open_for_generation(
+        path: &Path,
+        receiver: &str,
+        generation: &str,
+        binding: &BarrierBinding,
+    ) -> Result<Self, ActionEvidenceError> {
+        let tls = tls_directory(path)?;
+        Ok(Self {
+            store: ActionEvidenceStore::open_bound_under_barrier(
+                path,
+                &tls.join("phone-action-owner.json"),
+                receiver,
+                super::ActionEvidenceKind::Owner,
+                generation,
+                binding,
+            )?,
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn open(path: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
         Ok(Self {
@@ -239,7 +269,7 @@ impl OwnerJournal {
     }
 
     pub(super) fn begin(&self, identity: &ActionIdentity) -> Result<Begin, ActionEvidenceError> {
-        match self.store.reserve(identity)? {
+        match self.store.reserve_owner(identity)? {
             ActionReservation::New => Ok(Begin::New),
             ActionReservation::Existing => Ok(Begin::Existing(
                 self.store.lookup(&identity.operation_id)?.outcome,
@@ -264,7 +294,7 @@ impl OwnerJournal {
         if at_ms < identity.recorded_at_ms || at_ms > MAX_INTEGER {
             return Err(ActionEvidenceError::Malformed);
         }
-        match self.store.reserve(identity)? {
+        match self.store.reserve_owner(identity)? {
             ActionReservation::Existing => {
                 match self.store.lookup(&identity.operation_id)?.outcome {
                     ActionOutcome::FencedNoEffect { evidence } => Ok(Fence::Fenced(evidence)),
