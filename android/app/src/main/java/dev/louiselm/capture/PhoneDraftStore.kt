@@ -41,7 +41,36 @@ internal class PhoneDraftStore(private val root: File) {
     }
 
     /** Publish a complete replacement atomically; refusal leaves the previous ciphertext untouched. */
-    fun save(draft: PhoneDraft, key: SecretKey, onlyIfAbsentOrSame: Boolean = false, mayCommit: () -> Boolean): PhoneDraftSave {
+    fun save(draft: PhoneDraft, key: SecretKey, onlyIfAbsentOrSame: Boolean = false, mayCommit: () -> Boolean): PhoneDraftSave =
+        save(draft, key, onlyIfAbsentOrSame, null, mayCommit)
+
+    /** Fill only the exact empty draft recorded with a voice job, retaining its selected context. */
+    fun fillVoiceTranscript(source: PhoneOfflineSource, revision: String, text: String, key: SecretKey, mayCommit: () -> Boolean): PhoneDraftSave {
+        if (!revision.matches(Regex("[0-9a-f]{64}"))) return PhoneDraftSave.INVALID
+        var refusal = PhoneDraftSave.CONFLICT
+        val original = locked {
+            if (!mayCommit()) {
+                refusal = PhoneDraftSave.CANCELLED
+                return@locked null
+            }
+            val file = File(root, "${id(source)}.draft")
+            if (!file.exists()) return@locked null
+            if (!keyMatches(key, false)) {
+                refusal = PhoneDraftSave.DAMAGED
+                return@locked null
+            }
+            val draft = try { read(file, key) } catch (_: IOException) { refusal = PhoneDraftSave.DAMAGED; return@locked null }
+            catch (_: GeneralSecurityException) { refusal = PhoneDraftSave.DAMAGED; return@locked null }
+            catch (_: IllegalArgumentException) { refusal = PhoneDraftSave.DAMAGED; return@locked null }
+            catch (_: JSONException) { refusal = PhoneDraftSave.DAMAGED; return@locked null }
+            val currentRevision = phoneControlHex(MessageDigest.getInstance("SHA-256").digest(readCiphertext(file)))
+            if (draft.source != source || draft.text.isNotEmpty() || currentRevision != revision) return@locked null
+            draft
+        } ?: return refusal
+        return save(original.copy(text = text), key, false, revision, mayCommit)
+    }
+
+    private fun save(draft: PhoneDraft, key: SecretKey, onlyIfAbsentOrSame: Boolean, expectedRevision: String?, mayCommit: () -> Boolean): PhoneDraftSave {
         val id = id(draft.source)
         if (!validText(draft.text)) return PhoneDraftSave.INVALID
         if (draft.text.toByteArray(Charsets.UTF_8).size > MAX_DRAFT_BYTES || draft.context.size > MAX_SELECTIONS) return PhoneDraftSave.BYTE_LIMIT
@@ -59,8 +88,14 @@ internal class PhoneDraftStore(private val root: File) {
                 catch (_: GeneralSecurityException) { return@locked PhoneDraftSave.DAMAGED }
                 catch (_: IllegalArgumentException) { return@locked PhoneDraftSave.DAMAGED }
                 catch (_: JSONException) { return@locked PhoneDraftSave.DAMAGED }
+                if (expectedRevision != null && phoneControlHex(MessageDigest.getInstance("SHA-256").digest(readCiphertext(existing))) != expectedRevision) {
+                    return@locked PhoneDraftSave.CONFLICT
+                }
                 if (onlyIfAbsentOrSame) return@locked if (old == draft) PhoneDraftSave.SAVED else PhoneDraftSave.CONFLICT
-            } else if (files.size >= MAX_DRAFTS) return@locked PhoneDraftSave.COUNT_LIMIT
+            } else {
+                if (expectedRevision != null) return@locked PhoneDraftSave.CONFLICT
+                if (files.size >= MAX_DRAFTS) return@locked PhoneDraftSave.COUNT_LIMIT
+            }
             val used = files.sumOf { it.length() }
             if (used - (existing?.length() ?: 0L) + encrypted.size > MAX_TOTAL_BYTES) return@locked PhoneDraftSave.BYTE_LIMIT
             val temporary = File.createTempFile(".draft-", ".tmp", root)

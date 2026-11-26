@@ -25,6 +25,7 @@ mod runs;
 mod store;
 mod time;
 mod transcription;
+mod voice;
 
 pub use attention::{
     AttentionCode, AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionKind,
@@ -71,3 +72,4 @@ pub use store::{Capture, IngestOutcome, MAX_CAPTURE_BYTES, Store, StoreError};
 pub use transcription::{
     Transcriber, TranscriptRequest, TranscriptionError, TranscriptionErrorKind, TranscriptionWorker,
 };
+pub use voice::{VoiceArchive, VoiceAssociation, VoiceJob, VoiceStatus, VoiceTranscriptionWorker};
