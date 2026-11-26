@@ -21,7 +21,7 @@ import org.json.JSONObject
 internal data class PhoneDraftSelection(val source: PhoneOfflineSource, val page: PhoneControlReply.SessionPage)
 internal data class PhoneDraft(val source: PhoneOfflineSource, val text: String, val context: List<PhoneDraftSelection>)
 internal data class PhoneDraftListing(val drafts: List<PhoneDraft>, val damaged: List<String>)
-internal enum class PhoneDraftSave { SAVED, BYTE_LIMIT, COUNT_LIMIT, DAMAGED, CANCELLED, INVALID }
+internal enum class PhoneDraftSave { SAVED, BYTE_LIMIT, COUNT_LIMIT, DAMAGED, CANCELLED, INVALID, CONFLICT }
 
 /** Separate encrypted phone work. Call on a background thread with the locally unlocked draft key. */
 internal class PhoneDraftStore(private val root: File) {
@@ -31,8 +31,17 @@ internal class PhoneDraftStore(private val root: File) {
         return phoneControlHex(MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8)))
     }
 
+    /** The authenticated ciphertext identifies this exact saved version, including after recreation. */
+    fun revision(draft: PhoneDraft, key: SecretKey): String? = locked {
+        val file = File(root, "${id(draft.source)}.draft")
+        if (!file.exists()) return@locked null
+        if (!keyMatches(key, false)) throw IOException("draft key changed")
+        if (read(file, key) != draft) return@locked null
+        phoneControlHex(MessageDigest.getInstance("SHA-256").digest(readCiphertext(file)))
+    }
+
     /** Publish a complete replacement atomically; refusal leaves the previous ciphertext untouched. */
-    fun save(draft: PhoneDraft, key: SecretKey, mayCommit: () -> Boolean): PhoneDraftSave {
+    fun save(draft: PhoneDraft, key: SecretKey, onlyIfAbsentOrSame: Boolean = false, mayCommit: () -> Boolean): PhoneDraftSave {
         val id = id(draft.source)
         if (!validText(draft.text)) return PhoneDraftSave.INVALID
         if (draft.text.toByteArray(Charsets.UTF_8).size > MAX_DRAFT_BYTES || draft.context.size > MAX_SELECTIONS) return PhoneDraftSave.BYTE_LIMIT
@@ -46,10 +55,11 @@ internal class PhoneDraftStore(private val root: File) {
             val destination = File(root, "$id.draft")
             val existing = files.firstOrNull { it.name == destination.name }
             if (existing != null) {
-                try { read(existing, key) } catch (_: IOException) { return@locked PhoneDraftSave.DAMAGED }
+                val old = try { read(existing, key) } catch (_: IOException) { return@locked PhoneDraftSave.DAMAGED }
                 catch (_: GeneralSecurityException) { return@locked PhoneDraftSave.DAMAGED }
                 catch (_: IllegalArgumentException) { return@locked PhoneDraftSave.DAMAGED }
                 catch (_: JSONException) { return@locked PhoneDraftSave.DAMAGED }
+                if (onlyIfAbsentOrSame) return@locked if (old == draft) PhoneDraftSave.SAVED else PhoneDraftSave.CONFLICT
             } else if (files.size >= MAX_DRAFTS) return@locked PhoneDraftSave.COUNT_LIMIT
             val used = files.sumOf { it.length() }
             if (used - (existing?.length() ?: 0L) + encrypted.size > MAX_TOTAL_BYTES) return@locked PhoneDraftSave.BYTE_LIMIT
@@ -136,20 +146,27 @@ internal class PhoneDraftStore(private val root: File) {
 
     private fun read(file: File, key: SecretKey): PhoneDraft {
         val id = file.name.removeSuffix(".draft")
-        if (!id.matches(Regex("[0-9a-f]{64}")) || Files.isSymbolicLink(file.toPath()) ||
-            file.length() !in OVERHEAD.toLong()..MAX_DRAFT_BYTES.toLong()) throw IOException("invalid draft record")
-        val encrypted = DataInputStream(FileInputStream(file)).use { input ->
-            val bytes = ByteArray(file.length().toInt())
-            input.readFully(bytes)
-            if (input.read() != -1) throw IOException("draft length changed")
-            bytes
-        }
+        if (!id.matches(Regex("[0-9a-f]{64}"))) throw IOException("invalid draft record")
+        val encrypted = readCiphertext(file)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, encrypted, 0, NONCE_BYTES))
         cipher.updateAAD(id.toByteArray(Charsets.US_ASCII))
         val draft = decode(cipher.doFinal(encrypted, NONCE_BYTES, encrypted.size - NONCE_BYTES))
         if (id(draft.source) != id) throw IOException("draft identity changed")
         return draft
+    }
+
+    private fun readCiphertext(file: File): ByteArray {
+        val size = file.length()
+        if (Files.isSymbolicLink(file.toPath()) || !file.isFile || size !in OVERHEAD.toLong()..MAX_DRAFT_BYTES.toLong()) {
+            throw IOException("invalid draft record")
+        }
+        return DataInputStream(FileInputStream(file)).use { input ->
+            val bytes = ByteArray(size.toInt())
+            input.readFully(bytes)
+            if (input.read() != -1) throw IOException("draft length changed")
+            bytes
+        }
     }
 
     private fun records(): List<File> = (root.listFiles() ?: throw IOException("draft directory unavailable"))

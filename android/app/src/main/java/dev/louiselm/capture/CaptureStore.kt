@@ -3,9 +3,11 @@ package dev.louiselm.capture
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import org.json.JSONObject
+import java.io.DataInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
@@ -36,8 +38,8 @@ internal data class CaptureRecord(
     val audio: File,
 )
 
-internal class CaptureStore(context: Context) {
-    private val root = File(context.applicationContext.filesDir, "captures")
+internal class CaptureStore(context: Context, voice: Boolean = false) {
+    private val root = File(context.applicationContext.filesDir, if (voice) "voice-captures-v1" else "captures")
 
     init {
         check(root.mkdirs() || root.isDirectory) { "capture directory could not be created" }
@@ -124,6 +126,36 @@ internal class CaptureStore(context: Context) {
             .toList()
     }
 
+    fun find(id: String): CaptureRecord? {
+        require(runCatching { UUID.fromString(id).toString() == id }.getOrDefault(false)) { "capture ID is invalid" }
+        val directory = File(root, id)
+        if (!directory.exists()) return null
+        require(directory.isDirectory && !Files.isSymbolicLink(directory.toPath())) { "capture directory is invalid" }
+        return load(directory)
+    }
+
+    fun recoverOne(id: String): CaptureRecord? {
+        find(id)?.let { return it }
+        val metadata = File(root, ".recording-$id.json")
+        if (Files.isSymbolicLink(metadata.toPath()) || !metadata.isFile) return null
+        val size = metadata.length()
+        if (size !in 1L..4096L) throw IOException("pending capture metadata is invalid")
+        val bytes = DataInputStream(FileInputStream(metadata)).use { input ->
+            val data = ByteArray(size.toInt())
+            input.readFully(data)
+            if (input.read() != -1) throw IOException("pending capture metadata changed")
+            data
+        }
+        val value = JSONObject(String(bytes, Charsets.UTF_8))
+        if (value.getString("id") != id) throw IOException("pending capture identity is invalid")
+        val audio = File(root, ".recording-$id.m4a")
+        val incoming = File(root, ".incoming-$id")
+        if (Files.isSymbolicLink(audio.toPath()) || Files.isSymbolicLink(incoming.toPath()) ||
+            Files.isSymbolicLink(File(incoming, AUDIO_NAME).toPath())) throw IOException("invalid pending capture path")
+        recover(metadata, null, value)
+        return find(id)
+    }
+
     fun markUploaded(id: String, receiverIdentitySha256: String): Boolean {
         val directory = captureDirectory(id)
         val state = readState(directory)
@@ -205,8 +237,7 @@ internal class CaptureStore(context: Context) {
         )
     }
 
-    private fun recover(metadata: File, receiverIdentitySha256: String?) {
-        val value = JSONObject(metadata.readText())
+    private fun recover(metadata: File, receiverIdentitySha256: String?, value: JSONObject = JSONObject(metadata.readText())) {
         val id = value.getString("id")
         require(runCatching { UUID.fromString(id) }.isSuccess) { "pending capture ID is invalid" }
         val recordedAtMs = value.getLong("recorded_at_ms")

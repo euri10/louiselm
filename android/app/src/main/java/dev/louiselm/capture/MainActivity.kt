@@ -233,26 +233,16 @@ class MainActivity : Activity() {
         startRecording()
     }
 
-    @Suppress("DEPRECATION")
     private fun startRecording() {
         val pending = captureStore.begin()
-        val newRecorder = MediaRecorder()
+        val newRecorder: MediaRecorder
         try {
-            newRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            newRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            newRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            newRecorder.setAudioSamplingRate(44_100)
-            newRecorder.setAudioEncodingBitRate(128_000)
-            newRecorder.setOutputFile(pending.file.absolutePath)
-            newRecorder.prepare()
-            newRecorder.start()
+            newRecorder = startCaptureRecorder(pending.file)
         } catch (error: RuntimeException) {
-            newRecorder.release()
             captureStore.abort(pending)
             statusView.text = getString(R.string.recording_failed, error.message ?: "recorder unavailable")
             return
         } catch (error: java.io.IOException) {
-            newRecorder.release()
             captureStore.abort(pending)
             statusView.text = getString(R.string.recording_failed, error.message ?: "audio file unavailable")
             return

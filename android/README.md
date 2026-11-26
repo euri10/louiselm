@@ -175,6 +175,32 @@ If the device proves the draft key permanently lost, the app explains that the
 work cannot be recovered and asks before deleting the affected drafts and
 resetting the key. Original recordings and pending action identities are separate.
 
+### Session voice recordings
+
+Open an authorized Session and unlock phone drafts to record a voice instruction.
+The screen discloses the planned phone → paired computer → OpenAI transcription
+route. **Stop voice recording** saves the original locally and records the request
+for transcription. This local slice does not submit a voice job: transcription
+is shown as unavailable until the protected receiver route is implemented. No
+recording, playback, reconnect, or transcription request sends a Session prompt.
+
+Locking the phone or leaving the Activity stops an active recording. After local
+unlock, **Session voice recordings** shows its original Session association and
+asks whether to request transcription or keep it without requesting transcription.
+Keeping an original does not prevent explicitly requesting transcription later.
+The list works offline after restart and can play a saved original; playback stops
+when the app backgrounds or locks. A recording exceeding 20 MiB remains on the
+phone but cannot use the planned transfer route. A failed or incomplete capture
+is retained and reported; an unfinalized audio container may not be recoverable.
+
+Session voice originals use the existing capture storage format in a separate
+local collection, outside ordinary thought uploads and draft/cache quotas. Their
+associated source and draft revision are encrypted with an independent device-only
+key, so resetting a lost draft key does not delete the recording association.
+The local draft unlock controls presentation; it grants no workspace authority.
+The eventual transcription, review and explicit Send path remains
+`louiselm-qbr.12.13.2`.
+
 ### Runs and prepared selections
 
 **Runs** browses authorized durable Run records or opens the exact Run from an
@@ -332,6 +358,13 @@ in `louiselm-qbr.9.9`.
 
 ## Physical acceptance checklist
 
+- Session voice (`louiselm-qbr.12.22`): in the isolated QA app, record the APK
+  build, original Session identity and each recording UUID. Check explicit Stop
+  and screen lock while recording in both orders, then reopen offline after an
+  app restart. Confirm the original plays, its Session association is unchanged,
+  an interrupted recording requires a post-unlock choice, and the unavailable
+  transcription status is truthful. Confirm ordinary thought capture still
+  works and no Session prompt or remote voice job was created.
 - FID upgrade (`louiselm-qbr.9.23`): record the APK and receiver builds, upgrade
   both without clearing app data, then reopen/refresh an opted-in pairing.
   Confirm the pairing and one recorded capture UUID survive, push resumes for
