@@ -711,6 +711,9 @@ jobs:
       - name: Test
         run: cargo test --all-features --locked
 
+      - name: Test phone host reference candidate
+        run: python3 ../scripts/test-phone-host.py
+
       - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true

@@ -313,6 +313,10 @@ Override XDG roots for tests or deployments with
 `LOUISELM_CAPTURE_STATE_DIR`. These overrides are roots; the service still
 appends `louiselm/...`.
 
+The [phone host reference candidate](https://github.com/euri10/louiselm/blob/main/docs/phone-host-reference.md) provides
+fixture provisioning and diagnostics only. Phone Send and affected recovery
+remain unavailable until the independent host-scope proofs are implemented.
+
 ## Transcription
 
 Set `LOUISELM_TRANSCRIPTION_ENABLED=true` and supply
