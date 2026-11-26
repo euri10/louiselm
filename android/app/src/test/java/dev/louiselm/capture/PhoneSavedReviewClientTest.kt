@@ -40,7 +40,7 @@ class PhoneSavedReviewClientTest {
             PhoneSavedFile("file", PhoneSavedChange.MODIFIED, PhoneSavedSide.BEFORE, 0, "text", false, false), cursor)
         var mismatch = ""
         var mayDeliver = true
-        val transport: PhoneControlTransport = { _, _, body, _ ->
+        val transport: PhoneControlTransport = request@ { _, _, body, _ ->
             val wire = body.getJSONObject("request")
             val operation = wire.getString("operation_id")
             val request = PhoneControlRequest(grant.grantId, grant.revision, period.periodId, grant.receiverIdentity,
@@ -52,6 +52,11 @@ class PhoneSavedReviewClientTest {
                 initVerify(working.public); update(request.transcript()); verify(phoneControlHex(wire.getString("signature")))
             })
             if (mismatch == "late") mayDeliver = false
+            if (mismatch == "status" || mismatch == "foreign-status") {
+                val statusRun = if (mismatch == "foreign-status") "22222222-2222-4222-8222-222222222222" else run
+                return@request PhoneControlReply.SavedReview(operation,
+                    PhoneSavedStatus(statusRun, "result", PhoneSavedState.APPLICATION_UNKNOWN))
+            }
             val complete = review.copy(next = null)
             val changed = when (mismatch) {
                 "run" -> complete.copy(runId = "22222222-2222-4222-8222-222222222222")
@@ -69,6 +74,13 @@ class PhoneSavedReviewClientTest {
             assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
                 client.readSavedReview(period, run, "result", revision, cursor, 1) { mayDeliver })
         }
+        mismatch = "status"
+        assertTrue(client.readSavedReview(period, run, "result", null, null, 1) { mayDeliver } is PhoneControlResult.Value)
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
+            client.readSavedReview(period, run, "result", revision, cursor, 1) { mayDeliver })
+        mismatch = "foreign-status"
+        assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED),
+            client.readSavedReview(period, run, "result", null, null, 1) { mayDeliver })
         mismatch = "late"
         assertEquals(PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE),
             client.readSavedReview(period, run, "result", null, null, 1) { mayDeliver })

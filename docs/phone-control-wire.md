@@ -548,6 +548,16 @@ broker observations, not proof that current tools, rules, destination/base,
 or action authority are valid. The nullable file and next fields are the only
 nulls in this response.
 
+For a first-page request whose result has since been decided or whose
+application has started, success is instead exactly
+`{v:1,type:"saved_review",request_id:hex16,run_id:uuid,result_id:string,state:string}`.
+The owner-observed state is `accepted`, `discarded`, `application_unknown`, or
+`application_completed` (completed application without durable acceptance).
+This response contains no file, cursor, verification or other review evidence.
+It is an observation at the last refresh, not permission to act or retry.
+A continuation using an old revision remains unavailable after a decision or
+started application; it cannot return a status for a different revision.
+
 The exact native result owner verifies the Run/result and current revision and
 checks its pinned destination's canonical path and device/inode. Delivery also
 requires the retained original-project/source/checkout chain, the same retained

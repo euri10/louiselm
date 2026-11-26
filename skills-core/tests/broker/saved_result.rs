@@ -366,6 +366,185 @@ fn saved_review_pages_exact_bytes_after_restart_without_deciding() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One saved publication is observed across interruption, completion, acceptance and restart."
+)]
+fn saved_review_status_preserves_decisions_and_uncertainty_across_restart() {
+    use louiselm_skills::broker::promotion::{
+        SavedAcceptance, SavedReviewCursor, SavedReviewSide, SavedReviewState,
+    };
+    use louiselm_skills::workspace::{
+        promotion::ApplicationResult,
+        provenance::{OutputProvenance, OutputProvenanceCode},
+    };
+
+    let root = TempDir::new().unwrap();
+    let saved = fixture(root.path());
+    let run = &saved.selection.run_id;
+    let cursor = SavedReviewCursor {
+        file: 0,
+        side: SavedReviewSide::Before,
+        offset: 0,
+    };
+    let service = verification::reopen(root.path(), "status-first.sock");
+    assert!(
+        service
+            .saved_review_status(1000, "promotion", run)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        service
+            .saved_review_page(1000, "promotion", run, None, cursor.clone(), 4096)
+            .unwrap()
+            .file
+            .is_some()
+    );
+    let journal = root.path().join("authorizations/promotions/promotion");
+    fs::create_dir_all(&journal).unwrap();
+    fs::write(
+        journal.join("request.json"),
+        serde_json::to_vec(&saved.request).unwrap(),
+    )
+    .unwrap();
+    fs::write(journal.join("0.grant"), b"0").unwrap();
+    assert_eq!(
+        service
+            .saved_review_status(1000, "promotion", run)
+            .unwrap()
+            .unwrap()
+            .state,
+        SavedReviewState::ApplicationUnknown
+    );
+    assert!(
+        service
+            .saved_review_page(1000, "promotion", run, None, cursor.clone(), 4096)
+            .is_err()
+    );
+    assert!(service.discard_saved_result(1000, "promotion").is_err());
+    drop(service);
+    let service = verification::reopen(root.path(), "status-reopened.sock");
+    let interrupted = service.saved_result(1000, "promotion").unwrap();
+    assert_eq!(
+        service
+            .saved_review_status(1000, "promotion", run)
+            .unwrap()
+            .unwrap()
+            .state,
+        SavedReviewState::ApplicationUnknown
+    );
+    assert!(!journal.join("result.json").exists());
+    assert_eq!(
+        service.saved_result(1000, "promotion").unwrap(),
+        interrupted
+    );
+    assert_eq!(fs::read_dir(&journal).unwrap().count(), 2);
+    assert!(
+        !root
+            .path()
+            .join("authorizations/saved-results/promotion/discarded.json")
+            .exists()
+    );
+    fs::write(journal.join("0.done"), b"0").unwrap();
+    fs::write(
+        journal.join("result.json"),
+        serde_json::to_vec(&ApplicationResult {
+            complete: true,
+            completed_steps: 1,
+            output_provenance: OutputProvenance {
+                schema: "louiselm.workspace.output-provenance/1".into(),
+                code: OutputProvenanceCode::Untainted,
+                taint_digest: None,
+                clean_review_refs: vec![],
+            },
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        service
+            .saved_review_status(1000, "promotion", run)
+            .unwrap()
+            .unwrap()
+            .state,
+        SavedReviewState::ApplicationCompleted
+    );
+    assert!(
+        service
+            .saved_result(1000, "promotion")
+            .unwrap()
+            .accepted
+            .is_none()
+    );
+    let accepted = SavedAcceptance {
+        commit: "c".repeat(40),
+        approval_digest: Digest::of(b"exact review").to_string(),
+        request_digest: Digest::of(&serde_json::to_vec(&saved.request).unwrap()).to_string(),
+    };
+    service
+        .accept_saved_result(1000, "promotion", &accepted)
+        .unwrap();
+    let status = service
+        .saved_review_status(1000, "promotion", run)
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.state, SavedReviewState::Accepted);
+    let wire = serde_json::to_value(&status).unwrap();
+    assert!(wire.get("file").is_none());
+    assert!(wire.get("verification_digest").is_none());
+    assert!(
+        service
+            .saved_review_page(1000, "promotion", run, None, cursor.clone(), 4096)
+            .is_err()
+    );
+    assert!(matches!(
+        service.saved_review_status(1001, "promotion", run),
+        Err(BrokerError::ControllerMismatch)
+    ));
+    assert!(matches!(
+        service.saved_review_status(1000, "promotion", "foreign"),
+        Err(BrokerError::RequestMismatch)
+    ));
+    assert!(service.saved_review_status(1000, "missing", run).is_err());
+    drop(service);
+    let reopened = verification::reopen(root.path(), "status-accepted.sock");
+    assert_eq!(
+        reopened
+            .saved_review_status(1000, "promotion", run)
+            .unwrap()
+            .unwrap()
+            .state,
+        SavedReviewState::Accepted
+    );
+
+    let discarded_root = TempDir::new().unwrap();
+    let discarded_saved = fixture(discarded_root.path());
+    let discard = verification::reopen(discarded_root.path(), "status-discard.sock");
+    discard.discard_saved_result(1000, "promotion").unwrap();
+    assert_eq!(
+        discard
+            .saved_review_status(1000, "promotion", &discarded_saved.selection.run_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        SavedReviewState::Discarded
+    );
+    assert!(
+        discard
+            .saved_review_page(
+                1000,
+                "promotion",
+                &discarded_saved.selection.run_id,
+                None,
+                cursor,
+                4096
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn saved_review_bounds_utf8_and_reports_binary_or_corrupt_bytes() {
     use louiselm_skills::broker::promotion::{SavedReviewCursor, SavedReviewSide};
 
@@ -519,6 +698,80 @@ fn saved_review_crosses_authenticated_operator_socket() {
     };
     assert_eq!(page.file.unwrap().text, "exact saved result");
     assert_eq!(page.current_verification, "unavailable");
+}
+
+#[test]
+fn saved_decision_crosses_authenticated_operator_socket_without_content() {
+    use louiselm_skills::broker::{
+        operator::{
+            self, InspectError, OperatorServer, VerificationControlRequest,
+            VerificationControlResponse,
+        },
+        promotion::{SavedReviewCursor, SavedReviewSide},
+    };
+    let root = TempDir::new().unwrap();
+    let saved = fixture(root.path());
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.path().join("decision-operator.sock");
+    let uid = rustix::process::geteuid().as_raw();
+    let server = OperatorServer::bind(&path, uid).unwrap();
+    let service = verification::reopen(root.path(), "decision-owner.sock");
+    service.discard_saved_result(1000, "promotion").unwrap();
+    let worker = thread::spawn(move || {
+        server
+            .serve_once(
+                |_, _| Err(InspectError::UnknownSession),
+                |_| panic!("not launch-input staging"),
+                |request, _| {
+                    let VerificationControlRequest::SavedReviewPage {
+                        result_id, run_id, ..
+                    } = request
+                    else {
+                        panic!("unexpected request")
+                    };
+                    let status = service
+                        .saved_review_status(1000, result_id, run_id)
+                        .map_err(|_| InspectError::StatusUnavailable)?
+                        .ok_or(InspectError::StatusUnavailable)?;
+                    Ok(VerificationControlResponse::SavedReviewStatus {
+                        status: Box::new(status),
+                    })
+                },
+                |_| panic!("not authorization"),
+                |_, _| panic!("not dependencies"),
+                |_, _| panic!("not inspection"),
+                |_| panic!("not conformance"),
+                |_, _, _| panic!("not skill"),
+                |_, _| panic!("not Beads"),
+                |_, _| panic!("not retention"),
+                |_, _, _| panic!("not waiver"),
+                |_, _, _| panic!("not extension"),
+            )
+            .unwrap();
+    });
+    let response = operator::verification(
+        &path,
+        uid,
+        &VerificationControlRequest::SavedReviewPage {
+            result_id: "promotion".into(),
+            run_id: saved.selection.run_id,
+            revision: None,
+            cursor: SavedReviewCursor {
+                file: 0,
+                side: SavedReviewSide::Before,
+                offset: 0,
+            },
+            limit: 4096,
+        },
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    worker.join().unwrap();
+    let wire = serde_json::to_value(response).unwrap();
+    assert_eq!(wire["kind"], "saved_review_status");
+    assert_eq!(wire["status"]["state"], "discarded");
+    assert!(wire["status"].get("file").is_none());
+    assert!(wire["status"].get("verification_digest").is_none());
 }
 
 #[test]

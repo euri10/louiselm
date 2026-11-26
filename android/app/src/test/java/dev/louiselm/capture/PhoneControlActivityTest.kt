@@ -104,6 +104,7 @@ private object PhoneScreenFixture {
     val savedReads = mutableListOf<Triple<String, String, PhoneSavedCursor?>>()
     var savedReadOnMain = false
     var savedFailure: PhoneControlOutcome? = null
+    var savedState: String? = null
     fun reset() {
         grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), "22".repeat(32), "33".repeat(32))
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
@@ -116,7 +117,7 @@ private object PhoneScreenFixture {
         evidenceOperationIds.clear()
         preparedReads = 0; preparedFailure = null; preparedInteractions.clear(); runReads.clear(); runFailure = null
         runController = PhoneRunController.ABSENT; runLiveFailure = null; runLiveReads.clear(); runSessionReads.clear(); savedReads.clear()
-        savedReadOnMain = false; savedFailure = null
+        savedReadOnMain = false; savedFailure = null; savedState = null
         actionHistoryReads = 0; moreActionHistory = false; actionHistoryCursors.clear()
         revision = 1; latest = listOf(PhoneControlEntry.Message(1, "assistant", "private session text", false))
         older = emptyList(); nextBefore = 0; olderNextBefore = 0; staleOlder = false; olderOutcome = null; readRequests.clear()
@@ -164,6 +165,14 @@ class PhoneScreenClientFixture {
         PhoneScreenFixture.savedReadOnMain = Looper.myLooper() == Looper.getMainLooper()
         PhoneScreenFixture.savedReads += Triple(runId, resultId, cursor)
         PhoneScreenFixture.savedFailure?.let { return PhoneControlResult.Failure(it) }
+        PhoneScreenFixture.savedState?.let { state ->
+            val status = org.json.JSONObject().put("v", 1).put("type", "saved_review")
+                .put("request_id", "88".repeat(16)).put("run_id", runId)
+                .put("result_id", resultId).put("state", state)
+            val reply = parsePhoneControlReply(status.toString().toByteArray(Charsets.UTF_8))
+            return if (reply is PhoneControlReply.SavedReview) PhoneControlResult.Value(reply)
+                else PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)
+        }
         val digest = "sha256:" + "44".repeat(32)
         val page = PhoneSavedReview(runId, resultId, revision ?: "33".repeat(32), "codex", listOf("codex"),
             "/checkout", "a".repeat(40), digest, digest, digest, digest, 1, PhoneSavedVerification.MATCHING,
@@ -755,6 +764,24 @@ class PhoneControlActivityTest {
         assertFalse(PhoneScreenFixture.savedReadOnMain)
         assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private after") })
         assertEquals(View.GONE, button(R.string.phone_send).visibility)
+        val states = listOf(
+            "accepted" to R.string.phone_saved_status_accepted,
+            "discarded" to R.string.phone_saved_status_discarded,
+            "application_unknown" to R.string.phone_saved_status_unknown,
+            "application_completed" to R.string.phone_saved_status_completed,
+        )
+        for ((state, label) in states) {
+            PhoneScreenFixture.savedState = state
+            button(R.string.phone_refresh).performClick()
+            drainBackground()
+            assertTrue(hasText(label))
+            assertFalse(views(activity.window.decorView).filterIsInstance<TextView>()
+                .any { it.text.toString().contains("private after") })
+            assertFalse(views(activity.window.decorView).filterIsInstance<Button>()
+                .any { it.text.toString() == activity.getString(R.string.phone_saved_next) })
+            assertEquals(0, PhoneScreenFixture.sendCalls)
+        }
+        PhoneScreenFixture.savedState = null
         PhoneScreenFixture.savedFailure = PhoneControlOutcome.UNAVAILABLE
         button(R.string.phone_refresh).performClick()
         drainBackground()

@@ -88,6 +88,68 @@ fn own(path: &Path, uid: u32) {
     chown(path, Some(uid), Some(uid)).unwrap();
 }
 
+fn inject_saved_review_observation(
+    fixture: &Path,
+    owner: (u32, u32),
+    completed: bool,
+) -> thread::JoinHandle<()> {
+    let fixture = fixture.to_owned();
+    thread::spawn(move || {
+        let input = fixture.join("uncertain-request.json");
+        // Case 15 deliberately waits for its 60-second Run deadline first.
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while !input.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "saved review never requested the observation fixture"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        // This is the same durable request/grant observation used by the
+        // broker interruption tests, attached to the real saved publication.
+        let request: crate::broker::promotion::PromotionRequest =
+            serde_json::from_slice(&fs::read(&input).unwrap()).unwrap();
+        assert!(
+            !request.request_id.is_empty()
+                && request.request_id.len() <= 128
+                && request
+                    .request_id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        );
+        let parent = Path::new(STATE).join("authorizations/promotions");
+        fs::create_dir_all(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        chown(&parent, Some(owner.0), Some(owner.1)).unwrap();
+        let journal = parent.join(&request.request_id);
+        fs::create_dir(&journal).unwrap();
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+        write_json(&journal.join("request.json"), &request);
+        write_json(&journal.join("0.grant"), &0usize);
+        if completed {
+            write_json(&journal.join("0.done"), &0usize);
+            write_json(
+                &journal.join("result.json"),
+                &crate::workspace::promotion::ApplicationResult {
+                    complete: true,
+                    completed_steps: 1,
+                    output_provenance: crate::workspace::provenance::OutputProvenance::untainted(),
+                },
+            );
+        }
+        chown(&journal, Some(owner.0), Some(owner.1)).unwrap();
+        for entry in fs::read_dir(&journal).unwrap() {
+            let path = entry.unwrap().path();
+            chown(&path, Some(owner.0), Some(owner.1)).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::File::open(path).unwrap().sync_all().unwrap();
+        }
+        fs::File::open(&journal).unwrap().sync_all().unwrap();
+        fs::File::open(&parent).unwrap().sync_all().unwrap();
+        fs::write(fixture.join("uncertain-ready"), b"").unwrap();
+    })
+}
+
 struct FixtureBrokerGroup(crate::sandbox::Cgroup);
 
 impl FixtureBrokerGroup {
@@ -221,6 +283,18 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     assert!((1..=15).contains(&index));
     let saved_refresh = index == 14;
     let saved_review = index == 15;
+    let saved_review_decision =
+        std::env::var("LOUISELM_TEST_REVIEW_DECISION").unwrap_or_else(|_| "pending".into());
+    assert!(
+        [
+            "pending",
+            "accepted",
+            "discarded",
+            "application_unknown",
+            "application_completed"
+        ]
+        .contains(&saved_review_decision.as_str())
+    );
     let rehearsal_fault = match index {
         12 => "replica",
         13 => "pre_acp",
@@ -694,6 +768,14 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             &staged_inputs,
         )
     });
+    let saved_observation = (saved_review && saved_review_decision.starts_with("application_"))
+        .then(|| {
+            inject_saved_review_observation(
+                &state,
+                (config.broker_uid, config.broker_gid),
+                saved_review_decision == "application_completed",
+            )
+        });
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
     let neovim = std::env::var_os("LOUISELM_TEST_NVIM").expect("explicit stable Neovim executable");
     let groups = if index == 5 {
@@ -772,6 +854,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             "LOUISELM_TEST_CAPTURE_TEST",
             std::env::var_os("LOUISELM_TEST_CAPTURE_TEST").unwrap(),
         );
+        command.env("LOUISELM_TEST_REVIEW_DECISION", &saved_review_decision);
     }
     let status = if let Some(observation) = failure {
         let mut neovim = BrokerChild(command.spawn().unwrap());
@@ -809,6 +892,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         command.status().unwrap()
     };
     let pending_before = saved_cleanup.and_then(|cleanup| cleanup.join().unwrap());
+    if let Some(observation) = saved_observation {
+        observation.join().unwrap();
+    }
     if let Some(injector) = hold_injector {
         injector.join().unwrap();
         let store = crate::broker::AuthorizationStore::open(
@@ -881,13 +967,25 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             1,
             "double Accept must create only one application journal"
         );
-        saved_attention::assert_saved_decision("44444444-4444-4444-8444-444444444444");
+        saved_attention::assert_saved_decision("44444444-4444-4444-8444-444444444444", true);
     }
     if saved_review {
-        let pending_after =
-            saved_attention::assert_saved_pending("44444444-4444-4444-8444-444444444444");
-        assert_eq!(Some(pending_after), pending_before);
-        assert_eq!(fs::read_dir(&journal).unwrap().count(), 0);
+        if saved_review_decision == "pending" || saved_review_decision.starts_with("application_") {
+            let pending_after =
+                saved_attention::assert_saved_pending("44444444-4444-4444-8444-444444444444");
+            assert_eq!(Some(pending_after), pending_before);
+            assert_eq!(fs::read_dir(&journal).unwrap().count(), 0);
+        } else {
+            let accepted = saved_review_decision == "accepted";
+            saved_attention::assert_saved_decision(
+                "44444444-4444-4444-8444-444444444444",
+                accepted,
+            );
+            assert_eq!(
+                fs::read_dir(&journal).unwrap().count(),
+                usize::from(accepted)
+            );
+        }
     }
     if (2..=3).contains(&index) && std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let read = |arguments: &[&str]| {

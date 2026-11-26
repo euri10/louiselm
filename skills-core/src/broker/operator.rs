@@ -284,6 +284,11 @@ pub enum VerificationControlResponse {
         /// Exact historical evidence and one before/after file page.
         page: Box<super::promotion::SavedReviewPage>,
     },
+    /// Bounded decision or application state, without retained review content.
+    SavedReviewStatus {
+        /// Exact native status and the identity required for scope checks.
+        status: Box<super::promotion::SavedReviewStatus>,
+    },
     /// Exact private input digest.
     Staged {
         /// Digest of staged snapshot and plan.
@@ -394,6 +399,25 @@ pub fn verification(
                     .file
                     .as_ref()
                     .is_none_or(|file| file.text.len() <= *limit)
+        }
+        (
+            VerificationControlRequest::SavedReviewPage {
+                result_id,
+                run_id,
+                revision,
+                cursor,
+                limit,
+            },
+            VerificationControlResponse::SavedReviewStatus { status },
+        ) => {
+            status.schema == "louiselm.saved-review-status/1"
+                && status.result_id == *result_id
+                && status.run_id == *run_id
+                && revision.is_none()
+                && cursor.file == 0
+                && cursor.side == super::promotion::SavedReviewSide::Before
+                && cursor.offset == 0
+                && (4..=4096).contains(limit)
         }
         (
             VerificationControlRequest::Stage { plan_digest, .. },

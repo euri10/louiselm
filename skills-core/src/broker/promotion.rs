@@ -7,7 +7,10 @@ mod saved;
 mod selection;
 mod service;
 pub use refresh::{RefreshInput, RefreshSelection};
-pub use review::{SavedReviewCursor, SavedReviewFile, SavedReviewPage, SavedReviewSide};
+pub use review::{
+    SavedReviewCursor, SavedReviewFile, SavedReviewPage, SavedReviewSide, SavedReviewState,
+    SavedReviewStatus,
+};
 pub use saved::{SavedAcceptance, SavedResult};
 pub use selection::SavedSelection;
 

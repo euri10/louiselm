@@ -67,7 +67,7 @@ pub(super) fn assert_saved_pending(run_id: &str) -> Projection {
     publication.clone()
 }
 
-pub(super) fn assert_saved_decision(run_id: &str) {
+pub(super) fn assert_saved_decision(run_id: &str, accepted: bool) {
     let state = Path::new(STATE).join("authorizations");
     let projections: Vec<Projection> = fs::read_dir(state.join("attention-outbox/entries"))
         .unwrap()
@@ -97,7 +97,15 @@ pub(super) fn assert_saved_decision(run_id: &str) {
         unreachable!();
     };
     let saved = state.join("saved-results").join(result_id);
-    assert!(saved.join("accepted.json").is_file());
+    assert!(
+        saved
+            .join(if accepted {
+                "accepted.json"
+            } else {
+                "discarded.json"
+            })
+            .is_file()
+    );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(
             &fs::read(saved.join("attention.json")).unwrap()
@@ -110,5 +118,5 @@ pub(super) fn assert_saved_decision(run_id: &str) {
     for field in ["source", "job", "verification", "changes", "prompt"] {
         assert!(wire["change"]["attention"].get(field).is_none());
     }
-    eprintln!("saved Attention: durable pending publication, exact accepted clear, no payload");
+    eprintln!("saved Attention: durable pending publication, exact decision clear, no payload");
 }

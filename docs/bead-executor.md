@@ -572,6 +572,15 @@ select its executable from Cargo's JSON artifact output to avoid shared-target
 cross-checkout contamination. The case requires
 `SAVED_REVIEW_STALE_INPUTS_UNPUBLISHED`, `SAVED_REVIEW_INSTALLED_HTTP_PASSED`
 and `SAVED_REVIEW_PROMOTION_PENDING_UNCHANGED`.
+CI repeats case 15 with `LOUISELM_TEST_REVIEW_DECISION` set to `accepted`,
+`discarded`, `application_unknown`, and `application_completed`. Acceptance
+and discard use the real desktop promotion command after a pending phone read.
+The two application observations reuse the broker interruption fixture's
+durable request/grant records, optionally with its completion record. Each run
+requires `SAVED_REVIEW_INSTALLED_DECISION_<UPPERCASE_STATE>`, a status-only
+refresh, stale-page refusal, and unchanged native state after phone reads.
+The application observations retain pending Attention; only native acceptance
+or discard clears it. These cases do not establish physical Android acceptance.
 The separate failure-cleanup case interrupts case 1 during its tracker import,
 then checks that the original failure survives, the broker is reaped, the
 tracker exits and the fixture account is removed. It also forces a secondary

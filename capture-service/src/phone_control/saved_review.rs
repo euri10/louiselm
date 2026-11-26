@@ -25,15 +25,15 @@ const CONTROL: &str = "/usr/local/lib/louiselm/current/bin/louiselm-control";
 const MAX_REPLY: usize = 65_536;
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NativeReply {
-    kind: String,
-    page: NativePage,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum NativePage {
+    SavedReviewPage { page: Box<Page> },
+    SavedReviewStatus { status: Status },
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct NativePage {
+pub(super) struct Page {
     schema: String,
     result_id: String,
     run_id: String,
@@ -51,6 +51,27 @@ pub(super) struct NativePage {
     current_provenance: Provenance,
     file: Option<ReviewFile>,
     next: Option<Cursor>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Status {
+    schema: String,
+    result_id: String,
+    run_id: String,
+    agent_id: String,
+    checkout: String,
+    destination: Destination,
+    state: Decision,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Decision {
+    Accepted,
+    Discarded,
+    ApplicationUnknown,
+    ApplicationCompleted,
 }
 
 #[derive(Deserialize)]
@@ -183,16 +204,17 @@ fn source_refusal(error: &PhoneSourceError) -> Refusal {
 }
 
 pub(super) fn check_destination(page: &NativePage) -> Result<(), Refusal> {
-    let path = Path::new(&page.checkout);
+    let (checkout, destination) = match page {
+        NativePage::SavedReviewPage { page } => (&page.checkout, &page.destination),
+        NativePage::SavedReviewStatus { status } => (&status.checkout, &status.destination),
+    };
+    let path = Path::new(checkout);
     let current = directory(path).map_err(|_| Refusal::Unavailable)?;
     let metadata = fs::metadata(path).map_err(|_| Refusal::Unavailable)?;
-    if !current.matches_destination(
-        &page.checkout,
-        page.destination.device,
-        page.destination.inode,
-    ) || metadata.dev() != page.destination.device
-        || metadata.ino() != page.destination.inode
-        || metadata.uid() != page.destination.uid
+    if !current.matches_destination(checkout, destination.device, destination.inode)
+        || metadata.dev() != destination.device
+        || metadata.ino() != destination.inode
+        || metadata.uid() != destination.uid
     {
         return Err(Refusal::Unavailable);
     }
@@ -200,8 +222,44 @@ pub(super) fn check_destination(page: &NativePage) -> Result<(), Refusal> {
 }
 
 pub(super) fn decode(query: &SavedReviewQuery, bytes: &[u8]) -> Result<NativePage, Refusal> {
-    let reply: NativeReply = serde_json::from_slice(bytes).map_err(|_| Refusal::Unavailable)?;
-    let page = reply.page;
+    let reply: NativePage = serde_json::from_slice(bytes).map_err(|_| Refusal::Unavailable)?;
+    let (schema, result_id, run_id, agent_id, checkout) = match &reply {
+        NativePage::SavedReviewPage { page } => (
+            &page.schema,
+            &page.result_id,
+            &page.run_id,
+            &page.agent_id,
+            &page.checkout,
+        ),
+        NativePage::SavedReviewStatus { status } => (
+            &status.schema,
+            &status.result_id,
+            &status.run_id,
+            &status.agent_id,
+            &status.checkout,
+        ),
+    };
+    if result_id != &query.result_id
+        || run_id != &query.run_id
+        || agent_id.is_empty()
+        || agent_id.len() > 512
+        || agent_id.contains('\0')
+        || !Path::new(checkout).is_absolute()
+        || checkout.len() > 8192
+        || checkout.contains('\0')
+    {
+        return Err(Refusal::Unavailable);
+    }
+    let NativePage::SavedReviewPage { page } = &reply else {
+        return if schema == "louiselm.saved-review-status/1"
+            && query.revision.is_none()
+            && (query.file, query.side, query.offset) == (0, 0, 0)
+        {
+            Ok(reply)
+        } else {
+            Err(Refusal::Unavailable)
+        };
+    };
     let file_valid = page.file.as_ref().is_none_or(|file| {
         !file.path.is_empty()
             && file.path.len() <= 1025
@@ -220,16 +278,7 @@ pub(super) fn decode(query: &SavedReviewQuery, bytes: &[u8]) -> Result<NativePag
             && (next.file, next.side.number(), next.offset) > (query.file, query.side, query.offset)
             && page.file.is_some()
     });
-    if reply.kind != "saved_review_page"
-        || page.schema != "louiselm.saved-review-page/1"
-        || page.result_id != query.result_id
-        || page.run_id != query.run_id
-        || page.agent_id.is_empty()
-        || page.agent_id.len() > 512
-        || page.agent_id.contains('\0')
-        || !Path::new(&page.checkout).is_absolute()
-        || page.checkout.len() > 8192
-        || page.checkout.contains('\0')
+    if page.schema != "louiselm.saved-review-page/1"
         || !valid_commit(&page.base_commit)
         || !valid_digest(&page.revision)
         || page.revision == format!("sha256:{}", "00".repeat(32))
@@ -247,7 +296,7 @@ pub(super) fn decode(query: &SavedReviewQuery, bytes: &[u8]) -> Result<NativePag
     {
         return Err(Refusal::Unavailable);
     }
-    Ok(page)
+    Ok(reply)
 }
 
 /// Checks the native destination separately from the original-project grant.
@@ -258,20 +307,47 @@ pub(super) fn project(
     checkout: &Directory,
     operation_id: &str,
 ) -> Result<Value, Refusal> {
-    if binding.run_id != query.run_id
-        || page.run_id != query.run_id
-        || page.result_id != query.result_id
-        || query
-            .revision
-            .as_ref()
-            .is_some_and(|revision| revision != &page.revision)
-        || !binding.agents.contains(&page.agent_id)
-        || !checkout.matches_destination(
+    let (run_id, result_id, agent_id, path, destination) = match page {
+        NativePage::SavedReviewPage { page } => (
+            &page.run_id,
+            &page.result_id,
+            &page.agent_id,
             &page.checkout,
-            page.destination.device,
-            page.destination.inode,
-        )
-        || page.destination.uid == 0
+            &page.destination,
+        ),
+        NativePage::SavedReviewStatus { status } => (
+            &status.run_id,
+            &status.result_id,
+            &status.agent_id,
+            &status.checkout,
+            &status.destination,
+        ),
+    };
+    if binding.run_id != query.run_id
+        || run_id != &query.run_id
+        || result_id != &query.result_id
+        || !binding.agents.contains(agent_id)
+        || !checkout.matches_destination(path, destination.device, destination.inode)
+        || destination.uid == 0
+    {
+        return Err(Refusal::Unavailable);
+    }
+    let page = match page {
+        NativePage::SavedReviewStatus { status } => {
+            if query.revision.is_some() || (query.file, query.side, query.offset) != (0, 0, 0) {
+                return Err(Refusal::Unavailable);
+            }
+            return Ok(
+                json!({"v":1,"type":"saved_review","request_id":operation_id,
+                "run_id":run_id,"result_id":result_id,"state":status.state}),
+            );
+        }
+        NativePage::SavedReviewPage { page } => page,
+    };
+    if query
+        .revision
+        .as_ref()
+        .is_some_and(|revision| revision != &page.revision)
     {
         return Err(Refusal::Unavailable);
     }
@@ -350,5 +426,70 @@ mod tests {
         reply["page"]["agent_id"] = json!("other");
         let foreign_agent = parse(&reply).unwrap();
         assert!(project(&foreign_agent, &query, &binding, &checkout, "operation").is_err());
+    }
+
+    #[test]
+    fn native_decisions_are_bounded_and_keep_the_exact_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let checkout = crate::phone_projects::directory(root.path()).unwrap();
+        let metadata = root.path().metadata().unwrap();
+        let run = "11111111-1111-4111-8111-111111111111";
+        let query = SavedReviewQuery {
+            run_id: run.into(),
+            result_id: "result".into(),
+            revision: None,
+            file: 0,
+            side: 0,
+            offset: 0,
+        };
+        let binding = RunProjectBinding {
+            run_id: run.into(),
+            project_id: "11".repeat(16),
+            source_id: "22".repeat(16),
+            checkout_id: "33".repeat(16),
+            agents: vec!["codex".into()],
+        };
+        for state in [
+            "accepted",
+            "discarded",
+            "application_unknown",
+            "application_completed",
+        ] {
+            let mut reply = json!({"kind":"saved_review_status","status":{
+                "schema":"louiselm.saved-review-status/1", "result_id":"result", "run_id":run,
+                "agent_id":"codex", "checkout":checkout.path,
+                "destination":{"device":metadata.dev(),"inode":metadata.ino(),"uid":1000},
+                "state":state
+            }});
+            let read = |value: &Value| decode(&query, &serde_json::to_vec(value).unwrap());
+            let status = read(&reply).unwrap();
+            let projected =
+                project(&status, &query, &binding, &checkout, &"44".repeat(16)).unwrap();
+            assert_eq!(
+                projected,
+                json!({"v":1,"type":"saved_review",
+                "request_id":"44".repeat(16),"run_id":run,"result_id":"result","state":state})
+            );
+            let stale = SavedReviewQuery {
+                run_id: query.run_id.clone(),
+                result_id: query.result_id.clone(),
+                revision: Some(format!("sha256:{}", "ab".repeat(32))),
+                file: 0,
+                side: 0,
+                offset: 0,
+            };
+            assert!(decode(&stale, &serde_json::to_vec(&reply).unwrap()).is_err());
+            let mut foreign_binding = binding.clone();
+            foreign_binding.agents = vec!["other".into()];
+            assert!(project(&status, &query, &foreign_binding, &checkout, "operation").is_err());
+            reply["status"]["file"] = json!({"text":"secret"});
+            assert!(read(&reply).is_err());
+            reply["status"].as_object_mut().unwrap().remove("file");
+            reply["status"]["run_id"] = json!("foreign");
+            assert!(read(&reply).is_err());
+            reply["status"]["run_id"] = json!(run);
+            reply["status"]["state"] = json!("safe_to_retry");
+            assert!(read(&reply).is_err());
+        }
     }
 }

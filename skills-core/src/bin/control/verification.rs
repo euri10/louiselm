@@ -52,6 +52,9 @@ pub(super) fn cli(arguments: Result<&clap::ArgMatches, ()>) -> u8 {
         if let VerificationControlResponse::SavedReviewPage { page } = &mut response {
             page.checkout = review_destination(&page.checkout, page.destination)?;
         }
+        if let VerificationControlResponse::SavedReviewStatus { status } = &mut response {
+            status.checkout = review_destination(&status.checkout, status.destination)?;
+        }
         serde_json::to_vec(&response).map_err(|_| InspectError::StatusUnavailable)
     })();
     match result {

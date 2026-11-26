@@ -92,8 +92,16 @@ local controller = assert(Workflow.new_bead_executor({
             local output = capture_review("review", {
               LOUISELM_TEST_REVIEW_RESULT = preview.selection.request_id,
               LOUISELM_TEST_REVIEW_EXPIRES_MS = string.format("%.0f", case.envelope.expires_at_ms),
+              LOUISELM_TEST_REVIEW_DECISION = nvim.env.LOUISELM_TEST_REVIEW_DECISION or "pending",
+              LOUISELM_TEST_REVIEW_APPROVAL = preview.approval_digest,
             })
             assert(output:find("SAVED_REVIEW_INSTALLED_HTTP_PASSED", 1, true), output)
+            local decision = nvim.env.LOUISELM_TEST_REVIEW_DECISION or "pending"
+            if decision ~= "pending" then
+              local marker = "SAVED_REVIEW_INSTALLED_DECISION_" .. decision:upper()
+              assert(output:find(marker, 1, true), output)
+              print(marker)
+            end
             print("SAVED_REVIEW_INSTALLED_HTTP_PASSED")
             decide(nil, "leave saved review pending")
           end, math.max(1, case.envelope.expires_at_ms - now_ms() + 50))

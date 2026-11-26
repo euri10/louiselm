@@ -41,7 +41,7 @@ internal sealed class PhoneControlReply {
     data class RunDetail(val requestId: String, val run: PhoneRunView) : PhoneControlReply()
     data class RunLive(val requestId: String, val runId: String, val durableRevision: Long,
         val controller: PhoneRunController, val live: PhoneRunLiveView?) : PhoneControlReply()
-    data class SavedReview(val requestId: String, val review: PhoneSavedReview) : PhoneControlReply()
+    data class SavedReview(val requestId: String, val review: PhoneSavedReviewPayload) : PhoneControlReply()
     data class ActionHistory(val requestId: String, val record: PhoneActionRecord) : PhoneControlReply()
     data class ActionHistoryPage(val requestId: String, val records: List<PhoneActionRecord>, val nextAfter: String) : PhoneControlReply()
     data class VoiceHistory(val requestId: String, val records: List<PhoneVoiceRow>, val nextAfter: String) : PhoneControlReply()

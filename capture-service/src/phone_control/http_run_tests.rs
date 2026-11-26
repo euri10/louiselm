@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use std::time::Instant;
 use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -271,12 +271,18 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
             "text":"private saved content","binary":false,"executable":false},"next":null
     }}).to_string().into_bytes());
     let native_for_reader = native_page.clone();
+    let decision = Arc::new(Mutex::new(None::<Vec<u8>>));
+    let decision_for_reader = decision.clone();
     service
         .prepared
         .as_mut()
         .unwrap()
         .set_test_saved_review(move |query| {
-            super::super::saved_review::decode(query, &native_for_reader)
+            let status = decision_for_reader.lock().unwrap();
+            super::super::saved_review::decode(
+                query,
+                status.as_deref().unwrap_or(&native_for_reader),
+            )
         });
     let app = service.router();
     let fixture: Value = serde_json::from_str(include_str!(
@@ -362,6 +368,44 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     assert_eq!(result["file"]["text"], "private saved content");
     assert_eq!(result["current_provenance"], "unknown");
     assert_eq!(attention.snapshot().unwrap(), original_attention);
+    for (operation, state) in [
+        "accepted",
+        "discarded",
+        "application_unknown",
+        "application_completed",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        *decision.lock().unwrap() = Some(json!({"kind":"saved_review_status","status":{
+            "schema":"louiselm.saved-review-status/1", "result_id":"result", "run_id":run,
+            "agent_id":"codex", "checkout":checkout.checkout.path,
+            "destination":{"device":destination.dev(),"inode":destination.ino(),"uid":destination.uid().max(1)},
+            "state":state
+        }}).to_string().into_bytes());
+        let signed = signed_run(
+            &fixture,
+            &grant,
+            &period,
+            80,
+            &subject,
+            &review_payload,
+            0,
+            990 + u128::try_from(operation).unwrap(),
+        );
+        let (_, observed) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &signed.to_string(),
+        )
+        .await;
+        assert_eq!(observed["state"], state);
+        assert!(observed.get("file").is_none());
+        assert!(observed.get("verification_digest").is_none());
+        assert_eq!(attention.snapshot().unwrap(), original_attention);
+    }
+    *decision.lock().unwrap() = None;
     let mut changed = review_payload.clone();
     changed[8..40].fill(0xcd);
     let changed = signed_run(&fixture, &grant, &period, 80, &subject, &changed, 0, 975);
@@ -1259,12 +1303,14 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         .unwrap()
         .set_test_integration(|| Ok(()));
     let reopened_page = native_page.clone();
+    let reopened_decision = decision.clone();
     reopened
         .prepared
         .as_mut()
         .unwrap()
         .set_test_saved_review(move |query| {
-            super::super::saved_review::decode(query, &reopened_page)
+            let status = reopened_decision.lock().unwrap();
+            super::super::saved_review::decode(query, status.as_deref().unwrap_or(&reopened_page))
         });
     let reopened_app = reopened.router();
     let reopened_period =
@@ -1288,6 +1334,33 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
     .await;
     assert_eq!(reviewed["file"]["text"], "private saved content");
     assert_eq!(reviewed["agents"], json!(["codex", "claude"]));
+    assert_eq!(attention.snapshot().unwrap().items.len(), 1);
+
+    *decision.lock().unwrap() = Some(json!({"kind":"saved_review_status","status":{
+        "schema":"louiselm.saved-review-status/1", "result_id":"result", "run_id":run,
+        "agent_id":"codex", "checkout":checkout.checkout.path,
+        "destination":{"device":destination.dev(),"inode":destination.ino(),"uid":destination.uid().max(1)},
+        "state":"application_unknown"
+    }}).to_string().into_bytes());
+    let status = signed_run(
+        &fixture,
+        &replacement_grant,
+        &reopened_period,
+        80,
+        &subject,
+        &review_payload,
+        0,
+        982,
+    );
+    let (_, observed) = post(
+        reopened_app.clone(),
+        "/v1/phone-control/request",
+        &replacement.credential,
+        &status.to_string(),
+    )
+    .await;
+    assert_eq!(observed["state"], "application_unknown");
+    assert!(observed.get("file").is_none());
     assert_eq!(attention.snapshot().unwrap().items.len(), 1);
 
     std::fs::rename(

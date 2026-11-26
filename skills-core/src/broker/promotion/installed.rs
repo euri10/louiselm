@@ -119,6 +119,21 @@ impl InstalledBroker {
             .saved_review_page(uid, id, run_id, revision, cursor, limit)
     }
 
+    /// Inspects a decision or uncertain application for one exact saved result.
+    /// # Errors
+    /// Refuses foreign ownership, a mismatched Run or unavailable evidence.
+    pub fn saved_review_status(
+        &self,
+        uid: u32,
+        id: &str,
+        run_id: &str,
+    ) -> Result<Option<crate::broker::promotion::SavedReviewStatus>, BrokerError> {
+        if uid != self.verifier.config().operator_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        self.service.saved_review_status(uid, id, run_id)
+    }
+
     /// Records the authenticated operator's confirmed commit without checkout access.
     /// # Errors
     /// Refuses foreign ownership, incomplete application or conflicting decisions.

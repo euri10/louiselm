@@ -364,13 +364,19 @@ jobs:
             sudo -n env TMPDIR=/var/lib timeout 60 /bin/bash -c '\''umask 022; exec "$1" preparation::privileged_preparation_cli_measures_trusted_owners_without_launch --exact --ignored --nocapture'\'' bash "$preparation_test"
             for bead_case in 1 2 3 4 5 6 7 8 9 14 15; do
               bead_timeout=$((bead_case >= 14 ? 300 : 120))
-              sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
-                LOUISELM_TEST_LUA_ROOT=/home/vm \
-                LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
-                LOUISELM_TEST_CAPTURE=/var/tmp/louiselm-test-capture \
-                LOUISELM_TEST_CAPTURE_TEST=/var/tmp/louiselm-test-capture-review \
-                LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout "$bead_timeout" \
-                unshare --mount --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture'\'' bash "$library_test"
+              decisions=pending
+              if [ "$bead_case" = 15 ]; then
+                decisions="pending accepted discarded application_unknown application_completed"
+              fi
+              for decision in $decisions; do
+                sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE="$bead_case" \
+                  LOUISELM_TEST_REVIEW_DECISION="$decision" LOUISELM_TEST_LUA_ROOT=/home/vm \
+                  LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+                  LOUISELM_TEST_CAPTURE=/var/tmp/louiselm-test-capture \
+                  LOUISELM_TEST_CAPTURE_TEST=/var/tmp/louiselm-test-capture-review \
+                  LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout "$bead_timeout" \
+                  unshare --mount --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture'\'' bash "$library_test"
+              done
             done
             # Keep the empty case above as the unset check, then require real
             # source bytes through both startup and the operator/capture path.

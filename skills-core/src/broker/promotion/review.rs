@@ -95,6 +95,40 @@ pub struct SavedReviewPage {
     pub next: Option<SavedReviewCursor>,
 }
 
+/// Owner-observed decision or application state, without review content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedReviewState {
+    /// The operator durably confirmed acceptance after application.
+    Accepted,
+    /// The operator explicitly discarded the undecided result.
+    Discarded,
+    /// Application started without a complete durable outcome.
+    ApplicationUnknown,
+    /// Application completed but no durable acceptance was recorded.
+    ApplicationCompleted,
+}
+
+/// Bounded state and the native identity needed to authorize its delivery.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedReviewStatus {
+    /// Fixed closed status schema.
+    pub schema: String,
+    /// Exact saved publication.
+    pub result_id: String,
+    /// Original Run.
+    pub run_id: String,
+    /// Authenticated producer Agent.
+    pub agent_id: String,
+    /// Operator-selected destination, for a separate scope check.
+    pub checkout: PathBuf,
+    /// Pinned identity of that destination.
+    pub destination: DestinationIdentity,
+    /// Observed durable decision or application state.
+    pub state: SavedReviewState,
+}
+
 fn file_page(
     preview: &ChangePreview,
     changes: &Changes,
@@ -182,6 +216,46 @@ fn file_page(
 }
 
 impl BrokerService {
+    /// Inspects the exact decision without returning changes or granting authority.
+    /// Pending work returns `None`; started application is never treated as pending.
+    /// # Errors
+    /// Refuses foreign operators or Runs, contradictory state and unavailable evidence.
+    pub fn saved_review_status(
+        &self,
+        uid: u32,
+        id: &str,
+        run_id: &str,
+    ) -> Result<Option<SavedReviewStatus>, BrokerError> {
+        let _guard = self.lifecycle.promotion_guard();
+        let (saved, _) = self.saved_revision(uid, id)?;
+        if saved.selection.run_id != run_id {
+            return Err(BrokerError::RequestMismatch);
+        }
+        let state = if saved.discarded {
+            if saved.accepted.is_some() || saved.application != PromotionStatus::NotRequested {
+                return Err(BrokerError::RequestMismatch);
+            }
+            SavedReviewState::Discarded
+        } else if saved.accepted.is_some() {
+            SavedReviewState::Accepted
+        } else {
+            match saved.application {
+                PromotionStatus::NotRequested => return Ok(None),
+                PromotionStatus::Unknown { .. } => SavedReviewState::ApplicationUnknown,
+                PromotionStatus::Completed { .. } => SavedReviewState::ApplicationCompleted,
+            }
+        };
+        Ok(Some(SavedReviewStatus {
+            schema: "louiselm.saved-review-status/1".into(),
+            result_id: id.into(),
+            run_id: run_id.into(),
+            agent_id: saved.verification.producer.request.launch.agent_id,
+            checkout: saved.selection.checkout,
+            destination: saved.request.destination,
+            state,
+        }))
+    }
+
     /// Reads a bounded page through the exact durable saved-result owner.
     /// This blocks on retained-store I/O and never grants promotion or Run authority.
     /// # Errors
@@ -199,6 +273,7 @@ impl BrokerService {
         if !(4..=4096).contains(&limit) {
             return Err(BrokerError::InvalidGrant);
         }
+        let _guard = self.lifecycle.promotion_guard();
         let (saved, directory) = self.saved_revision(uid, id)?;
         if saved.selection.run_id != run_id
             || saved.discarded

@@ -22,4 +22,8 @@
     <string name="phone_saved_empty">No changed file on this page.</string>
     <string name="phone_saved_next">Next page</string>
     <string name="phone_saved_unavailable">Saved work changed, was decided, or its evidence is unavailable. Refresh to check it again.</string>
+    <string name="phone_saved_status_accepted">At last refresh: accepted on the desktop.</string>
+    <string name="phone_saved_status_discarded">At last refresh: discarded on the desktop.</string>
+    <string name="phone_saved_status_unknown">At last refresh: application outcome unknown. Inspect it on the desktop; do not retry or discard.</string>
+    <string name="phone_saved_status_completed">At last refresh: application completed, but acceptance is not confirmed. Inspect it on the desktop; do not retry or discard.</string>
 </resources>

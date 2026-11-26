@@ -30,13 +30,13 @@ class PhoneSavedReviewReplyTest {
     fun savedReviewIsBoundedAndClosed() {
         val valid = page()
         assertNotEquals(PhoneControlReply.Failure(PhoneControlOutcome.UNSUPPORTED), parse(valid))
-        val review = (parse(valid) as PhoneControlReply.SavedReview).review
+        val review = (parse(valid) as PhoneControlReply.SavedReview).review as PhoneSavedReview
         assertEquals("hello", review.file?.text)
         assertEquals(PhoneSavedProvenance.UNKNOWN, review.provenance)
         assertEquals(PhoneSavedCursor(0, PhoneSavedSide.AFTER, 0), review.next)
         val longAgent = "a".repeat(200)
         val longAgentPage = page().put("producer_agent", longAgent).put("agents", JSONArray().put(longAgent))
-        assertEquals(longAgent, (parse(longAgentPage) as PhoneControlReply.SavedReview).review.producer)
+        assertEquals(longAgent, ((parse(longAgentPage) as PhoneControlReply.SavedReview).review as PhoneSavedReview).producer)
         val malformed = PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED)
         assertEquals(malformed, parse(page().put("extra", true)))
         val foreign = page().put("producer_agent", "other")
@@ -44,5 +44,20 @@ class PhoneSavedReviewReplyTest {
         val binary = page()
         binary.getJSONObject("file").put("binary", true)
         assertEquals(malformed, parse(binary))
+    }
+
+    @Test
+    fun savedDecisionStatusIsAcceptedWithoutReviewContent() {
+        for (state in listOf("accepted", "discarded", "application_unknown", "application_completed")) {
+            val status = JSONObject().put("v", 1).put("type", "saved_review")
+                .put("request_id", "11".repeat(16)).put("run_id", "11111111-1111-4111-8111-111111111111")
+                .put("result_id", "result").put("state", state)
+            val parsed = (parse(status) as PhoneControlReply.SavedReview).review as PhoneSavedStatus
+            assertEquals(state.uppercase(), parsed.state.name)
+            assertEquals(null, parsed.revision)
+            assertEquals(null, parsed.next)
+            assertEquals(PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED),
+                parse(JSONObject(status.toString()).put("file", "private content")))
+        }
     }
 }

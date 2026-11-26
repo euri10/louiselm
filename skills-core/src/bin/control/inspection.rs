@@ -258,6 +258,19 @@ impl Queries {
             } => {
                 operator::validate_subject(result_id)?;
                 operator::validate_subject(run_id)?;
+                if revision.is_none()
+                    && cursor.file == 0
+                    && cursor.side == louiselm_skills::broker::promotion::SavedReviewSide::Before
+                    && cursor.offset == 0
+                    && (4..=4096).contains(limit)
+                    && let Some(status) = broker
+                        .saved_review_status(self.operator_uid, result_id, run_id)
+                        .map_err(|_| InspectError::StatusUnavailable)?
+                {
+                    return Ok(Response::SavedReviewStatus {
+                        status: Box::new(status),
+                    });
+                }
                 broker
                     .saved_review_page(
                         self.operator_uid,

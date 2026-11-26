@@ -6,7 +6,13 @@
     reason = "disposable installed fixture setup and assertions"
 )]
 
-use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+use std::{
+    io::Write,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    process::{Command, Stdio},
+    sync::Arc,
+};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -145,6 +151,30 @@ async fn request(client: &reqwest::Client, url: &str, credential: &str, body: &V
         .json()
         .await
         .unwrap()
+}
+
+fn desktop_promotion(verb: &str, payload: &Value) -> Value {
+    let mut command = Command::new("/usr/local/lib/louiselm/current/bin/louiselm-control")
+        .args(["promotion", verb, "--json"])
+        .env("PATH", "/usr/local/lib/louiselm/current/bin:/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    command
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(payload).unwrap())
+        .unwrap();
+    let output = command.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "fixture desktop promotion failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 #[expect(
@@ -403,6 +433,101 @@ async fn review(root: &Path) {
         request(&client, &url, &other.credential, &before_revoke).await["type"],
         "saved_review"
     );
+    let decision =
+        std::env::var("LOUISELM_TEST_REVIEW_DECISION").unwrap_or_else(|_| "pending".into());
+    if decision != "pending" {
+        assert!(
+            [
+                "accepted",
+                "discarded",
+                "application_unknown",
+                "application_completed"
+            ]
+            .contains(&decision.as_str())
+        );
+        let id = result_id.clone();
+        let selected = decision.clone();
+        let approval = std::env::var("LOUISELM_TEST_REVIEW_APPROVAL").unwrap();
+        let fixture_root = root.to_owned();
+        let before = tokio::task::spawn_blocking(move || {
+            if selected.starts_with("application_") {
+                // Existing interrupted-application fixture: request plus a spent
+                // grant, optionally with its matching completion observation.
+                let saved = desktop_promotion("inspect", &json!({"result_id":id}));
+                let temporary = fixture_root.join("uncertain-request.tmp");
+                std::fs::write(
+                    &temporary,
+                    serde_json::to_vec(&saved["result"]["request"]).unwrap(),
+                )
+                .unwrap();
+                std::fs::rename(temporary, fixture_root.join("uncertain-request.json")).unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while !fixture_root.join("uncertain-ready").exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "uncertain fixture was not published"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            } else {
+                let (verb, payload) = if selected == "accepted" {
+                    ("commit", json!({"result_id":id,"approval_digest":approval}))
+                } else {
+                    ("discard", json!({"result_id":id}))
+                };
+                desktop_promotion(verb, &payload);
+            }
+            desktop_promotion("inspect", &json!({"result_id":id}))
+        })
+        .await
+        .unwrap();
+        let signed = signed_run(
+            &fixture,
+            &grant,
+            &period,
+            80,
+            &subject,
+            &payload(&result_id, None, None),
+            0,
+            19,
+        );
+        let observed = request(&client, &url, &phone.credential, &signed).await;
+        assert_eq!(
+            observed,
+            json!({"v":1,"type":"saved_review",
+            "request_id":signed["request"]["operation_id"],"run_id":RUN,
+            "result_id":result_id,"state":decision})
+        );
+        let stale = signed_run(
+            &fixture,
+            &grant,
+            &period,
+            80,
+            &subject,
+            &payload(&result_id, revision.as_deref(), None),
+            0,
+            20,
+        );
+        assert_eq!(
+            request(&client, &url, &phone.credential, &stale).await["code"],
+            "unavailable"
+        );
+        let id = result_id.clone();
+        let after = tokio::task::spawn_blocking(move || {
+            desktop_promotion("inspect", &json!({"result_id":id}))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "phone reads must not alter the native result"
+        );
+        assert_eq!(attention.snapshot().unwrap(), original_attention);
+        println!(
+            "SAVED_REVIEW_INSTALLED_DECISION_{}",
+            decision.to_uppercase()
+        );
+    }
     pairing.revoke(&other.device_id).unwrap();
     let revoked = signed_run(
         &fixture,

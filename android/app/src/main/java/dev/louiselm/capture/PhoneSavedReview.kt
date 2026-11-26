@@ -6,6 +6,7 @@ internal enum class PhoneSavedSide { BEFORE, AFTER }
 internal enum class PhoneSavedChange { ADDED, MODIFIED, DELETED }
 internal enum class PhoneSavedVerification { MATCHING, CHANGED, QUARANTINED, UNAVAILABLE }
 internal enum class PhoneSavedProvenance { UNTAINTED, SESSION_OUTPUT_TAINTED, UNKNOWN }
+internal enum class PhoneSavedState { ACCEPTED, DISCARDED, APPLICATION_UNKNOWN, APPLICATION_COMPLETED }
 
 internal data class PhoneSavedCursor(val file: Int, val side: PhoneSavedSide, val offset: Int)
 
@@ -17,13 +18,26 @@ internal data class PhoneSavedFile(
     val path: String, val change: PhoneSavedChange, val side: PhoneSavedSide, val offset: Int,
     val text: String, val binary: Boolean, val executable: Boolean,
 )
+internal sealed interface PhoneSavedReviewPayload {
+    val runId: String
+    val resultId: String
+    val revision: String?
+    val next: PhoneSavedCursor?
+}
+internal data class PhoneSavedStatus(
+    override val runId: String, override val resultId: String, val state: PhoneSavedState,
+) : PhoneSavedReviewPayload {
+    override val revision: String? = null
+    override val next: PhoneSavedCursor? = null
+}
 internal data class PhoneSavedReview(
-    val runId: String, val resultId: String, val revision: String, val producer: String, val agents: List<String>,
+    override val runId: String, override val resultId: String, override val revision: String,
+    val producer: String, val agents: List<String>,
     val destination: String, val baseCommit: String, val verificationDigest: String, val planDigest: String,
     val verifierInputsDigest: String, val resultDigest: String, val commandsPassed: Long,
     val verification: PhoneSavedVerification, val provenance: PhoneSavedProvenance,
-    val file: PhoneSavedFile?, val next: PhoneSavedCursor?,
-)
+    val file: PhoneSavedFile?, override val next: PhoneSavedCursor?,
+) : PhoneSavedReviewPayload
 
 internal fun validSavedResultId(value: String): Boolean = value.length in 1..128 &&
     value.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '_' || it == '-' }
@@ -59,6 +73,13 @@ private inline fun <reified T : Enum<T>> savedEnum(value: String): T =
     enumValues<T>().firstOrNull { it.name.lowercase() == value } ?: throw UnsupportedReply()
 
 internal fun parseSavedReview(fields: Map<String, Any>): PhoneControlReply.SavedReview {
+    if ("state" in fields) {
+        fields.wireKeys("v", "type", "request_id", "run_id", "result_id", "state")
+        val run = fields.wireString("run_id").also { phoneControlRunIdBytes(it) }
+        val result = fields.wireString("result_id").also { require(validSavedResultId(it)) }
+        val state = savedEnum<PhoneSavedState>(fields.wireString("state"))
+        return PhoneControlReply.SavedReview(fields.wireHex("request_id", 16), PhoneSavedStatus(run, result, state))
+    }
     fields.wireKeys("v", "type", "request_id", "run_id", "result_id", "revision", "producer_agent", "agents",
         "destination", "base_commit", "verification_digest", "plan_digest", "verifier_inputs_digest", "result_digest",
         "commands_passed", "current_verification", "current_provenance", "file", "next")

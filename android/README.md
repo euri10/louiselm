@@ -252,7 +252,13 @@ one does not Start a Run, allocate Sessions, grant capability, or start a
 deadline. The operator may reopen its waiting controller after a restart; the
 phone never launches one automatically. Run support uses optional skills-core
 integration and reports unsupported if it is absent; ordinary Sessions do not
-depend on it. Phone Start and saved-result review are separate work.
+depend on it. Phone Start is separate work.
+
+Open a saved-work Attention item to review bounded changes and verification
+evidence while the result is pending. Refresh the exact review to see a later
+desktop acceptance or discard. An interrupted application is shown as unknown;
+completed application without a confirmed acceptance is shown separately. These
+are observations at the last refresh. Inspect uncertain work on the desktop.
 
 ### Saved offline copies
 
