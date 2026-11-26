@@ -68,8 +68,9 @@ class PhoneSendAvailabilityEndToEndTest {
         val store = PendingPhoneActionStore(app, keyAccess)
         val intent = Intent(app, PhoneControlActivity::class.java).putExtra(PhoneControlActivity.ATTENTION, true)
             .putExtra(PhoneControlActivity.CONTROLLER_ID, controller).putExtra(PhoneControlActivity.SUBJECT_ID, subject)
+        val reviewedDraft = "Full reviewed instruction\nwith another line and é."
 
-        fun runScreen(check: (PhoneControlActivity, PausedExecutorService) -> Unit) {
+        fun runScreen(offlineDraft: Boolean = false, check: (PhoneControlActivity, PausedExecutorService) -> Unit) {
             val screen = Robolectric.buildActivity(PhoneControlActivity::class.java, intent)
             val activity = screen.get()
             ReflectionHelpers.getField<ExecutorService>(activity, "networkExecutor").shutdown()
@@ -80,11 +81,22 @@ class PhoneSendAvailabilityEndToEndTest {
                 screen.setup()
                 ReflectionHelpers.setField(activity, "pendingActionsStore", store)
                 drain()
-                views(activity.window.decorView).filterIsInstance<Button>()
-                    .single { it.text.toString() == activity.getString(R.string.phone_unlock) }.performClick()
-                repeat(10) { drain() }
-                assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
-                    .any { it.text.toString().contains("fixture request") })
+                val onlineUnlock = views(activity.window.decorView).filterIsInstance<Button>()
+                    .single { it.text.toString() == activity.getString(R.string.phone_unlock) }
+                if (offlineDraft) {
+                    views(activity.window.decorView).filterIsInstance<Button>()
+                        .single { it.text.toString() == activity.getString(R.string.phone_draft_unlock) }.performClick()
+                    repeat(10) { drain() }
+                    assertTrue(onlineUnlock.isShown)
+                    views(activity.window.decorView).filterIsInstance<Button>()
+                        .single { it.text.toString().contains(controller) && it.text.toString().contains(subject) }.performClick()
+                    drain()
+                } else {
+                    onlineUnlock.performClick()
+                    repeat(10) { drain() }
+                    assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+                        .any { it.text.toString().contains("fixture request") })
+                }
                 check(activity, executor)
             } finally {
                 screen.close()
@@ -95,9 +107,8 @@ class PhoneSendAvailabilityEndToEndTest {
         }
 
         fun trySend(activity: PhoneControlActivity, executor: PausedExecutorService, denyNetwork: Boolean = false) {
-            val draft = "Full reviewed instruction\nwith another line and é."
             val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
-            input.setText(draft)
+            input.setText(reviewedDraft)
             repeat(3) { executor.runAll(); shadowOf(Looper.getMainLooper()).idle() }
             val button = views(activity.window.decorView).filterIsInstance<Button>()
                 .single { it.text.toString() == activity.getString(R.string.phone_send) }
@@ -110,7 +121,7 @@ class PhoneSendAvailabilityEndToEndTest {
                 }
                 button.performClick()
                 repeat(3) { executor.runAll(); shadowOf(Looper.getMainLooper()).idle() }
-                assertEquals(draft, input.text.toString())
+                assertEquals(reviewedDraft, input.text.toString())
                 assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
                     .any { it.text.toString() == activity.getString(R.string.phone_unsupported) })
                 assertEquals(null, ReflectionHelpers.getField<Any?>(activity, "pendingNetworkAction"))
@@ -123,8 +134,16 @@ class PhoneSendAvailabilityEndToEndTest {
             trySend(activity, executor, denyNetwork = true)
             assertFalse(snapshot.exists())
         }
+        // Drafts have a separate local unlock and survive an Activity/process-style restart.
+        runScreen(offlineDraft = true) { activity, _ ->
+            val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+            assertTrue(input.isShown)
+            assertEquals(reviewedDraft, input.text.toString())
+            assertFalse(snapshot.exists())
+        }
         // The restarted Activity reads the real receiver again; the refused Send left no identity.
         runScreen { activity, executor ->
+            assertEquals(reviewedDraft, views(activity.window.decorView).filterIsInstance<EditText>().single().text.toString())
             trySend(activity, executor)
             assertFalse(snapshot.exists())
         }
