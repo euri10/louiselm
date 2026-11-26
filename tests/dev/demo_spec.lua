@@ -35,9 +35,16 @@ local function drain(queued)
   end
 end
 
+local function wait_until(queued, predicate)
+  assert(nvim.wait(1000, function()
+    drain(queued)
+    return predicate()
+  end))
+end
+
 T["demo API"] = MiniTest.new_set()
 
-T["demo API"]["startup opens an idle chat before any prompt or diff"] = function()
+local function start_demo(schedule)
   local root = fixture()
   local cwd = nvim.fn.getcwd()
   local commands = nvim.api.nvim_get_commands({ builtin = false })
@@ -62,7 +69,12 @@ T["demo API"]["startup opens an idle chat before any prompt or diff"] = function
     end
     nvim.fn.delete(root, "rf")
   end)
-  runtime = assert(Demo.start({ project_root = root }))
+  runtime = assert(Demo.start({ project_root = root, schedule = schedule }))
+  return runtime
+end
+
+T["demo API"]["startup opens an idle chat before any prompt or diff"] = function()
+  local runtime = start_demo()
   MiniTest.expect.equality(runtime.session:inspect().status, "ready")
   MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0):match("^louiselm://demo%-") ~= nil, true)
   local content = table.concat(nvim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
@@ -70,9 +82,378 @@ T["demo API"]["startup opens an idle chat before any prompt or diff"] = function
   assert(runtime.chat:submit("fix the calculator"))
   local view = runtime.chat.views[runtime.session:inspect().id]
   assert(nvim.wait(1000, function()
-    return view.pending_admission == nil
+    return #view.transcript:snapshot() > 0
   end))
   MiniTest.expect.equality(view.transcript:snapshot()[1], { kind = "user", text = "fix the calculator" })
+end
+
+T["demo API"]["real Chat keeps busy submissions and drops queued UI work after disposal"] = function()
+  local queued, schedule = scheduler()
+  local runtime = start_demo(schedule)
+  local session, chat = runtime.session, runtime.chat
+  local permissions = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+  assert(chat:submit("first turn"))
+  assert(nvim.wait(1000, function()
+    drain(queued)
+    return #permissions == 1
+  end))
+  assert(chat:submit("waiting one"))
+  assert(nvim.wait(1000, function()
+    drain(queued)
+    return #session:queue_inspect().entries == 1 and not session:queue_inspect().pending
+  end))
+  assert(chat:submit("waiting two"))
+  assert(nvim.wait(1000, function()
+    drain(queued)
+    return #session:queue_inspect().entries == 2 and not session:queue_inspect().pending
+  end))
+  local entries = session:queue_inspect().entries
+  MiniTest.expect.equality({ entries[1].display_text, entries[2].display_text }, { "waiting one", "waiting two" })
+  assert(permissions[1].respond({ outcome = { outcome = "selected", optionId = "reject-once" } }))
+  assert(nvim.wait(1000, function()
+    drain(queued)
+    return #permissions == 2
+  end))
+  local view = chat.views[session:inspect().id]
+  assert(nvim.wait(1000, function()
+    local content = table.concat(nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false), "\n")
+    return content:find("waiting one", 1, true) ~= nil
+  end))
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "waiting two")
+  assert(permissions[2].respond({ outcome = { outcome = "selected", optionId = "reject-once" } }))
+  chat:dispose()
+  runtime.api:dispose()
+  drain(queued)
+  nvim.wait(20)
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+end
+
+T["demo API"]["full queue rejection completes asynchronously"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  assert(session:prompt("active"))
+  drain(queued)
+  for index = 1, 20 do
+    local accepted
+    assert(session:enqueue("waiting " .. index, function(id, err)
+      accepted = { id = id, error = err }
+    end))
+    wait_until(queued, function()
+      return accepted ~= nil
+    end)
+    assert(accepted.id, accepted.error)
+  end
+  local result
+  assert(session:enqueue("overflow", function(id, err)
+    result = { id = id, error = err }
+  end))
+  MiniTest.expect.equality(result, nil)
+  wait_until(queued, function()
+    return result ~= nil
+  end)
+  MiniTest.expect.equality(result, { error = "Session queue is full (20 waiting instructions)" })
+end
+
+T["demo API"]["does not dispatch after an admission listener disposes the Session"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local events, completed = {}, false
+  session:on(function(event)
+    events[#events + 1] = event.type
+    if event.type == "admission_settled" then
+      session:dispose()
+    end
+  end)
+  assert(session:prompt("fix", function()
+    completed = true
+  end))
+  drain(queued)
+  MiniTest.expect.equality(events, { "state_changed", "admission_settled", "state_changed" })
+  MiniTest.expect.equality(completed, false)
+end
+
+T["demo API"]["cancellation pauses waiting work until reviewed and continued"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local permissions, result = {}, nil
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+  assert(session:prompt("active", function(value, err)
+    result = { value, err }
+  end))
+  drain(queued)
+  local accepted
+  assert(session:enqueue("waiting", function(id, err)
+    accepted = { id = id, error = err }
+  end))
+  wait_until(queued, function()
+    return accepted ~= nil
+  end)
+  assert(accepted.id, accepted.error)
+  assert(session:cancel())
+  wait_until(queued, function()
+    return result ~= nil and session:queue_inspect().paused and not session:queue_inspect().pending
+  end)
+  local state = session:queue_inspect()
+  MiniTest.expect.equality({ state.paused, #state.entries, #permissions }, { true, 1, 1 })
+  MiniTest.expect.equality(result, { { stopReason = "cancelled" } })
+  local continued
+  assert(session:queue_continue(state.revision, function(ok, err)
+    continued = { ok, err }
+  end))
+  MiniTest.expect.equality(continued, nil)
+  assert(nvim.wait(1000, function()
+    drain(queued)
+    return #permissions == 2
+  end))
+  MiniTest.expect.equality(continued, { true })
+  MiniTest.expect.equality(session:queue_inspect().paused, false)
+end
+
+T["demo API"]["Stop fences an admission while the Session is still ready"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local admitted
+  assert(session:enqueue("waiting", function(id, err)
+    admitted = { id = id, error = err }
+  end))
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  assert(session:cancel())
+  wait_until(queued, function()
+    local state = session:queue_inspect()
+    return admitted ~= nil and state.paused and not state.pending
+  end)
+  assert(admitted.id, admitted.error)
+  MiniTest.expect.equality(#session:queue_inspect().entries, 1)
+  MiniTest.expect.equality(session:inspect().current_turn, 0)
+end
+
+T["demo API"]["cancelling before dispatch settles admission without a tool event"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local events, result = {}, nil
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+  local id = assert(session:prompt("cancel before dispatch", function(value, err)
+    result = { value, err }
+  end))
+  assert(session:cancel())
+  drain(queued)
+  local types = {}
+  for _, event in ipairs(events) do
+    types[#types + 1] = event.type
+  end
+  MiniTest.expect.equality(types, { "state_changed", "admission_settled", "state_changed", "turn_done" })
+  MiniTest.expect.equality({ events[2].data.turn_id, events[2].data.result }, { id, "cancelled" })
+  MiniTest.expect.equality(result, { { stopReason = "cancelled" } })
+end
+
+T["demo API"]["retains, edits, and dispatches independent busy submissions"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local permissions, dispatched, changes = {}, {}, {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    elseif event.type == "prompt_dispatched" then
+      dispatched[#dispatched + 1] = event.data
+    elseif event.type == "queue_changed" then
+      changes[#changes + 1] = event.data
+    end
+  end)
+  assert(session:prompt("active"))
+  drain(queued)
+  MiniTest.expect.equality(#permissions, 1)
+
+  local contexts = { { label = "file", text = "original" } }
+  local admissions = {}
+  assert(session:enqueue("first", function(id, err)
+    admissions[#admissions + 1] = { id = id, error = err }
+  end, nil, "first visible", contexts))
+  assert(session:enqueue("second", function(id, err)
+    admissions[#admissions + 1] = { id = id, error = err }
+  end))
+  contexts[1].text = "changed later"
+  MiniTest.expect.equality(admissions, {})
+  wait_until(queued, function()
+    return #admissions == 2
+  end)
+  local state = session:queue_inspect()
+  MiniTest.expect.equality(#state.entries, 2)
+  MiniTest.expect.equality(state.entries[1].contexts[1].text, "original")
+  MiniTest.expect.equality({ admissions[1].id, admissions[2].id }, { state.entries[1].id, state.entries[2].id })
+  MiniTest.expect.equality(#changes > 0, true)
+
+  local moved
+  assert(session:queue_move(state.entries[2].id, 1, state.revision, function(ok, err)
+    moved = { ok, err }
+  end))
+  MiniTest.expect.equality(moved, nil)
+  wait_until(queued, function()
+    return moved ~= nil
+  end)
+  MiniTest.expect.equality(moved, { true })
+  state = session:queue_inspect()
+  MiniTest.expect.equality(state.entries[1].display_text, "second")
+
+  local replaced
+  assert(session:queue_replace(state.entries[1].id, state.revision, "replacement", function(ok, err)
+    replaced = { ok, err }
+  end))
+  wait_until(queued, function()
+    return replaced ~= nil
+  end)
+  MiniTest.expect.equality(replaced, { true })
+  state = session:queue_inspect()
+  local replacement_id = state.entries[1].id
+  MiniTest.expect.equality(state.entries[1].display_text, "replacement")
+  MiniTest.expect.equality(replacement_id ~= admissions[2].id, true)
+
+  local cancelled
+  assert(session:queue_cancel(state.entries[2].id, state.revision, function(ok, err)
+    cancelled = { ok, err }
+  end))
+  wait_until(queued, function()
+    return cancelled ~= nil
+  end)
+  MiniTest.expect.equality(cancelled, { true })
+  assert(permissions[1].respond({ outcome = { outcome = "selected", optionId = "reject-once" } }))
+  assert(nvim.wait(1000, function()
+    drain(queued)
+    return #permissions == 2
+  end))
+  MiniTest.expect.equality(dispatched[2].queue_entry.id, replacement_id)
+  MiniTest.expect.equality(dispatched[2].queue_entry.display_text, "replacement")
+  MiniTest.expect.equality(session:queue_inspect().active_status, "dispatched")
+end
+
+T["demo API"]["drops unacknowledged queue work and late callbacks on disposal"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local events, result = {}, nil
+  session:on(function(event)
+    events[#events + 1] = event.type
+  end)
+  assert(session:enqueue("queued", function(id, err)
+    result = { id = id, error = err }
+  end))
+  assert(session:dispose())
+  local count = #events
+  local disposal_result = nvim.deepcopy(result)
+  drain(queued)
+  nvim.wait(20)
+  MiniTest.expect.equality(#events, count)
+  MiniTest.expect.equality(result, disposal_result)
+  if result ~= nil then
+    MiniTest.expect.equality(result, { error = "Session Disposal stopped queue admission" })
+  end
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  MiniTest.expect.equality(session:inspect().current_turn, 0)
+end
+
+T["demo API"]["a failed scripted turn reports its error and pauses waiting work"] = function()
+  local root, path = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local completion, admission
+  assert(session:prompt("active", function(result, err)
+    completion = { result = result, error = err }
+  end))
+  assert(session:enqueue("waiting", function(id, err)
+    admission = { id = id, error = err }
+  end))
+  assert(nvim.fn.delete(path) == 0)
+  wait_until(queued, function()
+    return completion ~= nil and admission ~= nil and not session:queue_inspect().pending
+  end)
+  MiniTest.expect.equality(completion, { error = "demo project is missing " .. path })
+  assert(admission.id, admission.error)
+  local state = session:queue_inspect()
+  MiniTest.expect.equality({ state.paused, #state.entries, session:inspect().current_turn }, { true, 1, 1 })
+end
+
+T["demo API"]["reloading the seeded Session does not invent queue persistence"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:load_session("your-codex-here", "scripted-resume-1"))
+  drain(queued)
+  assert(session:prompt("active"))
+  drain(queued)
+  local admitted
+  assert(session:enqueue("waiting", function(id, err)
+    admitted = { id = id, error = err }
+  end))
+  wait_until(queued, function()
+    return admitted ~= nil
+  end)
+  assert(admitted.id, admitted.error)
+  MiniTest.expect.equality(#session:queue_inspect().entries, 1)
+  assert(session:dispose())
+  drain(queued)
+  local restored = assert(api:load_session("your-codex-here", "scripted-resume-1"))
+  drain(queued)
+  MiniTest.expect.equality({ restored:inspect().status, #restored:queue_inspect().entries }, { "ready", 0 })
 end
 
 T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted file-edit turn"] = function()
@@ -96,10 +477,11 @@ T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted f
     { type = "text", text = "surprise me with a fix" },
   }))
   MiniTest.expect.equality(session:inspect().status, "prompting")
-  MiniTest.expect.equality({ events[2].type, events[3].type }, { "admission_settled", "prompt_dispatched" })
+  MiniTest.expect.equality(#events, 1)
 
   drain(queued)
   MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  MiniTest.expect.equality({ events[2].type, events[3].type }, { "admission_settled", "prompt_dispatched" })
   MiniTest.expect.equality(events[4].type, "chunk")
   MiniTest.expect.equality(events[4].data.content.text:find("scripted demo", 1, true) ~= nil, true)
   MiniTest.expect.equality(events[5].type, "tool_call_started")
@@ -195,7 +577,7 @@ T["demo API"]["drops scheduled Agent work after disposal"] = function()
   assert(session:dispose())
   drain(queued)
 
-  MiniTest.expect.equality(events, { "state_changed", "admission_settled", "prompt_dispatched", "state_changed" })
+  MiniTest.expect.equality(events, { "state_changed", "state_changed" })
   MiniTest.expect.equality(session:inspect().status, "disposed")
   assert(api:dispose())
   nvim.fn.delete(root, "rf")

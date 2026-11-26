@@ -135,11 +135,12 @@ local function set_status(self, status)
   if self.state.status == status then
     return
   end
+  local previous_status = self.state.status
   self.state.status = status
   self.emitter:emit({
     type = "state_changed",
     session_id = self.state.id,
-    data = { status = status },
+    data = { status = status, previous_status = previous_status },
   })
 end
 
@@ -148,6 +149,42 @@ end
 ---@param data unknown
 local function emit(self, event_type, data)
   self.emitter:emit({ type = event_type, session_id = self.state.id, data = data })
+end
+
+---@param self table
+---@param turn_id string
+---@param result "dispatched"|"cancelled"
+local function settle_admission(self, turn_id, result)
+  emit(self, "admission_settled", {
+    turn_id = turn_id,
+    result = result,
+    requested = {},
+    confirmed = {},
+    options = {},
+    requests = {},
+    elapsed_ms = 0,
+  })
+end
+
+---@param self table
+---@param result table?
+---@param error_message string?
+local function complete_turn(self, result, error_message)
+  local callback = self.prompt_callback
+  self.prompt_callback = nil
+  if error_message ~= nil then
+    emit(self, "error", { message = error_message, can_continue = false })
+  end
+  if self.state.status == "disposed" then
+    return
+  end
+  set_status(self, "ready")
+  if result ~= nil and self.state.status ~= "disposed" then
+    emit(self, "turn_done", result)
+  end
+  if callback ~= nil and self.state.status ~= "disposed" then
+    callback(result, error_message)
+  end
 end
 
 ---@param self table
@@ -168,8 +205,7 @@ local function finish_turn(self, revision, outcome)
     or self.api.copy.cancelled
   emit(self, "chunk", { content = { type = "text", text = message } })
   self.pending_permission = nil
-  set_status(self, "ready")
-  emit(self, "turn_done", { stopReason = outcome == "cancelled" and "cancelled" or "end_turn" })
+  complete_turn(self, { stopReason = outcome == "cancelled" and "cancelled" or "end_turn" })
 end
 
 ---@param self table
@@ -180,8 +216,7 @@ local function propose_edit(self, revision)
   end
   local content, read_error = read_file(self.calculator_path)
   if content == nil then
-    emit(self, "error", { message = read_error })
-    set_status(self, "ready")
+    complete_turn(self, nil, read_error)
     return
   end
   local start = content:find(BROKEN_EXPRESSION, 1, true)
@@ -189,8 +224,7 @@ local function propose_edit(self, revision)
     emit(self, "chunk", {
       content = { type = "text", text = self.api.copy.label .. "\n\n" .. self.api.copy.already_fixed },
     })
-    set_status(self, "ready")
-    emit(self, "turn_done", { stopReason = "end_turn" })
+    complete_turn(self, { stopReason = "end_turn" })
     return
   end
   local proposed = content:sub(1, start - 1) .. FIXED_EXPRESSION .. content:sub(start + #BROKEN_EXPRESSION)
@@ -257,8 +291,8 @@ local function propose_edit(self, revision)
         if selected == "allow-once" then
           local written, write_error = write_file(self.calculator_path, proposed)
           if not written then
-            emit(self, "error", { message = write_error })
-            set_status(self, "ready")
+            self.pending_permission = nil
+            complete_turn(self, nil, write_error)
             return
           end
           local buffer = nvim.fn.bufnr(self.calculator_path)
@@ -290,8 +324,7 @@ local function acknowledge_handoff(self, revision)
       text = self.api.copy.label .. "\n\n" .. self.api.copy.handoff,
     },
   })
-  set_status(self, "ready")
-  emit(self, "turn_done", { stopReason = "end_turn" })
+  complete_turn(self, { stopReason = "end_turn" })
 end
 
 ---Subscribe to typed events from this browser-local Session.
@@ -305,6 +338,123 @@ end
 ---@return louiselm.session.State state
 function Session:inspect()
   return nvim.deepcopy(self.state)
+end
+
+---Inspect waiting work in this browser-local Session.
+---@return table state
+function Session:queue_inspect()
+  return self.queue and self.queue:inspect()
+    or {
+      revision = 0,
+      entries = {},
+      pending = false,
+      paused = self.queue_pause_reason ~= nil,
+      uncertain = false,
+      reason = self.queue_pause_reason,
+    }
+end
+
+---Admit work to the in-memory Session queue.
+---@param prompt louiselm.session.Prompt
+---@param callback fun(id: string?, error_message?: string)
+---@param metadata? louiselm.routing.SubmissionMetadata
+---@param display_text? string
+---@param contexts? table[]
+---@return boolean started
+---@return string? error_message
+function Session:enqueue(prompt, callback, metadata, display_text, contexts)
+  if self.state.status == "starting" or self.state.status == "disposed" or self.state.status == "error" then
+    return false, "session is not available for queue admission"
+  end
+  if self.queue == nil then
+    -- The browser has no durable queue store. The Queue itself owns all state;
+    -- this scheduled acknowledgement never writes or promises restart recovery.
+    local store = {
+      save = function(_, _, _, _, done)
+        self.api.schedule(0, done)
+      end,
+    }
+    local queue, err = require("louiselm.session.queue").new(self, store)
+    if queue == nil then
+      return false, err
+    end
+    self.queue = queue
+    if self.queue_pause_reason ~= nil then
+      queue:pause(self.queue_pause_reason)
+      self.queue_pause_reason = nil
+    end
+  end
+  return self.queue:enqueue(
+    prompt,
+    metadata,
+    display_text or (type(prompt) == "string" and prompt or ""),
+    contexts or {},
+    callback
+  )
+end
+
+---Cancel a reviewed waiting instruction.
+---@param id string
+---@param revision integer
+---@param callback fun(changed: boolean, error_message?: string)
+---@return boolean started
+---@return string? error_message
+function Session:queue_cancel(id, revision, callback)
+  if self.queue == nil then
+    return false, "waiting entry no longer exists"
+  end
+  return self.queue:cancel(id, revision, callback)
+end
+
+---Move a reviewed waiting instruction.
+---@param id string
+---@param position integer
+---@param revision integer
+---@param callback fun(changed: boolean, error_message?: string)
+---@return boolean started
+---@return string? error_message
+function Session:queue_move(id, position, revision, callback)
+  if self.queue == nil then
+    return false, "waiting entry no longer exists"
+  end
+  return self.queue:move(id, position, revision, callback)
+end
+
+---Replace a reviewed waiting instruction.
+---@param id string
+---@param revision integer
+---@param prompt louiselm.session.Prompt
+---@param callback fun(changed: boolean, error_message?: string)
+---@param metadata? louiselm.routing.SubmissionMetadata
+---@param display_text? string
+---@param contexts? table[]
+---@return boolean started
+---@return string? error_message
+function Session:queue_replace(id, revision, prompt, callback, metadata, display_text, contexts)
+  if self.queue == nil then
+    return false, "waiting entry no longer exists"
+  end
+  return self.queue:replace(
+    id,
+    revision,
+    prompt,
+    metadata,
+    display_text or (type(prompt) == "string" and prompt or ""),
+    contexts or {},
+    callback
+  )
+end
+
+---Resume a paused and reviewed queue.
+---@param revision integer
+---@param callback fun(changed: boolean, error_message?: string)
+---@return boolean started
+---@return string? error_message
+function Session:queue_continue(revision, callback)
+  if self.queue == nil then
+    return false, "Session has no queue"
+  end
+  return self.queue:continue(revision, callback)
 end
 
 ---Rename this browser-local Session.
@@ -325,12 +475,12 @@ end
 
 ---Start one deterministic browser-local turn.
 ---@param prompt louiselm.session.Prompt
----@param _callback? fun(result: unknown, error?: string)
+---@param callback? fun(result: unknown, error?: string)
 ---@param _metadata? louiselm.routing.SubmissionMetadata
 ---@param display_text? string
----@return integer? request_id
+---@return string? request_id
 ---@return string? error_message
-function Session:prompt(prompt, _callback, _metadata, display_text)
+function Session:prompt(prompt, callback, _metadata, display_text)
   if self.state.status ~= "ready" then
     return nil, "session is not ready"
   end
@@ -340,30 +490,63 @@ function Session:prompt(prompt, _callback, _metadata, display_text)
   self.state.current_turn = self.state.current_turn + 1
   self.revision = self.revision + 1
   local revision = self.revision
+  local turn_id = self.state.id .. "-turn-" .. self.state.current_turn
   local handoff = prompt_contains(prompt, "## Handoff")
+  prompt = type(prompt) == "string" and { { type = "text", text = prompt } } or nvim.deepcopy(prompt)
+  self.state.turn_id = turn_id
+  self.prompt_callback = callback
+  self.recording_turn = { dispatched = false }
   set_status(self, "prompting")
-  emit(self, "admission_settled", { turn_id = self.state.current_turn, result = "dispatched" })
-  emit(self, "prompt_dispatched", {
-    turn_id = self.state.current_turn,
-    prompt = type(prompt) == "string" and { { type = "text", text = prompt } } or prompt,
-    display_text = display_text,
-  })
   self.api.schedule(120, function()
+    if self.revision ~= revision or self.state.status ~= "prompting" then
+      return
+    end
+    self.recording_turn.dispatched = true
+    settle_admission(self, turn_id, "dispatched")
+    if self.revision ~= revision or self.state.status ~= "prompting" then
+      return
+    end
+    emit(self, "prompt_dispatched", {
+      turn_id = turn_id,
+      prompt = prompt,
+      display_text = display_text,
+      queue_entry = self.queue and self.queue:entry_for_turn(turn_id) or nil,
+    })
     if handoff then
       acknowledge_handoff(self, revision)
     else
       propose_edit(self, revision)
     end
   end)
-  return self.state.current_turn
+  return turn_id
 end
 
 ---Cancel the active browser-local turn.
 ---@return boolean cancelled
 ---@return string? error_message
 function Session:cancel()
+  if self.state.status == "ready" and self.queue ~= nil then
+    local state = self.queue:inspect()
+    if state.pending or #state.entries > 0 or state.active ~= nil then
+      self.queue:pause("turn stopped; review the queue")
+      return true
+    end
+  end
   if self.state.status ~= "prompting" and self.state.status ~= "waiting_permission" then
     return false, "session is not prompting"
+  end
+  if self.queue ~= nil then
+    self.queue:pause("turn stopped; review the queue")
+  else
+    self.queue_pause_reason = "turn stopped; review the queue"
+  end
+  if self.recording_turn ~= nil and not self.recording_turn.dispatched then
+    self.revision = self.revision + 1
+    settle_admission(self, self.state.turn_id, "cancelled")
+    if self.state.status ~= "disposed" then
+      complete_turn(self, { stopReason = "cancelled" })
+    end
+    return true
   end
   if self.pending_permission ~= nil then
     self.pending_permission.answered = true
@@ -393,7 +576,11 @@ function Session:dispose()
   end
   self.revision = self.revision + 1
   self.pending_permission = nil
+  self.prompt_callback = nil
   set_status(self, "disposed")
+  if self.queue ~= nil then
+    self.queue:dispose()
+  end
   self.api:remove_session(self.state.id)
   self.emitter:clear()
   return true
@@ -426,6 +613,8 @@ local function add_session(api, agent_name, options, source, acp_session_id, sta
     emitter = Events.new(),
     transcript = Transcript.new(),
     revision = 0,
+    permission_queue = {},
+    interactions = {},
     calculator_path = api.project_root .. "/lua/calculator.lua",
     client = { agent_capabilities = { loadSession = true } },
     state = {
@@ -445,6 +634,9 @@ local function add_session(api, agent_name, options, source, acp_session_id, sta
   }, Session)
   session:on(function(event)
     session.transcript:record(event)
+    if session.queue ~= nil then
+      session.queue:observe(event)
+    end
   end)
   if type(options.on_event) == "function" then
     session:on(options.on_event)
