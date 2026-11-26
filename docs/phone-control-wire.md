@@ -646,7 +646,7 @@ Agent-advertised current value's display name for the `model`, `thought_level`
 or `mode` category, respectively; boolean options show their name and value.
 An empty string (or absent `settings`)
 means unavailable. Labels are at most 256 UTF-8 bytes with no ASCII control
-characters. No other option, choice list or config metadata is projected.
+characters. No other configuration option, configuration choice list or config metadata is projected.
 The owner updates these values from confirmed config events and advances the
 page revision when options change. A mode label is not a permission grant.
 `CurrentPermission` is exactly `{title:string,options:[string],incomplete:boolean}`.
@@ -655,7 +655,7 @@ only while `status` is `waiting_permission`. It contains the displayed tool
 title and offered choice labels, not raw tool input, option identifiers or a
 responder. Each string is at most 8192 UTF-8 bytes, there are at most 50 choices
 and choice labels total at most 16384 bytes. Empty fields and `incomplete=true`
-indicate unavailable or shortened information. The owner advances the revision
+indicate unavailable or shortened information and make the page incomplete. The owner advances the revision
 on request, desktop response or cancellation, including replacement by a queued
 request. A saved page discards this current-only field and labels its state as
 historical; it cannot claim that an old request is still waiting. Labels are

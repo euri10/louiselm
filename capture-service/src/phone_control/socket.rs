@@ -185,7 +185,7 @@ enum ReadResponse {
         #[serde(default)]
         settings: ReadSettings,
         #[serde(default, deserialize_with = "deserialize_permission")]
-        current_permission: Option<ReadPermission>,
+        current_permission: Option<Box<ReadPermission>>,
         entries: Vec<ReadEntry>,
         next_before: u64,
         complete: bool,
@@ -201,11 +201,11 @@ struct ReadPermission {
     incomplete: bool,
 }
 
-fn deserialize_permission<'de, D>(deserializer: D) -> Result<Option<ReadPermission>, D::Error>
+fn deserialize_permission<'de, D>(deserializer: D) -> Result<Option<Box<ReadPermission>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    ReadPermission::deserialize(deserializer).map(Some)
+    ReadPermission::deserialize(deserializer).map(|permission| Some(Box::new(permission)))
 }
 
 impl ReadPermission {
