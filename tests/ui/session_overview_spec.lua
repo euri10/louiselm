@@ -41,6 +41,10 @@ local function fake_session(id, agent, working_dir)
     return self.state
   end
 
+  function session:queue_inspect()
+    return { revision = 0, entries = {}, paused = false, uncertain = false }
+  end
+
   function session:usage_history(callback)
     nvim.schedule(function()
       callback({})

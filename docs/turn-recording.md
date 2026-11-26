@@ -12,6 +12,7 @@ All shared LouiseLM state uses the same root, independently of the editor profil
 | Relative path | Owner and purpose |
 | --- | --- |
 | `usage/turns.sqlite3` | Session registry: durable facts, custom names and current routing preferences |
+| `queues/queues.sqlite3` | Session registry: private frozen instruction and context payloads |
 | `usage.json` | Chat: read-only legacy replay annotations |
 | `forensics/` | Session registry: immutable Forensics records |
 | `permissions.json` | Permission store: remembered rules |
@@ -58,8 +59,8 @@ the new immutable start row. Only its successful acknowledgement permits the
 ACP prompt write. A failed admission leaves the Session `ready`, calls the
 callback with an error, and sends no prompt. Accepted attempts advance the local
 turn ordinal even if admission fails; consumers must use the durable ID for
-identity. Chat shows the submitted attempt and the recording error for ordinary
-submissions. Retrying the prompt creates another attempt, with another ID.
+identity. Chat retains an unsent instruction in the paused Session queue and
+shows the error. Replacing it creates a new instruction identity.
 
 An Agent configured with `auto = { model = "<advertised value>", effort = "<advertised value>" }`
 opts new Sessions into baseline Auto admission. Omit `effort` only when the Agent
@@ -99,15 +100,24 @@ names. Pre-feature stores have no recoverable name unless it was saved elsewhere
 set that name again after updating. Older plugin processes cannot read schema 5,
 so restart all editors sharing this store when updating.
 
-A failed or unknown configuration does not trigger a
-resend; an unresolved request holds or errors the Session. Chat keeps the
-editable prompt and Staged context until dispatch is confirmed, and leaves
-them in place when admission rejects the attempt. This also applies when Auto
-is unset or the current pair is pinned. Dispatch consumes only that input's
-captured context; edits and newly staged context remain in the next draft.
-Editing any line of a queued prompt cancels automatic release until Enter
-recommits it. A queued replacement is selected at actual release under the
-current configuration and approval evidence, not when it was first queued.
+A failed or unknown configuration never triggers a resend. Chat first freezes
+the visible text and selected context in the Session queue; after durable queue
+admission, the next draft is separate. Each Session accepts up to 20 waiting
+instructions. `:LouiselmQueue` reviews, cancels, replaces or reorders waiting
+entries and continues a paused queue. Replacement from that picker is text only
+and gives the replacement a new identity. Stop, failure and uncertainty pause
+for review. Unsent, dispatched and uncertain work remain distinct; neither an
+unknown write nor an interrupted turn is automatically retried.
+
+Queue payloads are stored separately from the payload-free turn record in the
+private `queues/queues.sqlite3` file. With a headless `usage_directory`, the
+queue file is `<usage_directory>/queues/queues.sqlite3`. Restoring requires the
+same Agent, ACP Session ID and workspace plus evidence that the former owner and
+recorded turns have settled. Restored work is paused until explicit Continue;
+missing evidence leaves it unavailable for execution. Closing a Session fences
+its queue before confirming Disposal. Exiting the editor retains saved work for
+review. The headless `session:prompt` contract above remains immediate; owners
+that want queued admission use `session:enqueue` and its asynchronous callback.
 
 `admission_events` is in the same private SQLite store. It records one
 payload-free `decision` and one terminal `settlement` keyed by the returned
@@ -156,15 +166,16 @@ response) record `failed` with `peer_response=true`, including any reported
 usage. The prompt callback receives `nil, message`; an `error` event replaces
 `turn_done`. The ACP connection stays available, and the Session returns to
 `ready` once the Agent is idle and permission requests are settled. Chat keeps
-the diagnostic visible. Ordinary failures cancel queued follow-up authorization
-while retaining its draft; the operator can submit it or choose another Model.
+the diagnostic visible. Failures pause accepted follow-ups for review; the
+operator can inspect the queue, choose another Model and explicitly Continue.
 
 A failed qualified economical attempt instead persists local
 `routing_recovery = { turn_id, reason }`, with reason `not_sent`, `turn_failed`
 or `delivery_unknown`. In Auto, the next authorized submission confirms the
 configured baseline before dispatch, bypassing economical rule selection.
-An explicitly queued follow-up is a separate authorized submission and can
-continue when the Session is safe and idle. No original failed request is
+An explicitly queued follow-up is a separate authorized submission. After a
+failure it continues only after operator review and explicit Continue, when the
+Session is safe and idle. No original failed request is
 replayed, no tool is rerun and no workspace change is undone. Queue replacement,
 editing and captured-context ownership still apply. The header shows pending
 baseline recovery, including after supported `session/load` resume.

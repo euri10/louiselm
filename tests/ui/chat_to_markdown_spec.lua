@@ -39,7 +39,21 @@ local function fake_session(id, agent)
     return self.state
   end
 
-  function session:prompt(prompt, _, _, display_text)
+  function session:queue_inspect()
+    return { revision = 0, entries = {}, paused = false, uncertain = false }
+  end
+
+  function session:enqueue(prompt, callback, _, display_text, contexts)
+    local entry =
+      { id = tostring(#self.prompts + 1), prompt = prompt, display_text = display_text, contexts = contexts }
+    nvim.schedule(function()
+      callback(entry.id)
+      self:prompt(prompt, nil, nil, display_text, entry)
+    end)
+    return true
+  end
+
+  function session:prompt(prompt, _, _, display_text, entry)
     self.prompts[#self.prompts + 1] = prompt
     self:emit({
       type = "admission_settled",
@@ -53,6 +67,7 @@ local function fake_session(id, agent)
         turn_id = #self.prompts,
         prompt = type(prompt) == "string" and { { type = "text", text = prompt } } or prompt,
         display_text = display_text,
+        queue_entry = entry,
       },
     })
     return #self.prompts
@@ -77,6 +92,15 @@ local function fake_session(id, agent)
   end
 
   return session
+end
+
+local function submit(chat, text)
+  local session = chat.views[chat.current_id].session
+  local before = #session.prompts
+  assert(chat:submit(text))
+  assert(nvim.wait(1000, function()
+    return #session.prompts > before
+  end, 10))
 end
 
 local function fake_api()
@@ -150,7 +174,7 @@ T["to_markdown"]["exports the current session's full transcript, in order, with 
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(session))
 
-  assert(chat:submit("run the tests"))
+  submit(chat, "run the tests")
   session:emit({
     type = "tool_call_started",
     session_id = "session-1",
@@ -205,9 +229,9 @@ T["to_markdown"]["exports a specific attached session by id, independent of the 
   local second = fake_session("session-2", "codex")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
-  assert(chat:submit("first message"))
+  submit(chat, "first message")
   assert(chat:attach(second))
-  assert(chat:submit("second message"))
+  submit(chat, "second message")
 
   local path = nvim.fn.tempname() .. ".md"
   local written_path, write_error = export(chat, "session-1", path)
@@ -255,7 +279,7 @@ T["to_markdown"]["defaults to a generated path in the current working directory 
   local session = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(session))
-  assert(chat:submit("hello"))
+  submit(chat, "hello")
 
   local written_path, write_error = assert(export(chat))
 
@@ -293,7 +317,7 @@ T["to_markdown"]["reports a clean error instead of crashing when the destination
   local session = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(session))
-  assert(chat:submit("hello"))
+  submit(chat, "hello")
 
   local path = nvim.fn.tempname() .. "/nope/qa-export.md"
   local written_path, write_error = export(chat, nil, path)
@@ -320,7 +344,7 @@ T["to_markdown"]["adds current broker taint metadata without changing transcript
   session.state.broker_session_id = "broker-session"
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(session))
-  assert(chat:submit("secret original prompt"))
+  submit(chat, "secret original prompt")
   local path = nvim.fn.tempname() .. ".md"
   local result, failure
   local cancel = assert(chat:to_markdown(nil, path, function(value, err)

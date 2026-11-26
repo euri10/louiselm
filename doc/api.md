@@ -54,7 +54,7 @@ louiselm.SessionControlPhase:
 - `agents: string[]` -- Sorted configured names, at most 128; no commands, environments or credentials.
 - `availability: "available"|"select_session"|"unavailable"` -- Advertisements need an explicitly selected existing Session.
 - `options: louiselm.session.ConfigOption[]?` -- Selected Session's current advertisement, with descriptions omitted; whole response at most 64 KiB.
-- `sessions: { session_id: string, acp_session_id: string, status: "admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6), options: table<string, boolean|string> }[]` -- At most 32 Sessions of the selected Agent.
+- `sessions: { session_id: string, acp_session_id: string, status: "admitting"|"cancelling"|"configuring"|"disposed"|"disposing"...(+7), options: table<string, boolean|string> }[]` -- At most 32 Sessions of the selected Agent.
 - `truncated: boolean` -- More Sessions exist; select an exact session_id.
 
 ### louiselm.SessionControlSnapshot
@@ -70,7 +70,7 @@ louiselm.SessionControlPhase:
 - `result: { text: string, truncated: boolean }?` -- Explicitly requested assistant-text tail, at most 8192 bytes.
 - `revision: integer` -- Monotonic change counter for this operation's compact state.
 - `session_id: string?` -- Local child identity.
-- `status: ("admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6))?` -- Latest child state, including the actual state after terminal cleanup.
+- `status: ("admitting"|"cancelling"|"configuring"|"disposed"|"disposing"...(+7))?` -- Latest child state, including the actual state after terminal cleanup.
 - `stop_reason: string?` -- Peer's completed-turn stop reason.
 - `turn_id: string?` -- Stable admission/turn identity; not proof of dispatch.
 
@@ -87,7 +87,7 @@ louiselm.SessionControlPhase:
 - `collect_forensics: fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: fun(path?: string, error_message?: string)):boolean, string?`
 - `create_session: fun(self: louiselm.session.Api, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session?: louiselm.session.Session, error?: string)):(louiselm.session.Session)?, string?`
 - `discover_sessions: fun(self: louiselm.session.Api, options?: louiselm.session.DiscoveryOptions, callback: fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.DiscoveryError[])):boolean, string?`
-- `dispose: fun(self: louiselm.session.Api):boolean, string?`
+- `dispose: fun(self: louiselm.session.Api, callback?: fun(disposed: boolean, error_message?: string)):boolean, string?`
 - `flush_recording: fun(self: louiselm.session.Api, callback: fun(error?: louiselm.session.RecordingError))` -- Retry/acknowledge queued facts, including final observations after Disposal.
 - `get_session: fun(self: louiselm.session.Api, id: string):(louiselm.session.Session)?`
 - `inspect_agent_limits: fun(self: louiselm.session.Api, agent_name: string):(louiselm.session.LimitsState)?, string?`
@@ -132,8 +132,9 @@ fun(path?: string, error_message?: string)
 
 ### louiselm.session.Module
 
+- `abandon_all: fun():boolean, string?` -- Stop this editor's Sessions and retain saved queues.
 - `collect_forensics: fun(agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: fun(path?: string, error_message?: string)):boolean, string?` -- Collect Forensics for any live Session in this process.
-- `dispose_all: fun():boolean, string?` -- Dispose every live Session in this Neovim process.
+- `dispose_all: fun(callback?: fun(disposed: boolean, error_message?: string)):boolean, string?` -- Dispose every live Session in this Neovim process.
 - `exit_verdict: fun():louiselm.session.ExitVerdict[]` -- Inspect live Sessions across every headless API.
 - `identity: fun(acp_session_id: string):string?, string?` -- Resolve the calling Session's `<agent>/<acp session id>` identity.
 - `new: fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions):(louiselm.session.Api)?, louiselm.agent.ConfigError[]` -- Create a headless session API.
@@ -157,6 +158,7 @@ louiselm.session.Status:
     | "running"
     | "waiting_permission"
     | "cancelling"
+    | "disposing"
     | "error"
     | "disposed"
 ```
@@ -201,7 +203,7 @@ string|table
 - `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
 - `source: "loaded"|"new"` -- Whether the session was created or restored.
-- `status: "admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6)` -- Lifecycle state.
+- `status: "admitting"|"cancelling"|"configuring"|"disposed"|"disposing"...(+7)` -- Lifecycle state.
 - `turn_id: string?` -- Durable identity of the latest accepted prompt attempt; independent of local turn ordinal.
 - `turn_identity: (louiselm.session.TurnIdentity)?` -- Owned identity for the latest accepted attempt; later option changes never rewrite it.
 - `turn_options_changed: boolean` -- Whether the current/last attempt had confirmed value changes; unsuitable for fixed-option comparisons.
@@ -227,7 +229,7 @@ string|table
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `launch_request: (louiselm.acp.LaunchRequest)?` -- Launch through the installed supervisor instead of the configured command.
 - `name: string?` -- Explicit persistent display name; loading without one restores the saved name.
-- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))?` -- Initial event listener.
+- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
 - `resume_mode: string?` -- Explicit replacement permission mode for an unmanaged load only; the Agent must acknowledge it. Never inferred from defaults.
@@ -250,6 +252,7 @@ string|table
 
 ### louiselm.session.Session
 
+- `abandon: fun(self: louiselm.session.Session):boolean, string?` -- Stop this editor's Session while retaining its saved queue.
 - `acp_session_id: string?` -- Agent-side session identifier.
 - `admission: (louiselm.session.Admission)?` -- Admission ownership until a terminal settlement.
 - `agent_running: boolean?` -- Agent-reported processing, independent of the client prompt response; nil until observed.
@@ -259,15 +262,17 @@ string|table
 - `codex_turn_failed: boolean?` -- Active prompt received systemError before its terminal response.
 - `custom_name: string?` -- Explicit name supplied during this live Session, taking precedence over a pending restore.
 - `definition: louiselm.agent.Definition` -- Agent process definition.
-- `dispose: fun(self: louiselm.session.Session, reason?: string):boolean, string?`
+- `disposal_callbacks: fun(disposed: boolean, error_message?: string)[]?` -- In-flight Disposal observers.
+- `dispose: fun(self: louiselm.session.Session, reason?: string, callback?: fun(disposed: boolean, error_message?: string)):boolean, string?`
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
+- `enqueue: fun(self: louiselm.session.Session, prompt: string|table, callback: fun(id?: string, error_message?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string, contexts?: table[]):boolean, string?`
 - `history: louiselm.session.History` -- Bounded projection of this Session's owned conversation.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `interactions: louiselm.session.InteractionEntry[]` -- Pending vendor interactions, in arrival order.
 - `load_session_id: string?` -- Agent-side session identifier to load.
 - `mcp_servers: louiselm.mcp.WireServer[]` -- Owned ACP configuration; never included in inspectable state or recordings.
 - `name_read: fun()?` -- Cancel a pending custom name read.
-- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))):fun()`
+- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
 - `option_usage: fun(self: louiselm.session.Session, option_id: string, callback: fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError))`
@@ -280,6 +285,13 @@ string|table
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
 - `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string):string?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
+- `queue: (louiselm.session.Queue)?` -- Session-owned submitted instructions.
+- `queue_cancel: fun(self: louiselm.session.Session, id: string, revision: integer, callback: fun(changed: boolean, error_message?: string)):boolean, string?`
+- `queue_continue: fun(self: louiselm.session.Session, revision: integer, callback: fun(changed: boolean, error_message?: string)):boolean, string?`
+- `queue_inspect: fun(self: louiselm.session.Session):louiselm.session.QueueState`
+- `queue_move: fun(self: louiselm.session.Session, id: string, position: integer, revision: integer, callback: fun(changed: boolean, error_message?: string)):boolean, string?`
+- `queue_pause_reason: string?` -- Pause retained if a queue identity could not yet be allocated.
+- `queue_replace: fun(self: louiselm.session.Session, id: string, revision: integer, prompt: string|table, callback: fun(changed: boolean, error_message?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string, contexts?: table[]):boolean, string?`
 - `read_history: fun(self: louiselm.session.Session, request: louiselm.session.HistoryRequest, callback: fun(page?: louiselm.session.HistoryPage, error_code?: string)):fun()`
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
@@ -397,7 +409,7 @@ louiselm.session.HistoryMessage|louiselm.session.HistoryPlan|louiselm.session.Hi
 - `next_before: integer` -- Exclusive cursor, or zero when no older entries remain.
 - `revision: integer` -- Snapshot revision, invalidated by a projected update.
 - `source: louiselm.session.HistorySource` -- Source and projection limitations.
-- `status: "admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6)` -- Session status at this revision.
+- `status: "admitting"|"cancelling"|"configuring"|"disposed"|"disposing"...(+7)` -- Session status at this revision.
 - `subject: string` -- Exact Session incarnation; never authority on its own.
 
 ### louiselm.session.HistoryCallback
@@ -411,7 +423,7 @@ fun(page?: louiselm.session.HistoryPage, error_code?: string)
 - `entries: table[]` -- References to owned transcript entries or bounded interaction projections.
 - `missing: boolean`
 - `read: fun(self: louiselm.session.History, request: louiselm.session.HistoryRequest, callback: fun(page?: louiselm.session.HistoryPage, error_code?: string)):fun()`
-- `record: fun(self: louiselm.session.History, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))`
+- `record: fun(self: louiselm.session.History, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))`
 - `recorded: integer`
 - `redacted: boolean`
 - `revision: integer`
@@ -453,7 +465,7 @@ louiselm.session.TranscriptEntryKind:
 - `entries: louiselm.session.TranscriptEntry[]` -- Recorded blocks, in arrival order.
 - `mark_handoff: fun(self: louiselm.session.Transcript, turn_id: string|number, source_session_id: string)` -- Attach Handoff provenance to an already-dispatched prompt.
 - `open_tool_calls: table<string, louiselm.session.TranscriptEntry>` -- Tool calls awaiting a terminal status, by ACP tool call id.
-- `record: fun(self: louiselm.session.Transcript, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))` -- Ingest one session event.
+- `record: fun(self: louiselm.session.Transcript, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))` -- Ingest one session event.
 - `record_handoff: fun(self: louiselm.session.Transcript, text: string, source_session_id: string)` -- Record a Handoff prompt and its source Session.
 - `record_user: fun(self: louiselm.session.Transcript, text: string)` -- Record a live, client-submitted prompt.
 - `snapshot: fun(self: louiselm.session.Transcript):louiselm.session.TranscriptEntry[]` -- Copy of recorded entries in order.
@@ -493,8 +505,11 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `definitions: table<string, louiselm.agent.Definition>` -- Normalized named definitions.
 - `discover_sessions: fun(self: louiselm.session.Registry, options?: louiselm.session.DiscoveryOptions, callback: fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.DiscoveryError[])):boolean, string?`
 - `discoveries: table<integer, louiselm.session.DiscoveryState>` -- Active adapter discovery operations.
-- `dispose: fun(self: louiselm.session.Registry):boolean, string?`
+- `disposal_callbacks: fun(disposed: boolean, error_message?: string)[]?` -- Waiting shutdown observers.
+- `disposal_error: string?` -- Failed close or unresolved fence.
+- `dispose: fun(self: louiselm.session.Registry, callback?: fun(disposed: boolean, error_message?: string)):boolean, string?`
 - `disposed: boolean` -- Whether this registry is closed.
+- `disposing: boolean?` -- Whether Session fences are still settling.
 - `flush_recording: fun(self: louiselm.session.Api, callback: fun(error?: louiselm.session.RecordingError))` -- Retry/acknowledge queued facts, including final observations after Disposal.
 - `forensics_reads: table<fun(), boolean>` -- Owned current-provenance reads awaiting collection.
 - `forensics_store: louiselm.forensics.Store` -- Immutable Session Forensics records.
@@ -511,6 +526,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `order: string[]` -- Session ids in creation order.
 - `permission_store: louiselm.permission.Store` -- Remembered rules owned by this registry.
 - `qualification: louiselm.routing.Qualification` -- Durable comparison approvals used by Auto admission.
+- `queue_store: louiselm.session.QueueStore` -- Private queue payload storage.
 - `read_selected_content: fun(self: louiselm.session.Api, job: louiselm.routing.ReaderJob, callback: fun(result?: louiselm.routing.ReaderResult, error?: louiselm.routing.ReaderError)):(louiselm.routing.Reader)?, (louiselm.routing.ReaderError)?`
 - `readers: table<louiselm.routing.Reader, boolean>` -- Owned reading jobs, including pending qualification reads.
 - `recording: louiselm.session.RecordingStore` -- Shared durable writer; failed writes gate subsequent prompts.
@@ -999,6 +1015,7 @@ louiselm.session.EventType:
     | "prompt_dispatched"
     | "admission_decided"
     | "admission_settled"
+    | "queue_changed"
     | "state_changed"
     | "turn_done"
     | "error"
@@ -1011,8 +1028,8 @@ louiselm.session.EventType:
 ### louiselm.session.StateChangedData
 
 - `activity: string?` -- Current generic tool activity.
-- `previous_status: ("admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6))?` -- Previous state when the lifecycle changed, absent for refreshes.
-- `status: "admitting"|"cancelling"|"configuring"|"disposed"|"error"...(+6)` -- Current lifecycle state.
+- `previous_status: ("admitting"|"cancelling"|"configuring"|"disposed"|"disposing"...(+7))?` -- Previous state when the lifecycle changed, absent for refreshes.
+- `status: "admitting"|"cancelling"|"configuring"|"disposed"|"disposing"...(+7)` -- Current lifecycle state.
 
 ### louiselm.session.StateChangedEvent
 
@@ -1073,7 +1090,7 @@ louiselm.session.EventType:
 
 ### louiselm.session.PromptDispatchedEvent
 
-- `data: { turn_id: string, prompt: table[], display_text: string? }` -- Local in-memory content accepted by the transport, not proof of peer receipt. The optional caller-owned visible text excludes attached context. Never persisted in admission or usage records.
+- `data: { turn_id: string, prompt: table[], display_text: string?, queue_entry: (louiselm.session.QueueEntry)? }` -- Local in-memory content accepted by the transport, not proof of peer receipt. The optional caller-owned visible text excludes attached context. Never persisted in admission or usage records.
 - `session_id: string` -- Local session identifier.
 - `type: "prompt_dispatched"`
 
@@ -1115,6 +1132,12 @@ louiselm.session.EventType:
 - `data: { turn_id: string, result: "cancelled"|"dispatched"|"not_sent"|"uncertain", requested: { model: boolean|string, effort: boolean|string }, confirmed: { model: boolean|string, effort: boolean|string }, options: table<string, boolean|string>, requests: table<string, string|number>, reason: string?, elapsed_ms: integer }` -- Payload-free terminal admission result and complete confirmed option tuple.
 - `session_id: string` -- Local session identifier.
 - `type: "admission_settled"`
+
+### louiselm.session.QueueChangedEvent
+
+- `data: louiselm.session.QueueState` -- Exact Session queue snapshot; contains submitted content.
+- `session_id: string` -- Local session identifier.
+- `type: "queue_changed"`
 
 ### louiselm.session.PermissionData
 
@@ -1229,22 +1252,22 @@ louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louise
 ### louiselm.session.Event
 
 ```lua
-louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11)
+louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12)
 ```
 
 ### louiselm.session.EventCallback
 
 ```lua
-fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))
+fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))
 ```
 
 ### louiselm.session.EventEmitter
 
 - `clear: fun(self: louiselm.session.EventEmitter)`
-- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))`
-- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))>`
+- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))`
+- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))>`
 - `next_id: integer` -- Next listener identifier.
-- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+11))):fun()` -- Remove the listener.
+- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))):fun()` -- Remove the listener.
 - `order: integer[]` -- Listener registration order.
 
 ## Permission Policies

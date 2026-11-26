@@ -221,7 +221,18 @@ T["command"] = MiniTest.new_set({
   hooks = {
     post_case = function()
       -- A failing expectation skips a test's own cleanup.
-      Session.dispose_all()
+      local completed
+      local started, err = Session.dispose_all(function(ok, failure)
+        completed = { ok, failure }
+      end)
+      assert(started, err)
+      assert(
+        nvim.wait(6000, function()
+          return completed ~= nil
+        end, 10),
+        "Session Disposal did not settle"
+      )
+      assert(completed[1], completed[2])
       delete_chat_buffers()
     end,
   },

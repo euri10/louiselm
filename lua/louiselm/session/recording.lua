@@ -81,6 +81,7 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.RoutingPreferenceCallback): fun()
 ---@field save_session_name fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, name: string, callback?: louiselm.session.RecordingCallback)
 ---@field session_name fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: fun(name: string?, error?: louiselm.session.RecordingError)): fun()
+---@field queue_reconciliation fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, turn_id: string?, callback: fun(unresolved: boolean?, outcome: string?, error?: louiselm.session.RecordingError))
 
 ---@class louiselm.session.UsageCohort
 ---@field agent string Exact configured Agent.
@@ -828,6 +829,49 @@ COMMIT;
       running = nil
     end
   end
+end
+
+---Read payload-free terminal evidence before a saved queue can be continued.
+---@param self louiselm.session.RecordingStore
+---@param agent string
+---@param acp_session_id string
+---@param turn_id string?
+---@param callback fun(unresolved: boolean?, outcome: string?, error?: louiselm.session.RecordingError)
+function Store:queue_reconciliation(agent, acp_session_id, turn_id, callback)
+  local terminal = "(json_extract(e.data,'$.peer_response')=1 OR json_extract(e.data,'$.outcome')='not_sent')"
+  local subject = "t.agent=" .. sql_text(agent) .. " AND t.acp_session_id=" .. sql_text(acp_session_id)
+  local sql = "SELECT EXISTS(SELECT 1 FROM turns t LEFT JOIN turn_events e ON e.turn_id=t.id AND e.kind='outcome' WHERE "
+    .. subject
+    .. " AND (e.data IS NULL OR NOT COALESCE("
+    .. terminal
+    .. ",0))) AS unresolved, "
+    .. "(SELECT json_extract(e.data,'$.outcome') FROM turns t JOIN turn_events e ON e.turn_id=t.id AND e.kind='outcome' WHERE "
+    .. subject
+    .. " AND t.id="
+    .. sql_text(turn_id)
+    .. " AND "
+    .. terminal
+    .. " LIMIT 1) AS outcome;"
+  read(self, sql, function(rows, err)
+    if err ~= nil or rows == nil then
+      callback(nil, nil, err or failure("storage"))
+      return
+    end
+    if #rows == 0 then
+      callback(nil, nil, failure("storage"))
+      return
+    end
+    local row = rows[1]
+    if
+      #rows ~= 1
+      or (row.unresolved ~= 0 and row.unresolved ~= 1)
+      or (row.outcome ~= nil and type(row.outcome) ~= "string")
+    then
+      callback(nil, nil, failure("corrupt"))
+      return
+    end
+    callback(row.unresolved == 1, row.outcome)
+  end)
 end
 
 -- Older stores have no import tables. Probe without migrating, then require the

@@ -347,6 +347,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Each Chat Session has an ordered queue of up to 20 waiting instructions. Send freezes the visible text and selected context; subsequent edits are a separate draft. Use :LouiselmQueue to inspect, cancel, replace or reorder waiting entries and to Continue after Stop or failure. Picker replacements contain text without context. Queue payloads are private local state. After restart, recovered entries stay paused; missing owner or outcome evidence keeps them unavailable. Headless session:prompt stays immediate and refuses a busy Session; session:enqueue explicitly requests queued admission.",
+        context
+      )
+      append_prose(
+        lines,
         "The Session picker uses vim.ui.select with kind louiselm_session and plain id/label items. Chunk-aware pickers such as Snacks color the status cell with the same group as the Session's window-bar entry, so an unseen response shows as a warning. Snacks is optional: its select.kinds configuration can bind Ctrl-d to close marked Sessions, falling back to the cursor row only when nothing is marked. Enter still switches. See docs/tutorial.md for the configuration recipe; plain Neovim supports the same bulk-close command without a picker plugin.",
         context
       )
@@ -423,7 +428,7 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "An Agent's auto.rules maps exact workload keys to candidate Model/effort pairs and comparison policy revisions. Auto resolves explicit workload metadata, a selected Skill with a matching rule, then an explicitly declared phase; it never classifies prompt prose. Only a matching approved main-workload comparison with supported options, required Agent capabilities and comparable approved economics can select the candidate. Unknown evidence keeps the configured baseline; a manual pin wins. Approval or configuration changes during preparation prevent stale dispatch. Admission records retain payload-free selection provenance. After an economical failure, the next authorized Auto continuation confirms baseline; a later manual pin wins. Recovery survives supported resume until a continuation completes. Separately queued follow-ups may continue on a safe idle Session; failed prompts and tools are never replayed automatically. Unavailable baseline or a dead Session retains input for operator action. Failures and completed turns never rewrite qualification approvals. See docs/routing-qualification.md for configuration, headless metadata and allowance semantics.",
+        "An Agent's auto.rules maps exact workload keys to candidate Model/effort pairs and comparison policy revisions. Auto resolves explicit workload metadata, a selected Skill with a matching rule, then an explicitly declared phase; it never classifies prompt prose. Only a matching approved main-workload comparison with supported options, required Agent capabilities and comparable approved economics can select the candidate. Unknown evidence keeps the configured baseline; a manual pin wins. Approval or configuration changes during preparation prevent stale dispatch. Admission records retain payload-free selection provenance. After an economical failure, the next authorized Auto continuation confirms baseline; a later manual pin wins. Recovery survives supported resume until a continuation completes. Failure pauses queued follow-ups; after review, Continue can release them on a safe idle Session. Failed prompts and tools are never replayed automatically. Unavailable baseline or a dead Session retains input for operator action. Failures and completed turns never rewrite qualification approvals. See docs/routing-qualification.md for configuration, headless metadata and allowance semantics.",
         context
       )
       append_prose(

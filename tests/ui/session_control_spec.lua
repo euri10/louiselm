@@ -111,6 +111,61 @@ local function request(id)
   return { action = "start", id = id, agent = "mock", cwd = "/tmp", prompt = "task " .. id }
 end
 
+T["control does not report terminal cleanup before the Session Disposal fence"] = function()
+  local control, children = fixture()
+  local req = request("pending-disposal-fence")
+  req.timeout_ms = false
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  local child = children[1]
+  local complete
+  function child:dispose(_, callback)
+    self.state.status = "disposing"
+    complete = function()
+      self.state.status = "disposed"
+      self.disposed = true
+      callback(true)
+    end
+    return true
+  end
+  local pending = assert(control:request({ action = "cancel", id = req.id }))
+  MiniTest.expect.equality(pending.phase, "cancelling")
+  MiniTest.expect.equality(pending.status, "disposing")
+  assert(complete)
+  complete()
+  wait_for(function()
+    return assert(control:request({ action = "inspect", id = req.id })).phase == "cancelled"
+  end)
+  MiniTest.expect.equality(assert(control:request({ action = "inspect", id = req.id })).status, "disposed")
+end
+
+T["control reports a failed Disposal fence instead of a cancelled child"] = function()
+  local control, children = fixture()
+  local req = request("failed-disposal-fence")
+  req.timeout_ms = false
+  assert(control:request(req))
+  wait_for(function()
+    return #children == 1
+  end)
+  local complete
+  children[1].dispose = function(self, _, callback)
+    self.state.status = "disposing"
+    complete = function()
+      self.state.status = "error"
+      callback(false, "fence outcome unknown")
+    end
+    return true
+  end
+  assert(control:request({ action = "cancel", id = req.id }))
+  complete()
+  local state = assert(control:request({ action = "inspect", id = req.id }))
+  MiniTest.expect.equality(state.phase, "failed")
+  MiniTest.expect.equality(state.status, "error")
+  assert(state.error:find("fence outcome unknown", 1, true))
+end
+
 local function options(model)
   return {
     { id = "model", type = "select", current_value = model, options = { { value = "a" }, { value = "b" } } },

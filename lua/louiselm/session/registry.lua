@@ -7,6 +7,7 @@ local Validation = require("louiselm.session.validation")
 local ForensicsStore = require("louiselm.forensics.store")
 local Provenance = require("louiselm.output_provenance")
 local Recording = require("louiselm.session.recording")
+local QueueStore = require("louiselm.session.queue_store")
 local Paths = require("louiselm.paths")
 local Qualification = require("louiselm.routing.qualification")
 local SelectedContent = require("louiselm.session.selected_content")
@@ -50,8 +51,12 @@ local nvim = vim
 ---@field forensics_store louiselm.forensics.Store Immutable Session Forensics records.
 ---@field forensics_reads table<fun(), boolean> Owned current-provenance reads awaiting collection.
 ---@field recording louiselm.session.RecordingStore Shared durable writer; failed writes gate subsequent prompts.
+---@field queue_store louiselm.session.QueueStore Private queue payload storage.
 ---@field qualification louiselm.routing.Qualification Durable comparison approvals used by Auto admission.
 ---@field disposed boolean Whether this registry is closed.
+---@field disposing? boolean Whether Session fences are still settling.
+---@field disposal_error? string Failed close or unresolved fence.
+---@field disposal_callbacks? fun(disposed: boolean, error_message?: string)[] Waiting shutdown observers.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field load_session fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field discover_sessions fun(self: louiselm.session.Registry, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?
@@ -64,7 +69,7 @@ local nvim = vim
 ---@field list_permissions fun(self: louiselm.session.Registry): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Registry, id: string): boolean, string?
 ---@field collect_forensics fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string?
----@field dispose fun(self: louiselm.session.Registry): boolean, string?
+---@field dispose fun(self: louiselm.session.Registry, callback?: fun(disposed: boolean, error_message?: string)): boolean, string?
 ---@field remove_session fun(self: louiselm.session.Registry, id: string)
 
 local M = {}
@@ -295,6 +300,7 @@ function M.new(definitions, default_skills_policy, options)
     permission_store = permission_store,
     forensics_store = forensics_store,
     qualification = qualification,
+    queue_store = QueueStore.new(nvim.fs.joinpath(options and options.usage_directory or Paths.state(), "queues")),
     forensics_reads = {},
     disposed = false,
   }, Registry)
@@ -366,7 +372,8 @@ function M.exit_verdict()
         or state.status == "prompting"
         or state.status == "running"
         or state.status == "waiting_permission"
-        or state.status == "cancelling",
+        or state.status == "cancelling"
+        or state.status == "disposing",
     }
   end)
   return verdict
@@ -389,7 +396,7 @@ function M.identity(acp_session_id)
   end
   local agents = {}
   each_live_session(function(_, state)
-    if state.acp_session_id == acp_session_id then
+    if state.status ~= "disposing" and state.acp_session_id == acp_session_id then
       agents[#agents + 1] = state.agent
     end
   end)
@@ -437,21 +444,77 @@ function M.collect_forensics(agent_name, acp_session_id, options, callback)
 end
 
 ---Dispose every Session registry created in this Neovim process.
----@return boolean disposed
----@return string? error_message First disposal failure, if any.
-function M.dispose_all()
+---@param callback? fun(disposed: boolean, error_message?: string)
+---@return boolean started_or_disposed
+---@return string? error_message First immediate failure, if any.
+function M.dispose_all(callback)
+  if callback ~= nil and type(callback) ~= "function" then
+    return false, "Disposal callback must be a function"
+  end
   local first_error
   local current = {}
   for index, registry in ipairs(registries) do
     current[index] = registry
   end
-  for _, registry in ipairs(current) do
-    local _, dispose_error = registry:dispose()
-    if first_error == nil and dispose_error ~= nil then
-      first_error = dispose_error
+  local remaining, scanning = 0, true
+  local function finish()
+    if not scanning and remaining == 0 and callback ~= nil then
+      local notify = callback
+      callback = nil
+      nvim.schedule(function()
+        notify(first_error == nil, first_error)
+      end)
     end
   end
+  for _, registry in ipairs(current) do
+    remaining = remaining + 1
+    local settled = false
+    local function complete(ok, err)
+      if settled then
+        return
+      end
+      settled = true
+      if not ok and first_error == nil then
+        first_error = err or "registry Disposal failed"
+      end
+      remaining = remaining - 1
+      finish()
+    end
+    local started, err = registry:dispose(complete)
+    if not started then
+      complete(false, err)
+    elseif not registry.disposing then
+      complete(registry.disposal_error == nil, registry.disposal_error)
+    end
+  end
+  scanning = false
+  finish()
   return first_error == nil, first_error
+end
+
+---Stop Sessions for editor exit while preserving their saved waiting queues.
+---@return boolean stopped
+---@return string? error_message
+function M.abandon_all()
+  local current = {}
+  for index, registry in ipairs(registries) do
+    current[index] = registry
+  end
+  local failure
+  for _, registry in ipairs(current) do
+    for _, id in ipairs(registry:list_sessions()) do
+      local session = registry.sessions[id]
+      if session ~= nil then
+        local ok, err = session:abandon()
+        if not ok then
+          failure = failure or err
+        end
+      end
+    end
+    local _, err = registry:dispose()
+    failure = failure or err
+  end
+  return failure == nil, failure
 end
 
 ---@param self louiselm.session.Registry
@@ -1251,15 +1314,32 @@ function Registry:revoke_permission(id)
   return self.permission_store:revoke(id)
 end
 
----Dispose every live session and close the registry.
+---Stop every live Session and acknowledge registry Disposal after all fences settle.
 ---@param self louiselm.session.Registry
----@return boolean disposed
----@return string? error_message First close error, if any.
-function Registry:dispose()
-  if self.disposed then
+---@param callback? fun(disposed: boolean, error_message?: string)
+---@return boolean started_or_disposed
+---@return string? error_message First immediately observed error, if any.
+function Registry:dispose(callback)
+  if callback ~= nil and type(callback) ~= "function" then
+    return false, "Disposal callback must be a function"
+  end
+  if self.disposing then
+    if callback ~= nil then
+      self.disposal_callbacks[#self.disposal_callbacks + 1] = callback
+    end
     return true
   end
+  if self.disposed then
+    if callback ~= nil then
+      nvim.schedule(function()
+        callback(self.disposal_error == nil, self.disposal_error)
+      end)
+    end
+    return self.disposal_error == nil, self.disposal_error
+  end
   self.disposed = true
+  self.disposing = true
+  self.disposal_callbacks = callback and { callback } or {}
   for cancel in pairs(self.forensics_reads) do
     cancel()
     self.forensics_reads[cancel] = nil
@@ -1284,21 +1364,55 @@ function Registry:dispose()
     self.discoveries[id] = nil
   end
   local ids = self:list_sessions()
+  local remaining, scanning = 0, true
+  local function finish()
+    if scanning or remaining ~= 0 then
+      return
+    end
+    self.disposing = false
+    self.disposal_error = first_error
+    if first_error == nil then
+      for index, registry in ipairs(registries) do
+        if registry == self then
+          table.remove(registries, index)
+          break
+        end
+      end
+    end
+    local callbacks = self.disposal_callbacks or {}
+    self.disposal_callbacks = nil
+    nvim.schedule(function()
+      for _, notify in ipairs(callbacks) do
+        notify(first_error == nil, first_error)
+      end
+    end)
+  end
   for _, id in ipairs(ids) do
     local session = self.sessions[id]
     if session ~= nil then
-      local _, close_error = session:dispose()
-      if first_error == nil and close_error ~= nil then
-        first_error = close_error
+      remaining = remaining + 1
+      local settled = false
+      local function completed(ok, close_error)
+        if settled then
+          return
+        end
+        settled = true
+        if not ok and first_error == nil then
+          first_error = close_error or "Session Disposal failed"
+        end
+        remaining = remaining - 1
+        finish()
+      end
+      local started, close_error = session:dispose(nil, completed)
+      if not started then
+        completed(false, close_error)
+      elseif session:inspect().status == "disposed" then
+        completed(close_error == nil, close_error)
       end
     end
   end
-  for index, registry in ipairs(registries) do
-    if registry == self then
-      table.remove(registries, index)
-      break
-    end
-  end
+  scanning = false
+  finish()
   return first_error == nil, first_error
 end
 

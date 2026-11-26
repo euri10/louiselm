@@ -11,7 +11,7 @@
 ---@field list_permissions fun(self: louiselm.session.Api): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Api, id: string): boolean, string?
 ---@field collect_forensics fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string?
----@field dispose fun(self: louiselm.session.Api): boolean, string?
+---@field dispose fun(self: louiselm.session.Api, callback?: fun(disposed: boolean, error_message?: string)): boolean, string?
 ---@field flush_recording fun(self: louiselm.session.Api, callback: louiselm.session.RecordingCallback) Retry/acknowledge queued facts, including final observations after Disposal.
 
 ---@class louiselm.session.ApiOptions
@@ -42,7 +42,8 @@
 ---@field exit_verdict fun(): louiselm.session.ExitVerdict[] Inspect live Sessions across every headless API.
 ---@field identity fun(acp_session_id: string): string?, string? Resolve the calling Session's `<agent>/<acp session id>` identity.
 ---@field collect_forensics fun(agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string? Collect Forensics for any live Session in this process.
----@field dispose_all fun(): boolean, string? Dispose every live Session in this Neovim process.
+---@field dispose_all fun(callback?: fun(disposed: boolean, error_message?: string)): boolean, string? Dispose every live Session in this Neovim process.
+---@field abandon_all fun(): boolean, string? Stop this editor's Sessions and retain saved queues.
 
 local M = {}
 local Registry = require("louiselm.session.registry")
@@ -94,10 +95,18 @@ function M.collect_forensics(agent_name, acp_session_id, options, callback)
 end
 
 ---Dispose every live Session in this Neovim process.
----@return boolean disposed
----@return string? error_message First disposal failure, if any.
-function M.dispose_all()
-  return Registry.dispose_all()
+---@param callback? fun(disposed: boolean, error_message?: string)
+---@return boolean started_or_disposed
+---@return string? error_message First immediately observed failure, if any.
+function M.dispose_all(callback)
+  return Registry.dispose_all(callback)
+end
+
+---Stop Sessions during editor exit without marking saved queues disposed.
+---@return boolean stopped
+---@return string? error_message
+function M.abandon_all()
+  return Registry.abandon_all()
 end
 
 return M

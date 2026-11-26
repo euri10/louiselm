@@ -32,7 +32,6 @@ local function normalize_sessions(value)
       or item.staged.contexts < 0
       or item.staged.contexts % 1 ~= 0
       or type(item.staged.pending_skill) ~= "boolean"
-      or type(item.staged.queued_prompt) ~= "boolean"
     then
       return nil
     end
@@ -44,7 +43,6 @@ local function normalize_sessions(value)
       staged = {
         contexts = item.staged.contexts,
         pending_skill = item.staged.pending_skill,
-        queued_prompt = item.staged.queued_prompt,
       },
     }
   end

@@ -69,6 +69,9 @@ local nvim = vim
 ---@field replay_events? { event: louiselm.session.Event, state: louiselm.session.State? }[] UI events waiting for asynchronous usage history.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field input_revision integer Revision of the editable input, including staged-context changes.
+---@field suppress_input_revision? boolean A Chat-owned buffer update is not a new operator edit.
+---@field closing? boolean Waiting for the Session's durable Disposal fence.
+---@field last_queue_error? string Last queue diagnostic rendered in this view.
 ---@field pending_admission? louiselm.ui.PendingPrompt Captured input awaiting local dispatch settlement.
 ---@field unsubscribe fun() Session event listener removal function.
 ---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
@@ -128,6 +131,7 @@ local nvim = vim
 ---@field discard_empty_background fun(self: louiselm.ui.Chat, session_id: string) Release an untouched background view after its Session is disposed.
 ---@field staged_context fun(self: louiselm.ui.Chat): table<louiselm.session.Session, louiselm.ui.StagedContext> Report Staged context by attached Session.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
+---@field manage_queue fun(self: louiselm.ui.Chat): boolean, string? Inspect and edit the current Session queue.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
 ---@field show_limits fun(self: louiselm.ui.Chat, agent_name?: string): boolean, string? Inspect one configured Agent's account limits.
 ---@field manage_permissions fun(self: louiselm.ui.Chat): boolean, string? Inspect and revoke remembered permission rules.
@@ -141,7 +145,7 @@ local nvim = vim
 ---@field abandon_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Close a handoff buffer without sending it.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
 ---@field set_auto fun(self: louiselm.ui.Chat, enabled: boolean, callback?: fun(error?: string)): boolean, string? Persist the current Session's routing choice.
----@field submit fun(self: louiselm.ui.Chat, text?: string): string|number|boolean?, string? Submit or queue the current prompt.
+---@field submit fun(self: louiselm.ui.Chat, text?: string): boolean?, string? Submit the current prompt to its Session queue.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
 ---@field mention_buffer fun(self: louiselm.ui.Chat): boolean, string? Queue the source buffer context.
 ---@field send_selection fun(self: louiselm.ui.Chat): boolean, string? Queue the source visual selection.
@@ -296,18 +300,13 @@ end
 
 local ACTIVE_TURN_STATUS = {
   admitting = true,
+  configuring = true,
   preparing = true,
   prompting = true,
   running = true,
   waiting_permission = true,
   cancelling = true,
 }
-
----@param view louiselm.ui.ChatView
-local function clear_queued_prompt(view)
-  view.draft:queue(nil)
-  view.renderer:clear_queue_indicator()
-end
 
 ---@param value number
 ---@return string
@@ -789,7 +788,9 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param text string
 local function set_prompt_line(view, text)
+  view.suppress_input_revision = true
   view.renderer:replace_prompt(view.draft.context_prefix .. text)
+  view.suppress_input_revision = false
 end
 
 ---@param message string
@@ -809,7 +810,6 @@ local function accept_prompt(self, view, pending)
   if pending.source_session_id ~= nil and pending.turn_id ~= nil then
     view.transcript:mark_handoff(pending.turn_id, pending.source_session_id)
   end
-  clear_queued_prompt(view)
   if pending.text:sub(1, 1) ~= "/" then
     view.draft:consume(pending.draft)
     if pending.phase ~= nil then
@@ -848,6 +848,10 @@ local function dispatch_prompt(self, view, text, content, contexts, metadata, so
   if view.pending_admission ~= nil then
     return nil, "Prompt admission is still settling"
   end
+  local queue = view.session:queue_inspect()
+  if queue.pending or queue.active ~= nil or #queue.entries > 0 or queue.paused or queue.uncertain then
+    return nil, "Session queue has pending or paused work"
+  end
   local state = view.session:inspect()
   local pending = {
     text = text,
@@ -877,36 +881,40 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
----@return string|number? request_id
+---@return boolean? started
 ---@return string? error_message
-local function submit_prompt(self, view, text)
+local function queue_prompt(self, view, text)
   local content, resolve_error, contexts = build_content(view, text)
   if content == nil then
     notify_prompt_error(resolve_error or "prompt could not be resolved")
     return nil, resolve_error
   end
+  local draft, revision = view.draft:snapshot(), view.input_revision
   local metadata = text:sub(1, 1) ~= "/" and view.draft:submission_metadata() or nil
-  return dispatch_prompt(self, view, text, content, contexts, metadata)
-end
-
----@param view louiselm.ui.ChatView
----@param text string
-local function queue_prompt(view, text)
-  clear_queued_prompt(view)
-  set_prompt_line(view, text)
-  view.draft:queue(text)
-  view.renderer:queue_indicator()
-end
-
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
-local function release_queued_prompt(self, view)
-  local queued = view.draft.queued_prompt
-  if queued == nil or view.pending_admission ~= nil or view.session:inspect().status ~= "ready" then
-    return
+  local started, err = view.session:enqueue(content, function(id, queue_error)
+    if
+      self.disposed
+      or self.views[view.session:inspect().id] ~= view
+      or not nvim.api.nvim_buf_is_valid(view.renderer.buffer)
+    then
+      return
+    end
+    if id == nil then
+      notify_prompt_error(queue_error or "queue admission failed")
+      return
+    end
+    local edited = view.input_revision ~= revision
+    local next_text = edited and view.draft:reconcile_skills(view.renderer:prompt_text()) or ""
+    if text:sub(1, 1) ~= "/" then
+      view.draft:consume(draft)
+    end
+    set_prompt_line(view, next_text)
+  end, metadata, text, contexts)
+  if not started then
+    notify_prompt_error(err or "queue admission failed")
+    return nil, err
   end
-  clear_queued_prompt(view)
-  submit_prompt(self, view, queued)
+  return true
 end
 
 ---@param option louiselm.session.ConfigOption
@@ -1233,7 +1241,6 @@ local function handle_event(self, view, event, completed_state)
     self.decisions:present_next()
   end
   if event.type == "state_changed" and event.data.status == "disposed" then
-    clear_queued_prompt(view)
     view.renderer:close_reasoning()
     view.renderer:reset_response()
     local reason = view.session:inspect().disposal_reason
@@ -1286,7 +1293,6 @@ local function handle_event(self, view, event, completed_state)
       view.replay_user_open = false
     end
     open_session_options(self, view, true)
-    release_queued_prompt(self, view)
     refresh_limits(self, view.session:inspect().agent)
   end
 
@@ -1307,6 +1313,9 @@ local function handle_event(self, view, event, completed_state)
   then
     view.replay_user_open = false
     view.renderer:render(event)
+  elseif event.type == "prompt_dispatched" and event.data.queue_entry ~= nil then
+    view.workflow_phase = event.data.queue_entry.metadata and event.data.queue_entry.metadata.phase or nil
+    view.renderer:queued_prompt(event.data.queue_entry.display_text, event.data.queue_entry.contexts)
   elseif event.type == "compaction_updated" then
     render_winbars(self)
     if view.renderer:compaction(event.data) then
@@ -1323,16 +1332,12 @@ local function handle_event(self, view, event, completed_state)
     end
   elseif event.type == "recording_changed" then
     if event.data.error ~= nil then
-      clear_queued_prompt(view)
       view.renderer:append({ "Recording error: " .. event.data.error.message })
     end
   elseif event.type == "error" then
     view.replay_user_open = false
     local state = view.session:inspect()
     local can_continue = event.data.can_continue == true and state.status ~= "error" and state.status ~= "disposed"
-    if not can_continue then
-      clear_queued_prompt(view)
-    end
     local message = field(event.data, "message") or "unknown session error"
     view.renderer:error(message)
     if event.data.recovery ~= nil then
@@ -1392,7 +1397,7 @@ local function handle_event(self, view, event, completed_state)
     if line ~= nil then
       view.renderer:usage(line)
     end
-    if self.workflow ~= nil and view.workflow_phase ~= nil and view.draft.queued_prompt == nil then
+    if self.workflow ~= nil and view.workflow_phase ~= nil and #view.session:queue_inspect().entries == 0 then
       local outcome = type(event.data) == "table" and event.data.stopReason == "cancelled" and "cancelled"
         or "completed"
       local observed, observe_error = self.workflow:observe(view.workflow_phase, state, outcome)
@@ -1412,9 +1417,24 @@ local function handle_event(self, view, event, completed_state)
       end)
     end
     view.renderer:reset_response()
-    release_queued_prompt(self, view)
     view.unread_turn = state.status == "ready" and nvim.api.nvim_get_current_buf() ~= view.renderer.buffer
     render_winbars(self)
+  end
+  if event.type == "queue_changed" then
+    local queue = event.data
+    if
+      queue.reason ~= nil
+      and (queue.uncertain or queue.active_status == "not_sent")
+      and queue.reason ~= view.last_queue_error
+    then
+      view.last_queue_error = queue.reason
+      view.renderer:append({ "Queue: " .. queue.reason })
+    end
+    if #queue.entries > 0 or queue.paused or queue.uncertain then
+      view.renderer:queue_indicator(#queue.entries, queue.paused or queue.uncertain)
+    else
+      view.renderer:clear_queue_indicator()
+    end
   end
 end
 
@@ -1438,6 +1458,12 @@ local function observe_view_event(self, view, event)
     if pending ~= nil and (pending.turn_id == nil or pending.turn_id == event.data.turn_id) then
       -- This view owns the authored text and submitted contexts; settlement
       -- consumes only its captured draft. Other callers never consume it.
+      return
+    end
+    if event.data.queue_entry ~= nil then
+      nvim.schedule(function()
+        handle_event(self, view, event)
+      end)
       return
     end
     local parts = {}
@@ -1900,8 +1926,9 @@ local function attach_session(self, session, event_relay, background)
   view.renderer = ChatBuffer.new(state, {
     markdown_highlighting = self.markdown_highlighting,
     on_prompt_edit = function()
-      view.input_revision = view.input_revision + 1
-      clear_queued_prompt(view)
+      if not view.suppress_input_revision then
+        view.input_revision = view.input_revision + 1
+      end
     end,
     prompt_prefix = function()
       return view.draft.context_prefix
@@ -1915,6 +1942,10 @@ local function attach_session(self, session, event_relay, background)
       self:submit()
     end,
   })
+  local queue = session:queue_inspect()
+  if #queue.entries > 0 or queue.paused or queue.uncertain then
+    view.renderer:queue_indicator(#queue.entries, queue.paused or queue.uncertain)
+  end
   local buffer = view.renderer.buffer
   if event_relay == nil then
     view.unsubscribe = session:on(function(event)
@@ -2169,7 +2200,7 @@ function Chat:park()
   end
   local staged = self:staged_context()[session]
   local staged_count = staged.contexts
-  local has_staged = staged_count > 0 or staged.pending_skill or staged.queued_prompt
+  local has_staged = staged_count > 0 or staged.pending_skill
 
   local function begin()
     local started, park_error = self.recovery:park(session, function(run_id, error_message)
@@ -2200,9 +2231,6 @@ function Chat:park()
   end
   if staged.pending_skill then
     reasons[#reasons + 1] = "pending skill selection"
-  end
-  if staged.queued_prompt then
-    reasons[#reasons + 1] = "queued prompt"
   end
   Picker.select({ "Park", "Cancel" }, {
     prompt = "louiselm: " .. table.concat(reasons, ", ") .. " will not survive cold Park; proceed? ",
@@ -2542,6 +2570,31 @@ end
 ---@param retain_session? boolean The caller owns Session disposal.
 local function close_view(self, view, replacement, retain_session)
   local id = view.session:inspect().id
+  if not retain_session then
+    if view.closing then
+      return
+    end
+    view.closing = true
+    local started, dispose_error = view.session:dispose(nil, function(disposed, err)
+      view.closing = nil
+      if self.disposed or self.views[id] ~= view then
+        return
+      end
+      if not disposed then
+        nvim.notify("louiselm: " .. (err or "Session Disposal could not be confirmed"), nvim.log.levels.ERROR)
+        return
+      end
+      close_view(self, view, replacement, true)
+    end)
+    if not started then
+      view.closing = nil
+      nvim.notify("louiselm: " .. (dispose_error or "Session Disposal could not start"), nvim.log.levels.ERROR)
+    elseif view.session:inspect().status == "disposed" then
+      view.closing = nil
+      close_view(self, view, replacement, true)
+    end
+    return
+  end
   view.resume_choice = nil
   if
     self.resume_discovery ~= nil
@@ -2587,7 +2640,6 @@ local function close_view(self, view, replacement, retain_session)
     self.attention:session_disposed(state.acp_session_id)
   end
   restore_winbars(self)
-  clear_queued_prompt(view)
   view.unsubscribe()
   self.views[id] = nil
   self.decisions:retire(view.session)
@@ -2596,11 +2648,6 @@ local function close_view(self, view, replacement, retain_session)
       table.remove(self.view_order, index)
       break
     end
-  end
-  local close_error
-  if not retain_session then
-    local _
-    _, close_error = view.session:dispose()
   end
   if self.current_id == id then
     self.current_id = nil
@@ -2617,11 +2664,13 @@ local function close_view(self, view, replacement, retain_session)
   end
   -- Select the survivor before deleting the buffer in its host window.
   view.renderer:dispose()
-  if close_error ~= nil then
-    nvim.notify("louiselm: " .. close_error, nvim.log.levels.ERROR)
-  end
   render_winbars(self)
   self.decisions:present_next()
+end
+
+local function has_queued_work(session)
+  local queue = session:queue_inspect()
+  return #queue.entries > 0 or queue.active ~= nil or queue.pending or queue.uncertain_proposal ~= nil
 end
 
 ---Remove an untouched background view after its owner disposes the Session.
@@ -2632,7 +2681,7 @@ function Chat:discard_empty_background(session_id)
     return
   end
   local draft = view.draft
-  if #draft.contexts > 0 or draft.pending_skill ~= nil or draft.queued_prompt ~= nil then
+  if #draft.contexts > 0 or draft.pending_skill ~= nil or has_queued_work(view.session) then
     return
   end
   if nvim.api.nvim_buf_is_valid(view.renderer.buffer) and view.renderer:prompt_text() ~= "" then
@@ -2687,8 +2736,8 @@ function Chat:close_session(session_ids)
         if session_is_active(state.status) then
           label = label .. " [active: " .. state.status .. "]"
         end
-        if view.draft.queued_prompt ~= nil then
-          label = label .. " [queued prompt]"
+        if has_queued_work(view.session) then
+          label = label .. " [queued instructions]"
         end
         labels[#labels + 1] = label
       end
@@ -2723,7 +2772,7 @@ function Chat:close_session(session_ids)
     return false, "no chat session is attached"
   end
   local status = view.session:inspect().status
-  local has_queued_prompt = view.draft.queued_prompt ~= nil
+  local has_queued_prompt = has_queued_work(view.session)
   if has_queued_prompt or session_is_active(status) then
     local prompt = has_queued_prompt and "close active louiselm session and discard queued prompt? "
       or "close active louiselm session? "
@@ -2753,6 +2802,121 @@ function Chat:cancel()
     return false, "no chat session is attached"
   end
   return view.session:cancel()
+end
+
+---Inspect, continue, cancel, reorder, or replace submitted waiting instructions.
+---@param self louiselm.ui.Chat
+---@return boolean opened
+---@return string? error_message
+function Chat:manage_queue()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if self.decisions:is_active() then
+    return false, DECISION_OPEN_ERROR
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local queue = view.session:queue_inspect()
+  local choices = {}
+  if queue.paused then
+    choices[#choices + 1] = { action = "continue", label = "Continue queue" }
+  end
+  if queue.active ~= nil then
+    local active_text = queue.active.display_text:match("^[^\n]*") or ""
+    choices[#choices + 1] = {
+      action = "active",
+      index = 0,
+      entry = queue.active,
+      label = (queue.active_status or "admitting") .. ": " .. active_text,
+    }
+  end
+  for index, entry in ipairs(queue.entries) do
+    local first_line = entry.display_text:match("^[^\n]*") or ""
+    choices[#choices + 1] = { action = "entry", index = index, entry = entry, label = index .. ". " .. first_line }
+  end
+  if queue.uncertain_proposal ~= nil then
+    for index, entry in ipairs(queue.uncertain_proposal.entries) do
+      local first_line = entry.display_text:match("^[^\n]*") or ""
+      choices[#choices + 1] = {
+        action = "proposal",
+        index = index,
+        entry = entry,
+        label = "unconfirmed " .. index .. ". " .. first_line,
+      }
+    end
+  end
+  if #choices == 0 then
+    return false, queue.reason or "Session queue is empty"
+  end
+  local function current()
+    return not self.disposed and self.views[view.session:inspect().id] == view
+  end
+  local function result(ok, err)
+    if current() and not ok then
+      nvim.notify("louiselm: " .. (err or "queue change failed"), nvim.log.levels.ERROR)
+    end
+  end
+  local function start(ok, err)
+    if not ok then
+      result(false, err)
+    end
+  end
+  Picker.select(choices, {
+    prompt = queue.reason and ("Session queue (" .. queue.reason .. "): ") or "Session queue: ",
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(choice)
+    if choice == nil or not current() then
+      return
+    end
+    if choice.action == "continue" then
+      start(view.session:queue_continue(queue.revision, result))
+      return
+    end
+    local entry, index = choice.entry, choice.index
+    local actions = { "Inspect" }
+    if choice.action == "entry" or (choice.action == "active" and queue.active_status == "not_sent") then
+      actions[#actions + 1] = "Cancel"
+      actions[#actions + 1] = "Replace"
+    end
+    if choice.action == "entry" then
+      if index > 1 then
+        actions[#actions + 1] = "Move earlier"
+      end
+      if index < #queue.entries then
+        actions[#actions + 1] = "Move later"
+      end
+    end
+    Picker.select(actions, { prompt = "Waiting instruction: " }, function(action)
+      if action == nil or not current() then
+        return
+      end
+      if action == "Inspect" then
+        local lines = nvim.split(nvim.inspect(entry.prompt), "\n", { plain = true })
+        local window
+        window = Inspector.open(lines, function()
+          self.tool_inspect_windows[window] = nil
+        end, "Waiting instruction")
+        self.tool_inspect_windows[window] = true
+      elseif action == "Cancel" then
+        start(view.session:queue_cancel(entry.id, queue.revision, result))
+      elseif action == "Replace" then
+        nvim.ui.input({ prompt = "Replacement text (without context): ", default = entry.display_text }, function(value)
+          if value ~= nil and value ~= "" and current() then
+            start(view.session:queue_replace(entry.id, queue.revision, value, result))
+          end
+        end)
+      else
+        local target = action == "Move earlier" and index - 1 or index + 1
+        start(view.session:queue_move(entry.id, target, queue.revision, result))
+      end
+    end)
+  end)
+  return true
 end
 
 ---Inspect current configuration, including while busy; changes require an idle Session.
@@ -2843,10 +3007,10 @@ function Chat:set_auto(enabled, callback)
   return view.session:set_auto(enabled, callback)
 end
 
----Submit text to the current session; slash commands are passed through unchanged.
+---Submit text to the current Session queue; slash commands are passed through unchanged.
 ---@param self louiselm.ui.Chat
 ---@param text? string Prompt text; defaults to the current buffer prompt line.
----@return string|number|boolean? request_id ACP request id, true when queued, or nil on failure.
+---@return boolean? started Admission started, or nil on immediate failure.
 ---@return string? error_message Validation or session error.
 function Chat:submit(text)
   if self.disposed then
@@ -2858,9 +3022,6 @@ function Chat:submit(text)
   end
   if view.replay_events ~= nil then
     return nil, "Session history is still loading"
-  end
-  if view.pending_admission ~= nil then
-    return nil, "Prompt admission is still settling"
   end
   if text ~= nil and type(text) ~= "string" then
     return nil, "prompt must be a non-empty string"
@@ -2876,17 +3037,15 @@ function Chat:submit(text)
     return nil, text_error
   end
   local status = view.session:inspect().status
-  if ACTIVE_TURN_STATUS[status] then
-    queue_prompt(view, text)
-    return true
+  if not from_buffer then
+    view.input_revision = view.input_revision + 1
+    set_prompt_line(view, text)
   end
-
-  set_prompt_line(view, text)
-  if status ~= "ready" then
+  if status ~= "ready" and not ACTIVE_TURN_STATUS[status] then
     notify_prompt_error("session is not ready")
     return nil, "session is not ready"
   end
-  return submit_prompt(self, view, text)
+  return queue_prompt(self, view, text)
 end
 
 ---Queue a context item for the current chat prompt.
@@ -3115,7 +3274,10 @@ function Chat:hand_off()
     return false, "no chat session is attached"
   end
   local source_state = source_view.session:inspect()
-  if (source_state.status ~= "ready" and source_state.status ~= "error") or source_view.draft.queued_prompt ~= nil then
+  if
+    (source_state.status ~= "ready" and source_state.status ~= "error")
+    or #source_view.session:queue_inspect().entries > 0
+  then
     return false, "current session has an active turn; finish or cancel it before handing off"
   end
   if #self.agents < 2 then
@@ -3593,7 +3755,6 @@ function Chat:dispose()
         nvim.notify("louiselm: " .. dispose_error, nvim.log.levels.ERROR)
       end
     end
-    clear_queued_prompt(view)
     view.unsubscribe()
     view.renderer:dispose()
     self.views[id] = nil

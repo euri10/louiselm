@@ -142,8 +142,8 @@ authorized Auto submission uses confirmed baseline and records
 `fallback_reason = "economical_failure"`; its admission decision names the
 failed turn and reason. Recovery survives supported resume and stays pending
 through unsent, cancelled or failed continuations until one completes. A later
-manual pin wins. Chat may release a separately queued follow-up when the Session
-can safely continue, but never replays the failed prompt, reruns tools, undoes
+manual pin wins. A failed turn pauses separately queued follow-ups; after review,
+Continue can release one when the Session is safe, but never replays the failed prompt, reruns tools, undoes
 workspace changes, restarts an Agent or creates a Handoff automatically.
 Unavailable baseline or a dead Session retains input for operator action.
 Operational failures never rewrite qualification approvals; completed turns

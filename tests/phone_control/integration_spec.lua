@@ -145,8 +145,8 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
       -- The Session becomes ready before Chat handles its scheduled ready event.
       nvim.schedule(function()
         assert(chat:queue_context({ label = "private", text = "UNSENT CONTEXT" }))
+        assert(chat:submit("UNSENT QUEUED"))
         view.renderer:replace_prompt("UNSENT DRAFT")
-        view.draft:queue("UNSENT QUEUED")
         ordering[#ordering + 1] = "queued"
       end)
     elseif event.type == "prompt_dispatched" and event.data.display_text == "UNSENT QUEUED" then
@@ -160,7 +160,10 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   assert(chat:queue_context({ label = "sent", text = "HIDDEN SENT CONTEXT" }))
   assert(chat:submit("visible typed message"))
   assert(nvim.wait(6000, function()
-    return session:inspect().current_turn == 3 and session:inspect().status == "ready"
+    return session:inspect().current_turn == 3
+      and session:inspect().status == "ready"
+      and session:queue_inspect().active == nil
+      and not session.queue.busy
   end))
   local chat_idle = false
   nvim.schedule(function()
@@ -178,7 +181,17 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
     content = "PRIVATE NATIVE SKILL",
   }, true) == nil)
   view.renderer:replace_prompt("PRIVATE DESKTOP DRAFT")
-  view.draft:queue("PRIVATE WAITING QUEUE")
+  session.queue:pause("review before continuing")
+  assert(nvim.wait(6000, function()
+    return session:queue_inspect().paused and not session.queue.busy
+  end))
+  local queued
+  assert(session:enqueue("PRIVATE WAITING QUEUE", function(id, err)
+    queued = assert(id, err)
+  end))
+  assert(nvim.wait(6000, function()
+    return queued ~= nil
+  end))
   local request = {
     v = 1,
     type = "read_session",
@@ -221,7 +234,7 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   end
   MiniTest.expect.equality(view.draft.contexts[1].text, private[1])
   MiniTest.expect.equality(view.renderer:prompt_text(), private[2])
-  MiniTest.expect.equality(view.draft.queued_prompt, private[3])
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, private[3])
   MiniTest.expect.equality(assert(view.draft.pending_skill).content, private[4])
 
   request.request.payload = "00000000000000000002"
@@ -249,9 +262,15 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   MiniTest.expect.equality(session:inspect().current_turn, 3)
   MiniTest.expect.equality(view.draft.contexts[1].text, private[1])
   MiniTest.expect.equality(view.renderer:prompt_text(), private[2])
-  MiniTest.expect.equality(view.draft.queued_prompt, private[3])
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, private[3])
   MiniTest.expect.equality(assert(view.draft.pending_skill).content, private[4])
-  assert(session:dispose())
+  local disposed
+  assert(session:dispose(nil, function(ok, err)
+    disposed = assert(ok, err)
+  end))
+  assert(nvim.wait(6000, function()
+    return disposed
+  end))
   local response_index = #responses + 1
   assert(peer):write(nvim.json.encode(request) .. "\n")
   assert(nvim.wait(6000, function()

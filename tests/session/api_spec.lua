@@ -68,7 +68,17 @@ local function new_api(definitions, debug_level, options)
   local api, err = Session.new(definitions, debug_level, options)
   if api then
     MiniTest.finally(function()
-      assert(api:dispose())
+      local disposed, disposal_error
+      assert(api:dispose(function(ok, err)
+        disposed, disposal_error = ok, err
+      end))
+      assert(
+        nvim.wait(6000, function()
+          return disposed ~= nil
+        end, 10),
+        "API fixture Disposal did not finish"
+      )
+      assert(disposed, disposal_error)
       local settled, failure = false, nil
       api:flush_recording(function(recording_error)
         settled, failure = true, recording_error
@@ -1134,6 +1144,9 @@ for _, action in ipairs({ "rename", "dispose" }) do
     assert(nvim.wait(6000, function()
       return delivered
     end, 10))
+    if action == "rename" then
+      wait_ready(session)
+    end
     MiniTest.expect.equality(session:inspect().name, action == "rename" and "New name" or "named-acp")
     MiniTest.expect.equality(session:inspect().status, action == "rename" and "ready" or "disposed")
     MiniTest.expect.equality(ready_count, action == "rename" and 1 or 0)
@@ -3311,9 +3324,16 @@ T["new"]["headless prompts reach attached Chat once without consuming its draft"
   assert(markdown:find("## User\n\ndelegated task\nwith details", 1, true))
 
   -- Ordinary Chat submission still renders and records exactly once.
+  local continued
+  assert(session:queue_continue(session:queue_inspect().revision, function(ok, err)
+    continued = assert(ok, err)
+  end))
+  assert(nvim.wait(6000, function()
+    return continued
+  end, 10))
   assert(chat:submit())
   assert(nvim.wait(6000, function()
-    return view.pending_admission == nil
+    return #view.transcript:snapshot() == 3
   end, 10))
   local transcript = view.transcript:snapshot()
   MiniTest.expect.equality(#transcript, 3)

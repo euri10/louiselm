@@ -324,6 +324,16 @@ Effort aligns by its ACP category; model settings such as Fast mode align by
 label. Ambiguous matches retain separate columns so no option disappears.
 Rows are a snapshot; reopen the picker to refresh their values and column widths.
 
+Each Chat Session has its own ordered queue. Sending while the Agent is busy
+freezes the instruction and its selected context; the next draft stays separate.
+Use `:LouiselmQueue` to inspect, cancel, replace or reorder waiting instructions
+and to continue a paused queue. There can be 20 waiting instructions per Session.
+Stop and failures pause the queue for review. Saved instructions return paused
+only when the same Agent Session can be recovered and its earlier outcome and
+owner can be reconciled; uncertain work never runs automatically. Queue payloads
+are stored privately on the computer. Headless `session:prompt` remains immediate
+and returns a busy error while the Session is occupied.
+
 Close several attached Sessions with `:LouiselmSessionClose session-3 session-4`.
 Tab completes local Session IDs. Explicit IDs use one Close/Keep confirmation
 listing the group and flagging active work or queued prompts; Keep is the default.
@@ -349,7 +359,7 @@ entry points are grouped by purpose:
 - Sessions: `:LouiselmSessionNew`, `:LouiselmSessionSwitch`,
   `:LouiselmHandOff`, `:LouiselmResume`.
 - Context and control: `:LouiselmPickFile`, `:LouiselmPickSkill`,
-  `:LouiselmPermissions`, `:LouiselmCancel`.
+  `:LouiselmPermissions`, `:LouiselmCancel`, `:LouiselmQueue`.
 - Inspection: `:LouiselmMcp`, `:LouiselmInspectTool`, `:LouiselmInspectProvenance`,
   `:LouiselmToMarkdown`, `:LouiselmForensics`.
 - Optional capture and Park: `:LouiselmCapture`, `:LouiselmCaptureInbox`,

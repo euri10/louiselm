@@ -10,6 +10,7 @@ local nvim = vim
 ---@field timer? {stop: fun(self: table), close: fun(self: table), is_closing: fun(self: table): boolean}
 ---@field unsubscribe? fun()
 ---@field terminal boolean
+---@field finishing? boolean Waiting for Session cleanup before publishing a terminal phase.
 ---@field output string Bounded assistant text, never included by default.
 ---@field truncated boolean
 ---@field cancel_requested? boolean Cancellation was requested by the operation owner.
@@ -361,21 +362,32 @@ end
 ---@param op louiselm.ui.SessionControlOperation
 ---@param reason? string
 ---@param discard_view boolean
----@return string? error_message
-local function dispose_child(op, reason, discard_view)
+---@param callback fun(error_message?: string)
+local function dispose_child(op, reason, discard_view, callback)
   local session = op.session
   if not session then
+    callback()
     return
   end
-  local disposed, err = session:dispose(reason)
-  if session:inspect().status == "disposed" then
-    if discard_view and op.detach then
-      op.detach()
+  local finished = false
+  local function complete(disposed, err)
+    if finished then
+      return
     end
-    op.detach = nil
+    finished = true
+    if session:inspect().status == "disposed" then
+      if discard_view and op.detach then
+        op.detach()
+      end
+      op.detach = nil
+    end
+    callback(not disposed and (err or "child disposal failed") or nil)
   end
-  if not disposed then
-    return err or "child disposal failed"
+  local started, err = session:dispose(reason, complete)
+  if not started then
+    complete(false, err)
+  elseif session:inspect().status == "disposed" then
+    complete(true)
   end
 end
 
@@ -385,26 +397,37 @@ end
 ---@param cleanup? "discard"|"retain"
 ---@param reason? string
 local function finish(op, phase, err, cleanup, reason)
-  if op.terminal then
+  if op.terminal or op.finishing then
     return
   end
   if phase == "failed" and cleanup == nil and before_dispatch(op) then
     cleanup = "discard"
   end
-  op.terminal = true
+  op.finishing = true
   release(op)
-  if cleanup then
-    local dispose_error = dispose_child(op, reason, cleanup == "discard")
+  local function complete(dispose_error)
     if dispose_error then
       err = "child disposal failed: " .. dispose_error .. (err and "; " .. err or "")
+      phase = "failed"
+    end
+    op.finishing = false
+    op.terminal = true
+    update(op, { phase = phase, error = err })
+    if cleanup == nil or not op.session or op.session:inspect().status == "disposed" then
+      op.session = nil
+    end
+    if cleanup ~= "discard" or op.session == nil then
+      op.detach = nil
     end
   end
-  update(op, { phase = phase, error = err })
-  if cleanup == nil or not op.session or op.session:inspect().status == "disposed" then
-    op.session = nil
-  end
-  if cleanup ~= "discard" or op.session == nil then
-    op.detach = nil
+  if cleanup then
+    update(op, { phase = "cancelling" })
+    dispose_child(op, reason, cleanup == "discard", complete)
+    if op.finishing then
+      update(op)
+    end
+  else
+    complete()
   end
 end
 
@@ -413,7 +436,7 @@ end
 ---@param callback fun()
 local function scheduled(self, op, callback)
   nvim.schedule(function()
-    if not self.disposed and not op.terminal then
+    if not self.disposed and not op.terminal and not op.finishing then
       callback()
     end
   end)
@@ -643,13 +666,15 @@ function Control:request(request)
   elseif not op then
     return nil, "unknown operation id in this editor registration; do not automatically replay after restart"
   elseif request.action == "cancel" and op.terminal and op.session then
-    local dispose_error = dispose_child(op, nil, true)
-    local err = dispose_error and ("child disposal failed: " .. dispose_error .. "; " .. (op.snapshot.error or ""))
-    update(op, err and { error = err } or nil)
-    if op.session:inspect().status == "disposed" then
-      op.session = nil
-    end
-  elseif request.action == "cancel" and not op.terminal and not op.completion_received then
+    dispose_child(op, nil, true, function(dispose_error)
+      local err = dispose_error and ("child disposal failed: " .. dispose_error .. "; " .. (op.snapshot.error or ""))
+      update(op, err and { error = err } or nil)
+      if op.session and op.session:inspect().status == "disposed" then
+        op.session = nil
+      end
+    end)
+    update(op)
+  elseif request.action == "cancel" and not op.terminal and not op.finishing and not op.completion_received then
     op.cancel_requested = true
     local session = op.session
     local state = session and session:inspect()
@@ -685,10 +710,11 @@ function Control:dispose()
       local owned = not op.session or owns_current_turn(op, op.session:inspect())
       finish(op, "cancelled", nil, owned and "retain" or nil)
     elseif op.session then
-      local dispose_error = dispose_child(op, nil, true)
-      if dispose_error then
-        update(op, { error = "child disposal failed: " .. dispose_error })
-      end
+      dispose_child(op, nil, true, function(dispose_error)
+        if dispose_error then
+          update(op, { error = "child disposal failed: " .. dispose_error })
+        end
+      end)
     end
   end
 end

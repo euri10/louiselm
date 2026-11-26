@@ -17,14 +17,14 @@ T["abandonment"]["records recovery truth and consumes the breadcrumb once"] = fu
       acp_session_id = "claude-acp",
       recoverable = false,
       turn_active = false,
-      staged = { contexts = 0, pending_skill = false, queued_prompt = false },
+      staged = { contexts = 0, pending_skill = false },
     },
     {
       agent = "codex",
       acp_session_id = "codex-acp",
       recoverable = true,
       turn_active = true,
-      staged = { contexts = 2, pending_skill = false, queued_prompt = false },
+      staged = { contexts = 2, pending_skill = false },
     },
   }
 

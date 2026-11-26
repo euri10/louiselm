@@ -6,7 +6,7 @@ local nvim = vim
 
 ---@class louiselm.ui.ChatBufferOptions
 ---@field markdown_highlighting boolean Enable Markdown highlighting explicitly.
----@field on_prompt_edit fun() Clear caller-owned queued draft state when its prompt is edited.
+---@field on_prompt_edit fun() Observe changes to the private editable prompt.
 ---@field prompt_prefix fun(): string Current caller-owned visible context prefix.
 ---@field on_enter fun() Mark the owning view as seen.
 ---@field submit fun() Submit through Chat coordination.
@@ -54,9 +54,10 @@ local nvim = vim
 ---@field reconcile fun(self: louiselm.ui.ChatBuffer)
 ---@field close_reasoning fun(self: louiselm.ui.ChatBuffer)
 ---@field clear_queue_indicator fun(self: louiselm.ui.ChatBuffer)
----@field queue_indicator fun(self: louiselm.ui.ChatBuffer)
+---@field queue_indicator fun(self: louiselm.ui.ChatBuffer, count: integer, paused: boolean)
 ---@field set_prefix fun(self: louiselm.ui.ChatBuffer, prefix: string, text: string)
 ---@field accept_prompt fun(self: louiselm.ui.ChatBuffer, text: string, contexts: louiselm.ui.ContextItem[], next_prefix: string, focus: boolean)
+---@field queued_prompt fun(self: louiselm.ui.ChatBuffer, text: string, contexts: louiselm.ui.ContextItem[])
 ---@field render fun(self: louiselm.ui.ChatBuffer, event: louiselm.session.GenericEvent, replay_active?: boolean, continuing_prompt?: boolean)
 ---@field compaction fun(self: louiselm.ui.ChatBuffer, entity: louiselm.session.Compaction): boolean
 ---@field finish_turn fun(self: louiselm.ui.ChatBuffer)
@@ -373,10 +374,11 @@ end
 ---@param view louiselm.ui.ChatBuffer
 ---@param text string
 ---@param contexts louiselm.ui.ContextItem[]
----@return integer line_count
-local function replace_submitted_prompt(view, text, contexts)
+---@param start_line integer
+---@return string[] lines
+---@return integer prompt_start
+local function submitted_layout(view, text, contexts, start_line)
   local lines = {}
-  local previous_folds = #view.context_folds
   if #contexts > 0 then
     local labels = {}
     for index, item in ipairs(contexts) do
@@ -389,14 +391,14 @@ local function replace_submitted_prompt(view, text, contexts)
         lines[#lines + 1] = "type: resource"
         lines[#lines + 1] = "uri: " .. item.uri
         lines[#lines + 1] = "mimeType: text/plain"
-        local body_first = view.prompt_line + #lines
+        local body_first = start_line + #lines
         lines[#lines + 1] = "[body: " .. single_line(item.label) .. "]"
         for _, line in ipairs(nvim.split(item.text, "\n", { plain = true })) do
           lines[#lines + 1] = "  " .. line
         end
         view.context_folds[#view.context_folds + 1] = {
           first = body_first,
-          last = view.prompt_line + #lines - 1,
+          last = start_line + #lines - 1,
         }
       elseif item.text ~= nil then
         nvim.list_extend(lines, nvim.split(item.text, "\n", { plain = true }))
@@ -407,14 +409,24 @@ local function replace_submitted_prompt(view, text, contexts)
       end
     end
     view.context_folds[#view.context_folds + 1] = {
-      first = view.prompt_line,
-      last = view.prompt_line + #lines - 1,
+      first = start_line,
+      last = start_line + #lines - 1,
     }
   end
-  local first_prompt_line = view.prompt_line + #lines
+  local first_prompt_line = start_line + #lines
   for _, line in ipairs(nvim.split(text, "\n", { plain = true })) do
     lines[#lines + 1] = "> " .. line
   end
+  return lines, first_prompt_line
+end
+
+---@param view louiselm.ui.ChatBuffer
+---@param text string
+---@param contexts louiselm.ui.ContextItem[]
+---@return integer line_count
+local function replace_submitted_prompt(view, text, contexts)
+  local previous_folds = #view.context_folds
+  local lines, first_prompt_line = submitted_layout(view, text, contexts, view.prompt_line)
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
   for index = previous_folds + 1, #view.context_folds do
     anchor_fold(view, view.context_folds[index])
@@ -552,6 +564,26 @@ local function insert_transcript(view, lines)
   view.transcript_tail = insertion_line + #replacement - 1
   mark_prompt(view, view.prompt_line + #replacement)
   return insertion_line
+end
+
+---Render a dispatched queued entry before the unrelated editable draft.
+---@param self louiselm.ui.ChatBuffer
+---@param text string
+---@param contexts louiselm.ui.ContextItem[]
+function Buffer:queued_prompt(text, contexts)
+  local insertion = self.transcript_tail == nil and self.prompt_line or self.transcript_tail + 1
+  local previous_folds = #self.context_folds
+  local lines, prompt_start = submitted_layout(self, text, contexts, insertion)
+  local last = insertion + #lines
+  lines[#lines + 1] = ""
+  insert_transcript(self, lines)
+  for index = previous_folds + 1, #self.context_folds do
+    anchor_fold(self, self.context_folds[index])
+  end
+  mark_submitted_prompt(self, prompt_start, last)
+  apply_incremental_folds(self, self.window, self.context_folds, self.fold_counts)
+  self.response_tail, self.response_started = nil, false
+  self.turn_prose, self.turn_done_fired, self.last_block_kind = "", false, nil
 end
 
 ---Render a terminal-completion tool's retained text inline unless that exact
@@ -758,11 +790,14 @@ function Buffer:clear_queue_indicator()
   self.queue_mark = nil
 end
 
----Mark the editable prompt as queued.
+---Show the Session queue without treating the editable prompt as submitted.
 ---@param self louiselm.ui.ChatBuffer
-function Buffer:queue_indicator()
+---@param count integer
+---@param paused boolean
+function Buffer:queue_indicator(count, paused)
+  self:clear_queue_indicator()
   self.queue_mark = nvim.api.nvim_buf_set_extmark(self.buffer, self.queue_namespace, self.prompt_line, -1, {
-    virt_text = { { "Queued for next turn", "Comment" } },
+    virt_text = { { string.format("%d waiting%s · :LouiselmQueue", count, paused and " · paused" or ""), "Comment" } },
     virt_text_pos = "eol",
   })
 end

@@ -48,7 +48,6 @@ T["assembles resolved input in order without consuming it or requiring a buffer 
   draft:add_context({ label = "AGENTS.md", uri = "file:///repo/AGENTS.md" })
   draft:set_catalog("hidden catalog")
   local text = assert(draft:prompt_text(draft.context_prefix .. "first line\nsecond line"))
-  draft:queue(text)
 
   MiniTest.expect.equality({ draft:content("/compact", "$review", true) }, { "/compact", {} })
   local content, contexts = draft:content(text, "$review", true)
@@ -77,10 +76,10 @@ T["assembles resolved input in order without consuming it or requiring a buffer 
   content[1] = { type = "text", text = "hidden catalog" }
   MiniTest.expect.equality(retry, content)
   MiniTest.expect.equality(retry_contexts, contexts)
-  MiniTest.expect.equality(draft:staged_context(), { contexts = 3, pending_skill = false, queued_prompt = true })
+  MiniTest.expect.equality(draft:staged_context(), { contexts = 3, pending_skill = false })
 end
 
-T["queue cancellation retains staged material until accepted context is consumed"] = function()
+T["staged material remains private until accepted context is consumed"] = function()
   local draft = Draft.new()
   local other = Draft.new()
   draft:select_skill({
@@ -91,9 +90,7 @@ T["queue cancellation retains staged material until accepted context is consumed
     content = "body",
   }, true)
   draft:set_catalog("catalog")
-  draft:queue("next turn")
-  draft:queue(nil)
-  MiniTest.expect.equality(draft:staged_context(), { contexts = 0, pending_skill = true, queued_prompt = false })
+  MiniTest.expect.equality(draft:staged_context(), { contexts = 0, pending_skill = true })
   MiniTest.expect.equality(draft:prompt_text(draft.context_prefix), "")
   MiniTest.expect.equality(draft:content("", "$review"), {
     { type = "text", text = "catalog" },

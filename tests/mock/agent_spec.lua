@@ -301,7 +301,7 @@ T["mock agent"]["preserves null request ids and emits null ids for parse errors"
   })
 end
 
-T["mock agent"]["Chat refuses an unresolved Provider before the mock receives a prompt"] = function()
+T["mock agent"]["Chat retains unsent work when the Provider is unresolved"] = function()
   local definition = mock_definition("echo")
   definition.provider = { { provider = "service", options = { route = "direct" } } }
   local api = track(assert(Session.new({ mock = definition })), "dispose")
@@ -310,10 +310,23 @@ T["mock agent"]["Chat refuses an unresolved Provider before the mock receives a 
   wait_for(function()
     return session:inspect().status == "ready"
   end)
-  local ok, err = chat:submit("must not reach Agent")
-  MiniTest.expect.equality(ok, nil)
-  MiniTest.expect.equality(err:find("Provider", 1, true) ~= nil, true)
+  assert(chat:submit("must not reach Agent"))
+  wait_for(function()
+    return session:queue_inspect().active_status == "not_sent" and not session:queue_inspect().pending
+  end)
+  local queue = session:queue_inspect()
+  MiniTest.expect.equality(queue.active.display_text, "must not reach Agent")
+  MiniTest.expect.equality(queue.reason:find("Provider", 1, true) ~= nil, true)
+  MiniTest.expect.equality(queue.paused, true)
   MiniTest.expect.equality(session:inspect().current_turn, 0)
+  local disposed
+  assert(api:dispose(function(ok)
+    disposed = ok
+  end))
+  wait_for(function()
+    return disposed ~= nil
+  end)
+  MiniTest.expect.equality(disposed, true)
 end
 
 T["mock agent"]["supports the ACP session flow and static responses"] = function()

@@ -37,6 +37,7 @@ local STATUS_HIGHLIGHTS = {
   starting = "LouiselmStatusActive",
   waiting_permission = "LouiselmStatusWarning",
   cancelling = "LouiselmStatusWarning",
+  disposing = "LouiselmStatusWarning",
   error = "LouiselmStatusError",
   disposed = "LouiselmStatusWarning",
 }
@@ -236,6 +237,9 @@ local function turn_label(state)
   end
   if state.status == "cancelling" then
     return "Stopping"
+  end
+  if state.status == "disposing" then
+    return "Closing Session"
   end
   if state.status == "starting" or state.status == "configuring" then
     return "Starting"

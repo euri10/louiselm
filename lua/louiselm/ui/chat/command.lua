@@ -68,7 +68,7 @@ local function exit_snapshot(chat)
   local sessions = {}
   local blocked = {}
   for _, verdict in ipairs(session_module().exit_verdict()) do
-    local session_staged = staged[verdict.session] or { contexts = 0, pending_skill = false, queued_prompt = false }
+    local session_staged = staged[verdict.session] or { contexts = 0, pending_skill = false }
     sessions[#sessions + 1] = {
       agent = verdict.agent,
       acp_session_id = verdict.acp_session_id,
@@ -89,9 +89,6 @@ local function exit_snapshot(chat)
     end
     if session_staged.pending_skill then
       reasons[#reasons + 1] = "skill selection pending"
-    end
-    if session_staged.queued_prompt then
-      reasons[#reasons + 1] = "prompt queued"
     end
     if #reasons > 0 then
       blocked[#blocked + 1] = verdict.agent .. ": " .. table.concat(reasons, ", ")
@@ -475,7 +472,7 @@ function M.register()
     end,
   })
 
-  ---@param method "switch_session"|"hand_off"|"inspect_tool"|"inspect_mcp"|"close_session"|"cancel"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
+  ---@param method "switch_session"|"hand_off"|"inspect_tool"|"inspect_mcp"|"close_session"|"cancel"|"manage_queue"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
   ---@return fun()
   local function chat_command(method)
     return function()
@@ -650,9 +647,9 @@ function M.register()
       if #sessions > 0 then
         Abandonment.write(abandonment_path(), sessions)
       end
-      session_module().dispose_all()
+      session_module().abandon_all()
     end,
-    desc = "Dispose live louiselm Sessions and record restart guidance",
+    desc = "Stop live louiselm Sessions and record restart guidance",
   })
 
   ---@return louiselm.ui.Chat? value
@@ -1126,6 +1123,12 @@ function M.register()
   end, { desc = "Inspect and revoke remembered louiselm permissions", force = true })
 
   nvim.api.nvim_create_user_command(
+    "LouiselmQueue",
+    chat_command("manage_queue"),
+    { desc = "Inspect and manage the Session queue", force = true }
+  )
+
+  nvim.api.nvim_create_user_command(
     "LouiselmPickSkill",
     chat_command("pick_skill"),
     { desc = "Pick a louiselm skill to invoke", force = true }
@@ -1204,6 +1207,19 @@ function M.register()
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
     disposed = true
+    local function dispose_api(api)
+      local reported = false
+      local function finished(ok, err)
+        if not ok and not reported then
+          reported = true
+          nvim.notify("louiselm: " .. (err or "Session Disposal could not be confirmed"), nvim.log.levels.ERROR)
+        end
+      end
+      local started, err = api:dispose(finished)
+      if not started then
+        finished(false, err)
+      end
+    end
     control_request = nil
     phone_subject = nil
     dispose_phone()
@@ -1237,12 +1253,12 @@ function M.register()
     staleness_generation = staleness_generation + 1
     if chat ~= nil then
       chat:dispose()
-      chat.api:dispose()
+      dispose_api(chat.api)
       chat = nil
     end
     if inline ~= nil then
       inline:dispose()
-      inline.api:dispose()
+      dispose_api(inline.api)
       inline = nil
     end
     decisions:dispose()

@@ -121,7 +121,14 @@ local function start(qualified)
   }, nil, { usage_directory = directory, qualification_path = directory .. "/qualifications.json" }))
   local owned_api = api
   MiniTest.finally(function()
-    assert(owned_api:dispose())
+    local disposed, disposal_error
+    assert(owned_api:dispose(function(ok, err)
+      disposed, disposal_error = ok, err
+    end))
+    wait_for(function()
+      return disposed ~= nil
+    end)
+    assert(disposed, disposal_error)
     local done
     owned_api:flush_recording(function()
       done = true
@@ -262,7 +269,7 @@ T["uncertainty and missing approvals dispatch the baseline with a recorded reaso
   MiniTest.expect.equality(nvim.json.decode(rows[2].data).selection.fallback_reason, "workload_unknown")
 end
 
-T["queued replacement uses current approval and dispatches its own Skill context once"] = function()
+T["distinct queued instructions use current approval and dispatch frozen Skill context once"] = function()
   local original_select = nvim.ui.select
   nvim.ui.select = function(_, _, callback)
     nvim.schedule(function()
@@ -290,8 +297,14 @@ T["queued replacement uses current approval and dispatches its own Skill context
     content = "selected Skill body",
   }, false)
   view.renderer:replace_prompt(view.draft.context_prefix)
-  assert(chat:submit("replaced text"))
+  assert(chat:submit("first queued text"))
+  wait_for(function()
+    return #session:queue_inspect().entries == 1
+  end)
   assert(chat:submit("latest text"))
+  wait_for(function()
+    return #session:queue_inspect().entries == 2
+  end)
   decide("reject")
   respond(active.id, { stopReason = "end_turn" })
   wait_for(function()
@@ -301,12 +314,19 @@ T["queued replacement uses current approval and dispatches its own Skill context
   MiniTest.expect.equality(request.method, "session/prompt")
   MiniTest.expect.equality(request.params.prompt, {
     { type = "text", text = "selected Skill body" },
-    { type = "text", text = "latest text" },
+    { type = "text", text = "first queued text" },
   })
   MiniTest.expect.equality(observed_decision.selection.fallback_reason, "unqualified")
   MiniTest.expect.equality(observed_decision.requested, { model = "large", effort = "high" })
   MiniTest.expect.equality(view.renderer:prompt_text(), "")
   MiniTest.expect.equality(view.draft.contexts, {})
+  respond(request.id, { stopReason = "end_turn" })
+  wait_for(function()
+    local last = process.writes[#process.writes]
+    return last.method == "session/prompt" and last.id ~= request.id
+  end)
+  request = process.writes[#process.writes]
+  MiniTest.expect.equality(request.params.prompt, { { type = "text", text = "latest text" } })
   respond(request.id, { stopReason = "end_turn" })
   local count = 0
   for _, write in ipairs(process.writes) do
@@ -314,7 +334,7 @@ T["queued replacement uses current approval and dispatches its own Skill context
       count = count + 1
     end
   end
-  MiniTest.expect.equality(count, 2)
+  MiniTest.expect.equality(count, 3)
 end
 
 T["revoked approval during option preparation cannot dispatch the candidate"] = function()
@@ -688,7 +708,7 @@ T["post-failure manual pin wins and records the effective continuation pair"] = 
   respond(request.id, { stopReason = "end_turn" })
 end
 
-T["an explicitly queued follow-up continues on baseline without replaying the failed request"] = function()
+T["a reviewed queued follow-up continues on baseline without replaying the failed request"] = function()
   local original_select = nvim.ui.select
   nvim.ui.select = function(_, _, callback)
     nvim.schedule(function()
@@ -706,7 +726,22 @@ T["an explicitly queued follow-up continues on baseline without replaying the fa
   end)
   assert(chat:attach(session))
   assert(chat:submit("separately authorized follow-up"))
+  wait_for(function()
+    return #session:queue_inspect().entries == 1
+  end)
   respond(active.id, failed_result())
+  wait_for(function()
+    return session:queue_inspect().paused and session:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(#process.writes, 5)
+  local continued
+  assert(session:queue_continue(session:queue_inspect().revision, function(ok, err)
+    continued = { ok, err }
+  end))
+  wait_for(function()
+    return continued ~= nil
+  end)
+  assert(continued[1], continued[2])
   local request = baseline_prompt()
   MiniTest.expect.equality(request.params.prompt, { { type = "text", text = "separately authorized follow-up" } })
   local view = chat.views[session:inspect().id]
@@ -770,6 +805,9 @@ T["dead economical Session retains queued input and unknown delivery recovery fo
   end)
   assert(chat:attach(session))
   assert(chat:submit("undelivered follow-up"))
+  wait_for(function()
+    return #session:queue_inspect().entries == 1
+  end)
   local timer = assert(nvim.uv.new_timer())
   MiniTest.finally(function()
     timer:close()
@@ -783,9 +821,10 @@ T["dead economical Session retains queued input and unknown delivery recovery fo
   end)
   local view = chat.views[session:inspect().id]
   wait_for(function()
-    return view.draft.queued_prompt == nil
+    return session:queue_inspect().paused
   end)
-  MiniTest.expect.equality(view.renderer:prompt_text(), "undelivered follow-up")
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "undelivered follow-up")
+  MiniTest.expect.equality(view.renderer:prompt_text(), "")
   MiniTest.expect.equality(session:inspect().routing_recovery, { turn_id = failed_id, reason = "delivery_unknown" })
   local text = table.concat(nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false), "\n")
   assert(text:find("Session cannot continue safely", 1, true), text)
@@ -833,10 +872,11 @@ T["unavailable baseline retains the draft and recovery; later manual selection r
   local sent = #process.writes
   assert(chat:submit("keep this continuation"))
   wait_for(function()
-    return view.pending_admission == nil
+    return session:queue_inspect().active_status == "not_sent"
   end)
   MiniTest.expect.equality(#process.writes, sent)
-  MiniTest.expect.equality(view.renderer:prompt_text(), "keep this continuation")
+  MiniTest.expect.equality(view.renderer:prompt_text(), "")
+  MiniTest.expect.equality(session:queue_inspect().active.display_text, "keep this continuation")
   assert(session:inspect().routing_recovery)
   local text = table.concat(nvim.api.nvim_buf_get_lines(view.renderer.buffer, 0, -1, false), "\n")
   assert(text:find("restore the baseline or choose a manual pin", 1, true), text)
@@ -844,7 +884,29 @@ T["unavailable baseline retains the draft and recovery; later manual selection r
   wait_for(function()
     return session:inspect().status == "ready"
   end)
-  assert(chat:submit())
+  nvim.wait(30)
+  wait_for(function()
+    return not session:queue_inspect().pending
+  end)
+  local queue = session:queue_inspect()
+  local entry, replaced = assert(queue.active), nil
+  assert(session:queue_replace(entry.id, queue.revision, entry.prompt, function(ok, err)
+    replaced = { ok, err }
+  end, entry.metadata, entry.display_text, entry.contexts))
+  wait_for(function()
+    return replaced ~= nil
+  end)
+  ---@cast replaced table
+  assert(replaced[1], replaced[2])
+  local continued
+  assert(session:queue_continue(session:queue_inspect().revision, function(ok, err)
+    continued = { ok, err }
+  end))
+  wait_for(function()
+    return continued ~= nil
+  end)
+  ---@cast continued table
+  assert(continued[1], continued[2])
   request = latest("session/prompt")
   MiniTest.expect.equality(observed_decision.origin, "manual")
   respond(request.id, { stopReason = "end_turn" })
@@ -873,6 +935,15 @@ T["unconfirmed baseline and cancelled continuation do not consume recovery or di
 end
 
 T["Disposal during economical failure cannot release queued work or accept late completion"] = function()
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    nvim.schedule(function()
+      callback(nil)
+    end)
+  end
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+  end)
   local session = start(true)
   local failed_id, request = candidate_prompt(session)
   local chat = assert(require("louiselm.ui.chat").new(api))
@@ -881,6 +952,9 @@ T["Disposal during economical failure cannot release queued work or accept late 
   end)
   assert(chat:attach(session))
   assert(chat:submit("retain across disposal"))
+  wait_for(function()
+    return #session:queue_inspect().entries == 1
+  end)
   local view = chat.views[session:inspect().id]
   local completions = 0
   session:on(function(event)
@@ -893,9 +967,10 @@ T["Disposal during economical failure cannot release queued work or accept late 
   respond(request.id, failed_result())
   respond(request.id, { stopReason = "end_turn" })
   wait_for(function()
-    return view.draft.queued_prompt == nil
+    return session:inspect().status == "disposed"
   end)
-  MiniTest.expect.equality(view.renderer:prompt_text(), "retain across disposal")
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "retain across disposal")
+  MiniTest.expect.equality(view.renderer:prompt_text(), "")
   MiniTest.expect.equality(completions, 1)
   MiniTest.expect.equality(session:inspect().status, "disposed")
   MiniTest.expect.equality(#process.writes, sent)

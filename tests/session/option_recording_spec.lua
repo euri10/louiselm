@@ -146,7 +146,14 @@ local T = MiniTest.new_set({
     end,
     post_case = function()
       if api then
-        assert(api:dispose())
+        local disposed, disposal_error
+        assert(api:dispose(function(ok, err)
+          disposed, disposal_error = ok, err
+        end))
+        wait_for(function()
+          return disposed ~= nil
+        end)
+        assert(disposed, disposal_error)
         flush()
       end
       rawset(nvim, "system", original_system)
@@ -516,7 +523,7 @@ T["unset Auto publishes correlated settlement only after the recorded local disp
   MiniTest.expect.equality({ decision.origin, decision.reason }, { "manual", "current_pair" })
 end
 
-T["ordinary Chat retains unsent text and context when the real recording barrier fails"] = function()
+T["ordinary Chat retains a frozen unsent instruction when the real recording barrier fails"] = function()
   local session = start()
   local original_select = nvim.ui.select
   nvim.ui.select = function(_, _, callback)
@@ -526,7 +533,7 @@ T["ordinary Chat retains unsent text and context when the real recording barrier
   end
   MiniTest.finally(function()
     nvim.ui.select = original_select
-    assert(nvim.uv.fs_chmod(directory, 448))
+    assert(nvim.uv.fs_chmod(directory .. "/turns.sqlite3", 384))
   end)
   local chat = assert(require("louiselm.ui.chat").new(api))
   MiniTest.finally(function()
@@ -535,19 +542,23 @@ T["ordinary Chat retains unsent text and context when the real recording barrier
   assert(chat:attach(session))
   assert(chat:queue_context({ label = "file", text = "unsent context" }))
   MiniTest.expect.equality(flush(), nil)
-  assert(nvim.uv.fs_chmod(directory, 320))
+  assert(nvim.uv.fs_chmod(directory .. "/turns.sqlite3", 256))
   local sent = #process.writes
-  local id = assert(chat:submit("unsent draft"))
+  assert(chat:submit("unsent draft"))
   local view = chat.views[session:inspect().id]
-  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] unsent draft")
   wait_for(function()
-    return session:inspect().status == "ready" and view.pending_admission == nil
+    local queue = session:queue_inspect()
+    return queue.active_status == "not_sent" and queue.active_turn_id ~= nil and not queue.pending
   end)
+  local queue = session:queue_inspect()
+  local id = queue.active_turn_id
   MiniTest.expect.equality(#process.writes, sent)
-  MiniTest.expect.equality(view.renderer:prompt_text(), "[context: file] unsent draft")
-  MiniTest.expect.equality(view.draft.contexts, { { label = "file", text = "unsent context" } })
+  MiniTest.expect.equality(view.renderer:prompt_text(), "")
+  MiniTest.expect.equality(queue.active.display_text, "unsent draft")
+  MiniTest.expect.equality(queue.active.contexts, { { label = "file", text = "unsent context" } })
+  MiniTest.expect.equality(queue.paused, true)
   MiniTest.expect.equality(view.transcript:snapshot(), {})
-  assert(nvim.uv.fs_chmod(directory, 448))
+  assert(nvim.uv.fs_chmod(directory .. "/turns.sqlite3", 384))
   MiniTest.expect.equality(flush(), nil)
   local rows = query("SELECT turn_id,data FROM admission_events WHERE phase='settlement'")
   MiniTest.expect.equality(rows[1].turn_id, id)

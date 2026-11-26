@@ -103,6 +103,15 @@ Sessions                                                   *louiselm-sessions*
   the whole group; duplicate IDs close once. Closing stops those Agent
   processes and discards their chat buffers and drafts.
 
+  Each Chat Session has an ordered queue of up to 20 waiting instructions.
+  Send freezes the visible text and selected context; subsequent edits are a
+  separate draft. Use |:LouiselmQueue| to inspect, cancel, replace or reorder
+  waiting entries and to Continue after Stop or failure. Picker replacements
+  contain text without context. Queue payloads are private local state. After
+  restart, recovered entries stay paused; missing owner or outcome evidence
+  keeps them unavailable. Headless session:prompt stays immediate and refuses
+  a busy Session; session:enqueue explicitly requests queued admission.
+
   The Session picker uses vim.ui.select with kind louiselm_session and plain
   id/label items. Chunk-aware pickers such as Snacks color the status cell
   with the same group as the Session's window-bar entry, so an unseen response
@@ -218,11 +227,11 @@ Workflow                                                   *louiselm-workflow*
   changes during preparation prevent stale dispatch. Admission records retain
   payload-free selection provenance. After an economical failure, the next
   authorized Auto continuation confirms baseline; a later manual pin wins.
-  Recovery survives supported resume until a continuation completes.
-  Separately queued follow-ups may continue on a safe idle Session; failed
-  prompts and tools are never replayed automatically. Unavailable baseline or
-  a dead Session retains input for operator action. Failures and completed
-  turns never rewrite qualification approvals. See
+  Recovery survives supported resume until a continuation completes. Failure
+  pauses queued follow-ups; after review, Continue can release them on a safe
+  idle Session. Failed prompts and tools are never replayed automatically.
+  Unavailable baseline or a dead Session retains input for operator action.
+  Failures and completed turns never rewrite qualification approvals. See
   docs/routing-qualification.md for configuration, headless metadata and
   allowance semantics.
 
@@ -452,6 +461,10 @@ Commands                                                   *louiselm-commands*
 
 :LouiselmProvenanceDecisions                    *:LouiselmProvenanceDecisions*
     Show the Provenance Decision index
+    Arguments: none
+
+:LouiselmQueue                                                *:LouiselmQueue*
+    Inspect and manage the Session queue
     Arguments: none
 
 :LouiselmRejectComparison                          *:LouiselmRejectComparison*

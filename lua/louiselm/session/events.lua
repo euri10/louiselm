@@ -17,6 +17,7 @@
 ---| "prompt_dispatched"
 ---| "admission_decided"
 ---| "admission_settled"
+---| "queue_changed"
 ---| "state_changed"
 ---| "turn_done"
 ---| "error"
@@ -71,7 +72,7 @@
 
 ---@class louiselm.session.PromptDispatchedEvent: louiselm.session.EventBase
 ---@field type "prompt_dispatched"
----@field data { turn_id: string, prompt: table[], display_text?: string } Local in-memory content accepted by the transport, not proof of peer receipt. The optional caller-owned visible text excludes attached context. Never persisted in admission or usage records.
+---@field data { turn_id: string, prompt: table[], display_text?: string, queue_entry?: louiselm.session.QueueEntry } Local in-memory content accepted by the transport, not proof of peer receipt. The optional caller-owned visible text excludes attached context. Never persisted in admission or usage records.
 
 ---@class louiselm.session.AdmissionDecisionEvent: louiselm.session.EventBase
 ---@field type "admission_decided"
@@ -104,6 +105,10 @@
 ---@class louiselm.session.AdmissionSettlementEvent: louiselm.session.EventBase
 ---@field type "admission_settled"
 ---@field data { turn_id: string, result: "dispatched"|"not_sent"|"cancelled"|"uncertain", requested: { model?: string|boolean, effort?: string|boolean }, confirmed: { model?: string|boolean, effort?: string|boolean }, options: table<string, string|boolean>, requests: table<string, string|number>, reason?: string, elapsed_ms: integer } Payload-free terminal admission result and complete confirmed option tuple.
+
+---@class louiselm.session.QueueChangedEvent: louiselm.session.EventBase
+---@field type "queue_changed"
+---@field data louiselm.session.QueueState Exact Session queue snapshot; contains submitted content.
 
 ---@class louiselm.session.PermissionData
 ---@field request_id string|number ACP request identifier.
@@ -197,7 +202,7 @@
 ---`can_continue: boolean`: true permits separately authorized queued work to continue;
 ---false requires operator recovery of the Agent/Session. No failed prompt is replayed.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PromptDispatchedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.InteractionRequestedEvent|louiselm.session.InteractionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PromptDispatchedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.QueueChangedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.InteractionRequestedEvent|louiselm.session.InteractionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

@@ -3,7 +3,6 @@
 ---@field context_prefix string Visible context markers, independent of buffer coordinates.
 ---@field skill_catalog? string Hidden catalog pending for the first accepted model prompt.
 ---@field pending_skill? louiselm.skills.Skill Selected native skill, resolved only at submission.
----@field queued_prompt? string Text committed for the next turn, without context markers.
 ---@field add_context fun(self: louiselm.ui.ChatDraft, item: louiselm.ui.ContextItem)
 ---@field select_skill fun(self: louiselm.ui.ChatDraft, skill: louiselm.skills.Skill, native: boolean): string?
 ---@field submission_metadata fun(self: louiselm.ui.ChatDraft): louiselm.routing.SubmissionMetadata? Explicit metadata for exactly one staged Skill.
@@ -18,13 +17,11 @@
 ---@field clear_context fun(self: louiselm.ui.ChatDraft)
 ---@field snapshot fun(self: louiselm.ui.ChatDraft): louiselm.ui.ChatDraft
 ---@field consume fun(self: louiselm.ui.ChatDraft, submitted: louiselm.ui.ChatDraft)
----@field queue fun(self: louiselm.ui.ChatDraft, text?: string)
 ---@field staged_context fun(self: louiselm.ui.ChatDraft): louiselm.ui.StagedContext
 
 ---@class louiselm.ui.StagedContext
 ---@field contexts integer Number of queued context items.
 ---@field pending_skill boolean Whether a native-mode skill selection is pending.
----@field queued_prompt boolean Whether a prompt is queued behind the active turn.
 
 local M = {}
 local Draft = {}
@@ -328,13 +325,6 @@ function Draft:consume(submitted)
   end
 end
 
----Replace or cancel the one committed next-turn prompt; does not consume contexts.
----@param self louiselm.ui.ChatDraft
----@param text? string New queued text, or nil to cancel/release it.
-function Draft:queue(text)
-  self.queued_prompt = text
-end
-
 ---Report the staged material that would be lost with this view.
 ---@param self louiselm.ui.ChatDraft
 ---@return louiselm.ui.StagedContext staged Fresh summary, excluding the hidden catalog.
@@ -342,7 +332,6 @@ function Draft:staged_context()
   return {
     contexts = #self.contexts,
     pending_skill = self.pending_skill ~= nil,
-    queued_prompt = self.queued_prompt ~= nil,
   }
 end
 

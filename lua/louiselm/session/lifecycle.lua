@@ -10,6 +10,7 @@ local Provider = require("louiselm.agent.provider")
 local Routing = require("louiselm.routing.routing")
 local SelectedContent = require("louiselm.session.selected_content")
 local ResumePermissions = require("louiselm.session.resume_permissions")
+local Queue = require("louiselm.session.queue")
 local Mcp = require("louiselm.mcp")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -20,7 +21,7 @@ local nvim = vim
 ---@field name string Display name; choosing it replaces the saved policy.
 ---@field description? string Agent-advertised summary of the replacement permissions.
 
----@alias louiselm.session.Status "starting"|"ready"|"admitting"|"configuring"|"preparing"|"prompting"|"running"|"waiting_permission"|"cancelling"|"error"|"disposed"
+---@alias louiselm.session.Status "starting"|"ready"|"admitting"|"configuring"|"preparing"|"prompting"|"running"|"waiting_permission"|"cancelling"|"disposing"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
 
 ---@class louiselm.session.TurnIdentity
@@ -134,6 +135,9 @@ local nvim = vim
 ---@field permission_active? louiselm.session.PermissionEntry Permission request published for a decision.
 ---@field permission_queue louiselm.session.PermissionEntry[] Permission requests waiting for the active one.
 ---@field interactions louiselm.session.InteractionEntry[] Pending vendor interactions, in arrival order.
+---@field queue? louiselm.session.Queue Session-owned submitted instructions.
+---@field queue_pause_reason? string Pause retained if a queue identity could not yet be allocated.
+---@field disposal_callbacks? fun(disposed: boolean, error_message?: string)[] In-flight Disposal observers.
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
@@ -142,10 +146,17 @@ local nvim = vim
 ---@field option_usage fun(self: louiselm.session.Session, option_id: string, callback: louiselm.session.OptionUsageCallback)
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
 ---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string): string?, string?
+---@field queue_inspect fun(self: louiselm.session.Session): louiselm.session.QueueState
+---@field enqueue fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback: fun(id: string?, error_message?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string, contexts?: table[]): boolean, string?
+---@field queue_cancel fun(self: louiselm.session.Session, id: string, revision: integer, callback: fun(changed: boolean, error_message?: string)): boolean, string?
+---@field queue_move fun(self: louiselm.session.Session, id: string, position: integer, revision: integer, callback: fun(changed: boolean, error_message?: string)): boolean, string?
+---@field queue_replace fun(self: louiselm.session.Session, id: string, revision: integer, prompt: louiselm.session.Prompt, callback: fun(changed: boolean, error_message?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string, contexts?: table[]): boolean, string?
+---@field queue_continue fun(self: louiselm.session.Session, revision: integer, callback: fun(changed: boolean, error_message?: string)): boolean, string?
 ---@field set_auto fun(self: louiselm.session.Session, enabled: boolean, callback?: fun(error?: string)): boolean, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
----@field dispose fun(self: louiselm.session.Session, reason?: string): boolean, string?
+---@field dispose fun(self: louiselm.session.Session, reason?: string, callback?: fun(disposed: boolean, error_message?: string)): boolean, string?
+---@field abandon fun(self: louiselm.session.Session): boolean, string? Stop this editor's Session while retaining its saved queue.
 
 -- ACP `RequestError.resourceNotFound`: the agent-side session store no longer
 -- has this session id, distinct from any other session/load failure mode.
@@ -371,7 +382,7 @@ end
 ---@param message string
 ---@param peer_response? boolean Whether an ACP prompt response was actually observed.
 local function fail(self, message, peer_response)
-  if self.state.status == "disposed" or self.state.status == "error" then
+  if self.state.status == "disposed" or self.state.status == "disposing" or self.state.status == "error" then
     return
   end
   local private_startup = self.state.status == "starting" and #self.mcp_servers > 0
@@ -453,7 +464,7 @@ end
 ---@param result unknown
 ---@param turn_error? string Failed turn diagnostic; the ACP connection remains usable.
 local function complete_turn(self, result, turn_error)
-  if self.state.status == "disposed" or self.state.status == "error" then
+  if self.state.status == "disposed" or self.state.status == "disposing" or self.state.status == "error" then
     return
   end
   local completing = self.turn_done_turn ~= self.state.current_turn
@@ -1309,6 +1320,34 @@ local function initialize_name(self, ready)
 end
 
 ---@param self louiselm.session.Session
+---@param ready fun()
+local function initialize_queue(self, ready)
+  if self.load_session_id == nil then
+    ready()
+    return
+  end
+  self.owner.queue_store:load(self.state.agent, self.load_session_id, self.state.working_dir, function(records, err)
+    if self.state.status ~= "starting" then
+      return
+    end
+    local queue, restore_error = Queue.restore(self, self.owner.queue_store, records, err)
+    self.queue = queue
+    if restore_error ~= nil then
+      self.queue_pause_reason = restore_error
+    end
+    if queue ~= nil and records ~= nil and #records == 1 and restore_error == nil then
+      queue:reconcile(records[1], function()
+        if self.state.status == "starting" then
+          ready()
+        end
+      end)
+    else
+      ready()
+    end
+  end)
+end
+
+---@param self louiselm.session.Session
 ---@param result unknown
 ---@param rpc_error? louiselm.acp.JsonRpcError
 local function handle_initialized(self, result, rpc_error)
@@ -1441,14 +1480,16 @@ local function handle_initialized(self, result, rpc_error)
     self.state.config_options = options
     initialize_routing(self, function()
       initialize_name(self, function()
-        set_status(self, "ready")
-        if not self.ready_callback_called and self.state.status ~= "disposed" then
-          self.ready_callback_called = true
-          local callback = self.ready_callback
-          if callback ~= nil then
-            callback(self)
+        initialize_queue(self, function()
+          set_status(self, "ready")
+          if not self.ready_callback_called and self.state.status ~= "disposed" then
+            self.ready_callback_called = true
+            local callback = self.ready_callback
+            if callback ~= nil then
+              callback(self)
+            end
           end
-        end
+        end)
       end)
     end)
   end
@@ -1486,7 +1527,7 @@ end
 ---@param result unknown
 ---@param rpc_error? louiselm.acp.JsonRpcError
 local function handle_prompt_result(self, result, rpc_error)
-  if self.state.status == "disposed" or self.state.status == "error" then
+  if self.state.status == "disposed" or self.state.status == "disposing" or self.state.status == "error" then
     return
   end
   if rpc_error ~= nil then
@@ -1605,6 +1646,9 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
   session:on(function(event)
     session.transcript:record(event)
     session.history:record(event)
+    if session.queue ~= nil then
+      session.queue:observe(event)
+    end
   end)
   if options.on_event ~= nil then
     session:on(options.on_event)
@@ -1628,16 +1672,22 @@ function Session:start()
     env = self.options.env,
     launch_request = self.options.launch_request,
     on_notification = function(message)
-      handle_notification(self, message)
+      if self.state.status ~= "disposing" then
+        handle_notification(self, message)
+      end
     end,
     on_request = function(request, respond)
-      handle_request(self, request, respond)
+      if self.state.status ~= "disposing" then
+        handle_request(self, request, respond)
+      end
     end,
     on_error = function(message)
       fail(self, "ACP transport error: " .. message)
     end,
     on_exit = function(result)
-      handle_exit(self, result)
+      if self.state.status ~= "disposing" then
+        handle_exit(self, result)
+      end
     end,
     on_stderr = function(data)
       buffer_stderr(self, data)
@@ -1680,6 +1730,128 @@ function Session:inspect()
   state.acp_session_id = self.acp_session_id
   ---@cast state louiselm.session.State
   return state
+end
+
+---Inspect the submitted instructions owned by this exact Session.
+---@param self louiselm.session.Session
+---@return louiselm.session.QueueState state Fresh snapshot, including frozen payloads.
+function Session:queue_inspect()
+  return self.queue and self.queue:inspect()
+    or {
+      revision = 0,
+      entries = {},
+      paused = self.queue_pause_reason ~= nil,
+      uncertain = false,
+      pending = false,
+      reason = self.queue_pause_reason,
+    }
+end
+
+---Submit frozen work to the Session queue. The callback acknowledges durable
+---admission, not ACP dispatch or completion; it runs asynchronously once.
+---@param self louiselm.session.Session
+---@param prompt louiselm.session.Prompt
+---@param callback fun(id: string?, error_message?: string)
+---@param correlation? louiselm.routing.SubmissionMetadata
+---@param display_text? string
+---@param contexts? table[]
+---@return boolean started
+---@return string? error_message
+function Session:enqueue(prompt, callback, correlation, display_text, contexts)
+  if
+    self.disposal_callbacks ~= nil
+    or self.state.status == "starting"
+    or self.state.status == "disposed"
+    or self.state.status == "error"
+  then
+    return false, "session is not available for queue admission"
+  end
+  if self.queue == nil then
+    local queue, err = Queue.new(self, self.owner.queue_store)
+    if queue == nil then
+      return false, err
+    end
+    self.queue = queue
+    if self.queue_pause_reason ~= nil then
+      queue:pause(self.queue_pause_reason)
+      self.queue_pause_reason = nil
+    end
+  end
+  return self.queue:enqueue(
+    prompt,
+    correlation,
+    display_text or (type(prompt) == "string" and prompt or ""),
+    contexts or {},
+    callback
+  )
+end
+
+---Cancel one reviewed waiting entry; running work is never modified.
+---@param self louiselm.session.Session
+---@param id string
+---@param revision integer
+---@param callback fun(changed: boolean, error_message?: string)
+---@return boolean started
+---@return string? error_message
+function Session:queue_cancel(id, revision, callback)
+  if self.queue == nil then
+    return false, "waiting entry no longer exists"
+  end
+  return self.queue:cancel(id, revision, callback)
+end
+
+---Reorder one reviewed waiting entry.
+---@param self louiselm.session.Session
+---@param id string
+---@param position integer
+---@param revision integer
+---@param callback fun(changed: boolean, error_message?: string)
+---@return boolean started
+---@return string? error_message
+function Session:queue_move(id, position, revision, callback)
+  if self.queue == nil then
+    return false, "waiting entry no longer exists"
+  end
+  return self.queue:move(id, position, revision, callback)
+end
+
+---Replace one reviewed waiting entry with a new frozen identity.
+---@param self louiselm.session.Session
+---@param id string
+---@param revision integer
+---@param prompt louiselm.session.Prompt
+---@param callback fun(changed: boolean, error_message?: string)
+---@param correlation? louiselm.routing.SubmissionMetadata
+---@param display_text? string
+---@param contexts? table[]
+---@return boolean started
+---@return string? error_message
+function Session:queue_replace(id, revision, prompt, callback, correlation, display_text, contexts)
+  if self.queue == nil then
+    return false, "waiting entry no longer exists"
+  end
+  return self.queue:replace(
+    id,
+    revision,
+    prompt,
+    correlation,
+    display_text or (type(prompt) == "string" and prompt or ""),
+    contexts or {},
+    callback
+  )
+end
+
+---Continue a paused, reviewed queue only when its outcome is known.
+---@param self louiselm.session.Session
+---@param revision integer
+---@param callback fun(changed: boolean, error_message?: string)
+---@return boolean started
+---@return string? error_message
+function Session:queue_continue(revision, callback)
+  if self.queue == nil then
+    return false, "Session has no queue"
+  end
+  return self.queue:continue(revision, callback)
 end
 
 ---Read a bounded, closed history page from this exact live Session.
@@ -1944,11 +2116,12 @@ local function prepare_prompt(self, prompt, turn_id, provider)
       record_observation(self, "dispatch", { request_id = request_id, transcript_turn = self.transcript_turn })
       local display_text = self.admission and self.admission.display_text or nil
       settle_admission(self, "dispatched")
-      emit(
-        self,
-        "prompt_dispatched",
-        { turn_id = turn_id, prompt = nvim.deepcopy(prompt), display_text = display_text }
-      )
+      emit(self, "prompt_dispatched", {
+        turn_id = turn_id,
+        prompt = nvim.deepcopy(prompt),
+        display_text = display_text,
+        queue_entry = self.queue and self.queue:entry_for_turn(turn_id) or nil,
+      })
     end)
   end)
 end
@@ -2173,6 +2346,9 @@ end
 ---@return string? turn_id Stable local admission and eventual turn ID, never proof of peer receipt.
 ---@return string? error_message Immediate validation, state, Provider, or random identity error.
 function Session:prompt(prompt, callback, correlation, display_text)
+  if self.disposal_callbacks ~= nil then
+    return nil, "session is not ready"
+  end
   if #self.interactions > 0 then
     return nil, "session is waiting for an interaction"
   end
@@ -2313,6 +2489,23 @@ end
 ---@return boolean sent
 ---@return string? error_message ACP write or state error.
 function Session:cancel()
+  if
+    self.state.status == "admitting"
+    or self.state.status == "preparing"
+    or self.state.status == "prompting"
+    or self.state.status == "running"
+    or self.state.status == "waiting_permission"
+    or self.state.status == "cancelling"
+  then
+    if self.queue == nil then
+      self.queue = Queue.new(self, self.owner.queue_store)
+    end
+    if self.queue ~= nil then
+      self.queue:pause("turn stopped; review the queue")
+    else
+      self.queue_pause_reason = "turn stopped; review the queue"
+    end
+  end
   if
     self.state.status == "admitting"
     or (
@@ -2548,23 +2741,50 @@ function Session:set_auto(enabled, callback)
   return true
 end
 
----Dispose this session, terminate its ACP process, and remove it from its registry.
+---Stop this Session and fence its saved queue before reporting completed Disposal.
+---Sessions without a saved queue still dispose immediately. When supplied, the
+---callback runs once on the main loop after completion or a durable-fence error.
 ---@param self louiselm.session.Session
 ---@param reason? string Non-empty, single-line explanation retained in the terminal snapshot.
----@return boolean disposed
----@return string? error_message Invalid reason or process close error.
-function Session:dispose(reason)
+---@param callback? fun(disposed: boolean, error_message?: string)
+---@return boolean started_or_disposed
+---@return string? error_message Invalid input or immediate process close error.
+function Session:dispose(reason, callback)
   if self.state.status == "disposed" then
+    if callback ~= nil then
+      nvim.schedule(function()
+        callback(true)
+      end)
+    end
     return true
   end
   if reason ~= nil and (type(reason) ~= "string" or reason == "" or reason:find("[%z\r\n]")) then
     return false, "disposal reason must be a non-empty single-line string without NUL"
   end
+  if callback ~= nil and type(callback) ~= "function" then
+    return false, "Disposal callback must be a function"
+  end
+  if self.disposal_callbacks ~= nil then
+    if callback ~= nil then
+      self.disposal_callbacks[#self.disposal_callbacks + 1] = callback
+    end
+    return true
+  end
+  self.disposal_callbacks = callback and { callback } or {}
+  local function notify_callbacks(disposed, err)
+    local callbacks = self.disposal_callbacks or {}
+    self.disposal_callbacks = nil
+    for _, notify in ipairs(callbacks) do
+      notify(disposed, err)
+    end
+  end
+  local queue = self.queue
+  local needs_fence = queue ~= nil and (queue.busy or queue.state.revision > 0 or queue.state.uncertain)
   record_observation(self, "outcome", { outcome = "disposed", peer_response = false })
   settle_admission(self, "cancelled", "disposed")
   clear_session_failure(self)
   self.state.disposal_reason = reason
-  set_status(self, "disposed")
+  set_status(self, needs_fence and "disposing" or "disposed")
   local interaction_error = cancel_interactions(self)
   self.permission_store:clear_session(self.state.id)
   self.permission_active = nil
@@ -2583,9 +2803,46 @@ function Session:dispose(reason)
   if client ~= nil then
     closed, close_error = client:close()
   end
+  local function finish(fence_error)
+    if fence_error ~= nil then
+      set_status(self, "error")
+      emit(self, "error", { message = fence_error, can_continue = false })
+      notify_callbacks(false, fence_error)
+      return
+    end
+    set_status(self, "disposed")
+    self.emitter:clear()
+    self.owner:remove_session(self.state.id)
+    notify_callbacks(closed and interaction_error == nil, close_error or interaction_error)
+  end
+  if needs_fence and queue ~= nil then
+    queue:dispose(finish)
+    return true
+  end
+  if queue ~= nil then
+    queue:dispose()
+  end
   self.emitter:clear()
   self.owner:remove_session(self.state.id)
+  nvim.schedule(function()
+    notify_callbacks(closed and interaction_error == nil, close_error or interaction_error)
+  end)
   return closed and interaction_error == nil, close_error or interaction_error
+end
+
+---Close this editor's Session on exit while leaving its saved queue for review.
+---@param self louiselm.session.Session
+---@return boolean stopped
+---@return string? error_message
+function Session:abandon()
+  if self.state.status == "disposing" then
+    return true
+  end
+  if self.queue ~= nil then
+    self.queue:abandon()
+    self.queue = nil
+  end
+  return self:dispose()
 end
 
 return M
