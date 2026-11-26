@@ -446,6 +446,21 @@ persist_disposal = function(self)
   end
   local state = self:inspect()
   state.disposed, state.paused = true, true
+  if state.replacement ~= nil then
+    local replacement = state.replacement
+    if replacement.cancellation == "requesting" or replacement.cancellation == "requested" then
+      replacement.cancellation = "unknown"
+    end
+    if self.replacement_dispatched or replacement.status == "dispatched" or replacement.status == "uncertain" then
+      replacement.status = "uncertain"
+      replacement.reason = "Session disposed after replacement dispatch; outcome is unknown"
+      state.uncertain = true
+    else
+      replacement.status = "unsent"
+      replacement.reason = "Session disposed before replacement dispatch"
+    end
+    state.reason = replacement.reason
+  end
   state.revision = state.revision + 1
   local session = self.session:inspect()
   self.busy = true

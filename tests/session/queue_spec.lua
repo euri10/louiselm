@@ -1105,6 +1105,77 @@ T["lost Agent response leaves cancellation unknown and the replacement unsent"] 
   MiniTest.expect.equality(session:queue_inspect().paused, true)
 end
 
+T["Disposal retains the reserved replacement as unsent with unknown cancellation"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local dispatched = 0
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return dispatched == 1
+  end)
+  local client = assert(session.client)
+  client.cancel = function()
+    return true
+  end
+  assert(session:stop_and_send(target, "reserved replacement", function() end))
+  wait_for(function()
+    local replacement = session:queue_inspect().replacement
+    return replacement ~= nil and replacement.cancellation == "requested" and not session:queue_inspect().pending
+  end)
+  local disposed, failure
+  assert(session:dispose(nil, function(ok, err)
+    disposed, failure = ok, err
+  end))
+  wait_for(function()
+    return disposed ~= nil
+  end)
+  assert(disposed, failure)
+  local queue = session:queue_inspect()
+  MiniTest.expect.equality(queue.paused, true)
+  MiniTest.expect.equality(queue.replacement.status, "unsent")
+  MiniTest.expect.equality(queue.replacement.cancellation, "unknown")
+  MiniTest.expect.equality(dispatched, 1)
+end
+
+T["Disposal keeps a dispatched replacement outcome unknown"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local dispatched = 0
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return dispatched == 1
+  end)
+  assert(session:stop_and_send(target, "replacement", function() end))
+  wait_for(function()
+    local queue = session:queue_inspect()
+    return dispatched == 2
+      and queue.replacement ~= nil
+      and queue.replacement.status == "dispatched"
+      and not queue.pending
+  end)
+  local disposed, failure
+  assert(session:dispose(nil, function(ok, err)
+    disposed, failure = ok, err
+  end))
+  wait_for(function()
+    return disposed ~= nil
+  end)
+  assert(disposed, failure)
+  local queue = session:queue_inspect()
+  MiniTest.expect.equality(queue.paused, true)
+  MiniTest.expect.equality(queue.uncertain, true)
+  MiniTest.expect.equality(queue.replacement.status, "uncertain")
+  MiniTest.expect.equality(queue.replacement.cancellation, "acknowledged")
+end
+
 T["plain Stop wins while the replacement dispatch fence is awaiting storage"] = function()
   local _, session = fixture(nil, nil, "hold")
   local dispatched = 0
