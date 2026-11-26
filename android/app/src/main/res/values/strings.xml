@@ -102,6 +102,7 @@
     <string name="phone_send_unsupported">This receiver does not support Send. Your instruction and the pending identity remain; delivery is not confirmed.</string>
     <string name="phone_send_unavailable">Send could not be confirmed. Your instruction remains available.</string>
     <string name="phone_send_invalid">Enter valid text of at most 4095 UTF-8 bytes.</string>
+    <string name="phone_draft_limit">Draft limit reached. Clear an existing draft to write here.</string>
     <string name="phone_send_other_session">This instruction belongs to another Session. Return to that Session to send it.</string>
     <string name="phone_send_review">The original was fenced without effect. Refresh this Session and review the instruction before sending again.</string>
     <string name="phone_send_fenced">The original was fenced without effect. Review the instruction before another explicit Send.</string>

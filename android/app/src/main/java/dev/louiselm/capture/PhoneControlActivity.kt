@@ -131,8 +131,10 @@ class PhoneControlActivity : Activity() {
     private var selectedRunId: String? = null
     private var selectedSavedResult: String? = null
     private var linkedRunSession: PhoneRunSessionTarget? = null
+    private val drafts = mutableMapOf<Pair<String, PhoneControlTarget>, String>()
     private var draftTarget: PhoneControlTarget? = null
     private var draftReceiver: String? = null
+    private var changingDraft = false
     private var pendingActions = emptyList<PendingPhoneAction>()
     private val actionEvidence = mutableMapOf<String, PhoneActionRecord>()
     private val reviewedFences = mutableSetOf<String>()
@@ -307,6 +309,10 @@ class PhoneControlActivity : Activity() {
         selectedSavedResult = null
         linkedRunSession = null
         runPage = null
+        drafts.clear()
+        changingDraft = true
+        sendInput.text.clear()
+        changingDraft = false
         openedPages = emptyList()
         conversation.removeAllViews()
         handler.removeCallbacksAndMessages(null)
@@ -437,7 +443,16 @@ class PhoneControlActivity : Activity() {
         sendInput = EditText(this).apply {
             hint = getString(R.string.phone_send_hint)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            filters = arrayOf(InputFilter.LengthFilter(4095))
+            filters = arrayOf(InputFilter.LengthFilter(4095), InputFilter { _, start, end, _, _, _ ->
+                val receiver = draftReceiver
+                val selected = draftTarget
+                if (!changingDraft && start < end && receiver != null && selected != null &&
+                    drafts.size >= MAX_DRAFTS && (receiver to selected) !in drafts) {
+                    sendNotice = R.string.phone_draft_limit
+                    render()
+                    ""
+                } else null
+            })
             minLines = 3
         }
         add(sendInput)
@@ -450,14 +465,15 @@ class PhoneControlActivity : Activity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
-                if (s.isNullOrEmpty()) {
-                    draftTarget = null
-                    draftReceiver = null
-                } else if (draftTarget == null) {
-                    draftTarget = target
-                    draftReceiver = period?.grant?.receiverIdentity
+                if (changingDraft) return
+                val receiver = draftReceiver
+                val selected = draftTarget
+                if (receiver != null && selected != null) {
+                    val key = receiver to selected
+                    if (s.isNullOrEmpty()) drafts.remove(key) else drafts[key] = s.toString()
                 }
                 if (sendNotice == R.string.phone_send_invalid && sendDigest() != null) sendNotice = null
+                if (sendNotice == R.string.phone_draft_limit && !s.isNullOrEmpty()) sendNotice = null
                 render()
             }
         })
@@ -465,7 +481,21 @@ class PhoneControlActivity : Activity() {
         return ScrollView(this).apply { addView(column) }
     }
 
+    private fun selectDraft() {
+        val current = period ?: return
+        val selected = target.takeIf { linkedRunSession == null && !showingOffline && !showingActionHistory && !showingPrepared && !showingRuns }
+        val receiver = if (selected == null) null else current.grant.receiverIdentity
+        if (draftTarget == selected && draftReceiver == receiver) return
+        draftTarget = selected
+        draftReceiver = receiver
+        sendNotice = null
+        changingDraft = true
+        sendInput.setText(if (selected != null && receiver != null) drafts[receiver to selected].orEmpty() else "")
+        changingDraft = false
+    }
+
     private fun render(message: Int? = null) {
+        selectDraft()
         statusView.text = when {
             message != null -> getString(message)
             busy -> getString(R.string.phone_busy)
@@ -492,6 +522,7 @@ class PhoneControlActivity : Activity() {
             (draftTarget != target || draftReceiver != period?.grant?.receiverIdentity)
         sendStatus.text = getString(when {
             wrongTarget -> R.string.phone_send_other_session
+            sendNotice == R.string.phone_draft_limit -> R.string.phone_draft_limit
             reviewNeeded -> R.string.phone_send_review
             unresolved && related.any { actionEvidence[it.operationId]?.state == PhoneActionState.REJECTED } -> R.string.phone_send_rejected
             unresolved -> sendNotice ?: R.string.phone_send_unknown
@@ -1985,6 +2016,7 @@ class PhoneControlActivity : Activity() {
         private const val PIN_REFRESH_INTERVAL_MS = 10_000L
         private const val RECONCILE_INTERVAL_MS = 10_000L
         private const val RECONCILE_BATCH = 4
+        private const val MAX_DRAFTS = 128
         private const val MEBIBYTE = 1024L * 1024
     }
 }

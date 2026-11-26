@@ -151,8 +151,13 @@ payload-free operation identity before sending and checks retained owner evidenc
 while the workspace is open and unlocked. A lost response is not confirmation,
 and reopening never resends. Another attempt requires owner evidence that the
 original had no effect and was fenced, followed by a Session refresh and review.
-Text in this composer is not yet a durable draft: retain a copy before closing
-the app. Durable drafts are tracked separately in `louiselm-qbr.12.12`.
+The composer keeps separate in-memory text for each receiver and exact
+controller/Session while this screen exists, including across navigation and
+refresh. At 128 nonempty drafts, clear one before starting another. Text is
+hidden while the workspace is locked or backgrounded, but remains in process
+memory and is lost when the Activity is destroyed, including during recreation.
+Retain a copy before leaving; protected durable drafts are tracked separately
+in `louiselm-qbr.12.12`.
 
 ### Runs and prepared selections
 

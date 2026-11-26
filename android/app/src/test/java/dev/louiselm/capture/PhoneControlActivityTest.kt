@@ -39,7 +39,7 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
 
 private object PhoneScreenFixture {
-    val grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), "22".repeat(32), "33".repeat(32))
+    var grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), "22".repeat(32), "33".repeat(32))
     val key = phoneControlWorkingKey()
     val offlineMaterial = ByteArray(32) { 7 }
     var status: PhoneControlStatus = PhoneControlStatus.Disabled
@@ -52,6 +52,7 @@ private object PhoneScreenFixture {
     var reads = 0
     var lastTarget: PhoneControlTarget? = null
     var sessionRows = emptyList<PhoneControlSessionSummary>()
+    var controllerId = "aa".repeat(16)
     var staleRead = false
     var actionHistoryReads = 0
     var moreActionHistory = false
@@ -99,8 +100,10 @@ private object PhoneScreenFixture {
     var savedReadOnMain = false
     var savedFailure: PhoneControlOutcome? = null
     fun reset() {
+        grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), "22".repeat(32), "33".repeat(32))
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
+        controllerId = "aa".repeat(16)
         preUnlockOffline = true
         sendCalls = 0; sendOutcome = PhoneControlOutcome.UNSUPPORTED; sendFailure = null; evidenceState = null; evidenceReads = 0; evidenceReadOnMain = false
         evidenceOperationIds.clear()
@@ -272,7 +275,7 @@ class PhoneScreenClientFixture {
     internal fun listControllers(period: PhoneControlPeriod, now: Long, after: String?, limit: Int,
         interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.ControllerList> {
         if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
-        return PhoneControlResult.Value(PhoneControlReply.ControllerList("88".repeat(16), listOf("aa".repeat(16)), ""))
+        return PhoneControlResult.Value(PhoneControlReply.ControllerList("88".repeat(16), listOf(PhoneScreenFixture.controllerId), ""))
     }
 
     @Implementation(methodName = "listSessions")
@@ -993,6 +996,212 @@ class PhoneControlActivityTest {
         assertTrue(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
         screenOff()
         assertFalse(views(activity.window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("private session text") })
+    }
+
+    @Test
+    fun draftsFollowReceiverAndExactTargetAcrossNavigationAndRefresh() {
+        val firstGrant = PhoneScreenFixture.grant
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(firstGrant)
+        PhoneScreenFixture.sessionRows = listOf(
+            PhoneControlSessionSummary("01".repeat(16), "same", "mock", "/work", "ready", false),
+            PhoneControlSessionSummary("02".repeat(16), "same", "mock", "/work", "ready", false),
+        )
+        controller.close()
+        create()
+        fun unlock() {
+            button(R.string.phone_unlock).performClick()
+            drainBackground()
+            requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+            repeat(5) { drainBackground() }
+        }
+        fun open(subject: String) {
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString().contains(subject) }.performClick()
+            repeat(2) { drainBackground() }
+        }
+        fun sessions() {
+            button(R.string.phone_sessions).performClick()
+            repeat(2) { drainBackground() }
+        }
+        unlock()
+        open("01".repeat(16))
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("first phone draft")
+        button(R.string.phone_refresh).performClick()
+        repeat(2) { drainBackground() }
+        assertEquals("first phone draft", input.text.toString())
+        sessions()
+        assertEquals(View.GONE, input.visibility)
+        open("02".repeat(16))
+        assertEquals("", input.text.toString())
+        input.setText("second phone draft")
+        sessions()
+        open("01".repeat(16))
+        assertEquals("first phone draft", input.text.toString())
+        sessions()
+        open("02".repeat(16))
+        assertEquals("second phone draft", input.text.toString())
+
+        sessions()
+        PhoneScreenFixture.controllerId = "bb".repeat(16)
+        button(R.string.phone_refresh).performClick()
+        repeat(2) { drainBackground() }
+        open("01".repeat(16))
+        assertEquals(PhoneControlTarget("bb".repeat(16), "01".repeat(16)), PhoneScreenFixture.lastTarget)
+        assertEquals("", input.text.toString())
+        input.setText("replacement controller draft")
+        sessions()
+        PhoneScreenFixture.controllerId = "aa".repeat(16)
+        button(R.string.phone_refresh).performClick()
+        repeat(2) { drainBackground() }
+        open("01".repeat(16))
+        assertEquals("first phone draft", input.text.toString())
+
+        button(R.string.phone_lock).performClick()
+        assertEquals(View.GONE, input.visibility)
+        PhoneScreenFixture.grant = firstGrant.copy(receiverIdentity = "bb".repeat(32))
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        unlock()
+        assertEquals("", input.text.toString())
+        input.setText("other receiver draft")
+        button(R.string.phone_lock).performClick()
+        PhoneScreenFixture.grant = firstGrant
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(firstGrant)
+        unlock()
+        assertEquals("first phone draft", input.text.toString())
+        controller.pause().stop()
+        assertEquals(View.GONE, input.visibility)
+        controller.restart().start().resume()
+        repeat(3) { drainBackground() }
+        assertEquals("first phone draft", input.text.toString())
+        assertEquals(0, PhoneScreenFixture.sendCalls)
+    }
+
+    @Test
+    fun navigatingAndEditingCannotBypassAnUnknownAction() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.evidenceState = PhoneActionState.UNKNOWN
+        PhoneScreenFixture.sessionRows = listOf(
+            PhoneControlSessionSummary("01".repeat(16), "same", "mock", "/work", "ready", false),
+            PhoneControlSessionSummary("02".repeat(16), "same", "mock", "/work", "ready", false),
+        )
+        controller.close()
+        create()
+        val snapshot = File(activity.noBackupFilesDir, "phone-action-pending-v1")
+        assertTrue(!snapshot.exists() || snapshot.delete())
+        val secret = SecretKeySpec(ByteArray(32) { 7 }, "AES")
+        var initialized = false
+        val store = PendingPhoneActionStore(activity, { create ->
+            if (create) initialized = true
+            if (initialized) secret else null
+        })
+        val grant = PhoneScreenFixture.grant
+        val request = PhoneControlRequest(grant.grantId, grant.revision, "77".repeat(16), grant.receiverIdentity,
+            "aa".repeat(16), "01".repeat(16), phoneControlSendPayload("earlier instruction"),
+            "98".repeat(16), 1, true, 3)
+        assertEquals(PendingReservation.NEW, store.reserve(request))
+        ReflectionHelpers.setField(activity, "pendingActionsStore", store)
+        button(R.string.phone_unlock).performClick()
+        drainBackground()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drainBackground() }
+        fun open(subject: String) {
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString().contains(subject) }.performClick()
+            repeat(3) { drainBackground() }
+        }
+        open("01".repeat(16))
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("newer edit")
+        assertFalse(button(R.string.phone_send).isEnabled)
+        button(R.string.phone_sessions).performClick()
+        repeat(2) { drainBackground() }
+        open("02".repeat(16))
+        input.setText("different Session")
+        button(R.string.phone_sessions).performClick()
+        repeat(2) { drainBackground() }
+        open("01".repeat(16))
+        button(R.string.phone_refresh).performClick()
+        repeat(3) { drainBackground() }
+        assertEquals("newer edit", input.text.toString())
+        assertFalse(button(R.string.phone_send).isEnabled)
+        assertEquals(request.operationId, store.pending().single().operationId)
+        assertTrue(PhoneScreenFixture.evidenceOperationIds.contains(request.operationId))
+        assertEquals(0, PhoneScreenFixture.sendCalls)
+    }
+
+    @Test
+    fun lockingFencesAQueuedRefreshAndDestroyClearsTheEditor() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "01".repeat(16))
+        controller.close()
+        create(intent)
+        fun unlock() {
+            button(R.string.phone_unlock).performClick()
+            drainBackground()
+            requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+            repeat(5) { drainBackground() }
+        }
+        unlock()
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("keep until this Activity ends")
+        button(R.string.phone_refresh).performClick()
+        var failure: Throwable? = null
+        val thread = Thread { try { executor.runAll() } catch (error: Throwable) { failure = error } }
+        thread.start()
+        thread.join()
+        failure?.let { throw AssertionError(it) }
+        button(R.string.phone_lock).performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(View.GONE, input.visibility)
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("private session text") })
+        unlock()
+        assertEquals("keep until this Activity ends", input.text.toString())
+        controller.close()
+        assertEquals("", input.text.toString())
+        assertEquals(0, PhoneScreenFixture.sendCalls)
+    }
+
+    @Test
+    fun draftLimitRefusesNewWorkWithoutEvictingExistingWork() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drain()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(4) { drain() }
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        var opened = false
+        fun select(index: Int) {
+            PhoneScreenFixture.sessionRows = listOf(
+                PhoneControlSessionSummary("%032x".format(index), "same", "mock", "/work", "ready", false),
+            )
+            if (opened) button(R.string.phone_sessions).performClick() else button(R.string.phone_refresh).performClick()
+            repeat(2) { drain() }
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString().contains("%032x".format(index)) }.performClick()
+            repeat(2) { drain() }
+            opened = true
+        }
+        for (index in 1..128) {
+            select(index)
+            input.setText("draft $index")
+        }
+        select(129)
+        input.setText("must not replace another draft")
+        assertEquals("", input.text.toString())
+        assertTrue(hasText(R.string.phone_draft_limit))
+        select(1)
+        assertEquals("draft 1", input.text.toString())
+        input.setText("")
+        select(129)
+        input.setText("now there is room")
+        assertEquals("now there is room", input.text.toString())
+        assertEquals(0, PhoneScreenFixture.sendCalls)
     }
 
     @Test

@@ -6,10 +6,12 @@ import android.os.PowerManager
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import java.util.concurrent.ExecutorService
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -68,10 +70,45 @@ class PhoneControlBrowseEndToEndTest {
             val refreshed = views(activity.window.decorView).filterIsInstance<Button>()
                 .filter { it.text.toString().contains("same") }.toList()
             assertEquals(2, refreshed.size)
-            refreshed.single { it.text.toString().contains(subject) }.performClick()
+            val first = refreshed.single { it.text.toString().contains(subject) }
+            val firstRow = first.text.toString()
+            val secondRow = refreshed.single { it !== first }.text.toString()
+            first.performClick()
             repeat(2) { drain() }
-            assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
-                .any { it.text.toString() == "You: other fixture request" })
+            fun message() = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }
+                .single { it == "You: fixture request" || it == "You: other fixture request" }
+            val firstMessage = message()
+            assertEquals("You: other fixture request", firstMessage)
+            val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+            input.setText("other phone draft")
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == activity.getString(R.string.phone_refresh) }.performClick()
+            repeat(2) { drain() }
+            assertEquals("other phone draft", input.text.toString())
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == activity.getString(R.string.phone_sessions) }.performClick()
+            repeat(2) { drain() }
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == secondRow }.performClick()
+            repeat(2) { drain() }
+            assertEquals("", input.text.toString())
+            assertNotEquals(firstMessage, message())
+            input.setText("first phone draft")
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == activity.getString(R.string.phone_sessions) }.performClick()
+            repeat(2) { drain() }
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == firstRow }.performClick()
+            repeat(2) { drain() }
+            assertEquals("other phone draft", input.text.toString())
+            assertEquals(firstMessage, message())
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == activity.getString(R.string.phone_sessions) }.performClick()
+            repeat(2) { drain() }
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .single { it.text.toString() == secondRow }.performClick()
+            repeat(2) { drain() }
+            assertEquals("first phone draft", input.text.toString())
         } finally {
             screen.close()
             executor.runAll()
