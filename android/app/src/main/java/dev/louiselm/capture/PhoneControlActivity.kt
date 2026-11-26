@@ -1028,6 +1028,7 @@ class PhoneControlActivity : Activity() {
                     val page = voiceStore.list(cursor)
                     for (record in page.records) {
                         if (!permitted()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                        if (record.source.receiver != online.grant.receiverIdentity) continue
                         if (record.intent == PhoneVoiceIntent.ACCEPTED) {
                             if (!canReview) { pending = true; continue }
                             val row = PhoneVoiceRow(record.id, record.source.target, record.source.project, record.source.agent, true, "completed", "")

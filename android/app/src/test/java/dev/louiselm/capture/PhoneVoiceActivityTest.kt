@@ -64,6 +64,7 @@ class VoiceScreenJobClient {
     @Implementation(methodName = "submit")
     internal fun submit(period: PhoneControlPeriod, record: PhoneVoiceRecord, maySend: () -> Boolean): PhoneControlResult<String> {
         VoiceScreenFixture.voiceSubmissions++
+        if (record.source.receiver != period.grant.receiverIdentity) return PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
         return if (VoiceScreenFixture.voiceAccepted && maySend()) PhoneControlResult.Value("pending")
             else PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
     }
@@ -309,6 +310,26 @@ class PhoneVoiceActivityTest {
         button("Stop voice recording").performClick()
         drain()
         assertTrue(button("Discard draft").isEnabled)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun oldReceiverRecordingsNeverLockOrRetargetTheCurrentWorkspace() {
+        VoiceScreenFixture.voiceAccepted = true
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        val store = PhoneVoiceStore(activity) { key }
+        val oldSource = PhoneOfflineSource("bb".repeat(32), VoiceScreenFixture.target, "old", "agent", "/project")
+        val drafts = PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1"))
+        val old = store.begin(oldSource, drafts.id(oldSource), "33".repeat(32))
+        old.recording.file.writeBytes(byteArrayOf(9))
+        store.finish(old, 1, true)
+        val current = beginWithDummyAudio()
+        button("Stop voice recording").performClick()
+        drain()
+        val records = recordings().associateBy { it.id }
+        assertEquals(PhoneVoiceIntent.REQUESTED, requireNotNull(records[old.recording.id]).intent)
+        assertEquals(PhoneVoiceIntent.ACCEPTED, requireNotNull(records[current]).intent)
+        assertEquals(1, VoiceScreenFixture.voiceSubmissions)
+        assertTrue(ReflectionHelpers.getField<PhoneControlPeriod?>(activity, "period")?.isActive(android.os.SystemClock.elapsedRealtime()) == true)
         assertEquals(0, VoiceScreenFixture.sends)
     }
 
