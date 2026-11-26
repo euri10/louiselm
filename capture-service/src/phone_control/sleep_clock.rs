@@ -79,16 +79,18 @@ impl Lease {
 
 #[cfg(target_os = "linux")]
 fn is_proc_mount(mounts: &str, mount_id: &str) -> bool {
-    mounts.lines().any(|line| {
-        let Some((fields, filesystem)) = line.split_once(" - ") else {
-            return false;
-        };
-        let mut fields = fields.split_whitespace();
-        fields.next() == Some(mount_id)
-            && fields.nth(2) == Some("/")
-            && fields.next() == Some("/proc")
-            && filesystem.split_whitespace().next() == Some("proc")
-    })
+    let mut matches = mounts
+        .lines()
+        .filter(|line| line.split_whitespace().next() == Some(mount_id));
+    let Some((fields, filesystem)) = matches.next().and_then(|line| line.split_once(" - ")) else {
+        return false;
+    };
+    let mut fields = fields.split_whitespace();
+    matches.next().is_none()
+        && fields.next() == Some(mount_id)
+        && fields.nth(2) == Some("/")
+        && fields.next() == Some("/proc")
+        && filesystem.split_whitespace().next() == Some("proc")
 }
 
 #[cfg(target_os = "linux")]
@@ -119,14 +121,70 @@ fn parse_uptime(value: &str) -> io::Result<u64> {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn sample() -> io::Result<Sample> {
-    use std::{fs::File, io::Read, os::fd::AsRawFd, path::Path};
+fn proc_mount_id(file: impl std::os::fd::AsFd) -> io::Result<u64> {
+    use rustix::fs::{AtFlags, PROC_SUPER_MAGIC, StatxFlags, fstatfs, statx};
 
-    fn bounded(path: &Path, limit: u64) -> io::Result<String> {
+    let info =
+        statx(&file, "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID).map_err(io::Error::other)?;
+    if info.stx_mask & StatxFlags::MNT_ID.bits() == 0
+        || info.stx_mnt_id == 0
+        || fstatfs(&file).map_err(io::Error::other)?.f_type != PROC_SUPER_MAGIC
+    {
+        return Err(io::Error::other("boot clock mount is unavailable"));
+    }
+    Ok(info.stx_mnt_id)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_namespace(namespace: &str) -> io::Result<String> {
+    namespace
+        .strip_prefix("time:[")
+        .and_then(|value| value.strip_suffix(']'))
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| io::Error::other("time namespace is unavailable"))?;
+    Ok(namespace.to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn read_namespace(path: &std::path::Path, mount_id: u64) -> io::Result<String> {
+    use rustix::fs::{Mode, OFlags, open, readlinkat};
+
+    let link = open(
+        path,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    if proc_mount_id(&link)? != mount_id {
+        return Err(io::Error::other("time namespace mount changed"));
+    }
+    let namespace = readlinkat(&link, "", Vec::new()).map_err(io::Error::from)?;
+    parse_namespace(
+        namespace
+            .to_str()
+            .map_err(|_| io::Error::other("time namespace is unavailable"))?,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn sample() -> io::Result<Sample> {
+    use std::{fs::File, io::Read, path::Path};
+
+    use rustix::fs::{Mode, OFlags, open};
+
+    fn open_file(path: &str) -> io::Result<File> {
+        open(
+            path,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(io::Error::from)
+    }
+
+    fn bounded(file: impl Read, limit: u64) -> io::Result<String> {
         let mut value = String::new();
-        File::open(path)?
-            .take(limit + 1)
-            .read_to_string(&mut value)?;
+        file.take(limit + 1).read_to_string(&mut value)?;
         if value.len() as u64 > limit {
             return Err(io::Error::other("boot clock source is too large"));
         }
@@ -134,40 +192,21 @@ pub(super) fn sample() -> io::Result<Sample> {
     }
 
     // Linux fs/proc/uptime.c reports CLOCK_BOOTTIME in the calling thread's
-    // time namespace, rounded down to centiseconds. Check the actual mount of
-    // the opened file and keep comparisons within the same namespace.
-    let namespace_path = Path::new("/proc/thread-self/ns/time");
-    let namespace = std::fs::read_link(namespace_path)?;
-    let namespace = namespace
-        .to_str()
-        .filter(|value| {
-            value
-                .strip_prefix("time:[")
-                .and_then(|value| value.strip_suffix(']'))
-                .is_some_and(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
-        })
-        .ok_or_else(|| io::Error::other("time namespace is unavailable"))?
-        .to_owned();
-    let mut uptime = File::open("/proc/uptime")?;
-    let fdinfo = bounded(
-        Path::new(&format!("/proc/thread-self/fdinfo/{}", uptime.as_raw_fd())),
-        4096,
-    )?;
-    let mount_id = fdinfo
-        .lines()
-        .find_map(|line| line.strip_prefix("mnt_id:\t"))
-        .ok_or_else(|| io::Error::other("boot clock mount is unavailable"))?;
-    let mounts = bounded(Path::new("/proc/thread-self/mountinfo"), 1_048_576)?;
-    if !is_proc_mount(&mounts, mount_id) {
+    // time namespace, rounded down to centiseconds. Descriptor metadata binds
+    // every source to the same full proc mount without trusting fdinfo text.
+    let mounts = open_file("/proc/thread-self/mountinfo")?;
+    let mount_id = proc_mount_id(&mounts)?;
+    if !is_proc_mount(&bounded(&mounts, 1_048_576)?, &mount_id.to_string()) {
         return Err(io::Error::other("boot clock is not on the proc filesystem"));
     }
-    let mut value = String::new();
-    uptime.by_ref().take(129).read_to_string(&mut value)?;
-    if value.len() > 128 {
-        return Err(io::Error::other("boot clock source is too large"));
+    let namespace_path = Path::new("/proc/thread-self/ns/time");
+    let namespace = read_namespace(namespace_path, mount_id)?;
+    let uptime = open_file("/proc/uptime")?;
+    if proc_mount_id(&uptime)? != mount_id {
+        return Err(io::Error::other("boot clock mount changed"));
     }
-    let centiseconds = parse_uptime(&value)?;
-    if std::fs::read_link(namespace_path)?.to_str() != Some(namespace.as_str()) {
+    let centiseconds = parse_uptime(&bounded(&uptime, 128)?)?;
+    if read_namespace(namespace_path, mount_id)? != namespace {
         return Err(io::Error::other("time namespace changed"));
     }
     Ok(Sample {
@@ -192,10 +231,25 @@ pub(super) fn sample() -> io::Result<Sample> {
     reason = "clock test assertions"
 )]
 mod tests {
-    use super::{Lease, Refusal, Sample, is_proc_mount, parse_uptime, sample};
+    use super::{
+        Lease, Refusal, Sample, is_proc_mount, parse_namespace, parse_uptime, proc_mount_id,
+        read_namespace, sample,
+    };
 
     #[test]
     fn proc_clock_is_available_and_does_not_rewind() {
+        let mounts = std::fs::File::open("/proc/thread-self/mountinfo").unwrap();
+        let mount_id = proc_mount_id(&mounts).unwrap();
+        let other_mount_id = if mount_id == 1 { 2 } else { 1 };
+        assert_eq!(
+            read_namespace(
+                std::path::Path::new("/proc/thread-self/ns/time"),
+                other_mount_id,
+            )
+            .unwrap_err()
+            .to_string(),
+            "time namespace mount changed"
+        );
         let first = sample().unwrap();
         let second = sample().unwrap();
         assert_eq!(first.namespace, second.namespace);
@@ -243,5 +297,46 @@ mod tests {
             "29 36 0:26 / /proc rw - tmpfs tmpfs rw",
             "29"
         ));
+        assert!(!is_proc_mount(
+            "29 36 0:26 / /proc rw - proc proc rw\n29 36 0:26 / /proc rw - proc proc rw\n",
+            "29"
+        ));
+        assert!(!is_proc_mount(
+            "29 36 0:26 / /proc rw - proc proc rw\n29 36 0:27 / /other rw - tmpfs tmpfs rw\n",
+            "29"
+        ));
+    }
+
+    #[test]
+    fn namespace_and_descriptor_evidence_must_be_available_and_valid() {
+        use std::{fs::File, os::unix::fs::symlink};
+
+        assert_eq!(parse_namespace("time:[123]").unwrap(), "time:[123]");
+        for value in ["", "time:[]", "time:[-1]", "time:[x]", "time:[1] extra"] {
+            assert_eq!(
+                parse_namespace(value).unwrap_err().to_string(),
+                "time namespace is unavailable"
+            );
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let missing = temporary.path().join("missing");
+        assert_eq!(
+            read_namespace(&missing, 1).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        let ordinary = temporary.path().join("ordinary");
+        File::create(&ordinary).unwrap();
+        assert_eq!(
+            proc_mount_id(File::open(&ordinary).unwrap())
+                .unwrap_err()
+                .to_string(),
+            "boot clock mount is unavailable"
+        );
+        let link = temporary.path().join("namespace");
+        symlink("time:[123]", &link).unwrap();
+        assert_eq!(
+            read_namespace(&link, 1).unwrap_err().to_string(),
+            "boot clock mount is unavailable"
+        );
     }
 }
