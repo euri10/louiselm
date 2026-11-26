@@ -1,4 +1,5 @@
 -- Isolated mock-ACP Session owner for the voice job boundary; never submits a prompt.
+---@diagnostic disable-next-line: undefined-global -- Neovim provides the fixture runtime.
 local nvim = vim
 local root = assert(nvim.env.LOUISELM_TEST_PROJECT)
 nvim.opt.runtimepath:prepend(root)
