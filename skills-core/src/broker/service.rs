@@ -49,7 +49,7 @@ use crate::{
     },
 };
 
-/// Longest a broker worker waits for a handshake or operation response.
+/// Longest a broker worker waits for an initial packet or operation response.
 ///
 /// The transport itself has no deadline. Without one here a supervisor that
 /// connects and then says nothing would hold this worker forever.
@@ -643,7 +643,7 @@ impl BrokerService {
     /// Waits for one authenticated connection without waiting for its first packet.
     ///
     /// An idle rendezvous has no deadline. Closing the listener interrupts this
-    /// wait; connection handshakes retain their own bounded packet deadlines.
+    /// wait; the first connection packet and operation transfers stay bounded.
     /// Run on the daemon accept worker, then dispatch [`Self::serve_accepted`].
     ///
     /// # Errors
