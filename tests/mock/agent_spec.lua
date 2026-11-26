@@ -49,7 +49,23 @@ local live_resources = {}
 ---@return table resource
 local function track(resource, method)
   live_resources[#live_resources + 1] = function()
-    pcall(resource[method], resource)
+    if method == "dispose" and resource.queue_store ~= nil then
+      local completed
+      local started, err = resource:dispose(function(ok, failure)
+        completed = { ok, failure }
+      end)
+      assert(started, err)
+      assert(
+        nvim.wait(6000, function()
+          return completed ~= nil
+        end, 10),
+        "Session Disposal did not settle"
+      )
+      assert(completed[1], completed[2])
+    else
+      local ok, err = pcall(resource[method], resource)
+      assert(ok, err)
+    end
   end
   return resource
 end

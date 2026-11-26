@@ -29,7 +29,14 @@ T["a headless Session owns replay and shares its transcript with a later ChatVie
     if chat then
       chat:dispose()
     end
-    assert(api:dispose())
+    local disposed, disposal_error
+    assert(api:dispose(function(ok, err)
+      disposed, disposal_error = ok, err
+    end))
+    assert(nvim.wait(6000, function()
+      return disposed ~= nil
+    end))
+    assert(disposed, disposal_error)
     local finished = false
     api:flush_recording(function()
       finished = true

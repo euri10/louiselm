@@ -14,21 +14,22 @@ end
 local function fixture(directory, load_id, mode, interaction_file)
   directory = directory or nvim.fn.tempname()
   local root = nvim.fn.getcwd()
-  local api = assert(Session.new({
-    mock = {
-      provider = "test",
-      command = nvim.v.progpath,
-      args = {
-        "--headless",
-        "--noplugin",
-        "-u",
-        root .. "/tests/mock/init.lua",
-        "-c",
-        "lua require('louiselm.dev.mock_agent').run()",
-      },
-      env = { LOUISELM_MOCK_MODE = mode or "permission", LOUISELM_MOCK_INTERACTION_FILE = interaction_file },
+  local definition = {
+    provider = "test",
+    command = nvim.v.progpath,
+    args = {
+      "--headless",
+      "--noplugin",
+      "-u",
+      root .. "/tests/mock/init.lua",
+      "-c",
+      "lua require('louiselm.dev.mock_agent').run()",
     },
-  }, nil, { usage_directory = directory }))
+    env = { LOUISELM_MOCK_MODE = mode or "permission", LOUISELM_MOCK_INTERACTION_FILE = interaction_file },
+  }
+  local api = assert(Session.new({ mock = definition, other = nvim.deepcopy(definition) }, nil, {
+    usage_directory = directory,
+  }))
   MiniTest.finally(function()
     for _, id in ipairs(api:list_sessions()) do
       local owned = api:get_session(id)
@@ -146,6 +147,38 @@ T["queue waits for a typed interaction without answering it"] = function()
     return #dispatched == 2 and #interactions == 2
   end)
   MiniTest.expect.equality(dispatched[2].display_text, "after the answer")
+end
+
+T["another Session can dispatch while the first queue waits"] = function()
+  local api, first = fixture()
+  local second = assert(api:create_session("other", { cwd = nvim.fn.getcwd() }))
+  wait_for(function()
+    return second:inspect().status == "ready"
+  end)
+  local first_wait, second_wait
+  first:on(function(event)
+    if event.type == "permission_requested" then
+      first_wait = event
+    end
+  end)
+  second:on(function(event)
+    if event.type == "permission_requested" then
+      second_wait = event
+    end
+  end)
+  assert(first:prompt("first active"))
+  wait_for(function()
+    return first_wait ~= nil
+  end)
+  assert(admit(first, "first waiting"))
+  assert(admit(second, "independent work"))
+  wait_for(function()
+    return second_wait ~= nil
+  end)
+  MiniTest.expect.equality(first:inspect().current_turn, 1)
+  MiniTest.expect.equality(first:queue_inspect().entries[1].display_text, "first waiting")
+  MiniTest.expect.equality(second:inspect().current_turn, 1)
+  MiniTest.expect.equality(second:queue_inspect().active.display_text, "independent work")
 end
 
 T["Chat freezes distinct busy submissions while a typed permission waits"] = function()
@@ -469,6 +502,12 @@ T["Disposal during an unacknowledged admission preserves its uncertain payload"]
 end
 
 T["registry Disposal acknowledges only after all Session queue fences finish"] = function()
+  local release, released
+  MiniTest.finally(function()
+    if release ~= nil and not released then
+      release()
+    end
+  end)
   local api, session = fixture()
   local permission
   session:on(function(event)
@@ -483,10 +522,10 @@ T["registry Disposal acknowledges only after all Session queue fences finish"] =
   assert(admit(session, "waiting"))
   local store = session.owner.queue_store
   local save = store.save
-  local release
   store.save = function(self, id, revision, snapshot, callback)
     if snapshot.state.disposed then
       release = function()
+        released = true
         save(self, id, revision, snapshot, callback)
       end
     else
@@ -511,6 +550,12 @@ T["registry Disposal acknowledges only after all Session queue fences finish"] =
 end
 
 T["process-wide Disposal waits for queue fences before acknowledging completion"] = function()
+  local release, released
+  MiniTest.finally(function()
+    if release ~= nil and not released then
+      release()
+    end
+  end)
   local _, session = fixture()
   local permission
   session:on(function(event)
@@ -525,10 +570,10 @@ T["process-wide Disposal waits for queue fences before acknowledging completion"
   assert(admit(session, "waiting"))
   local store = session.owner.queue_store
   local save = store.save
-  local release
   store.save = function(self, id, revision, snapshot, callback)
     if snapshot.state.disposed then
       release = function()
+        released = true
         save(self, id, revision, snapshot, callback)
       end
     else
