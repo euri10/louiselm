@@ -843,8 +843,10 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        let packet = receive(channel)?;
+        // After consumption the supervisor owns a bounded identity slot while
+        // it prepares the Session. That work is not a packet response and can
+        // take longer than a handshake; peer closure still cancels this wait.
+        let packet = receive_next(channel)?;
         let LauncherPacket::SignedReceipt(receipt) = &packet.packet else {
             return Err(BrokerError::ReceiptUnauthorized);
         };
@@ -861,7 +863,8 @@ impl BrokerService {
         };
         // The exact bytes from the wire are what gets stored: nothing here
         // reserializes the supervisor's signed envelope.
-        let report = conformance_transfer::receive_report(channel, receipt, deadline)?;
+        let report =
+            conformance_transfer::receive_report(channel, receipt, Instant::now() + STEP_TIMEOUT)?;
         let failed = matches!(receipt.payload.outcome, ReceiptOutcome::FailedLaunch { .. });
         self.check_history(&authorization.session_id)?;
         if !failed {

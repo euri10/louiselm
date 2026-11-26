@@ -89,9 +89,14 @@ It cannot be reconstructed into ordinary Agent authority by cold Resume.
 
 The daemon separates `accept_connection` from `serve_accepted`: each accepted
 supervisor gets its own handshake and continuing `step` worker. A silent or
-invalid peer cannot hold up another Session's launch. Handshake and operation
-response deadlines remain bounded; waiting for the next unsolicited packet on
-an idle Session has no deadline. Peer closure still wakes that worker.
+invalid peer cannot hold up another Session's launch. Initial handshakes and
+operation responses remain bounded. After a launch consumes an identity, its
+supervisor may spend time preparing the Session before sending either startup
+receipt; the broker waits for those receipts until the peer closes. The
+identity remains reserved until its separate cleanup and receipt requirements
+are met. A conformance report's transfer deadline starts when its receipt
+arrives. Waiting for the next unsolicited packet on an idle Session likewise
+has no deadline; peer closure wakes both waits.
 
 SIGTERM uses Linux's native process termination action. Process teardown closes
 all Session descriptors promptly, including workers blocked in handshake or

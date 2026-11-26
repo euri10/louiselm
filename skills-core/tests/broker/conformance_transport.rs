@@ -44,7 +44,7 @@ fn supervisor_result<T: Send + 'static>(
         .unwrap()
 }
 
-fn report_receipt(authorization: &LaunchAuthorization, bytes: &[u8]) -> SignedReceipt {
+pub(super) fn report_receipt(authorization: &LaunchAuthorization, bytes: &[u8]) -> SignedReceipt {
     let mut launch = launch_receipt(authorization);
     let ReceiptOutcome::Launch { evidence, .. } = &mut launch.payload.outcome else {
         panic!("launch fixture");
@@ -68,7 +68,7 @@ fn service(root: &Path, request: &LaunchRequest) -> BrokerService {
     .unwrap()
 }
 
-fn report_bytes() -> Vec<u8> {
+pub(super) fn report_bytes() -> Vec<u8> {
     Report {
         schema: REPORT_SCHEMA.into(),
         scope: Scope::InstalledHost,
@@ -97,7 +97,7 @@ struct WireChunk<'a> {
     bytes: &'a [u8],
 }
 
-fn report_packets(receipt: &SignedReceipt, bytes: &[u8]) -> Vec<Vec<u8>> {
+pub(super) fn report_packets(receipt: &SignedReceipt, bytes: &[u8]) -> Vec<Vec<u8>> {
     bytes
         .chunks(8192)
         .enumerate()

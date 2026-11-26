@@ -69,3 +69,106 @@ fn idle_session_waits_past_the_handshake_deadline() {
     assert!(result.recv_timeout(Duration::from_secs(2)).unwrap());
     worker.join().unwrap();
 }
+
+#[test]
+fn authorized_launch_can_finish_preparation_after_the_handshake_deadline() {
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("broker.sock");
+    let request = request("slow-preparation");
+    let authorizations =
+        AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap();
+    let mut approval = grant(&request);
+    approval.expires_at_ms = 180_000;
+    approval.commands.as_mut().unwrap().expires_at_ms = 180_000;
+    authorizations.authorize(&approval, 1_000).unwrap();
+    let service = Arc::new(
+        BrokerService::bind(
+            &socket,
+            authorizations,
+            ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap(),
+            AuditLog::open(&root.path().join("audit")).unwrap(),
+            local_pin(),
+        )
+        .unwrap(),
+    );
+    let broker = Arc::clone(&service);
+    let (finished, result) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        finished
+            .send(broker.serve_launch(2_000, verify_fixture_signature))
+            .unwrap();
+    });
+    let (authorization, channel) = supervisor_authorization(&socket, &request, 2_000);
+
+    // Preparation can copy a source-sized workspace before the first receipt.
+    match result.recv_timeout(Duration::from_secs(31)) {
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Ok(Err(error)) => panic!("broker stopped during preparation: {error:?}"),
+        Ok(Ok(_)) => panic!("broker completed before receiving launch receipts"),
+        Err(error) => panic!("broker worker disappeared: {error}"),
+    }
+    let report = conformance_transport::report_bytes();
+    let launch = conformance_transport::report_receipt(&authorization, &report);
+    settle(|complete| channel.send(launch.canonical_bytes(), complete));
+    for packet in conformance_transport::report_packets(&launch, &report) {
+        settle(|complete| channel.send(packet, complete));
+    }
+    assert_eq!(expect_acknowledgement(&channel).sequence, 0);
+    let start = start_receipt(&authorization, &launch);
+    settle(|complete| channel.send(start.canonical_bytes(), complete));
+    assert_eq!(expect_acknowledgement(&channel).sequence, 1);
+    let session = result
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.launch_head().digest, start.digest().to_string());
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes(&request.session_id)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        service
+            .receipts()
+            .conformance_report(&authorization, verify_fixture_signature)
+            .unwrap(),
+        Some(report)
+    );
+    worker.join().unwrap();
+}
+
+#[test]
+fn disconnected_supervisor_releases_its_waiting_launch_worker() {
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("broker.sock");
+    let request = request("disconnected-preparation");
+    let authorizations =
+        AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap();
+    authorizations.authorize(&grant(&request), 1_000).unwrap();
+    let service = BrokerService::bind(
+        &socket,
+        authorizations,
+        ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap(),
+        AuditLog::open(&root.path().join("audit")).unwrap(),
+        local_pin(),
+    )
+    .unwrap();
+    let (finished, result) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        finished
+            .send(service.serve_launch(2_000, verify_fixture_signature))
+            .unwrap();
+    });
+    let (_, channel) = supervisor_authorization(&socket, &request, 2_000);
+    channel.close();
+    assert!(matches!(
+        result.recv_timeout(Duration::from_secs(2)).unwrap(),
+        Err(BrokerError::Transport(
+            TransportError::Disconnected | TransportError::Closed
+        ))
+    ));
+    worker.join().unwrap();
+}
