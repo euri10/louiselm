@@ -18,7 +18,7 @@ internal fun reconcilePhoneSessionPages(
 ): PhoneControlResult<PhoneSessionRefresh> {
     val oldest = previous?.entries?.firstOrNull()?.seq ?: return PhoneControlResult.Value(PhoneSessionRefresh(newest, false))
     if (previous.revision == newest.revision) {
-        if (previous.status != newest.status || previous.settings != newest.settings || previous.currentPermission != newest.currentPermission || previous.currentInteractions != newest.currentInteractions) return PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)
+        if (previous.status != newest.status || previous.settings != newest.settings || previous.currentPermission != newest.currentPermission || previous.currentInteractions != newest.currentInteractions || previous.queue != newest.queue) return PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)
         return PhoneControlResult.Value(PhoneSessionRefresh(newest, false))
     }
     var entries = newest.entries
@@ -40,7 +40,7 @@ internal fun reconcilePhoneSessionPages(
             is PhoneControlResult.Value -> {
                 val older = result.value
                 if (older.controllerId != newest.controllerId || older.subjectId != newest.subjectId ||
-                    older.revision != newest.revision || older.status != newest.status || older.settings != newest.settings || older.currentPermission != newest.currentPermission || older.currentInteractions != newest.currentInteractions ||
+                    older.revision != newest.revision || older.status != newest.status || older.settings != newest.settings || older.currentPermission != newest.currentPermission || older.currentInteractions != newest.currentInteractions || older.queue != newest.queue ||
                     older.entries.any { it.seq >= cursor } || (older.nextBefore != 0L && older.nextBefore >= cursor) ||
                     (older.entries.isNotEmpty() && entries.isNotEmpty() && older.entries.last().seq >= entries.first().seq)) {
                     return PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)

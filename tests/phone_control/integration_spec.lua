@@ -186,12 +186,20 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
     return session:queue_inspect().paused and not session.queue.busy
   end))
   local queued
-  assert(session:enqueue("PRIVATE WAITING QUEUE", function(id, err)
+  assert(session:enqueue("ACCEPTED FIRST", function(id, err)
     queued = assert(id, err)
-  end))
+  end, nil, "ACCEPTED FIRST", { { text = "PRIVATE ACCEPTED CONTEXT" } }))
   assert(nvim.wait(6000, function()
     return queued ~= nil
   end))
+  local second
+  assert(session:enqueue("ACCEPTED SECOND", function(id, err)
+    second = assert(id, err)
+  end))
+  assert(nvim.wait(6000, function()
+    return second ~= nil
+  end))
+  local before_reads = session:queue_inspect()
   local request = {
     v = 1,
     type = "read_session",
@@ -222,10 +230,15 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   MiniTest.expect.equality(nvim.json.encode(responses[1]):find("UNSENT DRAFT", 1, true), nil)
   MiniTest.expect.equality(nvim.json.encode(responses[1]):find("HIDDEN SENT CONTEXT", 1, true), nil)
   MiniTest.expect.equality(responses[1].entries[3].text, "visible typed message")
+  MiniTest.expect.equality((responses[1].queue or {}).paused, true)
+  MiniTest.expect.equality((responses[1].queue or {}).entries, {
+    { id = queued, text = "ACCEPTED FIRST", truncated = false },
+    { id = second, text = "ACCEPTED SECOND", truncated = false },
+  })
   local private = {
     "PRIVATE STAGED CONTEXT",
     "PRIVATE DESKTOP DRAFT",
-    "PRIVATE WAITING QUEUE",
+    "PRIVATE ACCEPTED CONTEXT",
     "PRIVATE NATIVE SKILL",
     "private-native-skill",
   }
@@ -234,8 +247,34 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   end
   MiniTest.expect.equality(view.draft.contexts[1].text, private[1])
   MiniTest.expect.equality(view.renderer:prompt_text(), private[2])
-  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, private[3])
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "ACCEPTED FIRST")
+  MiniTest.expect.equality(session:queue_inspect(), before_reads)
   MiniTest.expect.equality(assert(view.draft.pending_skill).content, private[4])
+  local old_revision = responses[1].revision
+  local moved
+  assert(session:queue_move(second, 1, session:queue_inspect().revision, function(ok, err)
+    moved = assert(ok, err)
+  end))
+  assert(nvim.wait(6000, function()
+    return moved
+  end))
+  request.request.payload = "00000000000000000014"
+  request.request.expected_revision = old_revision
+  local stale_index = #responses + 1
+  assert(peer):write(nvim.json.encode(request) .. "\n")
+  assert(nvim.wait(6000, function()
+    return #responses == stale_index
+  end))
+  MiniTest.expect.equality(responses[stale_index].code, "stale_subject")
+  request.request.expected_revision = 0
+  local fresh_index = #responses + 1
+  assert(peer):write(nvim.json.encode(request) .. "\n")
+  assert(nvim.wait(6000, function()
+    return #responses == fresh_index
+  end))
+  MiniTest.expect.equality(responses[fresh_index].queue.entries[1].text, "ACCEPTED SECOND")
+  MiniTest.expect.equality(responses[fresh_index].queue.entries[2].text, "ACCEPTED FIRST")
+  MiniTest.expect.equality(session:inspect().current_turn, 3)
 
   request.request.payload = "00000000000000000002"
   local pages, queued_visible = 0, false
@@ -262,7 +301,7 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
   MiniTest.expect.equality(session:inspect().current_turn, 3)
   MiniTest.expect.equality(view.draft.contexts[1].text, private[1])
   MiniTest.expect.equality(view.renderer:prompt_text(), private[2])
-  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, private[3])
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "ACCEPTED SECOND")
   MiniTest.expect.equality(assert(view.draft.pending_skill).content, private[4])
   local disposed
   assert(session:dispose(nil, function(ok, err)

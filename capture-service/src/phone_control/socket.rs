@@ -188,11 +188,108 @@ enum ReadResponse {
         current_permission: Option<Box<ReadPermission>>,
         #[serde(default, deserialize_with = "deserialize_current_interactions")]
         current_interactions: Option<Box<ReadCurrentInteractions>>,
+        #[serde(default, deserialize_with = "deserialize_present")]
+        queue: Option<Box<ReadQueue>>,
         entries: Vec<ReadEntry>,
         next_before: u64,
         complete: bool,
         source: HistorySource,
     },
+}
+
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadQueue {
+    revision: u64,
+    #[serde(rename = "paused")]
+    _paused: bool,
+    #[serde(rename = "uncertain")]
+    _uncertain: bool,
+    entries: Vec<ReadQueueEntry>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    active: Option<ReadQueueActive>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    replacement: Option<ReadQueueReplacement>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadQueueEntry {
+    id: String,
+    text: String,
+    truncated: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadQueueActive {
+    entry: ReadQueueEntry,
+    status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadQueueReplacement {
+    entry: ReadQueueEntry,
+    status: String,
+    cancellation: String,
+}
+
+impl ReadQueueEntry {
+    fn valid(&self) -> bool {
+        fixed::<16>(&self.id).is_ok() && valid_string(&self.text) && self.text.len() <= 512
+    }
+}
+
+impl ReadQueue {
+    fn valid(&self, complete: bool) -> bool {
+        let mut ids = std::collections::HashSet::new();
+        self.revision <= MAX_INTEGER
+            && self.entries.len() <= 20
+            && self.entries.iter().all(|entry| {
+                entry.valid() && (!complete || !entry.truncated) && ids.insert(&entry.id)
+            })
+            && self.active.as_ref().is_none_or(|active| {
+                active.entry.valid()
+                    && (!complete || !active.entry.truncated)
+                    && !ids.contains(&active.entry.id)
+                    && matches!(
+                        active.status.as_str(),
+                        "admitting" | "dispatched" | "not_sent" | "uncertain"
+                    )
+            })
+            && self.replacement.as_ref().is_none_or(|replacement| {
+                replacement.entry.valid()
+                    && (!complete || !replacement.entry.truncated)
+                    && !ids.contains(&replacement.entry.id)
+                    && matches!(
+                        replacement.status.as_str(),
+                        "cancelling"
+                            | "acknowledged"
+                            | "admitting"
+                            | "dispatched"
+                            | "unsent"
+                            | "uncertain"
+                    )
+                    && matches!(
+                        replacement.cancellation.as_str(),
+                        "requesting"
+                            | "requested"
+                            | "acknowledged"
+                            | "completed"
+                            | "not_sent"
+                            | "unknown"
+                    )
+            })
+    }
 }
 
 #[derive(Deserialize)]
@@ -456,6 +553,7 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             settings,
             current_permission,
             current_interactions,
+            queue,
             entries,
             next_before,
             complete,
@@ -479,6 +577,7 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
                 || revision == 0
                 || revision > MAX_INTEGER
                 || !settings.valid()
+                || queue.as_ref().is_some_and(|queue| !queue.valid(complete))
                 || current_permission.as_ref().is_some_and(|permission| {
                     status != "waiting_permission"
                         || !permission.valid()
@@ -2554,6 +2653,46 @@ mod tests {
             invalid["settings"] = settings;
             assert_eq!(
                 super::validate_read_response(&serde_json::to_vec(&invalid).unwrap(), request),
+                Err(super::Refusal::Unavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn queue_view_is_closed_bounded_and_retains_owner_states() {
+        let request: super::super::Request = serde_json::from_value(json!({
+            "grant_id":"04".repeat(16), "grant_revision":1, "period_id":"05".repeat(16),
+            "receiver_identity":"06".repeat(32), "controller_id":"01".repeat(16), "subject_id":"02".repeat(16),
+            "action":1, "payload":"00000000000000000032", "payload_hash":"07".repeat(32),
+            "operation_id":"03".repeat(16), "expected_revision":0, "interaction":1, "signature":"3006020101020101"
+        })).unwrap();
+        let entry = json!({"id":"11".repeat(16),"text":"waiting","truncated":false});
+        let queue = json!({"revision":4,"paused":true,"uncertain":false,"entries":[entry.clone()],
+            "active":{"entry":{"id":"22".repeat(16),"text":"active","truncated":false},"status":"dispatched"},
+            "replacement":{"entry":{"id":"33".repeat(16),"text":"replacement","truncated":false},
+                "status":"unsent","cancellation":"unknown"}});
+        let mut page = json!({"v":2,"type":"session_page","controller_id":request.controller_id,
+            "subject_id":request.subject_id,"operation_id":request.operation_id,"revision":1,"status":"prompting",
+            "entries":[],"next_before":0,"complete":true,"source":{"replay":"not_applicable",
+                "archive":"unavailable","redaction":"unknown","missing":false,"truncated":false}});
+        page["queue"] = queue.clone();
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&page).unwrap(), &request).unwrap(),
+            page
+        );
+        for invalid in [
+            json!(null),
+            json!({"revision":4,"paused":true,"uncertain":false,"entries":[entry.clone(), entry.clone()]}),
+            json!({"revision":4,"paused":true,"uncertain":false,"entries":vec![entry.clone(); 21]}),
+            json!({"revision":4,"paused":true,"uncertain":false,"entries":[{"id":"11".repeat(16),"text":"x".repeat(513),"truncated":false}]}),
+            json!({"revision":4,"paused":true,"uncertain":false,"entries":[{"id":"11".repeat(16),"text":"visible","truncated":false,"prompt":"secret"}]}),
+            json!({"revision":4,"paused":true,"uncertain":false,"entries":[{"id":"11".repeat(16),"text":"shortened","truncated":true}]}),
+            json!({"revision":4,"paused":true,"uncertain":false,"entries":[],"active":{"entry":entry.clone(),"status":"completed"}}),
+            json!({"revision":4,"paused":true,"uncertain":false,"entries":[],"replacement":{"entry":entry.clone(),"status":"unsent","cancellation":"completed?"}}),
+        ] {
+            page["queue"] = invalid;
+            assert_eq!(
+                super::validate_read_response(&serde_json::to_vec(&page).unwrap(), &request),
                 Err(super::Refusal::Unavailable)
             );
         }

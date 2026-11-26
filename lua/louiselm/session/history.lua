@@ -97,6 +97,7 @@ local MAX_BYTES = 245760
 ---@field read fun(self: louiselm.session.History, request: louiselm.session.HistoryRequest, callback: louiselm.session.HistoryCallback): fun()
 
 local relevant = {
+  queue_changed = true,
   state_changed = true,
   config_options_changed = true,
   prompt_dispatched = true,

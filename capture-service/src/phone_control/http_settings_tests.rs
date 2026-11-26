@@ -88,7 +88,7 @@ async fn pinned_android_displays_acknowledged_session_settings() {
         &fixture,
         Scope {
             projects: vec![project.to_str().unwrap().into()],
-            agents: vec!["codex".into(), "missing".into()],
+            agents: vec!["codex".into(), "missing".into(), "queue".into()],
             groups: vec!["read".into()],
         },
     )
@@ -177,6 +177,7 @@ async fn pinned_android_displays_acknowledged_session_settings() {
             .env("LOUISELM_E2E_GRANT", grant.grant_id).env("LOUISELM_E2E_SETTINGS_PORT", port.to_string())
             .env("LOUISELM_E2E_SUBJECT", target["subject_id"].as_str().unwrap())
             .env("LOUISELM_E2E_OTHER_SUBJECT", target["other_subject_id"].as_str().unwrap())
+            .env("LOUISELM_E2E_QUEUE_SUBJECT", target["queue_subject_id"].as_str().unwrap())
             .status().unwrap();
         let report = std::fs::read_to_string(android.join("app/build/test-results/testDebugUnitTest/TEST-dev.louiselm.capture.PhoneSettingsEndToEndTest.xml")).unwrap();
         assert!(report.contains("tests=\"1\"") && report.contains("skipped=\"0\"")
@@ -184,6 +185,7 @@ async fn pinned_android_displays_acknowledged_session_settings() {
         result
     }).await.unwrap();
     assert!(status.success(), "Android settings integration failed");
+    println!("PHONE_QUEUE_PINNED_ANDROID_PASSED");
     let mut input = control.await.unwrap();
     input.write_all(b"stop\n").unwrap();
     assert!(

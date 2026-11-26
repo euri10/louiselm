@@ -692,7 +692,7 @@ This checks the signed bindings only. The controller still checks its own live
 controller, subject, project, Agent and state, and the receiver must still
 check current grant, lease and replay state before delivery or admission.
 
-Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,current_permission?:CurrentPermission,current_interactions?:CurrentInteractions,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
+Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,current_permission?:CurrentPermission,current_interactions?:CurrentInteractions,queue?:Queue,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
 The receiver returns this same closed object over HTTPS after the final authority
 recheck. `revision` is nonzero and increases on any projected state/content
 change within the subject. Status is one of `starting`, `ready`, `admitting`,
@@ -730,6 +730,26 @@ be incomplete. Overlapping sequences must have identical content. The owner
 matches each entry to the exact pending interaction, not a reusable request ID,
 and advances the revision on response or cancellation. Saved pages discard this
 current-only field. It contains no callback or authority to respond.
+`Queue` is the live Session owner's committed snapshot, exactly
+`{revision:integer,paused:boolean,uncertain:boolean,entries:[QueueEntry],active?:QueueActive,replacement?:QueueReplacement}`.
+Its revision is the native queue revision, distinct from the page revision;
+every published queue change advances the latter and invalidates older pages.
+`entries` contains at most 20 accepted ordinary waiting instructions in owner
+order. `QueueEntry` is exactly `{id:hex16,text:string,truncated:boolean}`;
+text is bounded to at most 512 UTF-8 bytes, shortened at a code-point boundary,
+and is only the explicitly submitted display text. Shortened queue text marks
+both its entry and the page incomplete. `QueueActive` is exactly
+`{entry:QueueEntry,status:string}`, where status is `admitting`, `dispatched`,
+`not_sent` or `uncertain`. `QueueReplacement` is exactly
+`{entry:QueueEntry,status:string,cancellation:string}`; status is `cancelling`,
+`acknowledged`, `admitting`, `dispatched`, `unsent` or `uncertain`, and
+cancellation is `requesting`, `requested`, `acknowledged`, `completed`,
+`not_sent` or `unknown`. The replacement is separate from ordinary waiting
+places; dispatch is not completion. An uncertain snapshot does not claim an
+unacknowledged proposal was accepted. No prompt blocks, contexts, routing data,
+drafts, callbacks, or failure strings are sent. Saved pages discard the queue;
+an offline page cannot claim a current queue. Reading does not change queue or
+working-period state.
 An unknown cursor returns `stale_subject`. To keep a multi-page read on one
 snapshot, use the first page's nonzero revision in subsequent requests.
 `complete=false` means projected content for this page or its current state is

@@ -5,6 +5,7 @@ local root = assert(nvim.env.LOUISELM_TEST_PROJECT)
 nvim.opt.runtimepath:prepend(root)
 local Session = require("louiselm.session")
 local Louise = require("louiselm")
+local Chat = require("louiselm.ui.chat")
 local options = {
   {
     id = "model",
@@ -62,7 +63,7 @@ local missing = {
     },
   },
 }
-local function definition(advertised)
+local function definition(advertised, mode)
   return {
     provider = "test-service",
     command = nvim.v.progpath,
@@ -72,11 +73,13 @@ local function definition(advertised)
       "-u",
       root .. "/tests/mock/init.lua",
       "-c",
-      "lua require('louiselm.dev.mock_agent').run(" .. nvim.inspect({ config_options = advertised }) .. ")",
+      "lua require('louiselm.dev.mock_agent').run("
+        .. nvim.inspect({ config_options = advertised, mode = mode })
+        .. ")",
     },
   }
 end
-local agents = { codex = definition(options), missing = definition(missing) }
+local agents = { codex = definition(options), missing = definition(missing), queue = definition({}, "hold") }
 assert(Louise.setup({
   phone_control = { enabled = true },
   capture = { service = { assert(nvim.env.LOUISELM_TEST_CAPTURE) } },
@@ -85,18 +88,35 @@ assert(Louise.setup({
 local api = assert(Session.new(agents, nil, { usage_directory = nvim.env.LOUISELM_TEST_USAGE }))
 local session = assert(api:create_session("codex", { cwd = root, name = "Settings" }))
 local other = assert(api:create_session("missing", { cwd = root, name = "Missing settings" }))
+local queued = assert(api:create_session("queue", { cwd = root, name = "Desktop queue" }))
 assert(nvim.wait(10000, function()
   return session:inspect().status == "ready"
     and other:inspect().status == "ready"
+    and queued:inspect().status == "ready"
     and Louise.phone_control_subject(session) ~= nil
     and Louise.phone_control_subject(other) ~= nil
+    and Louise.phone_control_subject(queued) ~= nil
 end))
+local chat = assert(Chat.new(api, { agents = { "queue" }, start_insert_on_switch = false }))
+assert(chat:attach(queued))
+assert(chat:submit("Desktop active"))
+assert(nvim.wait(10000, function()
+  return queued:queue_inspect().active_status == "dispatched"
+end))
+assert(chat:submit("Desktop first"))
+assert(chat:submit("Desktop second"))
+assert(nvim.wait(10000, function()
+  return #queued:queue_inspect().entries == 2 and not queued:queue_inspect().pending
+end))
+assert(chat:queue_context({ label = "private", text = "PRIVATE QUEUE CONTEXT" }))
+chat.views[queued:inspect().id].renderer:replace_prompt("PRIVATE QUEUE DRAFT")
 local target = assert(Louise.phone_control_subject(session))
 io.stdout:write(
   nvim.json.encode({
     controller_id = target.controller_id,
     subject_id = target.subject_id,
     other_subject_id = assert(Louise.phone_control_subject(other)).subject_id,
+    queue_subject_id = assert(Louise.phone_control_subject(queued)).subject_id,
   }),
   "\n"
 )
@@ -113,8 +133,21 @@ input:read_start(function(err, data)
       local changes = { { "model", "b" }, { "effort", "medium" }, { "access", "safe" } }
       local function apply(index)
         if index > #changes then
-          io.stdout:write("acknowledged\n")
-          io.stdout:flush()
+          local state = queued:queue_inspect()
+          assert(queued:queue_move(state.entries[2].id, 1, state.revision, function(ok, failure)
+            assert(ok, failure)
+            assert(queued:cancel())
+            local function settled()
+              local current = queued:queue_inspect()
+              if current.paused and not current.pending and queued:inspect().status == "ready" then
+                io.stdout:write("acknowledged\n")
+                io.stdout:flush()
+              else
+                nvim.defer_fn(settled, 10)
+              end
+            end
+            settled()
+          end))
           return
         end
         assert(session:set_config_option(changes[index][1], changes[index][2], function(_, failure)
@@ -130,5 +163,6 @@ assert(nvim.wait(300000, function()
   return closed
 end))
 input:close()
+chat:dispose()
 assert(api:dispose())
 nvim.cmd("qa!")

@@ -196,6 +196,21 @@ class PhoneOfflineScreenTest {
     }
 
     @Test
+    fun savedPageNeverShowsTheLiveQueue() {
+        val app = RuntimeEnvironment.getApplication()
+        val source = PhoneOfflineSource(OfflineScreenFixture.receiver, OfflineScreenFixture.target, "saved session", "agent", "project")
+        val page = PhoneControlReply.SessionPage(source.target.controllerId, source.target.subjectId, "33".repeat(16), 2, "ready",
+            emptyList(), 0, true, PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false),
+            queue = PhoneSessionQueue(1, true, false, listOf(PhoneQueueEntry("11".repeat(16), "private live queue", false)), null, null))
+        PhoneOfflineStore(File(app.filesDir, "phone-offline-v1")).save(source, sequenceOf(page), true,
+            System.currentTimeMillis(), System.currentTimeMillis(), 1_000_000, SecretKeySpec(OfflineScreenFixture.material, "AES")) { true }
+        unlockAndOpen()
+        assertTrue(contains(activity.getString(R.string.phone_offline_stale)))
+        assertFalse(contains("Session queue"))
+        assertFalse(contains("private live queue"))
+    }
+
+    @Test
     fun opensAndLocksAStaleCopyWithoutNetworkAndProtectsThePreview() {
         assertTrue(activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
         button(R.string.phone_offline_unlock).performClick()

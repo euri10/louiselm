@@ -72,6 +72,15 @@ class PhoneSettingsEndToEndTest {
             assertTrue(visible("Reasoning effort: High"))
             assertTrue(visible("Agent access mode: Full access"))
             assertFalse(visible("PRIVATE CONFIG"))
+            button(activity.getString(R.string.phone_sessions)).performClick()
+            repeat(3) { drain() }
+            select(requireNotNull(System.getenv("LOUISELM_E2E_QUEUE_SUBJECT")))
+            assertTrue(visible("Active · dispatched: Desktop active"))
+            assertTrue(visible("Waiting 1: Desktop first"))
+            assertTrue(visible("Waiting 2: Desktop second"))
+            assertFalse(visible("PRIVATE QUEUE DRAFT"))
+            assertFalse(visible("PRIVATE QUEUE CONTEXT"))
+            assertFalse(button(activity.getString(R.string.phone_send)).isEnabled)
             Socket("127.0.0.1", requireNotNull(System.getenv("LOUISELM_E2E_SETTINGS_PORT")).toInt()).use { socket ->
                 socket.soTimeout = 30_000
                 socket.getOutputStream().write("change\n".toByteArray())
@@ -79,6 +88,13 @@ class PhoneSettingsEndToEndTest {
             }
             button(activity.getString(R.string.phone_refresh)).performClick()
             repeat(3) { drain() }
+            assertTrue(visible("Queue paused for review."))
+            assertTrue(visible("Waiting 1: Desktop second"))
+            assertTrue(visible("Waiting 2: Desktop first"))
+            assertFalse(visible("Active · dispatched: Desktop active"))
+            button(activity.getString(R.string.phone_sessions)).performClick()
+            repeat(3) { drain() }
+            select(requireNotNull(System.getenv("LOUISELM_E2E_SUBJECT")))
             assertTrue(visible("Model: Model B"))
             assertTrue(visible("Reasoning effort: Medium"))
             assertTrue(visible("Agent access mode: Ask first"))
@@ -89,18 +105,23 @@ class PhoneSettingsEndToEndTest {
             assertTrue(visible("Reasoning effort: Unavailable"))
             assertTrue(visible("Agent access mode: Unavailable"))
             assertFalse(visible("Model: Model B"))
+            assertFalse(visible("Waiting 1: Desktop second"))
+            button(activity.getString(R.string.phone_sessions)).performClick()
+            repeat(3) { drain() }
+            select(requireNotNull(System.getenv("LOUISELM_E2E_QUEUE_SUBJECT")))
+            assertTrue(visible("Waiting 1: Desktop second"))
             button(activity.getString(R.string.phone_lock)).performClick()
-            assertFalse(visible("Model: Other model"))
+            assertFalse(visible("Waiting 1: Desktop second"))
             button(activity.getString(R.string.phone_unlock)).performClick()
             repeat(12) { drain() }
             button(activity.getString(R.string.phone_sessions)).performClick()
             repeat(3) { drain() }
-            select(requireNotNull(System.getenv("LOUISELM_E2E_SUBJECT")))
-            assertTrue(visible("Model: Model B"))
+            select(requireNotNull(System.getenv("LOUISELM_E2E_QUEUE_SUBJECT")))
+            assertTrue(visible("Waiting 1: Desktop second"))
             ShadowSystemClock.advanceBy(Duration.ofMinutes(6))
             button(activity.getString(R.string.phone_refresh)).performClick()
             repeat(3) { drain() }
-            assertFalse(visible("Model: Model B"))
+            assertFalse(visible("Waiting 1: Desktop second"))
         } finally {
             screen.close()
             executor.runAll()

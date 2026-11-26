@@ -59,7 +59,7 @@ internal class PhoneOfflineStore(private val root: File) {
                         page.subjectId == source.target.subjectId)
                     val prior = previous
                     if (prior != null) {
-                        require(prior.nextBefore != 0L && page.revision == prior.revision && page.status == prior.status && page.settings == prior.settings && page.currentPermission == prior.currentPermission && page.currentInteractions == prior.currentInteractions &&
+                        require(prior.nextBefore != 0L && page.revision == prior.revision && page.status == prior.status && page.settings == prior.settings && page.currentPermission == prior.currentPermission && page.currentInteractions == prior.currentInteractions && page.queue == prior.queue &&
                             page.entries.all { it.seq < prior.nextBefore } &&
                             (page.nextBefore == 0L || page.nextBefore < prior.nextBefore))
                     }

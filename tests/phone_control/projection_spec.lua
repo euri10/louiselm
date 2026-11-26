@@ -5,6 +5,76 @@ local Projection = require("louiselm.phone_control.projection")
 
 local T = MiniTest.new_set()
 
+T["projects only committed queue display fields"] = function()
+  local state = {
+    revision = 3,
+    paused = true,
+    uncertain = false,
+    entries = {
+      { id = "first", display_text = "first accepted", prompt = "SECRET PROMPT", contexts = { "SECRET CONTEXT" } },
+      { id = "second", display_text = "second accepted", metadata = { private = "SECRET ROUTING" } },
+    },
+    uncertain_proposal = { entries = { { display_text = "SECRET UNCONFIRMED" } } },
+  }
+  local queue = Projection.queue(state)
+  MiniTest.expect.equality(queue.entries, {
+    { id = "first", text = "first accepted", truncated = false },
+    { id = "second", text = "second accepted", truncated = false },
+  })
+  MiniTest.expect.equality(queue.paused, true)
+  MiniTest.expect.equality(nvim.json.encode(queue):find("SECRET", 1, true), nil)
+end
+
+T["bounds queue text and preserves distinct active replacement and uncertainty states"] = function()
+  local long = string.rep("é", 400)
+  local state = {
+    revision = 9,
+    paused = true,
+    uncertain = true,
+    entries = { { id = "first", display_text = long } },
+    active = { id = "active", display_text = "running" },
+    active_status = "dispatched",
+    replacement = {
+      entry = { id = "reserve", display_text = "replacement" },
+      status = "unsent",
+      cancellation = "unknown",
+    },
+  }
+  local queue = Projection.queue(state)
+  MiniTest.expect.equality(queue.uncertain, true)
+  MiniTest.expect.equality(queue.active.status, "dispatched")
+  MiniTest.expect.equality(queue.replacement.status, "unsent")
+  MiniTest.expect.equality(queue.replacement.cancellation, "unknown")
+  MiniTest.expect.equality(queue.entries[1].truncated, true)
+  MiniTest.expect.equality(long:sub(1, #queue.entries[1].text), queue.entries[1].text)
+  MiniTest.expect.equality(#nvim.json.encode({ text = queue.entries[1].text }) <= 512, true)
+  MiniTest.expect.equality(nvim.json.decode(nvim.json.encode(queue)).entries[1].text, queue.entries[1].text)
+end
+
+T["bounds a full queue within the remaining phone frame"] = function()
+  local entries = {}
+  for index = 1, 20 do
+    entries[index] = { id = string.format("%032x", index), display_text = string.rep("\1", 8192) }
+  end
+  local projected = Projection.queue({
+    revision = 20,
+    paused = true,
+    uncertain = false,
+    entries = entries,
+    active = { id = string.rep("a", 32), display_text = string.rep("\1", 8192), prompt = "", contexts = {} },
+    active_status = "dispatched",
+    replacement = {
+      entry = { id = string.rep("b", 32), display_text = string.rep("\1", 8192), prompt = "", contexts = {} },
+      target_turn_id = "turn",
+      status = "unsent",
+      cancellation = "unknown",
+    },
+  })
+  MiniTest.expect.equality(#projected.entries, 20)
+  MiniTest.expect.equality(projected.entries[1].truncated, true)
+  MiniTest.expect.equality(#nvim.json.encode(projected) < 14000, true)
+end
+
 T["projects only confirmed model effort and access labels and invalidates old snapshots"] = function()
   local options = {
     {

@@ -27,6 +27,7 @@ internal sealed class PhoneControlReply {
         val settings: PhoneSessionSettings = PhoneSessionSettings(),
         val currentPermission: PhoneCurrentPermission? = null,
         val currentInteractions: PhoneCurrentInteractions? = null,
+        val queue: PhoneSessionQueue? = null,
     ) : PhoneControlReply()
     data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
     data class SessionList(val controllerId: String, val operationId: String,
@@ -86,6 +87,12 @@ internal data class PhoneHistorySource(
 )
 
 internal data class PhoneSessionSettings(val model: String = "", val effort: String = "", val mode: String = "")
+
+internal data class PhoneQueueEntry(val id: String, val text: String, val truncated: Boolean)
+internal data class PhoneQueueActive(val entry: PhoneQueueEntry, val status: String)
+internal data class PhoneQueueReplacement(val entry: PhoneQueueEntry, val status: String, val cancellation: String)
+internal data class PhoneSessionQueue(val revision: Long, val paused: Boolean, val uncertain: Boolean,
+    val entries: List<PhoneQueueEntry>, val active: PhoneQueueActive?, val replacement: PhoneQueueReplacement?)
 
 internal sealed class PhoneControlEntry(open val seq: Long, open val truncated: Boolean) {
     data class Message(override val seq: Long, val role: String, val text: String, override val truncated: Boolean) : PhoneControlEntry(seq, truncated)
@@ -175,6 +182,39 @@ private fun parseActionRecord(value: Any): PhoneActionRecord {
         record.wireHex("controller_id", 16), record.wireHex("subject_id", 16), action.toInt(),
         record.wireHex("payload_hash", 32), record.wireHex("grant_id", 16), grantRevision,
         record.wireNumber("expected_revision"), recorded, updated, state, evidence, accepted, dispatched, completed)
+}
+
+private fun parseQueue(value: Any): PhoneSessionQueue {
+    val queue = value.wireObject()
+    val required = setOf("revision", "paused", "uncertain", "entries")
+    require(queue.keys.containsAll(required) && (queue.keys - required).all { it in setOf("active", "replacement") })
+    fun entry(value: Any): PhoneQueueEntry {
+        val fields = value.wireObject()
+        fields.wireKeys("id", "text", "truncated")
+        return PhoneQueueEntry(fields.wireHex("id", 16), fields.wireString("text", 512), fields.wireBoolean("truncated"))
+    }
+    val entries = queue.wireArray("entries").map { entry(requireNotNull(it)) }
+    require(entries.size <= 20 && entries.map { it.id }.toSet().size == entries.size)
+    val active = queue["active"]?.let {
+        val fields = it.wireObject()
+        fields.wireKeys("entry", "status")
+        val status = fields.wireString("status")
+        require(status in setOf("admitting", "dispatched", "not_sent", "uncertain"))
+        PhoneQueueActive(entry(requireNotNull(fields["entry"])), status)
+    }
+    val replacement = queue["replacement"]?.let {
+        val fields = it.wireObject()
+        fields.wireKeys("entry", "status", "cancellation")
+        val status = fields.wireString("status")
+        val cancellation = fields.wireString("cancellation")
+        require(status in setOf("cancelling", "acknowledged", "admitting", "dispatched", "unsent", "uncertain"))
+        require(cancellation in setOf("requesting", "requested", "acknowledged", "completed", "not_sent", "unknown"))
+        PhoneQueueReplacement(entry(requireNotNull(fields["entry"])), status, cancellation)
+    }
+    require(active == null || entries.none { it.id == active.entry.id })
+    require(replacement == null || entries.none { it.id == replacement.entry.id })
+    return PhoneSessionQueue(queue.wireNumber("revision"), queue.wireBoolean("paused"), queue.wireBoolean("uncertain"),
+        entries, active, replacement)
 }
 
 private fun parseEntry(value: Any): PhoneControlEntry {
@@ -306,7 +346,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
             }
             "session_page" -> {
                 val required = setOf("v", "type", "controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete", "source")
-                require(fields.keys.containsAll(required) && (fields.keys - required).all { it in setOf("settings", "current_permission", "current_interactions") })
+                require(fields.keys.containsAll(required) && (fields.keys - required).all { it in setOf("settings", "current_permission", "current_interactions", "queue") })
                 val settings = if ("settings" in fields) {
                     val values = requireNotNull(fields["settings"]).wireObject()
                     values.wireKeys("model", "effort", "mode")
@@ -362,8 +402,12 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 require(!complete || replay == "not_applicable" && redaction == "unknown" && !details.missing && !details.truncated)
                 require(!complete || permission?.incomplete != true)
                 require(!complete || currentInteractions?.incomplete != true)
+                val queue = fields["queue"]?.let { parseQueue(it) }
+                require(!complete || queue == null || (queue.entries.none { it.truncated } &&
+                    queue.active?.entry?.truncated != true && queue.replacement?.entry?.truncated != true))
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
-                    status, entries, nextBefore, complete, details, settings, permission, currentInteractions)
+                    status, entries, nextBefore, complete, details, settings, permission, currentInteractions,
+                    queue)
             }
             "controller_list" -> {
                 keys("operation_id", "controllers", "next_after")

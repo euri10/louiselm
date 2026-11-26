@@ -64,6 +64,21 @@ local function read(controller, request)
   return result
 end
 
+T["a shortened queue entry makes the live page incomplete"] = function()
+  local controller, session, request = fixture()
+  function session:queue_inspect()
+    return {
+      revision = 2,
+      paused = true,
+      uncertain = false,
+      entries = { { id = string.rep("1", 32), display_text = string.rep("é", 1000) } },
+    }
+  end
+  local page = read(controller, request)
+  MiniTest.expect.equality(page.queue.entries[1].truncated, true)
+  MiniTest.expect.equality(page.complete, false)
+end
+
 T["observation started during configuration does not reveal an unacknowledged value"] = function()
   local controller, session, request = fixture({
     status = "configuring",

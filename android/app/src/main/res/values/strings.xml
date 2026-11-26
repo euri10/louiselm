@@ -314,4 +314,27 @@
     <string name="phone_voice_stop_playback">Stop playback</string>
     <string name="phone_voice_playing">Playing the retained original on this phone.</string>
     <string name="phone_voice_play_failed">The retained original could not be played.</string>
+    <string name="phone_queue_heading">Session queue</string>
+    <string name="phone_queue_unavailable">Session queue unavailable.</string>
+    <string name="phone_queue_paused">Queue paused for review.</string>
+    <string name="phone_queue_uncertain">Queue outcome is uncertain; review on the computer.</string>
+    <string name="phone_queue_empty">No waiting instructions.</string>
+    <string name="phone_queue_waiting">Waiting %1$d</string>
+    <string name="phone_queue_active">Active · %1$s</string>
+    <string name="phone_queue_replacement">Reserved replacement · %1$s</string>
+    <string name="phone_queue_entry">%1$s: %2$s</string>
+    <string name="phone_queue_cancellation">Target cancellation: %1$s</string>
+    <string name="phone_queue_state_admitting">admission in progress</string>
+    <string name="phone_queue_state_dispatched">dispatched</string>
+    <string name="phone_queue_state_not_sent">not sent</string>
+    <string name="phone_queue_state_uncertain">delivery uncertain</string>
+    <string name="phone_queue_state_cancelling">awaiting cancellation</string>
+    <string name="phone_queue_state_acknowledged">cancellation acknowledged</string>
+    <string name="phone_queue_state_unsent">unsent</string>
+    <string name="phone_queue_cancel_requesting">requesting</string>
+    <string name="phone_queue_cancel_requested">requested</string>
+    <string name="phone_queue_cancel_acknowledged">acknowledged</string>
+    <string name="phone_queue_cancel_completed">target completed</string>
+    <string name="phone_queue_cancel_not_sent">not sent</string>
+    <string name="phone_queue_cancel_unknown">unknown</string>
 </resources>

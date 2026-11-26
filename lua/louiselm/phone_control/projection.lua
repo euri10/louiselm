@@ -51,6 +51,48 @@ local function bounded(value)
   return value:sub(1, index - 1), index <= #value
 end
 
+---Project only committed queue display text and owner-reported state.
+---@param state louiselm.session.QueueState Native Session queue snapshot.
+---@return table queue Bounded current-only fields; unacknowledged proposals are excluded.
+function M.queue(state)
+  local function entry(value)
+    local text, truncated = bounded(value.display_text)
+    local low, high = 0, #text
+    while low < high do
+      local middle = math.floor((low + high + 1) / 2)
+      local finish = middle
+      while finish > 0 and text:byte(finish + 1) and text:byte(finish + 1) >= 128 and text:byte(finish + 1) < 192 do
+        finish = finish - 1
+      end
+      if #nvim.json.encode({ text = text:sub(1, finish) }) <= 512 then
+        low = middle
+      else
+        high = middle - 1
+      end
+    end
+    while low > 0 and text:byte(low + 1) and text:byte(low + 1) >= 128 and text:byte(low + 1) < 192 do
+      low = low - 1
+    end
+    return { id = value.id, text = text:sub(1, low), truncated = truncated or low < #text }
+  end
+  local entries = {}
+  for _, value in ipairs(state.entries) do
+    entries[#entries + 1] = entry(value)
+  end
+  local result = { revision = state.revision, paused = state.paused, uncertain = state.uncertain, entries = entries }
+  if state.active ~= nil then
+    result.active = { entry = entry(state.active), status = state.active_status }
+  end
+  if state.replacement ~= nil then
+    result.replacement = {
+      entry = entry(state.replacement.entry),
+      status = state.replacement.status,
+      cancellation = state.replacement.cancellation,
+    }
+  end
+  return result
+end
+
 ---Select display-only fields from the Session's active permission event.
 ---@param data louiselm.session.PermissionData Active request owned by the Session.
 ---@return louiselm.session.CurrentPermission permission Bounded display fields; no response authority.

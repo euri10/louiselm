@@ -797,6 +797,19 @@ function Controller:read(line, callback)
                 subject.history_subject = page.subject
                 page.subject = nil
                 page.settings = nvim.deepcopy(subject.projection.settings)
+                if type(subject.session.queue_inspect) == "function" then
+                  page.queue = Projection.queue(subject.session:queue_inspect())
+                  local queue = page.queue
+                  for _, entry in ipairs(queue.entries) do
+                    page.complete = page.complete and not entry.truncated
+                  end
+                  if queue.active ~= nil then
+                    page.complete = page.complete and not queue.active.entry.truncated
+                  end
+                  if queue.replacement ~= nil then
+                    page.complete = page.complete and not queue.replacement.entry.truncated
+                  end
+                end
                 page.v, page.type = 2, "session_page"
                 page.controller_id, page.subject_id, page.operation_id =
                   attached, request.subject_id, request.operation_id

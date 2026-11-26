@@ -3153,13 +3153,13 @@ class PhoneControlActivity : Activity() {
             }
             val refresh = result.refresh
             val page = refresh.page
-            if (previous != null && page.revision == previous.revision && (page.settings != previous.settings || page.currentPermission != previous.currentPermission || page.currentInteractions != previous.currentInteractions)) {
+            if (previous != null && page.revision == previous.revision && (page.settings != previous.settings || page.currentPermission != previous.currentPermission || page.currentInteractions != previous.currentInteractions || page.queue != previous.queue)) {
                 showFailure(PhoneControlOutcome.MALFORMED)
                 return@task
             }
             val unchanged = !older && !interaction && !refresh.missingOlder && previous != null && page.revision == previous.revision
             if (older) {
-                if (previous == null || page.revision != previous.revision || page.status != previous.status || page.settings != previous.settings || page.currentPermission != previous.currentPermission || page.currentInteractions != previous.currentInteractions ||
+                if (previous == null || page.revision != previous.revision || page.status != previous.status || page.settings != previous.settings || page.currentPermission != previous.currentPermission || page.currentInteractions != previous.currentInteractions || page.queue != previous.queue ||
                     page.entries.any { it.seq >= before } || (page.nextBefore != 0L && page.nextBefore >= before) ||
                     (page.entries.isNotEmpty() && previous.entries.isNotEmpty() &&
                         page.entries.last().seq >= previous.entries.first().seq)) {
@@ -3217,6 +3217,26 @@ class PhoneControlActivity : Activity() {
             line(getString(R.string.phone_setting_model, value(page.settings.model)))
             line(getString(R.string.phone_setting_effort, value(page.settings.effort)))
             line(getString(R.string.phone_setting_access, value(page.settings.mode)))
+            page.queue?.let { queue ->
+                fun queueEntry(label: String, entry: PhoneQueueEntry) {
+                    line(getString(R.string.phone_queue_entry, label, entry.text))
+                    if (entry.truncated) line(getString(R.string.phone_truncated))
+                }
+                line(getString(R.string.phone_queue_heading))
+                if (queue.paused) line(getString(R.string.phone_queue_paused))
+                if (queue.uncertain) line(getString(R.string.phone_queue_uncertain))
+                queue.active?.let { active ->
+                    queueEntry(getString(R.string.phone_queue_active, queueState(active.status)), active.entry)
+                }
+                if (queue.entries.isEmpty()) line(getString(R.string.phone_queue_empty))
+                for ((index, entry) in queue.entries.withIndex()) {
+                    queueEntry(getString(R.string.phone_queue_waiting, index + 1), entry)
+                }
+                queue.replacement?.let { replacement ->
+                    queueEntry(getString(R.string.phone_queue_replacement, queueState(replacement.status)), replacement.entry)
+                    line(getString(R.string.phone_queue_cancellation, queueCancellation(replacement.cancellation)))
+                }
+            } ?: line(getString(R.string.phone_queue_unavailable))
             page.currentPermission?.let { permission ->
                 line(getString(R.string.phone_current_permission, value(permission.title)))
                 for (option in permission.options) line(getString(R.string.phone_permission_option, value(option)))
@@ -3253,6 +3273,25 @@ class PhoneControlActivity : Activity() {
             }
         }
     }
+
+    private fun queueState(status: String): String = getString(when (status) {
+        "admitting" -> R.string.phone_queue_state_admitting
+        "dispatched" -> R.string.phone_queue_state_dispatched
+        "not_sent" -> R.string.phone_queue_state_not_sent
+        "uncertain" -> R.string.phone_queue_state_uncertain
+        "cancelling" -> R.string.phone_queue_state_cancelling
+        "acknowledged" -> R.string.phone_queue_state_acknowledged
+        else -> R.string.phone_queue_state_unsent
+    })
+
+    private fun queueCancellation(status: String): String = getString(when (status) {
+        "requesting" -> R.string.phone_queue_cancel_requesting
+        "requested" -> R.string.phone_queue_cancel_requested
+        "acknowledged" -> R.string.phone_queue_cancel_acknowledged
+        "completed" -> R.string.phone_queue_cancel_completed
+        "not_sent" -> R.string.phone_queue_cancel_not_sent
+        else -> R.string.phone_queue_cancel_unknown
+    })
 
     private fun sessionState(status: String): String {
         val state = when (status) {
