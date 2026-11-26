@@ -847,6 +847,13 @@ T["VimLeavePre retains the saved queue for paused restart recovery"] = function(
 end
 
 T["Stop-and-send waits for cancellation and keeps ordinary work paused"] = function()
+  local holding, release, released = true, nil, false
+  MiniTest.finally(function()
+    holding = false
+    if release ~= nil and not released then
+      release()
+    end
+  end)
   local _, session = fixture()
   local permissions, dispatched = {}, {}
   session:on(function(event)
@@ -879,18 +886,64 @@ T["Stop-and-send waits for cancellation and keeps ordinary work paused"] = funct
   local queue = session:queue_inspect()
   MiniTest.expect.equality(queue.paused, true)
   MiniTest.expect.equality(queue.entries[1].display_text, "ordinary waiting")
+  wait_for(function()
+    local current = session:queue_inspect()
+    return current.replacement ~= nil and current.replacement.status == "dispatched" and not current.pending
+  end)
+  local store = session.owner.queue_store
+  local save = store.save
+  -- Hold the real completion write's acknowledgement to order Continue behind it.
+  store.save = function(self, id, revision, snapshot, callback)
+    if snapshot.state.replacement == nil and not snapshot.state.disposed and release == nil then
+      save(self, id, revision, snapshot, function(err)
+        if not holding then
+          callback(err)
+          return
+        end
+        release = function()
+          released = true
+          nvim.schedule(function()
+            callback(err)
+          end)
+        end
+      end)
+    else
+      save(self, id, revision, snapshot, callback)
+    end
+  end
   assert(permissions[2].respond({ outcome = { outcome = "selected", optionId = "allow-once" } }))
   wait_for(function()
-    return session:inspect().status == "ready"
+    return session:inspect().status == "ready" and release ~= nil
   end)
-  nvim.wait(50)
   MiniTest.expect.equality(#dispatched, 2)
+  local stale = session:queue_inspect()
+  MiniTest.expect.equality(stale.pending, true)
+  MiniTest.expect.equality(stale.replacement.status, "dispatched")
+  MiniTest.expect.equality(stale.replacement.cancellation, "acknowledged")
+  local done, changed, err
+  assert(session:queue_continue(stale.revision, function(ok, failure_message)
+    done, changed, err = true, ok, failure_message
+  end))
+  release()
+  wait_for(function()
+    return done
+  end)
+  MiniTest.expect.equality({ changed, err }, { false, "queue changed; review it again" })
+  wait_for(function()
+    local current = session:queue_inspect()
+    return current.replacement == nil and not current.pending
+  end)
+  local completed = session:queue_inspect()
+  MiniTest.expect.equality(completed.revision, stale.revision + 1)
+  MiniTest.expect.equality(completed.paused, true)
+  MiniTest.expect.equality(completed.entries[1].display_text, "ordinary waiting")
   assert(change(function(callback)
-    return session:queue_continue(session:queue_inspect().revision, callback)
+    return session:queue_continue(completed.revision, callback)
   end))
   wait_for(function()
     return #dispatched == 3
   end)
+  MiniTest.expect.equality(dispatched[3].display_text, "ordinary waiting")
 end
 
 T["a full queue reserves one replacement and old Stops cannot cancel its new turn"] = function()
