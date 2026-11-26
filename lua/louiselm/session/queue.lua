@@ -394,7 +394,9 @@ end
 
 local function enqueue_operation(self, operation, cancel)
   self.operations[#self.operations + 1] = { run = operation, cancel = cancel }
-  next_operation(self)
+  nvim.schedule(function()
+    next_operation(self)
+  end)
 end
 
 local function valid_entry(prompt, metadata, display_text, contexts)

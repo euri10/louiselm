@@ -2490,6 +2490,19 @@ end
 ---@return string? error_message ACP write or state error.
 function Session:cancel()
   if
+    self.state.status == "ready"
+    and self.queue ~= nil
+    and (
+      self.queue.busy
+      or #self.queue.operations > 0
+      or #self.queue.state.entries > 0
+      or self.queue.state.active ~= nil
+    )
+  then
+    self.queue:pause("turn stopped; review the queue")
+    return true
+  end
+  if
     self.state.status == "admitting"
     or self.state.status == "preparing"
     or self.state.status == "prompting"

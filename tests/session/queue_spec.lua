@@ -595,19 +595,32 @@ T["waiting work is bounded, editable by revision, and Stop pauses until Continue
   for index = 1, 20 do
     ids[index] = assert(admit(session, "waiting " .. index))
   end
-  local id, full = admit(session, "one too many")
-  MiniTest.expect.equality(id, nil)
-  MiniTest.expect.equality(full, "Session queue is full (20 waiting instructions)")
+  local returned, rejected
+  assert(session:enqueue("one too many", function(id, err)
+    assert(returned, "queue-full callback ran before enqueue returned")
+    rejected = { id, err }
+  end))
+  returned = true
+  wait_for(function()
+    return rejected ~= nil
+  end)
+  MiniTest.expect.equality(rejected[1], nil)
+  MiniTest.expect.equality(rejected[2], "Session queue is full (20 waiting instructions)")
   local initial = session:queue_inspect()
   MiniTest.expect.equality(#initial.entries, 20)
   assert(change(function(callback)
     return session:queue_move(ids[20], 1, initial.revision, callback)
   end))
-  local stale, stale_error = change(function(callback)
-    return session:queue_cancel(ids[1], initial.revision, callback)
+  returned, rejected = false, nil
+  assert(session:queue_cancel(ids[1], initial.revision, function(changed, err)
+    assert(returned, "stale-revision callback ran before queue_cancel returned")
+    rejected = { changed, err }
+  end))
+  returned = true
+  wait_for(function()
+    return rejected ~= nil
   end)
-  MiniTest.expect.equality(stale, false)
-  MiniTest.expect.equality(stale_error, "queue changed; review it again")
+  MiniTest.expect.equality(rejected, { false, "queue changed; review it again" })
   local reordered = session:queue_inspect()
   MiniTest.expect.equality(reordered.entries[1].id, ids[20])
   assert(change(function(callback)
@@ -705,6 +718,41 @@ T["Stop also pauses a queue created after cancellation begins"] = function()
   wait_for(function()
     return #dispatched == 2
   end)
+end
+
+T["Stop pauses an idle Session while a queued dispatch is committing"] = function()
+  local release, released
+  MiniTest.finally(function()
+    if release ~= nil and not released then
+      release()
+    end
+  end)
+  local _, session = fixture(nil, nil, "echo")
+  local store = session.owner.queue_store
+  local save = store.save
+  store.save = function(self, id, revision, snapshot, callback)
+    if snapshot.state.active_status == "admitting" and release == nil then
+      release = function()
+        released = true
+        save(self, id, revision, snapshot, callback)
+      end
+    else
+      save(self, id, revision, snapshot, callback)
+    end
+  end
+  assert(admit(session, "must stay paused"))
+  wait_for(function()
+    return release ~= nil
+  end)
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  assert(session:cancel())
+  release()
+  wait_for(function()
+    local queue = session:queue_inspect()
+    return queue.paused and not queue.pending
+  end)
+  MiniTest.expect.equality(session:inspect().current_turn, 0)
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "must stay paused")
 end
 
 T["a crashed editor recovers its waiting payload paused without replaying an uncertain turn"] = function()
