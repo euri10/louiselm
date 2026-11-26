@@ -100,7 +100,8 @@ def setup(capture, installer, templates, manual_assets):
 
 def verify(after_reboot):
     if after_reboot:
-        previous = (BASE / "initial-boot-id").read_text().strip()
+        last = BASE / "last-verified-boot-id"
+        previous = (last if last.exists() else BASE / "initial-boot-id").read_text().strip()
         current = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         assert previous != current, "expected a different guest boot ID"
     normal = json.loads(as_operator("pairing-status").stdout)
@@ -128,6 +129,7 @@ def verify(after_reboot):
     assert len(captures) == 1 and captures[0]["record"]["duration_ms"] == 1
     print("manual and user-unit queries: registered root and alias matched, other root refused, capture list healthy")
     if after_reboot:
+        last.write_text(current + "\n")
         print(f"guest reboot verified: {previous} -> {current}")
 
 
@@ -141,9 +143,40 @@ def without_service():
     print("absent socket: pairing query unavailable; capture list and status remain healthy")
 
 
+def move_root():
+    root = BASE / "state/louiselm/capture"
+    moved = root.with_name("capture-moved")
+    if moved.exists() or root.is_symlink():
+        raise RuntimeError("fixture root was already moved")
+    root.rename(moved)
+    root.symlink_to(moved.name)
+    print("registered fixture root moved; its former path is an alias")
+
+
+def without_host():
+    catalog = Path("/var/lib/louiselm-phone-host/catalog.json")
+    held = catalog.with_name("catalog.gate-hold")
+    if held.exists() or not catalog.is_file():
+        raise RuntimeError("fixture catalog is unavailable or already held")
+    run("systemctl", "stop", HOST_UNIT.name)
+    catalog.rename(held)
+    try:
+        result = as_operator("pairing-status", check=False)
+        assert result.returncode != 0 and not result.stdout, result.stdout
+        host = run("systemctl", "is-failed", HOST_UNIT.name, check=False)
+        assert host.stdout.strip() == "failed", host.stdout
+        assert len(json.loads(as_operator("list").stdout)) == 1
+        json.loads(as_operator("status").stdout)
+    finally:
+        held.rename(catalog)
+        run("systemctl", "reset-failed", HOST_UNIT.name)
+        run("systemctl", "start", HOST_UNIT.name)
+    print("missing fixture catalog: query unavailable; capture list and status remain healthy")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=("setup", "verify", "without-service"))
+    parser.add_argument("phase", choices=("setup", "verify", "without-service", "move-root", "without-host"))
     parser.add_argument("--capture", type=Path)
     parser.add_argument("--installer", type=Path)
     parser.add_argument("--templates", type=Path)
@@ -160,8 +193,12 @@ def main():
         setup(args.capture, args.installer, args.templates, args.manual_assets)
     elif args.phase == "verify":
         verify(args.after_reboot)
-    else:
+    elif args.phase == "without-service":
         without_service()
+    elif args.phase == "move-root":
+        move_root()
+    else:
+        without_host()
 
 
 if __name__ == "__main__":
