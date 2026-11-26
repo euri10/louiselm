@@ -125,7 +125,14 @@ T["one actionable incompatibility warning while ordinary chat turns remain usabl
       chat:dispose()
     end
     paste:dispose()
-    assert(api:dispose())
+    local disposed, disposal_error
+    assert(api:dispose(function(ok, err)
+      disposed, disposal_error = ok, err
+    end))
+    wait_for(function()
+      return disposed ~= nil
+    end)
+    assert(disposed, disposal_error)
     local settled, failure = false, nil
     api:flush_recording(function(err)
       settled, failure = true, err

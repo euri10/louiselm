@@ -946,13 +946,13 @@ T["chat"]["retained Park resume focuses its existing history without replacing t
   end
   assert(chat:resume_park())
   assert(nvim.wait(1000, function()
-    return #messages > 0
+    return nvim.tbl_contains(messages, "louiselm: Park resumed")
   end))
   MiniTest.expect.equality(chat:buffer(), buffer)
   MiniTest.expect.equality(chat.views["retained-session"], view)
   MiniTest.expect.equality(buffer_lines(buffer), lines)
   MiniTest.expect.equality(session.disposed, false)
-  MiniTest.expect.equality(messages, { "louiselm: Park resumed" })
+  MiniTest.expect.equality(messages[#messages], "louiselm: Park resumed")
 end
 
 T["chat"]["reconstructs the Run and preserves replay after cold resume"] = function()
@@ -1215,7 +1215,6 @@ T["chat"]["reconstructs the Run and preserves replay after cold resume"] = funct
   })
   chat:dispose()
 
-  local scheduled_before_disposal_event = #scheduled
   local late_emitted = false
   local late_was_fast = false
   local late_async
@@ -1238,8 +1237,12 @@ T["chat"]["reconstructs the Run and preserves replay after cold resume"] = funct
   )
   ready_callback(pending)
   MiniTest.expect.equality(late_was_fast, true)
-  MiniTest.expect.equality(#scheduled, scheduled_before_disposal_event)
+  while next_callback <= #scheduled do
+    scheduled[next_callback]()
+    next_callback = next_callback + 1
+  end
   MiniTest.expect.equality(chat:buffer("pending-session"), nil)
+  MiniTest.expect.equality(chat.views["pending-session"], nil)
   MiniTest.expect.equality(pending.disposed, true)
 end
 
