@@ -60,6 +60,49 @@ consumers still need a single authenticated, continuously held scope and their
 own store, exclusion, and recovery proofs. Capture-only use and unrelated reads
 do not call this candidate and remain available under their existing rules.
 
+## Manager handoff and remaining boundary
+
+The installer closes the selected directory after recording its device and
+inode. The catalog does not retain an open directory or a persistent filesystem
+handle. A later match cannot by itself establish that the same physical root
+survived: an inode number can be reused. The boot unit authenticates its own
+network namespace against PID 1, but exits after writing the reference; it does
+not authenticate the reference to an independently started caller.
+
+The system manager can provide a narrower, independently sourced handoff. In a
+disposable Debian 13 systemd guest, PID 1's
+[`OpenFile=`](https://www.freedesktop.org/software/systemd/man/257/systemd.service.html#OpenFile=)
+opened an administrator-selected root, `/proc`, and PID 1's network namespace
+and passed the descriptors into an unprivileged system-service fixture. The
+fixture held the root while reading through it: the selected root and an alias
+succeeded, and a different directory was refused. This exercised the actual
+manager and kernel descriptor handoff, but the fixture was not the capture
+service and did not perform a protected phone operation. It is not a usable
+scope API or proof of first enrollment, registrar exclusion, recovery, or Send.
+
+For that managed case, PID 1 vouches for the descriptors it opens and the
+process it starts; the kernel keeps the opened root and namespace references
+alive. A descriptor number or `LISTEN_PID` supplied by an arbitrary process
+does not itself prove that provenance. The existing manual CLI and user service
+do not receive this PID 1 handoff. A hardened user-service fixture saw the real
+root service's peer UID as 65534, so accepting `SO_PEERCRED` as UID 0 is not a
+substitute for an authenticated handoff in that mode.
+
+The smallest demonstrated route is to give real unprivileged operations a
+manager-established root and host reference, keep them for the operations'
+lifetimes, and make the actual store I/O use the held root. Manual and user
+entry points need an equally trusted handoff, such as mediation by an
+administrator-installed, on-demand system service; accepting a caller-provided
+descriptor or pathname is insufficient. Such mediation adds a system-service
+dependency for affected operations, which must remain unavailable when it is
+absent. Reopening the registered root after reboot also needs a durable
+filesystem identity and a supported persistent file handle, or another proven
+binding: Linux [file handles](https://man7.org/linux/man-pages/man2/open_by_handle_at.2.html)
+are filesystem-dependent, require privilege to reopen, and their mount IDs are
+not persistent. Neither this handoff nor a file handle proves local-only or
+cross-host exclusion. No new witness or change to the supported deployment is
+assumed here.
+
 Run `python3 scripts/test-phone-host.py` for the unprivileged filesystem
 fixtures. Installation, ordinary operator access, service restart, and actual
 reboot require an isolated disposable systemd guest. These checks do not prove
