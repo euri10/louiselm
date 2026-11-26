@@ -6,8 +6,10 @@
 ---| "tool_call_finished"
 ---| "permission_requested"
 ---| "permission_cancelled"
+---| "permission_resolved"
 ---| "interaction_requested"
 ---| "interaction_cancelled"
+---| "interaction_retired"
 ---| "config_options_changed"
 ---| "commands_changed"
 ---| "usage_updated"
@@ -125,11 +127,15 @@
 ---@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? Permission response callback.
 
 ---@class louiselm.session.PermissionCancelledData
----@field request_ids (string|number)[] ACP requests the session answered on the consumer's behalf.
+---@field request_ids (string|number)[] Requests whose UI authority was retired by Session cancellation, failure or Disposal; no delivery claim.
 
 ---@class louiselm.session.PermissionCancelledEvent: louiselm.session.EventBase
 ---@field type "permission_cancelled"
 ---@field data louiselm.session.PermissionCancelledData
+
+---@class louiselm.session.PermissionResolvedEvent: louiselm.session.EventBase
+---@field type "permission_resolved"
+---@field data louiselm.session.PermissionCancelledData Requests answered through their Session responder; retire other presentations.
 
 ---@class louiselm.session.QuestionOption
 ---@field label string Offered answer, preserved verbatim.
@@ -175,7 +181,7 @@
 ---@class louiselm.session.InteractionRequestedEvent: louiselm.session.EventBase
 ---@field type "interaction_requested"
 ---@field data louiselm.session.InteractionData Validated, owned snapshot; never persisted by default.
----@field claim fun(): boolean Claim asynchronous response ownership during event delivery; only the first claimant succeeds. Without a claim or synchronous answer, headless behavior cancels both kinds, never approves a plan.
+---@field claim fun(owner?: "chat"): boolean Claim asynchronous response ownership during event delivery. Desktop Chat views may share a chat claim; other consumers remain exclusive. Without a claim or synchronous answer, headless behavior cancels both kinds, never approves a plan.
 ---@field respond fun(result: louiselm.session.InteractionResponse): boolean, string? Validate/send once; malformed answers leave it pending, terminal cleanup makes late responses inert.
 
 ---@class louiselm.session.InteractionCancelledData
@@ -184,6 +190,10 @@
 ---@class louiselm.session.InteractionCancelledEvent: louiselm.session.EventBase
 ---@field type "interaction_cancelled"
 ---@field data louiselm.session.InteractionCancelledData Retire consumer UI without responding again.
+
+---@class louiselm.session.InteractionRetiredEvent: louiselm.session.EventBase
+---@field type "interaction_retired"
+---@field data louiselm.session.InteractionCancelledData The Session responder is no longer actionable; this does not assert delivery.
 
 ---@class louiselm.session.GenericEvent: louiselm.session.EventBase
 ---@field type "chunk"|"user_chunk"|"thought_chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"
@@ -202,7 +212,7 @@
 ---`can_continue: boolean`: true permits separately authorized queued work to continue;
 ---false requires operator recovery of the Agent/Session. No failed prompt is replayed.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PromptDispatchedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.QueueChangedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.InteractionRequestedEvent|louiselm.session.InteractionCancelledEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PromptDispatchedEvent|louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.QueueChangedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionResolvedEvent|louiselm.session.InteractionRequestedEvent|louiselm.session.InteractionCancelledEvent|louiselm.session.InteractionRetiredEvent|louiselm.session.ErrorEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

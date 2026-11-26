@@ -1323,6 +1323,277 @@ T["two desktop views keep private drafts when replacements compete"] = function(
   MiniTest.expect.equality(second_view.renderer:prompt_text(), "private second draft")
 end
 
+T["disposing one desktop view does not answer another view's permission"] = function()
+  local api, session = fixture()
+  local function decisions(visible)
+    return Decisions.new({
+      is_visible = function()
+        return visible
+      end,
+      is_live = function()
+        return true
+      end,
+      report_error = function() end,
+      resolved = function() end,
+    })
+  end
+  local first_decisions, second_decisions = decisions(false), decisions(false)
+  local first = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = first_decisions })
+  )
+  local second = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = second_decisions })
+  )
+  MiniTest.finally(function()
+    first:dispose()
+    second:dispose()
+    first_decisions:dispose()
+    second_decisions:dispose()
+  end)
+  assert(first:attach(session))
+  local permission
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission = event
+    end
+  end)
+  assert(session:prompt("request a decision"))
+  wait_for(function()
+    return permission ~= nil
+  end)
+  assert(second:attach(session))
+  local request_id = permission.data.request_id
+  wait_for(function()
+    return second_decisions:has_request(session, request_id, false)
+  end)
+  first:dispose()
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  assert(permission.respond({ outcome = { outcome = "selected", optionId = "allow-once" } }))
+  wait_for(function()
+    return not second_decisions:has_request(session, request_id, false)
+  end)
+end
+
+T["disposing one desktop view keeps a typed interaction in the other"] = function()
+  local api, session = fixture(nil, nil, "echo", nvim.fn.getcwd() .. "/tests/fixtures/grok_ask_user_question.json")
+  local function decisions(visible)
+    return Decisions.new({
+      is_visible = function()
+        return visible
+      end,
+      is_live = function()
+        return true
+      end,
+      report_error = function() end,
+      resolved = function() end,
+    })
+  end
+  local first_decisions, second_decisions = decisions(false), decisions(false)
+  local first = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = first_decisions })
+  )
+  local second = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = second_decisions })
+  )
+  MiniTest.finally(function()
+    first:dispose()
+    second:dispose()
+    first_decisions:dispose()
+    second_decisions:dispose()
+  end)
+  assert(first:attach(session))
+  local interaction
+  session:on(function(event)
+    if event.type == "interaction_requested" then
+      interaction = event
+    end
+  end)
+  assert(session:prompt("request an interaction"))
+  wait_for(function()
+    return interaction ~= nil
+  end)
+  assert(second:attach(session))
+  local request_id = interaction.data.request_id
+  wait_for(function()
+    return second_decisions:has_request(session, request_id, true)
+  end)
+  first:dispose()
+  MiniTest.expect.equality(#session.interactions, 1)
+  assert(interaction.respond({ outcome = "cancelled" }))
+  wait_for(function()
+    return not second_decisions:has_request(session, request_id, true)
+  end)
+end
+
+T["a desktop view cannot steal a headless interaction claim"] = function()
+  local api, session = fixture(nil, nil, "echo", nvim.fn.getcwd() .. "/tests/fixtures/grok_ask_user_question.json")
+  local interaction
+  session:on(function(event)
+    if event.type == "interaction_requested" then
+      assert(event.claim())
+      interaction = event
+    end
+  end)
+  assert(session:prompt("request an interaction"))
+  wait_for(function()
+    return interaction ~= nil
+  end)
+  local decisions = Decisions.new({
+    is_visible = function()
+      return false
+    end,
+    is_live = function()
+      return true
+    end,
+    report_error = function() end,
+    resolved = function() end,
+  })
+  local chat =
+    assert(Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = decisions }))
+  MiniTest.finally(function()
+    chat:dispose()
+    decisions:dispose()
+  end)
+  assert(chat:attach(session))
+  MiniTest.expect.equality(decisions:has_request(session, interaction.data.request_id, true), false)
+  assert(interaction.respond({ outcome = "cancelled" }))
+end
+
+T["a shared decision controller survives its creating Chat view"] = function()
+  local api, session = fixture()
+  local first = assert(Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false }))
+  local second = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = first.decisions })
+  )
+  MiniTest.finally(function()
+    first:dispose()
+    second:dispose()
+  end)
+  assert(first:attach(session))
+  assert(second:attach(session))
+  nvim.api.nvim_set_current_buf(first.views[session:inspect().id].source_buffer)
+  local permission
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission = event
+    end
+  end)
+  assert(session:prompt("request a decision"))
+  wait_for(function()
+    return permission ~= nil
+  end)
+  local request_id = permission.data.request_id
+  assert(first.decisions:has_request(session, request_id, false))
+  first:dispose()
+  nvim.wait(50)
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  assert(second.decisions:has_request(session, request_id, false))
+  assert(permission.respond({ outcome = { outcome = "selected", optionId = "allow-once" } }))
+  MiniTest.expect.equality(second.decisions:has_request(session, request_id, false), false)
+end
+
+T["Stop retires permission authority in both desktop views"] = function()
+  local api, session = fixture()
+  local function decisions()
+    return Decisions.new({
+      is_visible = function()
+        return false
+      end,
+      is_live = function()
+        return true
+      end,
+      report_error = function() end,
+      resolved = function() end,
+    })
+  end
+  local first_decisions, second_decisions = decisions(), decisions()
+  local first = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = first_decisions })
+  )
+  local second = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = second_decisions })
+  )
+  MiniTest.finally(function()
+    first:dispose()
+    second:dispose()
+    first_decisions:dispose()
+    second_decisions:dispose()
+  end)
+  assert(first:attach(session))
+  assert(second:attach(session))
+  local permission
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission = event
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return permission ~= nil
+  end)
+  local request_id = permission.data.request_id
+  assert(first_decisions:has_request(session, request_id, false))
+  assert(second_decisions:has_request(session, request_id, false))
+  assert(session:stop(target))
+  MiniTest.expect.equality(first_decisions:has_request(session, request_id, false), false)
+  MiniTest.expect.equality(second_decisions:has_request(session, request_id, false), false)
+  local sent = permission.respond({ outcome = { outcome = "selected", optionId = "allow-once" } })
+  MiniTest.expect.equality(sent, false)
+  wait_for(function()
+    return session:queue_inspect().paused
+  end)
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+end
+
+T["Session Disposal retires permission authority in every attached view"] = function()
+  local api, session = fixture()
+  local function decisions()
+    return Decisions.new({
+      is_visible = function()
+        return false
+      end,
+      is_live = function()
+        return true
+      end,
+      report_error = function() end,
+      resolved = function() end,
+    })
+  end
+  local first_decisions, second_decisions = decisions(), decisions()
+  local first = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = first_decisions })
+  )
+  local second = assert(
+    Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false, decisions = second_decisions })
+  )
+  MiniTest.finally(function()
+    first:dispose()
+    second:dispose()
+    first_decisions:dispose()
+    second_decisions:dispose()
+  end)
+  assert(first:attach(session))
+  assert(second:attach(session))
+  local permission
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission = event
+    end
+  end)
+  assert(session:prompt("active"))
+  wait_for(function()
+    return permission ~= nil
+  end)
+  local request_id = permission.data.request_id
+  assert(first_decisions:has_request(session, request_id, false))
+  assert(second_decisions:has_request(session, request_id, false))
+  assert(session:dispose())
+  MiniTest.expect.equality(first_decisions:has_request(session, request_id, false), false)
+  MiniTest.expect.equality(second_decisions:has_request(session, request_id, false), false)
+  local sent = permission.respond({ outcome = { outcome = "selected", optionId = "allow-once" } })
+  MiniTest.expect.equality(sent, false)
+end
+
 T["a live owner cannot be displaced and a reused local ID cannot adopt its queue"] = function()
   local api, original = fixture()
   local permission

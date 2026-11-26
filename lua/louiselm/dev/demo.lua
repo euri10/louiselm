@@ -276,7 +276,7 @@ local function propose_edit(self, revision)
   if self.revision ~= revision or self.state.status ~= "waiting_permission" then
     return
   end
-  self.emitter:emit({
+  local event = {
     type = "permission_requested",
     session_id = self.state.id,
     data = {
@@ -308,6 +308,8 @@ local function propose_edit(self, revision)
         return false, "demo permission response must select an advertised option"
       end
       permission.answered = true
+      self.permission_event = nil
+      emit(self, "permission_resolved", { request_ids = { "demo-permission-" .. self.state.current_turn } })
       self.api.schedule(80, function()
         if self.revision ~= revision or self.state.status == "disposed" then
           return
@@ -333,7 +335,9 @@ local function propose_edit(self, revision)
       end)
       return true
     end,
-  })
+  }
+  self.permission_event = event
+  self.emitter:emit(event)
 end
 
 ---@param self table
@@ -594,6 +598,7 @@ local function cancel_turn(self)
   end
   if self.pending_permission ~= nil then
     self.pending_permission.answered = true
+    self.permission_event = nil
     emit(self, "permission_cancelled", { request_ids = { "demo-permission-" .. self.state.current_turn } })
   end
   self.revision = self.revision + 1
@@ -662,7 +667,12 @@ function Session:dispose()
     return true
   end
   self.revision = self.revision + 1
+  if self.pending_permission ~= nil and not self.pending_permission.answered then
+    self.pending_permission.answered = true
+    emit(self, "permission_cancelled", { request_ids = { "demo-permission-" .. self.state.current_turn } })
+  end
   self.pending_permission = nil
+  self.permission_event = nil
   self.active_tool = nil
   self.prompt_callback = nil
   set_status(self, "disposed")

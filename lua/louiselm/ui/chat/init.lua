@@ -1453,11 +1453,16 @@ local function observe_view_event(self, view, event)
   if event.type == "interaction_requested" then
     -- Claim before scheduling presentation, so headless fallback cannot race this
     -- attached consumer. A second view/observer cannot steal the same request.
-    if self.disposed or self.views[event.session_id] ~= view or not event.claim() then
+    if self.disposed or self.views[event.session_id] ~= view or not event.claim("chat") then
       return
     end
   end
-  if event.type == "permission_cancelled" or event.type == "interaction_cancelled" then
+  if
+    event.type == "permission_cancelled"
+    or event.type == "interaction_cancelled"
+    or event.type == "permission_resolved"
+    or event.type == "interaction_retired"
+  then
     -- Revoke authority before deferred presentation or teardown can answer it again.
     self.decisions:cancel(view.session, type(event.data) == "table" and event.data.request_ids or nil)
   end
@@ -1779,32 +1784,38 @@ function M.new(api, options)
     return nil, limits_error or "could not observe Agent account limits"
   end
   chat.limits_unsubscribe = limits_unsubscribe
+  local function decision_host(session, visible)
+    for view, owner in pairs(session.chat_views or {}) do
+      if
+        owner.decisions == chat.decisions
+        and not owner.disposed
+        and owner.views[session:inspect().id] == view
+        and nvim.api.nvim_buf_is_valid(view.renderer.buffer)
+        and (not visible or nvim.api.nvim_get_current_buf() == view.renderer.buffer)
+      then
+        return owner, view
+      end
+    end
+  end
   chat.decisions = options and options.decisions
     or Decisions.new({
       is_visible = function(session)
-        local view = chat.views[session:inspect().id]
-        return not chat.disposed
-          and view ~= nil
-          and view.session == session
-          and nvim.api.nvim_get_current_buf() == view.renderer.buffer
+        return decision_host(session, true) ~= nil
       end,
       is_live = function(session)
-        local view = chat.views[session:inspect().id]
-        return not chat.disposed
-          and view ~= nil
-          and view.session == session
-          and nvim.api.nvim_buf_is_valid(view.renderer.buffer)
+        return decision_host(session, false) ~= nil
       end,
       report_error = function(session, message)
-        local view = chat.views[session:inspect().id]
-        if view ~= nil and view.session == session then
+        local _, view = decision_host(session, false)
+        if view ~= nil then
           view.renderer:append({ "Error: " .. message })
         end
       end,
       resolved = function(session, request_id)
         local state = session:inspect()
-        if chat.attention ~= nil and state.acp_session_id ~= nil then
-          chat.attention:permission_resolved(state.acp_session_id, request_id)
+        local owner = decision_host(session, false)
+        if owner ~= nil and owner.attention ~= nil and state.acp_session_id ~= nil then
+          owner.attention:permission_resolved(state.acp_session_id, request_id)
         end
       end,
     })
@@ -1965,7 +1976,20 @@ local function attach_session(self, session, event_relay, background)
     end
   end
   self.views[state.id] = view
+  session.chat_views = session.chat_views or {}
+  session.chat_views[view] = self
+  self.decisions.chat_owners = (self.decisions.chat_owners or 0) + 1
   self.view_order[#self.view_order + 1] = state.id
+  if event_relay == nil then
+    if session.permission_event ~= nil then
+      observe_view_event(self, view, session.permission_event)
+    end
+    for _, interaction in ipairs(session.interactions or {}) do
+      if not interaction.answered and interaction.event ~= nil then
+        observe_view_event(self, view, interaction.event)
+      end
+    end
+  end
   if event_relay ~= nil then
     local events = event_relay.events or {}
     event_relay.events = nil
@@ -2572,6 +2596,27 @@ function Chat:to_markdown(session_id, path, callback, fetch)
   return cancel, nil
 end
 
+local function release_view(self, view, defer_retire)
+  local views = view.session.chat_views or {}
+  views[view] = nil
+  self.decisions.chat_owners = (self.decisions.chat_owners or 1) - 1
+  local other, same_controller = false, false
+  for _, owner in pairs(views) do
+    other = true
+    same_controller = same_controller or owner.decisions == self.decisions
+  end
+  if same_controller then
+    return
+  end
+  if other then
+    self.decisions:detach(view.session)
+  elseif defer_retire then
+    return true
+  else
+    self.decisions:retire(view.session)
+  end
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param replacement? string Successfully loaded replacement to focus if this view is current.
@@ -2650,7 +2695,7 @@ local function close_view(self, view, replacement, retain_session)
   restore_winbars(self)
   view.unsubscribe()
   self.views[id] = nil
-  self.decisions:retire(view.session)
+  release_view(self, view)
   for index, candidate in ipairs(self.view_order) do
     if candidate == id then
       table.remove(self.view_order, index)
@@ -3791,11 +3836,21 @@ function Chat:dispose()
     close_limits_timer(self, agent_name)
   end
   restore_winbars(self)
+  local retire = {}
+  for _, view in pairs(self.views) do
+    view.unsubscribe()
+    if release_view(self, view, true) then
+      retire[view.session] = true
+    end
+  end
   if self.owns_decisions then
+    self.decisions.dispose_when_unattached = true
+  end
+  if self.decisions.dispose_when_unattached and (self.decisions.chat_owners or 0) == 0 then
     self.decisions:dispose()
   else
-    for _, view in pairs(self.views) do
-      self.decisions:retire(view.session)
+    for session in pairs(retire) do
+      self.decisions:retire(session)
     end
     self.decisions:present_next(self.session_picker_suspension)
   end

@@ -229,7 +229,7 @@ string|table
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `launch_request: (louiselm.acp.LaunchRequest)?` -- Launch through the installed supervisor instead of the configured command.
 - `name: string?` -- Explicit persistent display name; loading without one restores the saved name.
-- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))?` -- Initial event listener.
+- `on_event: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
 - `resume_mode: string?` -- Explicit replacement permission mode for an unmanaged load only; the Agent must acknowledge it. Never inferred from defaults.
@@ -246,8 +246,10 @@ string|table
 ### louiselm.session.InteractionEntry
 
 - `answered: boolean` -- Whether terminal ownership was settled, including a failed write.
+- `claim_owner: "chat"?` -- Whether the claim is shared by desktop Chat views.
 - `claimed: boolean` -- Whether an asynchronous consumer owns the response.
 - `data: louiselm.session.InteractionData` -- Owned request retained for response validation.
+- `event: (louiselm.session.InteractionRequestedEvent)?` -- Live request for newly attached views.
 - `respond: fun(result: unknown):boolean, string?` -- Raw ACP responder.
 
 ### louiselm.session.Session
@@ -258,6 +260,7 @@ string|table
 - `agent_running: boolean?` -- Agent-reported processing, independent of the client prompt response; nil until observed.
 - `attribution_error: (louiselm.session.RecordingError)?` -- Unresolved current Provider; cleared only by a confirmed correction.
 - `cancel: fun(self: louiselm.session.Session):boolean, string?`
+- `chat_views: table<table, louiselm.ui.Chat>?` -- Attached desktop view owners.
 - `client: (louiselm.acp.Client)?` -- ACP client.
 - `codex_turn_failed: boolean?` -- Active prompt received systemError before its terminal response.
 - `custom_name: string?` -- Explicit name supplied during this live Session, taking precedence over a pending restore.
@@ -272,7 +275,7 @@ string|table
 - `load_session_id: string?` -- Agent-side session identifier to load.
 - `mcp_servers: louiselm.mcp.WireServer[]` -- Owned ACP configuration; never included in inspectable state or recordings.
 - `name_read: fun()?` -- Cancel a pending custom name read.
-- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))):fun()`
+- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
 - `option_usage: fun(self: louiselm.session.Session, option_id: string, callback: fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError))`
@@ -280,6 +283,7 @@ string|table
 - `owner: louiselm.session.Registry` -- Registry that owns this session.
 - `owner_run: (louiselm.workflow.Run)?` -- Run that supervised construction of this Session.
 - `permission_active: (louiselm.session.PermissionEntry)?` -- Permission request published for a decision.
+- `permission_event: (louiselm.session.PermissionEvent)?` -- Live request for newly attached views.
 - `permission_policy: louiselm.permission.Policy` -- Policy for agent-requested operations.
 - `permission_queue: louiselm.session.PermissionEntry[]` -- Permission requests waiting for the active one.
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
@@ -425,7 +429,7 @@ fun(page?: louiselm.session.HistoryPage, error_code?: string)
 - `entries: table[]` -- References to owned transcript entries or bounded interaction projections.
 - `missing: boolean`
 - `read: fun(self: louiselm.session.History, request: louiselm.session.HistoryRequest, callback: fun(page?: louiselm.session.HistoryPage, error_code?: string)):fun()`
-- `record: fun(self: louiselm.session.History, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))`
+- `record: fun(self: louiselm.session.History, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))`
 - `recorded: integer`
 - `redacted: boolean`
 - `revision: integer`
@@ -467,7 +471,7 @@ louiselm.session.TranscriptEntryKind:
 - `entries: louiselm.session.TranscriptEntry[]` -- Recorded blocks, in arrival order.
 - `mark_handoff: fun(self: louiselm.session.Transcript, turn_id: string|number, source_session_id: string)` -- Attach Handoff provenance to an already-dispatched prompt.
 - `open_tool_calls: table<string, louiselm.session.TranscriptEntry>` -- Tool calls awaiting a terminal status, by ACP tool call id.
-- `record: fun(self: louiselm.session.Transcript, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))` -- Ingest one session event.
+- `record: fun(self: louiselm.session.Transcript, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))` -- Ingest one session event.
 - `record_handoff: fun(self: louiselm.session.Transcript, text: string, source_session_id: string)` -- Record a Handoff prompt and its source Session.
 - `record_user: fun(self: louiselm.session.Transcript, text: string)` -- Record a live, client-submitted prompt.
 - `snapshot: fun(self: louiselm.session.Transcript):louiselm.session.TranscriptEntry[]` -- Copy of recorded entries in order.
@@ -1006,8 +1010,10 @@ louiselm.session.EventType:
     | "tool_call_finished"
     | "permission_requested"
     | "permission_cancelled"
+    | "permission_resolved"
     | "interaction_requested"
     | "interaction_cancelled"
+    | "interaction_retired"
     | "config_options_changed"
     | "commands_changed"
     | "usage_updated"
@@ -1160,13 +1166,19 @@ louiselm.session.EventType:
 
 ### louiselm.session.PermissionCancelledData
 
-- `request_ids: (string|number)[]` -- ACP requests the session answered on the consumer's behalf.
+- `request_ids: (string|number)[]` -- Requests whose UI authority was retired by Session cancellation, failure or Disposal; no delivery claim.
 
 ### louiselm.session.PermissionCancelledEvent
 
 - `data: louiselm.session.PermissionCancelledData`
 - `session_id: string` -- Local session identifier.
 - `type: "permission_cancelled"`
+
+### louiselm.session.PermissionResolvedEvent
+
+- `data: louiselm.session.PermissionCancelledData` -- Requests answered through their Session responder; retire other presentations.
+- `session_id: string` -- Local session identifier.
+- `type: "permission_resolved"`
 
 ### louiselm.session.QuestionOption
 
@@ -1223,7 +1235,7 @@ louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louise
 
 ### louiselm.session.InteractionRequestedEvent
 
-- `claim: fun():boolean` -- Claim asynchronous response ownership during event delivery; only the first claimant succeeds. Without a claim or synchronous answer, headless behavior cancels both kinds, never approves a plan.
+- `claim: fun(owner?: "chat"):boolean` -- Claim asynchronous response ownership during event delivery. Desktop Chat views may share a chat claim; other consumers remain exclusive. Without a claim or synchronous answer, headless behavior cancels both kinds, never approves a plan.
 - `data: louiselm.session.InteractionData` -- Validated, owned snapshot; never persisted by default.
 - `respond: fun(result: louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louiselm.session.QuestionAccepted|louiselm.session.QuestionPartial):boolean, string?` -- Validate/send once; malformed answers leave it pending, terminal cleanup makes late responses inert.
 - `session_id: string` -- Local session identifier.
@@ -1238,6 +1250,12 @@ louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louise
 - `data: louiselm.session.InteractionCancelledData` -- Retire consumer UI without responding again.
 - `session_id: string` -- Local session identifier.
 - `type: "interaction_cancelled"`
+
+### louiselm.session.InteractionRetiredEvent
+
+- `data: louiselm.session.InteractionCancelledData` -- The Session responder is no longer actionable; this does not assert delivery.
+- `session_id: string` -- Local session identifier.
+- `type: "interaction_retired"`
 
 ### louiselm.session.GenericEvent
 
@@ -1254,22 +1272,22 @@ louiselm.session.InteractionCancelled|louiselm.session.PlanReviewResponse|louise
 ### louiselm.session.Event
 
 ```lua
-louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12)
+louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14)
 ```
 
 ### louiselm.session.EventCallback
 
 ```lua
-fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))
+fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))
 ```
 
 ### louiselm.session.EventEmitter
 
 - `clear: fun(self: louiselm.session.EventEmitter)`
-- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))`
-- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))>`
+- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))`
+- `listeners: table<integer, fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))>`
 - `next_id: integer` -- Next listener identifier.
-- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+12))):fun()` -- Remove the listener.
+- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.AdmissionDecisionEvent|louiselm.session.AdmissionSettlementEvent|louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent...(+14))):fun()` -- Remove the listener.
 - `order: integer[]` -- Listener registration order.
 
 ## Permission Policies

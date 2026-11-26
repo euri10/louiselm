@@ -97,6 +97,8 @@ local nvim = vim
 ---@field respond fun(result: unknown): boolean, string? Raw ACP responder.
 ---@field answered boolean Whether terminal ownership was settled, including a failed write.
 ---@field claimed boolean Whether an asynchronous consumer owns the response.
+---@field claim_owner? "chat" Whether the claim is shared by desktop Chat views.
+---@field event? louiselm.session.InteractionRequestedEvent Live request for newly attached views.
 
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.
@@ -133,10 +135,12 @@ local nvim = vim
 ---@field start_timeout_ms integer Milliseconds to wait for the ACP handshake before failing a Session stuck "starting".
 ---@field stderr_buffer string Recent stderr output from the agent process, most-recent-last.
 ---@field permission_active? louiselm.session.PermissionEntry Permission request published for a decision.
+---@field permission_event? louiselm.session.PermissionEvent Live request for newly attached views.
 ---@field permission_queue louiselm.session.PermissionEntry[] Permission requests waiting for the active one.
 ---@field interactions louiselm.session.InteractionEntry[] Pending vendor interactions, in arrival order.
 ---@field queue? louiselm.session.Queue Session-owned submitted instructions.
 ---@field queue_pause_reason? string Pause retained if a queue identity could not yet be allocated.
+---@field chat_views? table<table, louiselm.ui.Chat> Attached desktop view owners.
 ---@field disposal_callbacks? fun(disposed: boolean, error_message?: string)[] In-flight Disposal observers.
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
@@ -284,6 +288,7 @@ local function emit(self, event_type, data, respond)
   if
     self.state.status == "disposed"
     and event_type ~= "interaction_cancelled"
+    and event_type ~= "permission_cancelled"
     and not (event_type == "state_changed" and type(data) == "table" and data.status == "disposed")
   then
     return
@@ -292,6 +297,27 @@ local function emit(self, event_type, data, respond)
     self.emitter:emit({ type = event_type, session_id = self.state.id, data = data, respond = respond })
   else
     self.emitter:emit({ type = event_type, session_id = self.state.id, data = data })
+  end
+end
+
+local function retire_permissions(self)
+  local outstanding = self.permission_queue
+  local active = self.permission_active
+  self.permission_queue = {}
+  self.permission_active = nil
+  self.permission_event = nil
+  if active ~= nil then
+    table.insert(outstanding, 1, active)
+  end
+  local request_ids = {}
+  for _, entry in ipairs(outstanding) do
+    if not entry.answered then
+      entry.answered = true
+      request_ids[#request_ids + 1] = entry.data.request_id
+    end
+  end
+  if #request_ids > 0 then
+    emit(self, "permission_cancelled", { request_ids = request_ids })
   end
 end
 
@@ -418,8 +444,7 @@ local function fail(self, message, peer_response)
   if interaction_error ~= nil then
     message = message .. "; interaction cleanup failed: " .. interaction_error
   end
-  self.permission_active = nil
-  self.permission_queue = {}
+  retire_permissions(self)
   local client = self.client
   if client ~= nil then
     local closed, close_error = client:close()
@@ -837,7 +862,9 @@ local function send_permission(self, entry, result, rpc_error)
   entry.answered = true
   if self.permission_active == entry then
     self.permission_active = nil
+    self.permission_event = nil
   end
+  emit(self, "permission_resolved", { request_ids = { entry.data.request_id } })
   pump_permissions(self)
   if self.permission_active == nil and self.state.status == "waiting_permission" then
     local turn = self.recording_turn
@@ -932,9 +959,18 @@ pump_permissions = function(self)
     if not apply_remembered_permission(self, entry) then
       self.permission_active = entry
       set_status(self, "waiting_permission")
-      emit(self, "permission_requested", entry.data, function(result, rpc_error)
-        return respond_permission(self, entry, result, rpc_error)
-      end)
+      if self.permission_active == entry and self.state.status ~= "disposed" then
+        local event = {
+          type = "permission_requested",
+          session_id = self.state.id,
+          data = entry.data,
+          respond = function(result, rpc_error)
+            return respond_permission(self, entry, result, rpc_error)
+          end,
+        }
+        self.permission_event = event
+        self.emitter:emit(event)
+      end
     end
   end
 end
@@ -949,6 +985,7 @@ local function cancel_permissions(self)
   local active = self.permission_active
   self.permission_queue = {}
   self.permission_active = nil
+  self.permission_event = nil
   if active ~= nil then
     table.insert(outstanding, 1, active)
   end
@@ -1008,24 +1045,28 @@ local function handle_request(self, request, respond)
         end
       end
       local sent, err = entry.respond(response)
+      emit(self, "interaction_retired", { request_ids = { entry.data.request_id } })
       if not sent then
         fail(self, err or "could not answer xAI interaction")
       end
       return sent, err
     end
-    self.emitter:emit({
+    local event = {
       type = "interaction_requested",
       session_id = self.state.id,
       data = nvim.deepcopy(data),
       respond = answer,
-      claim = function()
-        if entry.answered or entry.claimed then
+      claim = function(owner)
+        if entry.answered or (entry.claimed and not (owner == "chat" and entry.claim_owner == "chat")) then
           return false
         end
         entry.claimed = true
+        entry.claim_owner = owner == "chat" and "chat" or nil
         return true
       end,
-    })
+    }
+    entry.event = event
+    self.emitter:emit(event)
     if not entry.claimed and not entry.answered then
       answer({ outcome = "cancelled" })
     end
@@ -2903,8 +2944,7 @@ function Session:dispose(reason, callback)
   set_status(self, needs_fence and "disposing" or "disposed")
   local interaction_error = cancel_interactions(self)
   self.permission_store:clear_session(self.state.id)
-  self.permission_active = nil
-  self.permission_queue = {}
+  retire_permissions(self)
   self.prompt_callback = nil
   if self.routing_read ~= nil then
     self.routing_read()

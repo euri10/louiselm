@@ -20,10 +20,14 @@ local nvim = vim
 ---@field package scheduled boolean Whether a focus check is already queued.
 ---@field package suspended? table Opaque navigation hold; only its matching completion releases it.
 ---@field package observer? integer Owned focus observer.
+---@field chat_owners? integer Attached Chat views using this controller.
+---@field dispose_when_unattached? boolean A creating Chat has released its ownership.
 ---@field request fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: unknown, respond?: (fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?), defer?: boolean) Queue one request, optionally deferring presentation.
 ---@field request_interaction fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, data: louiselm.session.InteractionData, respond: (fun(result: louiselm.session.InteractionResponse): boolean, string?), defer?: boolean) Queue a validated vendor interaction in the same slot.
 ---@field cancel fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, request_ids: unknown) Retire Session-cancelled requests.
+---@field has_request fun(self: louiselm.ui.Decisions, session: louiselm.session.Session, request_id: louiselm.acp.JsonRpcId, interaction: boolean): boolean Check whether a request is held.
 ---@field retire fun(self: louiselm.ui.Decisions, session: louiselm.session.Session) Retire a closing Session before selecting the survivor.
+---@field detach fun(self: louiselm.ui.Decisions, session: louiselm.session.Session) Drop this controller's presentations without answering a request held by another view.
 ---@field present_next fun(self: louiselm.ui.Decisions, suspension?: table) Reconcile pending work, releasing a matching navigation hold.
 ---@field suspend fun(self: louiselm.ui.Decisions): table Hide decisions until this navigation hold is released.
 ---@field is_active fun(self: louiselm.ui.Decisions): boolean Report active decision authority.
@@ -476,6 +480,26 @@ function Decisions:cancel(session, request_ids)
   present_pending(self)
 end
 
+---Check whether this controller already holds an exact Session request.
+---@param self louiselm.ui.Decisions
+---@param session louiselm.session.Session
+---@param request_id louiselm.acp.JsonRpcId
+---@param interaction boolean
+---@return boolean held
+function Decisions:has_request(session, request_id, interaction)
+  for _, pending in ipairs(self.queue) do
+    if
+      pending.session == session
+      and (pending.interaction ~= nil) == interaction
+      and pending.data.request_id == request_id
+      and not pending.answered
+    then
+      return true
+    end
+  end
+  return false
+end
+
 ---Queue a request for its visible Session; malformed requests are cancelled immediately.
 ---@param self louiselm.ui.Decisions
 ---@param session louiselm.session.Session Session that asked for a decision.
@@ -492,6 +516,9 @@ function Decisions:request(session, data, respond, defer)
     else
       report()
     end
+    return
+  end
+  if type(data) == "table" and data.request_id ~= nil and self:has_request(session, data.request_id, false) then
     return
   end
   local decision = {
@@ -522,9 +549,29 @@ end
 ---@param respond fun(result: louiselm.session.InteractionResponse): boolean, string? Consumer-owned answer.
 ---@param defer? boolean Record the request now but schedule presentation after its event observer returns.
 function Decisions:request_interaction(session, data, respond, defer)
+  if self:has_request(session, data.request_id, true) then
+    return
+  end
   self.queue[#self.queue + 1] =
     { session = session, data = data, interaction = data, respond = respond, answered = false }
   present_pending(self, defer)
+end
+
+---Release local presentations while another view retains the requests.
+---@param self louiselm.ui.Decisions
+---@param session louiselm.session.Session
+function Decisions:detach(session)
+  for index = #self.queue, 1, -1 do
+    local decision = self.queue[index]
+    if decision.session == session then
+      table.remove(self.queue, index)
+      decision.answered = true
+      if self.active == decision then
+        self.active = nil
+      end
+      close_ui(decision)
+    end
+  end
 end
 
 ---Retire a detached Session; call present_next after selecting its surviving host.
