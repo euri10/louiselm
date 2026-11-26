@@ -113,6 +113,10 @@
     <string name="phone_newer_omitted">Newer messages are outside this view. Refresh to return to the latest messages.</string>
     <string name="phone_stale">This Session is unavailable. Refresh Sessions or the Attention inbox.</string>
     <string name="phone_session_state">Current Session state: %1$s</string>
+    <string name="phone_saved_session_state">Session state when saved: %1$s</string>
+    <string name="phone_current_permission">Current permission request: %1$s</string>
+    <string name="phone_permission_option">Offered choice: %1$s</string>
+    <string name="phone_permission_incomplete">Some permission information is unavailable or shortened.</string>
     <string name="phone_state_starting">Starting</string>
     <string name="phone_state_ready">Ready</string>
     <string name="phone_state_admitting">Checking admission</string>

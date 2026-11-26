@@ -3867,6 +3867,56 @@ T["new"]["contained automatic approval cancels an unapprovable request without h
   })
 end
 
+T["new"]["history follows queued permission replacement"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", nvim.fn.getcwd())
+  local events = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      events[#events + 1] = event
+    end
+  end)
+  local function request(id, title)
+    process.options.stdout(nil, assert(Protocol.encode({
+      jsonrpc = "2.0",
+      id = id,
+      method = "session/request_permission",
+      params = {
+        sessionId = "agent-acp",
+        toolCall = { title = title },
+        options = { { optionId = "allow", name = "Allow", kind = "allow_once" } },
+      },
+    })) .. "\n")
+  end
+  local function read(revision, subject)
+    local page, err
+    session:read_history(
+      { before = 0, limit = 50, revision = revision or 0, subject = subject },
+      function(value, failure)
+        page, err = value, failure
+      end
+    )
+    assert(nvim.wait(6000, function()
+      return page ~= nil or err ~= nil
+    end))
+    return page, err
+  end
+  request(9, "First")
+  request(10, "Second")
+  local first = assert(read())
+  MiniTest.expect.equality(first.current_permission.title, "First")
+  assert(events[1].respond({ outcome = { outcome = "selected", optionId = "allow" } }))
+  local _, stale = read(first.revision, first.subject)
+  MiniTest.expect.equality(stale, "stale_subject")
+  local second = assert(read())
+  MiniTest.expect.equality(second.current_permission.title, "Second")
+  assert(events[2].respond({ outcome = { outcome = "selected", optionId = "allow" } }))
+  MiniTest.expect.equality(assert(read()).current_permission, nil)
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["persists exact always choices and replays only through compatible option kinds"] = function()
   local root = nvim.fn.tempname()
   local state_path = nvim.fs.joinpath(root, "permissions.json")

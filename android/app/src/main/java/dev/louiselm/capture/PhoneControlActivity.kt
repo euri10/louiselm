@@ -2798,13 +2798,13 @@ class PhoneControlActivity : Activity() {
             }
             val refresh = result.refresh
             val page = refresh.page
-            if (previous != null && page.revision == previous.revision && page.settings != previous.settings) {
+            if (previous != null && page.revision == previous.revision && (page.settings != previous.settings || page.currentPermission != previous.currentPermission)) {
                 showFailure(PhoneControlOutcome.MALFORMED)
                 return@task
             }
             val unchanged = !older && !interaction && !refresh.missingOlder && previous != null && page.revision == previous.revision
             if (older) {
-                if (previous == null || page.revision != previous.revision || page.status != previous.status || page.settings != previous.settings ||
+                if (previous == null || page.revision != previous.revision || page.status != previous.status || page.settings != previous.settings || page.currentPermission != previous.currentPermission ||
                     page.entries.any { it.seq >= before } || (page.nextBefore != 0L && page.nextBefore >= before) ||
                     (page.entries.isNotEmpty() && previous.entries.isNotEmpty() &&
                         page.entries.last().seq >= previous.entries.first().seq)) {
@@ -2845,12 +2845,17 @@ class PhoneControlActivity : Activity() {
         fun line(value: String) {
             conversation.addView(TextView(this).apply { text = value; textSize = 16f; setTextIsSelectable(true) })
         }
-        line(getString(R.string.phone_session_state, sessionState(page.status)))
+        line(getString(if (showingOffline) R.string.phone_saved_session_state else R.string.phone_session_state, sessionState(page.status)))
         if (!showingOffline) {
             fun value(text: String) = text.ifEmpty { getString(R.string.phone_setting_unavailable) }
             line(getString(R.string.phone_setting_model, value(page.settings.model)))
             line(getString(R.string.phone_setting_effort, value(page.settings.effort)))
             line(getString(R.string.phone_setting_access, value(page.settings.mode)))
+            page.currentPermission?.let { permission ->
+                line(getString(R.string.phone_current_permission, value(permission.title)))
+                for (option in permission.options) line(getString(R.string.phone_permission_option, value(option)))
+                if (permission.incomplete) line(getString(R.string.phone_permission_incomplete))
+            }
         }
         if (historyChanged) line(getString(R.string.phone_history_changed))
         if (newerOmitted) line(getString(R.string.phone_newer_omitted))

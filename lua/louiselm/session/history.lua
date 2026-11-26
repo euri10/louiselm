@@ -62,10 +62,16 @@ local MAX_BYTES = 245760
 
 ---@alias louiselm.session.HistoryEntry louiselm.session.HistoryMessage|louiselm.session.HistoryTool|louiselm.session.HistoryQuestion|louiselm.session.HistoryPlan
 
+---@class louiselm.session.CurrentPermission
+---@field title string Bounded tool title, or empty when unavailable.
+---@field options string[] Offered labels, without response identifiers.
+---@field incomplete boolean Some display information was unavailable or shortened.
+
 ---@class louiselm.session.HistoryPage
 ---@field subject string Exact Session incarnation; never authority on its own.
 ---@field revision integer Snapshot revision, invalidated by a projected update.
 ---@field status louiselm.session.Status Session status at this revision.
+---@field current_permission? louiselm.session.CurrentPermission Active request at this revision, never response authority.
 ---@field entries louiselm.session.HistoryEntry[] Closed variants, ascending by sequence.
 ---@field next_before integer Exclusive cursor, or zero when no older entries remain.
 ---@field complete boolean Whether the projected snapshot and this page have no known gaps.
@@ -95,6 +101,9 @@ local relevant = {
   tool_call_started = true,
   tool_call_finished = true,
   interaction_requested = true,
+  permission_requested = true,
+  permission_resolved = true,
+  permission_cancelled = true,
   compaction_updated = true,
 }
 
@@ -304,13 +313,19 @@ local function page(self, request)
     return nil, "unavailable"
   end
   local replay = session.state.source == "loaded" and "unverified" or "not_applicable"
+  local permission = session.permission_event and Projection.permission(session.permission_event.data) or nil
   return {
     subject = subject,
     revision = self.revision,
     status = session.state.status,
+    current_permission = permission,
     entries = entries,
     next_before = first > 1 and first or 0,
-    complete = replay == "not_applicable" and not redacted and not missing and not truncated,
+    complete = replay == "not_applicable"
+      and not redacted
+      and not missing
+      and not truncated
+      and (permission == nil or not permission.incomplete),
     source = {
       replay = replay,
       archive = "unavailable",

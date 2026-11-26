@@ -408,9 +408,16 @@ fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.Record
 louiselm.session.HistoryMessage|louiselm.session.HistoryPlan|louiselm.session.HistoryQuestion|louiselm.session.HistoryTool
 ```
 
+### louiselm.session.CurrentPermission
+
+- `incomplete: boolean` -- Some display information was unavailable or shortened.
+- `options: string[]` -- Offered labels, without response identifiers.
+- `title: string` -- Bounded tool title, or empty when unavailable.
+
 ### louiselm.session.HistoryPage
 
 - `complete: boolean` -- Whether the projected snapshot and this page have no known gaps.
+- `current_permission: (louiselm.session.CurrentPermission)?` -- Active request at this revision, never response authority.
 - `entries: louiselm.session.HistoryMessage|louiselm.session.HistoryPlan|louiselm.session.HistoryQuestion|louiselm.session.HistoryTool[]` -- Closed variants, ascending by sequence.
 - `next_before: integer` -- Exclusive cursor, or zero when no older entries remain.
 - `revision: integer` -- Snapshot revision, invalidated by a projected update.
@@ -1156,6 +1163,7 @@ louiselm.session.EventType:
 - `remembered_decision: ("allow"|"deny")?` -- A matching rule that could not be replayed through the offered option kinds.
 - `request_id: string|number` -- ACP request identifier.
 - `toolCall: table?` -- Agent tool call payload.
+- `tool_call: table?` -- Alternate Agent tool call spelling.
 
 ### louiselm.session.PermissionEvent
 

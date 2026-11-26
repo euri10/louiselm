@@ -51,6 +51,44 @@ local function bounded(value)
   return value:sub(1, index - 1), index <= #value
 end
 
+---Select display-only fields from the Session's active permission event.
+---@param data louiselm.session.PermissionData Active request owned by the Session.
+---@return louiselm.session.CurrentPermission permission Bounded display fields; no response authority.
+function M.permission(data)
+  local tool = data.toolCall or data.tool_call
+  local title, incomplete = bounded(type(tool) == "table" and tool.title or nil)
+  local options, size = {}, 0
+  if type(data.options) ~= "table" then
+    incomplete = true
+  else
+    local count = 0
+    for key in pairs(data.options) do
+      count = count + 1
+      if count > 50 or type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+        incomplete = true
+        break
+      end
+    end
+    for index, option in ipairs(data.options) do
+      if index > 50 then
+        incomplete = true
+        break
+      end
+      local label, shortened = bounded(type(option) == "table" and option.name or nil)
+      size = size + #label
+      if size > 16384 then
+        incomplete = true
+        break
+      end
+      options[#options + 1] = label
+      incomplete = incomplete or shortened or label == ""
+    end
+    incomplete = incomplete or count ~= #options
+  end
+  incomplete = incomplete or title == "" or #options == 0
+  return { title = title, options = options, incomplete = incomplete }
+end
+
 -- Only these Agent-advertised categories belong in the phone status view.
 local function settings(options)
   local result = { model = "", effort = "", mode = "" }

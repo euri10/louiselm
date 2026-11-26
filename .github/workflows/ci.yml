@@ -552,6 +552,10 @@ jobs:
             LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
               phone_control::http::settings_tests::pinned_android_displays_acknowledged_session_settings -- --exact --ignored
+          LOUISELM_TEST_NVIM="$(command -v nvim)" \
+            LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
+              phone_control::http::permission_tests::pinned_android_reads_current_permission_until_desktop_resolution -- --exact --ignored
 
   format:
     name: stylua

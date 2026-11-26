@@ -632,7 +632,7 @@ This checks the signed bindings only. The controller still checks its own live
 controller, subject, project, Agent and state, and the receiver must still
 check current grant, lease and replay state before delivery or admission.
 
-Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
+Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,current_permission?:CurrentPermission,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
 The receiver returns this same closed object over HTTPS after the final authority
 recheck. `revision` is nonzero and increases on any projected state/content
 change within the subject. Status is one of `starting`, `ready`, `admitting`,
@@ -649,6 +649,17 @@ means unavailable. Labels are at most 256 UTF-8 bytes with no ASCII control
 characters. No other option, choice list or config metadata is projected.
 The owner updates these values from confirmed config events and advances the
 page revision when options change. A mode label is not a permission grant.
+`CurrentPermission` is exactly `{title:string,options:[string],incomplete:boolean}`.
+It is present only for the Session's active ordinary ACP permission request and
+only while `status` is `waiting_permission`. It contains the displayed tool
+title and offered choice labels, not raw tool input, option identifiers or a
+responder. Each string is at most 8192 UTF-8 bytes, there are at most 50 choices
+and choice labels total at most 16384 bytes. Empty fields and `incomplete=true`
+indicate unavailable or shortened information. The owner advances the revision
+on request, desktop response or cancellation, including replacement by a queued
+request. A saved page discards this current-only field and labels its state as
+historical; it cannot claim that an old request is still waiting. Labels are
+inert and this projection grants no ability to answer the request.
 An unknown cursor returns `stale_subject`. To keep a multi-page read on one
 snapshot, use the first page's nonzero revision in subsequent requests.
 `complete=false` means projected content for this page or its current state is

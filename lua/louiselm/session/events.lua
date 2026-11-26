@@ -120,6 +120,7 @@
 ---@field permission_error? string Non-fatal remembered-permission lookup failure.
 ---@field options? unknown[] Agent-advertised response options.
 ---@field toolCall? table Agent tool call payload.
+---@field tool_call? table Alternate Agent tool call spelling.
 
 ---@class louiselm.session.PermissionEvent: louiselm.session.EventBase
 ---@field type "permission_requested"

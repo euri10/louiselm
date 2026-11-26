@@ -25,6 +25,7 @@ internal sealed class PhoneControlReply {
         val revision: Long, val status: String, val entries: List<PhoneControlEntry>,
         val nextBefore: Long, val complete: Boolean, val source: PhoneHistorySource,
         val settings: PhoneSessionSettings = PhoneSessionSettings(),
+        val currentPermission: PhoneCurrentPermission? = null,
     ) : PhoneControlReply()
     data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
     data class SessionList(val controllerId: String, val operationId: String,
@@ -69,6 +70,8 @@ internal data class PhoneActionRecord(
 )
 
 internal data class PhoneControlOption(val label: String, val description: String, val preview: String)
+
+internal data class PhoneCurrentPermission(val title: String, val options: List<String>, val incomplete: Boolean)
 
 internal data class PhoneHistorySource(
     val replay: String, val archive: String, val redaction: String, val missing: Boolean, val truncated: Boolean,
@@ -291,7 +294,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
             }
             "session_page" -> {
                 val required = setOf("v", "type", "controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete", "source")
-                require(fields.keys == required || fields.keys == required + "settings")
+                require(fields.keys.containsAll(required) && (fields.keys - required).all { it in setOf("settings", "current_permission") })
                 val settings = if ("settings" in fields) {
                     val values = requireNotNull(fields["settings"]).wireObject()
                     values.wireKeys("model", "effort", "mode")
@@ -304,6 +307,21 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 require(revision > 0)
                 val status = string("status")
                 if (status !in setOf("starting", "ready", "admitting", "configuring", "preparing", "prompting", "running", "waiting_permission", "cancelling", "error")) throw UnsupportedReply()
+                val permission = if ("current_permission" in fields) {
+                    require(status == "waiting_permission")
+                    val value = requireNotNull(fields["current_permission"]).wireObject()
+                    value.wireKeys("title", "options", "incomplete")
+                    val title = value.wireString("title")
+                    val options = value.wireArray("options").map {
+                        (it as? String ?: throw IllegalArgumentException("invalid option")).also { label ->
+                            require(validWireString(label, 8192))
+                        }
+                    }
+                    require(options.sumOf { it.toByteArray(Charsets.UTF_8).size } <= 16_384)
+                    val incomplete = value.wireBoolean("incomplete")
+                    require(incomplete || title.isNotEmpty() && options.isNotEmpty() && options.all { it.isNotEmpty() })
+                    PhoneCurrentPermission(title, options, incomplete)
+                } else null
                 val entries = fields.wireArray("entries").map { parseEntry(requireNotNull(it)) }
                 require(entries.zipWithNext().all { (left, right) -> left.seq < right.seq })
                 val nextBefore = number("next_before")
@@ -319,8 +337,9 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 require(nextBefore == 0L || details.missing || entries.firstOrNull()?.seq == nextBefore)
                 val complete = fields.wireBoolean("complete")
                 require(!complete || replay == "not_applicable" && redaction == "unknown" && !details.missing && !details.truncated)
+                require(!complete || permission?.incomplete != true)
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
-                    status, entries, nextBefore, complete, details, settings)
+                    status, entries, nextBefore, complete, details, settings, permission)
             }
             "controller_list" -> {
                 keys("operation_id", "controllers", "next_after")

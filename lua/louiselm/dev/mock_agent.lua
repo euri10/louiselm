@@ -342,11 +342,12 @@ local function handle_message(message, state, options, interaction)
         sessionId = prompt.session_id,
         toolCall = {
           kind = "edit",
+          title = "Edit mock file",
           rawInput = { path = "mock.txt", diff = "--- a/mock.txt\n+++ b/mock.txt\n@@ -1 +1 @@\n-old\n+new\n" },
         },
         options = {
-          { optionId = "allow-once", kind = "allow_once" },
-          { optionId = "reject", kind = "reject" },
+          { optionId = "allow-once", kind = "allow_once", name = "Allow once" },
+          { optionId = "reject", kind = "reject", name = "Reject" },
         },
       })
     elseif options.mode ~= "hold" then

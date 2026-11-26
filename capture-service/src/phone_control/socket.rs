@@ -184,11 +184,41 @@ enum ReadResponse {
         status: String,
         #[serde(default)]
         settings: ReadSettings,
+        #[serde(default, deserialize_with = "deserialize_permission")]
+        current_permission: Option<ReadPermission>,
         entries: Vec<ReadEntry>,
         next_before: u64,
         complete: bool,
         source: HistorySource,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadPermission {
+    title: String,
+    options: Vec<String>,
+    incomplete: bool,
+}
+
+fn deserialize_permission<'de, D>(deserializer: D) -> Result<Option<ReadPermission>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    ReadPermission::deserialize(deserializer).map(Some)
+}
+
+impl ReadPermission {
+    fn valid(&self) -> bool {
+        valid_string(&self.title)
+            && self.options.len() <= 50
+            && self.options.iter().all(|label| valid_string(label))
+            && self.options.iter().map(String::len).sum::<usize>() <= 16_384
+            && (self.incomplete
+                || (!self.title.is_empty()
+                    && !self.options.is_empty()
+                    && self.options.iter().all(|label| !label.is_empty())))
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -362,6 +392,7 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             revision,
             status,
             settings,
+            current_permission,
             entries,
             next_before,
             complete,
@@ -393,6 +424,11 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
                 || revision == 0
                 || revision > MAX_INTEGER
                 || !settings.valid()
+                || current_permission.as_ref().is_some_and(|permission| {
+                    status != "waiting_permission"
+                        || !permission.valid()
+                        || (complete && permission.incomplete)
+                })
                 || (request.expected_revision != 0 && revision != request.expected_revision)
                 || entries.len() > limit
                 || (complete
@@ -2463,6 +2499,46 @@ mod tests {
                 Err(super::Refusal::Unavailable)
             );
         }
+    }
+
+    #[test]
+    fn permission_view_is_closed_bounded_and_only_current_while_waiting() {
+        let request: super::super::Request = serde_json::from_value(json!({
+            "grant_id":"04".repeat(16), "grant_revision":1, "period_id":"05".repeat(16),
+            "receiver_identity":"06".repeat(32), "controller_id":"01".repeat(16), "subject_id":"02".repeat(16),
+            "action":1, "payload":"00000000000000000032", "payload_hash":"07".repeat(32),
+            "operation_id":"03".repeat(16), "expected_revision":0, "interaction":1, "signature":"3006020101020101"
+        })).unwrap();
+        let page = json!({"v":2,"type":"session_page","controller_id":request.controller_id,
+            "subject_id":request.subject_id,"operation_id":request.operation_id,"revision":1,"status":"waiting_permission",
+            "entries":[],"next_before":0,"complete":true,"source":{"replay":"not_applicable","archive":"unavailable",
+                "redaction":"unknown","missing":false,"truncated":false},
+            "current_permission":{"title":"Edit file","options":["Allow once","Reject"],"incomplete":false}});
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&page).unwrap(), &request).unwrap(),
+            page
+        );
+        for invalid in [
+            json!({"title":"Edit file","options":["Allow"],"incomplete":false,"raw_input":{}}),
+            json!({"title":"Edit file","options":vec!["x"; 51],"incomplete":false}),
+            json!({"title":"x".repeat(8193),"options":["Allow"],"incomplete":false}),
+            json!({"title":"Edit file","options":["x".repeat(8192),"y".repeat(8192),"z"],"incomplete":false}),
+            json!({"title":"Edit file","options":[],"incomplete":true}),
+            json!(null),
+        ] {
+            let mut bad = page.clone();
+            bad["current_permission"] = invalid;
+            assert_eq!(
+                super::validate_read_response(&serde_json::to_vec(&bad).unwrap(), &request),
+                Err(super::Refusal::Unavailable)
+            );
+        }
+        let mut stale = page;
+        stale["status"] = json!("ready");
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&stale).unwrap(), &request),
+            Err(super::Refusal::Unavailable)
+        );
     }
 
     #[test]
