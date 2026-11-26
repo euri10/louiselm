@@ -131,6 +131,7 @@ local nvim = vim
 ---@field discard_empty_background fun(self: louiselm.ui.Chat, session_id: string) Release an untouched background view after its Session is disposed.
 ---@field staged_context fun(self: louiselm.ui.Chat): table<louiselm.session.Session, louiselm.ui.StagedContext> Report Staged context by attached Session.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
+---@field stop_and_send fun(self: louiselm.ui.Chat): boolean?, string? Stop the reviewed turn and reserve the visible draft.
 ---@field manage_queue fun(self: louiselm.ui.Chat): boolean, string? Inspect and edit the current Session queue.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
 ---@field show_limits fun(self: louiselm.ui.Chat, agent_name?: string): boolean, string? Inspect one configured Agent's account limits.
@@ -881,9 +882,10 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
+---@param target_turn_id? string
 ---@return boolean? started
 ---@return string? error_message
-local function queue_prompt(self, view, text)
+local function queue_prompt(self, view, text, target_turn_id)
   local content, resolve_error, contexts = build_content(view, text)
   if content == nil then
     notify_prompt_error(resolve_error or "prompt could not be resolved")
@@ -891,7 +893,7 @@ local function queue_prompt(self, view, text)
   end
   local draft, revision = view.draft:snapshot(), view.input_revision
   local metadata = text:sub(1, 1) ~= "/" and view.draft:submission_metadata() or nil
-  local started, err = view.session:enqueue(content, function(id, queue_error)
+  local function admitted(id, queue_error)
     if
       self.disposed
       or self.views[view.session:inspect().id] ~= view
@@ -909,7 +911,13 @@ local function queue_prompt(self, view, text)
       view.draft:consume(draft)
     end
     set_prompt_line(view, next_text)
-  end, metadata, text, contexts)
+  end
+  local started, err
+  if target_turn_id ~= nil then
+    started, err = view.session:stop_and_send(target_turn_id, content, admitted, metadata, text, contexts)
+  else
+    started, err = view.session:enqueue(content, admitted, metadata, text, contexts)
+  end
   if not started then
     notify_prompt_error(err or "queue admission failed")
     return nil, err
@@ -1424,7 +1432,7 @@ local function handle_event(self, view, event, completed_state)
     local queue = event.data
     if
       queue.reason ~= nil
-      and (queue.uncertain or queue.active_status == "not_sent")
+      and (queue.uncertain or queue.active_status == "not_sent" or (queue.replacement ~= nil and queue.replacement.status == "unsent"))
       and queue.reason ~= view.last_queue_error
     then
       view.last_queue_error = queue.reason
@@ -2670,7 +2678,11 @@ end
 
 local function has_queued_work(session)
   local queue = session:queue_inspect()
-  return #queue.entries > 0 or queue.active ~= nil or queue.pending or queue.uncertain_proposal ~= nil
+  return #queue.entries > 0
+    or queue.active ~= nil
+    or queue.replacement ~= nil
+    or queue.pending
+    or queue.uncertain_proposal ~= nil
 end
 
 ---Remove an untouched background view after its owner disposes the Session.
@@ -2804,6 +2816,33 @@ function Chat:cancel()
   return view.session:cancel()
 end
 
+---Stop the exact active turn and reserve the current visible draft and context.
+---@param self louiselm.ui.Chat
+---@return boolean? started
+---@return string? error_message
+function Chat:stop_and_send()
+  if self.disposed then
+    return nil, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return nil, "no chat session is attached"
+  end
+  if view.replay_events ~= nil then
+    return nil, "Session history is still loading"
+  end
+  local state = view.session:inspect()
+  if state.turn_id == nil then
+    return nil, "session has no active turn"
+  end
+  local visible = view.draft:reconcile_skills(view.renderer:prompt_text())
+  local text, err = view.draft:prompt_text(visible, true)
+  if text == nil then
+    return nil, err
+  end
+  return queue_prompt(self, view, text, state.turn_id)
+end
+
 ---Inspect, continue, cancel, reorder, or replace submitted waiting instructions.
 ---@param self louiselm.ui.Chat
 ---@return boolean opened
@@ -2833,11 +2872,36 @@ function Chat:manage_queue()
       label = (queue.active_status or "admitting") .. ": " .. active_text,
     }
   end
+  if queue.replacement ~= nil then
+    local replacement = queue.replacement
+    local first_line = replacement.entry.display_text:match("^[^\n]*") or ""
+    choices[#choices + 1] = {
+      action = "replacement",
+      index = 0,
+      entry = replacement.entry,
+      label = "replacement "
+        .. replacement.status
+        .. " (cancellation "
+        .. replacement.cancellation
+        .. "): "
+        .. first_line,
+    }
+  end
   for index, entry in ipairs(queue.entries) do
     local first_line = entry.display_text:match("^[^\n]*") or ""
     choices[#choices + 1] = { action = "entry", index = index, entry = entry, label = index .. ". " .. first_line }
   end
   if queue.uncertain_proposal ~= nil then
+    local replacement = queue.uncertain_proposal.replacement
+    if replacement ~= nil then
+      local first_line = replacement.entry.display_text:match("^[^\n]*") or ""
+      choices[#choices + 1] = {
+        action = "proposal",
+        index = 0,
+        entry = replacement.entry,
+        label = "unconfirmed replacement: " .. first_line,
+      }
+    end
     for index, entry in ipairs(queue.uncertain_proposal.entries) do
       local first_line = entry.display_text:match("^[^\n]*") or ""
       choices[#choices + 1] = {
@@ -2882,6 +2946,8 @@ function Chat:manage_queue()
     if choice.action == "entry" or (choice.action == "active" and queue.active_status == "not_sent") then
       actions[#actions + 1] = "Cancel"
       actions[#actions + 1] = "Replace"
+    elseif choice.action == "replacement" and queue.replacement.status == "unsent" then
+      actions[#actions + 1] = "Cancel"
     end
     if choice.action == "entry" then
       if index > 1 then

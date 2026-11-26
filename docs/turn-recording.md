@@ -109,6 +109,16 @@ and gives the replacement a new identity. Stop, failure and uncertainty pause
 for review. Unsent, dispatched and uncertain work remain distinct; neither an
 unknown write nor an interrupted turn is automatically retried.
 
+`:LouiselmStopAndSend` reserves one frozen replacement outside those 20 places.
+Its reservation callback confirms durable admission, not cancellation or
+delivery. Only the targeted turn's actual cancelled prompt response permits the
+replacement to start; an ordinary completion or local cancellation before
+dispatch does not. A plain Stop before the replacement's transport write vetoes
+it. The older queue stays paused. After restart, a replacement known not to have
+started is unsent; one that might have started remains uncertain and is not
+replayed. Headless callers can target a turn with `session:stop(turn_id)` or
+`session:stop_and_send(turn_id, prompt, callback)` and inspect queue state.
+
 Queue payloads are stored separately from the payload-free turn record in the
 private `queues/queues.sqlite3` file. With a headless `usage_directory`, the
 queue file is `<usage_directory>/queues/queues.sqlite3`. Restoring requires the

@@ -133,6 +133,30 @@ T["demo API"]["real Chat keeps busy submissions and drops queued UI work after d
   MiniTest.expect.equality(session:inspect().status, "disposed")
 end
 
+T["demo API"]["real Chat can stop and send its visible replacement"] = function()
+  local queued, schedule = scheduler()
+  local runtime = start_demo(schedule)
+  local session, chat = runtime.session, runtime.chat
+  local dispatched = {}
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched[#dispatched + 1] = event.data
+    end
+  end)
+  assert(chat:submit("first turn"))
+  wait_until(queued, function()
+    return #dispatched == 1 and session:inspect().status == "waiting_permission"
+  end)
+  local view = chat.views[session:inspect().id]
+  view.renderer:replace_prompt("replacement")
+  nvim.cmd.LouiselmStopAndSend()
+  wait_until(queued, function()
+    return #dispatched == 2
+  end)
+  MiniTest.expect.equality(dispatched[2].display_text, "replacement")
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+end
+
 T["demo API"]["full queue rejection completes asynchronously"] = function()
   local root = fixture()
   local queued, schedule = scheduler()

@@ -472,7 +472,7 @@ function M.register()
     end,
   })
 
-  ---@param method "switch_session"|"hand_off"|"inspect_tool"|"inspect_mcp"|"close_session"|"cancel"|"manage_queue"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
+  ---@param method "switch_session"|"hand_off"|"inspect_tool"|"inspect_mcp"|"close_session"|"cancel"|"stop_and_send"|"manage_queue"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
   ---@return fun()
   local function chat_command(method)
     return function()
@@ -1126,6 +1126,12 @@ function M.register()
     "LouiselmQueue",
     chat_command("manage_queue"),
     { desc = "Inspect and manage the Session queue", force = true }
+  )
+
+  nvim.api.nvim_create_user_command(
+    "LouiselmStopAndSend",
+    chat_command("stop_and_send"),
+    { desc = "Stop the active turn and send the current draft after acknowledgement", force = true }
   )
 
   nvim.api.nvim_create_user_command(

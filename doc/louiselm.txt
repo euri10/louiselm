@@ -112,6 +112,15 @@ Sessions                                                   *louiselm-sessions*
   keeps them unavailable. Headless session:prompt stays immediate and refuses
   a busy Session; session:enqueue explicitly requests queued admission.
 
+  |:LouiselmStopAndSend| freezes the current draft and context in a separate
+  replacement place and requests cancellation of the active turn. The
+  replacement is sent only after that exact turn acknowledges cancellation.
+  |:LouiselmCancel| before dispatch stops the replacement. Older waiting
+  instructions remain paused until explicit Continue. Normal completion, a
+  lost response or restart never authorizes a replay. Inspect unsent or
+  uncertain replacements with |:LouiselmQueue|. Headless callers may use
+  session:stop(turn_id) and session:stop_and_send(turn_id, prompt, callback).
+
   The Session picker uses vim.ui.select with kind louiselm_session and plain
   id/label items. Chunk-aware pickers such as Snacks color the status cell
   with the same group as the Session's window-bar entry, so an unseen response
@@ -510,6 +519,10 @@ Commands                                                   *louiselm-commands*
 
 :LouiselmSessionSwitch                                *:LouiselmSessionSwitch*
     Switch between louiselm sessions
+    Arguments: none
+
+:LouiselmStopAndSend                                    *:LouiselmStopAndSend*
+    Stop the active turn and send the current draft after acknowledgement
     Arguments: none
 
 :LouiselmToMarkdown                                      *:LouiselmToMarkdown*

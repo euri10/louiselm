@@ -7,7 +7,7 @@ import tempfile
 import time
 from pathlib import Path
 
-editor, directory, settled, graceful = sys.argv[1:]
+editor, directory, settled, graceful, *replacement = sys.argv[1:]
 
 
 def terminate(_signum, _frame):
@@ -19,6 +19,7 @@ environment = os.environ.copy()
 environment["LOUISELM_QUEUE_TEST_DIR"] = directory
 environment["LOUISELM_QUEUE_TEST_SETTLED"] = settled
 environment["LOUISELM_QUEUE_TEST_GRACEFUL"] = graceful
+environment["LOUISELM_QUEUE_TEST_REPLACEMENT"] = replacement[0] if replacement else ""
 with tempfile.TemporaryFile() as diagnostics:
     process = subprocess.Popen(
         [editor, "--headless", "--noplugin", "-u", "tests/minimal_init.lua", "-c",

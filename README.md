@@ -334,6 +334,16 @@ owner can be reconciled; uncertain work never runs automatically. Queue payloads
 are stored privately on the computer. Headless `session:prompt` remains immediate
 and returns a busy error while the Session is occupied.
 
+`:LouiselmStopAndSend` freezes the current draft and context in a separate
+replacement place, requests cancellation of the active turn, and sends only
+after that turn acknowledges cancellation. The 20 waiting places remain
+available to ordinary instructions. `:LouiselmCancel` before replacement
+dispatch stops it; older instructions stay paused until `:LouiselmQueue` →
+Continue. A normal completion or lost response does not authorize a send.
+Inspect an unsent or uncertain replacement in `:LouiselmQueue`; it is never
+automatically replayed after restart. Headless callers can use
+`session:stop(turn_id)` and `session:stop_and_send(turn_id, prompt, callback)`.
+
 Close several attached Sessions with `:LouiselmSessionClose session-3 session-4`.
 Tab completes local Session IDs. Explicit IDs use one Close/Keep confirmation
 listing the group and flagging active work or queued prompts; Keep is the default.

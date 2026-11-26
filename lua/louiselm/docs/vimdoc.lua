@@ -352,6 +352,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        ":LouiselmStopAndSend freezes the current draft and context in a separate replacement place and requests cancellation of the active turn. The replacement is sent only after that exact turn acknowledges cancellation. :LouiselmCancel before dispatch stops the replacement. Older waiting instructions remain paused until explicit Continue. Normal completion, a lost response or restart never authorizes a replay. Inspect unsent or uncertain replacements with :LouiselmQueue. Headless callers may use session:stop(turn_id) and session:stop_and_send(turn_id, prompt, callback).",
+        context
+      )
+      append_prose(
+        lines,
         "The Session picker uses vim.ui.select with kind louiselm_session and plain id/label items. Chunk-aware pickers such as Snacks color the status cell with the same group as the Session's window-bar entry, so an unseen response shows as a warning. Snacks is optional: its select.kinds configuration can bind Ctrl-d to close marked Sessions, falling back to the cursor row only when nothing is marked. Enter still switches. See docs/tutorial.md for the configuration recipe; plain Neovim supports the same bulk-close command without a picker plugin.",
         context
       )

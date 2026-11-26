@@ -154,6 +154,8 @@ local nvim = vim
 ---@field queue_continue fun(self: louiselm.session.Session, revision: integer, callback: fun(changed: boolean, error_message?: string)): boolean, string?
 ---@field set_auto fun(self: louiselm.session.Session, enabled: boolean, callback?: fun(error?: string)): boolean, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
+---@field stop fun(self: louiselm.session.Session, turn_id: string): boolean, string? Stop an exact reviewed turn.
+---@field stop_and_send fun(self: louiselm.session.Session, turn_id: string, prompt: louiselm.session.Prompt, callback: fun(id: string?, error_message?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string, contexts?: table[]): boolean, string? Reserve one replacement and stop the exact turn.
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
 ---@field dispose fun(self: louiselm.session.Session, reason?: string, callback?: fun(disposed: boolean, error_message?: string)): boolean, string?
 ---@field abandon fun(self: louiselm.session.Session): boolean, string? Stop this editor's Session while retaining its saved queue.
@@ -1558,6 +1560,7 @@ local function handle_prompt_result(self, result, rpc_error)
     -- Preserve the failed outcome even when no detailed diagnostic is sent.
     turn_error = "Codex agent reported a system error for this turn"
   end
+  local completed_turn_id = self.state.turn_id
   self.state.usage = usage
   if turn_error ~= nil then
     recover_economical(self, "turn_failed")
@@ -1571,6 +1574,9 @@ local function handle_prompt_result(self, result, rpc_error)
     usage = usage,
   })
   complete_turn(self, result, turn_error)
+  if self.queue ~= nil and completed_turn_id ~= nil then
+    self.queue:target_result(completed_turn_id, turn_error == nil and result.stopReason == "cancelled")
+  end
 end
 
 ---@param owner louiselm.session.Registry
@@ -2085,6 +2091,14 @@ local function prepare_prompt(self, prompt, turn_id, provider)
         reject_prompt(self, "Agent started processing while preparing; submit the prompt after it becomes idle")
         return
       end
+      if
+        self.queue ~= nil
+        and self.queue.replacement_turn_id == turn_id
+        and not self.queue:replacement_authorized(turn_id)
+      then
+        reject_prompt(self, "replacement authorization changed before dispatch", "cancelled")
+        return
+      end
       local current_values = option_values(self.state.config_options)
       local current_provider = Provider.resolve(self.definition.provider, current_values)
       if
@@ -2394,6 +2408,9 @@ function Session:prompt(prompt, callback, correlation, display_text)
   self.codex_turn_failed = nil
   self.state.current_turn = self.state.current_turn + 1
   self.state.turn_id = turn_id
+  if self.queue ~= nil and self.queue.replacement_starting and self.queue.replacement_turn_id == nil then
+    self.queue.replacement_turn_id = turn_id
+  end
   self.state.turn_identity = nil
   self.state.turn_options_changed = false
   self.state.usage = nil
@@ -2484,11 +2501,7 @@ function Session:prompt(prompt, callback, correlation, display_text)
   return turn_id
 end
 
----Request cancellation of the active prompt or autonomous agent processing.
----@param self louiselm.session.Session
----@return boolean sent
----@return string? error_message ACP write or state error.
-function Session:cancel()
+local function cancel_turn(self)
   if
     self.state.status == "ready"
     and self.queue ~= nil
@@ -2497,6 +2510,7 @@ function Session:cancel()
       or #self.queue.operations > 0
       or #self.queue.state.entries > 0
       or self.queue.state.active ~= nil
+      or self.queue.state.replacement ~= nil
     )
   then
     self.queue:pause("turn stopped; review the queue")
@@ -2588,6 +2602,95 @@ function Session:cancel()
   end
   clear_session_failure(self)
   return true
+end
+
+---Request cancellation of the active prompt or autonomous agent processing.
+---@param self louiselm.session.Session
+---@return boolean sent
+---@return string? error_message ACP write or state error.
+function Session:cancel()
+  local vetoed = false
+  if self.queue ~= nil and self.state.turn_id ~= nil then
+    vetoed = self.queue:veto_replacement(self.state.turn_id)
+  end
+  if vetoed and self.state.status == "cancelling" then
+    return true
+  end
+  return cancel_turn(self)
+end
+
+---Stop one reviewed turn; a late request never retargets a later turn.
+---@param self louiselm.session.Session
+---@param turn_id string Exact turn returned by prompt or inspect.
+---@return boolean sent
+---@return string? error_message Stale turn, lifecycle, or ACP write error.
+function Session:stop(turn_id)
+  if type(turn_id) ~= "string" or turn_id == "" then
+    return false, "invalid turn identity"
+  end
+  local vetoed = self.queue ~= nil and self.queue:veto_replacement(turn_id)
+  if self.state.turn_id ~= turn_id and not vetoed then
+    return false, "turn changed; review it again"
+  end
+  if self.state.turn_id == turn_id and self.turn_done_turn == self.state.current_turn and not vetoed then
+    return false, "turn already completed"
+  end
+  if vetoed and self.state.status == "ready" then
+    return true
+  end
+  if vetoed and self.state.status == "cancelling" then
+    return true
+  end
+  return cancel_turn(self)
+end
+
+---Reserve a frozen replacement and request cancellation of the exact active turn.
+---The callback acknowledges durable reservation, not cancellation or dispatch.
+---@param self louiselm.session.Session
+---@param turn_id string Exact currently active turn.
+---@param prompt louiselm.session.Prompt
+---@param callback fun(id: string?, error_message?: string)
+---@param correlation? louiselm.routing.SubmissionMetadata
+---@param display_text? string
+---@param contexts? table[]
+---@return boolean started
+---@return string? error_message Stale turn, unavailable queue, or validation error.
+function Session:stop_and_send(turn_id, prompt, callback, correlation, display_text, contexts)
+  if
+    type(turn_id) ~= "string"
+    or turn_id == ""
+    or self.state.turn_id ~= turn_id
+    or self.turn_done_turn == self.state.current_turn
+  then
+    return false, "turn changed; review it again"
+  end
+  if
+    self.state.status ~= "admitting"
+    and self.state.status ~= "preparing"
+    and self.state.status ~= "prompting"
+    and self.state.status ~= "running"
+    and self.state.status ~= "waiting_permission"
+  then
+    return false, "turn is not active"
+  end
+  if self.queue == nil then
+    local queue, err = Queue.new(self, self.owner.queue_store)
+    if queue == nil then
+      return false, err
+    end
+    self.queue = queue
+  end
+  return self.queue:stop_and_send(
+    turn_id,
+    prompt,
+    correlation,
+    display_text or (type(prompt) == "string" and prompt or ""),
+    contexts or {},
+    callback,
+    function()
+      return cancel_turn(self)
+    end
+  )
 end
 
 ---Change a supported option while the session is idle and replace all local options from the response.

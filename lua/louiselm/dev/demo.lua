@@ -170,6 +170,7 @@ end
 ---@param result table?
 ---@param error_message string?
 local function complete_turn(self, result, error_message)
+  self.turn_done_turn = self.state.current_turn
   local callback = self.prompt_callback
   self.prompt_callback = nil
   if error_message ~= nil then
@@ -211,7 +212,11 @@ local function finish_turn(self, revision, outcome)
     return
   end
   self.pending_permission = nil
+  local turn_id = self.state.turn_id
   complete_turn(self, { stopReason = outcome == "cancelled" and "cancelled" or "end_turn" })
+  if self.queue ~= nil and turn_id ~= nil then
+    self.queue:target_result(turn_id, outcome == "cancelled")
+  end
 end
 
 ---@param self table
@@ -376,6 +381,28 @@ function Session:queue_inspect()
     }
 end
 
+local function ensure_queue(self)
+  if self.queue == nil then
+    -- The browser has no durable queue store. The Queue itself owns all state;
+    -- this scheduled acknowledgement never writes or promises restart recovery.
+    local store = {
+      save = function(_, _, _, _, done)
+        self.api.schedule(0, done)
+      end,
+    }
+    local queue, err = require("louiselm.session.queue").new(self, store)
+    if queue == nil then
+      return nil, err
+    end
+    self.queue = queue
+    if self.queue_pause_reason ~= nil then
+      queue:pause(self.queue_pause_reason)
+      self.queue_pause_reason = nil
+    end
+  end
+  return self.queue
+end
+
 ---Admit work to the in-memory Session queue.
 ---@param prompt louiselm.session.Prompt
 ---@param callback fun(id: string?, error_message?: string)
@@ -388,25 +415,11 @@ function Session:enqueue(prompt, callback, metadata, display_text, contexts)
   if self.state.status == "starting" or self.state.status == "disposed" or self.state.status == "error" then
     return false, "session is not available for queue admission"
   end
-  if self.queue == nil then
-    -- The browser has no durable queue store. The Queue itself owns all state;
-    -- this scheduled acknowledgement never writes or promises restart recovery.
-    local store = {
-      save = function(_, _, _, _, done)
-        self.api.schedule(0, done)
-      end,
-    }
-    local queue, err = require("louiselm.session.queue").new(self, store)
-    if queue == nil then
-      return false, err
-    end
-    self.queue = queue
-    if self.queue_pause_reason ~= nil then
-      queue:pause(self.queue_pause_reason)
-      self.queue_pause_reason = nil
-    end
+  local queue, err = ensure_queue(self)
+  if queue == nil then
+    return false, err
   end
-  return self.queue:enqueue(
+  return queue:enqueue(
     prompt,
     metadata,
     display_text or (type(prompt) == "string" and prompt or ""),
@@ -516,11 +529,23 @@ function Session:prompt(prompt, callback, _metadata, display_text)
   local handoff = prompt_contains(prompt, "## Handoff")
   prompt = type(prompt) == "string" and { { type = "text", text = prompt } } or nvim.deepcopy(prompt)
   self.state.turn_id = turn_id
+  if self.queue ~= nil and self.queue.replacement_starting and self.queue.replacement_turn_id == nil then
+    self.queue.replacement_turn_id = turn_id
+  end
+  self.turn_done_turn = nil
   self.prompt_callback = callback
-  self.recording_turn = { dispatched = false }
+  self.recording_turn = { id = turn_id, dispatched = false }
   set_status(self, "prompting")
   self.api.schedule(120, function()
     if self.revision ~= revision or self.state.status ~= "prompting" then
+      return
+    end
+    if
+      self.queue ~= nil
+      and self.queue.replacement_turn_id == turn_id
+      and not self.queue:replacement_authorized(turn_id)
+    then
+      complete_turn(self, nil, "replacement authorization changed before dispatch")
       return
     end
     self.recording_turn.dispatched = true
@@ -543,10 +568,7 @@ function Session:prompt(prompt, callback, _metadata, display_text)
   return turn_id
 end
 
----Cancel the active browser-local turn.
----@return boolean cancelled
----@return string? error_message
-function Session:cancel()
+local function cancel_turn(self)
   if self.state.status == "ready" and self.queue ~= nil then
     local state = self.queue:inspect()
     if state.pending or #state.entries > 0 or state.active ~= nil then
@@ -581,6 +603,49 @@ function Session:cancel()
     finish_turn(self, revision, "cancelled")
   end)
   return true
+end
+
+---Cancel the active browser-local turn.
+---@return boolean cancelled
+---@return string? error_message
+function Session:cancel()
+  if self.queue ~= nil and self.state.turn_id ~= nil then
+    self.queue:veto_replacement(self.state.turn_id)
+  end
+  return cancel_turn(self)
+end
+
+---Reserve the reviewed replacement in this browser-local Session.
+---@param turn_id string
+---@param prompt louiselm.session.Prompt
+---@param callback fun(id: string?, error_message?: string)
+---@param metadata? louiselm.routing.SubmissionMetadata
+---@param display_text? string
+---@param contexts? table[]
+---@return boolean started
+---@return string? error_message
+function Session:stop_and_send(turn_id, prompt, callback, metadata, display_text, contexts)
+  if self.state.turn_id ~= turn_id or self.turn_done_turn == self.state.current_turn then
+    return false, "turn changed; review it again"
+  end
+  if self.state.status ~= "prompting" and self.state.status ~= "waiting_permission" then
+    return false, "turn is not active"
+  end
+  local queue, err = ensure_queue(self)
+  if queue == nil then
+    return false, err
+  end
+  return queue:stop_and_send(
+    turn_id,
+    prompt,
+    metadata,
+    display_text or (type(prompt) == "string" and prompt or ""),
+    contexts or {},
+    callback,
+    function()
+      return cancel_turn(self)
+    end
+  )
 end
 
 ---Reject configuration changes because this introductory Session advertises none.
@@ -1002,6 +1067,18 @@ local function register_commands(api, chat)
     local _, switch_error = chat:switch_session()
     report_error(switch_error)
   end, { desc = "Switch between louiselm demo Sessions", force = true })
+  nvim.api.nvim_create_user_command("LouiselmCancel", function()
+    local _, cancel_error = chat:cancel()
+    report_error(cancel_error)
+  end, { desc = "Stop the current louiselm demo turn", force = true })
+  nvim.api.nvim_create_user_command("LouiselmStopAndSend", function()
+    local _, send_error = chat:stop_and_send()
+    report_error(send_error)
+  end, { desc = "Stop the demo turn and send the current draft", force = true })
+  nvim.api.nvim_create_user_command("LouiselmQueue", function()
+    local _, queue_error = chat:manage_queue()
+    report_error(queue_error)
+  end, { desc = "Inspect and manage the demo Session queue", force = true })
   nvim.api.nvim_create_user_command("LouiselmHandOff", function()
     local _, handoff_error = chat:hand_off()
     report_error(handoff_error)

@@ -9,6 +9,14 @@ local Routing = require("louiselm.routing.routing")
 ---@field contexts table[] Frozen presentation context.
 ---@field metadata? louiselm.routing.SubmissionMetadata Frozen routing correlation.
 
+---@class louiselm.session.QueueReplacement
+---@field entry louiselm.session.QueueEntry Frozen replacement payload.
+---@field target_turn_id string Exact turn targeted by cancellation.
+---@field cancellation "requesting"|"requested"|"acknowledged"|"completed"|"not_sent"|"unknown" Evidence about the target turn, separate from replacement delivery.
+---@field status "cancelling"|"acknowledged"|"admitting"|"dispatched"|"unsent"|"uncertain" Evidence for the replacement, never a promise of completion.
+---@field turn_id? string Replacement admission identity, when known.
+---@field reason? string Why the replacement is unavailable.
+
 ---@class louiselm.session.QueueState
 ---@field revision integer Revision of the committed queue.
 ---@field pending? boolean A local admission or edit awaits acknowledgement.
@@ -16,10 +24,11 @@ local Routing = require("louiselm.routing.routing")
 ---@field active? louiselm.session.QueueEntry Entry whose dispatch has started.
 ---@field active_status? "admitting"|"dispatched"|"not_sent"|"uncertain" Distinct local dispatch evidence for the active entry.
 ---@field active_turn_id? string Stable admission identity, not proof of peer receipt.
+---@field replacement? louiselm.session.QueueReplacement Reserved Stop-and-send instruction, separate from ordinary waiting places.
 ---@field paused boolean Explicit review is needed before draining.
 ---@field reason? string Why draining is unavailable or paused.
 ---@field uncertain boolean A storage or delivery outcome is unresolved.
----@field uncertain_proposal? { entries: louiselm.session.QueueEntry[], active?: louiselm.session.QueueEntry, active_status?: string } Proposed state whose durable write was not acknowledged.
+---@field uncertain_proposal? { entries: louiselm.session.QueueEntry[], active?: louiselm.session.QueueEntry, active_status?: string, replacement?: louiselm.session.QueueReplacement } Proposed state whose durable write was not acknowledged.
 ---@field disposed? boolean Explicit Disposal fenced this queue.
 
 ---@class louiselm.session.Queue
@@ -34,6 +43,12 @@ local Routing = require("louiselm.routing.routing")
 ---@field recovered? boolean A saved queue awaits identity and outcome reconciliation.
 ---@field abandoned? boolean Editor exit retains the saved queue for review.
 ---@field current_turn_id? string Active queued admission in this live Session.
+---@field replacement_target? string Target reserved by a live Stop-and-send operation.
+---@field replacement_turn_id? string Live replacement admission, if started.
+---@field replacement_starting? boolean The replacement prompt call is reentrantly publishing its new turn.
+---@field replacement_dispatched? boolean Local transport accepted the replacement prompt.
+---@field replacement_cancel_requested? boolean The target's cancellation was requested by this operation.
+---@field replacement_vetoed? boolean A plain Stop won before replacement dispatch.
 ---@field disposal_callback? fun(error_message?: string)
 ---@field inspect fun(self: louiselm.session.Queue): louiselm.session.QueueState
 ---@field enqueue fun(self: louiselm.session.Queue, prompt: string|table, metadata: louiselm.routing.SubmissionMetadata?, display_text: string, contexts: table[], callback: fun(id: string?, error_message?: string)): boolean, string?
@@ -47,6 +62,10 @@ local Routing = require("louiselm.routing.routing")
 ---@field dispose fun(self: louiselm.session.Queue, callback?: fun(error_message?: string))
 ---@field abandon fun(self: louiselm.session.Queue)
 ---@field entry_for_turn fun(self: louiselm.session.Queue, turn_id: string): louiselm.session.QueueEntry?
+---@field stop_and_send fun(self: louiselm.session.Queue, target: string, prompt: string|table, metadata: louiselm.routing.SubmissionMetadata?, display_text: string, contexts: table[], callback: fun(id: string?, error_message?: string), cancel: fun(): boolean, string?): boolean, string?
+---@field veto_replacement fun(self: louiselm.session.Queue, target: string): boolean
+---@field target_result fun(self: louiselm.session.Queue, target: string, cancelled: boolean)
+---@field replacement_authorized fun(self: louiselm.session.Queue, turn_id: string): boolean
 
 local M = {}
 local Queue = {}
@@ -134,12 +153,53 @@ function M.restore(session, store, records, error_message)
         and valid_entry(state.active)
         and (state.active_status == "admitting" or state.active_status == "dispatched" or state.active_status == "not_sent" or state.active_status == "uncertain")
         and (state.active_turn_id == nil or type(state.active_turn_id) == "string")
+      if valid then
+        seen[state.active.id] = true
+      end
     else
       valid = valid and state.active_status == nil and state.active_turn_id == nil
+    end
+    if state.replacement ~= nil then
+      local replacement = state.replacement
+      valid = valid
+        and type(replacement) == "table"
+        and valid_entry(replacement.entry)
+        and type(replacement.target_turn_id) == "string"
+        and replacement.target_turn_id ~= ""
+        and ({
+          requesting = true,
+          requested = true,
+          acknowledged = true,
+          completed = true,
+          not_sent = true,
+          unknown = true,
+        })[replacement.cancellation]
+        and ({
+          cancelling = true,
+          acknowledged = true,
+          admitting = true,
+          dispatched = true,
+          unsent = true,
+          uncertain = true,
+        })[replacement.status]
+        and (replacement.turn_id == nil or type(replacement.turn_id) == "string")
     end
     if valid then
       queue.id = saved.queue_id
       queue.state = nvim.deepcopy(state)
+      local replacement = queue.state.replacement
+      if replacement ~= nil then
+        if replacement.cancellation == "requesting" or replacement.cancellation == "requested" then
+          replacement.cancellation = "unknown"
+        end
+        if replacement.status == "cancelling" or replacement.status == "acknowledged" then
+          replacement.status = "unsent"
+          replacement.reason = "replacement was not dispatched before restart"
+        elseif replacement.status == "admitting" or replacement.status == "dispatched" then
+          replacement.status = "uncertain"
+          replacement.reason = "replacement dispatch outcome requires reconciliation"
+        end
+      end
     else
       error_message = "saved queue is malformed"
     end
@@ -169,6 +229,9 @@ function Queue:entry_for_turn(turn_id)
   if self.current_turn_id == turn_id and self.state.active ~= nil then
     return nvim.deepcopy(self.state.active)
   end
+  if self.replacement_turn_id == turn_id and self.state.replacement ~= nil then
+    return nvim.deepcopy(self.state.replacement.entry)
+  end
 end
 
 local function publish(self)
@@ -192,6 +255,19 @@ function Queue:reconcile(snapshot, callback)
       return
     end
     local state = self:inspect()
+    if state.replacement ~= nil then
+      if
+        state.replacement.status ~= "cancelling"
+        and state.replacement.status ~= "acknowledged"
+        and state.replacement.status ~= "unsent"
+      then
+        self.state.reason = "replacement dispatch outcome requires reconciliation"
+        callback()
+        return
+      end
+      state.replacement.status = "unsent"
+      state.replacement.reason = "replacement was not dispatched before restart"
+    end
     if state.active ~= nil and state.active_status ~= "not_sent" and state.active_turn_id == nil then
       self.state.reason = "queued dispatch outcome requires reconciliation"
       callback()
@@ -270,6 +346,7 @@ local function mark_uncertain(self, state, err)
     entries = nvim.deepcopy(state.entries),
     active = nvim.deepcopy(state.active),
     active_status = state.active_status,
+    replacement = nvim.deepcopy(state.replacement),
   }
 end
 
@@ -457,6 +534,215 @@ function Queue:enqueue(prompt, metadata, display_text, contexts, callback)
   return true
 end
 
+local function replacement_unsent(self, target, reason, cancellation)
+  enqueue_operation(self, function()
+    local state = self:inspect()
+    if state.replacement == nil or state.replacement.target_turn_id ~= target then
+      next_operation(self)
+      return
+    end
+    state.replacement.status, state.replacement.reason = "unsent", reason
+    if
+      cancellation ~= nil
+      and (
+        cancellation ~= "unknown"
+        or state.replacement.cancellation == "requesting"
+        or state.replacement.cancellation == "requested"
+      )
+    then
+      state.replacement.cancellation = cancellation
+    end
+    state.paused, state.reason = true, reason
+    state.revision = state.revision + 1
+    commit(self, state)
+  end)
+end
+
+local function cancellation_requested(self, target)
+  enqueue_operation(self, function()
+    local state = self:inspect()
+    if
+      state.replacement == nil
+      or state.replacement.target_turn_id ~= target
+      or state.replacement.cancellation ~= "requesting"
+    then
+      next_operation(self)
+      return
+    end
+    state.replacement.cancellation = "requested"
+    state.revision = state.revision + 1
+    commit(self, state)
+  end)
+end
+
+---Reserve one frozen replacement independently of ordinary queue capacity.
+---The cancellation request follows durable admission, never the reverse.
+---@param self louiselm.session.Queue
+---@param target string
+---@param prompt string|table
+---@param metadata? louiselm.routing.SubmissionMetadata
+---@param display_text string
+---@param contexts table[]
+---@param callback fun(id: string?, error_message?: string)
+---@param cancel fun(): boolean, string?
+---@return boolean started
+---@return string? error_message
+function Queue:stop_and_send(target, prompt, metadata, display_text, contexts, callback, cancel)
+  if self.stopped or self.state.uncertain then
+    return false, self.state.reason or "queue is unavailable"
+  end
+  if self.replacement_target ~= nil or self.state.replacement ~= nil then
+    return false, "a replacement is already reserved"
+  end
+  if
+    type(target) ~= "string"
+    or target == ""
+    or not valid_entry(prompt, metadata, display_text, contexts)
+    or type(callback) ~= "function"
+  then
+    return false, "invalid replacement"
+  end
+  local id, err = identity()
+  if id == nil then
+    return false, err
+  end
+  local entry =
+    nvim.deepcopy({ id = id, prompt = prompt, metadata = metadata, display_text = display_text, contexts = contexts })
+  self.replacement_target, self.replacement_vetoed = target, false
+  self.replacement_cancel_requested = false
+  self.replacement_dispatched = false
+  self.pause_requested = true
+  enqueue_operation(self, function()
+    if
+      self.session.state.turn_id ~= target
+      or self.session.turn_done_turn == self.session.state.current_turn
+      or self.replacement_vetoed
+    then
+      self.replacement_target = nil
+      callback(nil, "target turn changed or was stopped; review again")
+      next_operation(self)
+      return
+    end
+    local state = self:inspect()
+    state.paused, state.reason = true, "stopping turn; review the queue"
+    state.replacement = { entry = entry, target_turn_id = target, status = "cancelling", cancellation = "requesting" }
+    state.revision = state.revision + 1
+    commit(self, state, function(save_error)
+      if save_error ~= nil then
+        callback(nil, save_error)
+        return
+      end
+      if self.replacement_vetoed then
+        replacement_unsent(self, target, "replacement stopped before dispatch")
+      elseif self.session.state.turn_id ~= target or self.session.turn_done_turn == self.session.state.current_turn then
+        replacement_unsent(self, target, "target completed before cancellation", "unknown")
+      else
+        local turn = self.session.recording_turn
+        self.replacement_cancel_requested = turn ~= nil and turn.dispatched
+        local sent, cancel_error = cancel()
+        if not sent then
+          self.replacement_cancel_requested = false
+          replacement_unsent(self, target, cancel_error or "cancellation request failed", "unknown")
+        elseif not self.replacement_cancel_requested then
+          replacement_unsent(self, target, "target was not sent; cancellation was not acknowledged", "not_sent")
+        else
+          cancellation_requested(self, target)
+        end
+      end
+      callback(id)
+    end)
+  end, function(error_message)
+    callback(nil, error_message)
+  end)
+  return true
+end
+
+---Fence a reserved replacement before its actual transport write.
+---@param self louiselm.session.Queue
+---@param target string
+---@return boolean vetoed
+function Queue:veto_replacement(target)
+  local replacement = self.state.replacement
+  if self.replacement_target ~= target and (replacement == nil or replacement.target_turn_id ~= target) then
+    return false
+  end
+  local current = self.session.state.turn_id
+  if current ~= target then
+    if self.replacement_turn_id == nil then
+      if not self.replacement_starting then
+        return false
+      end
+    elseif current ~= self.replacement_turn_id then
+      return false
+    end
+  end
+  local turn = self.session.recording_turn
+  if current ~= target and turn ~= nil and turn.dispatched then
+    return false
+  end
+  self.replacement_vetoed = true
+  self.pause_requested = true
+  replacement_unsent(self, target, "replacement stopped before dispatch")
+  return true
+end
+
+---Record the actual prompt response for the exact targeted turn.
+---@param self louiselm.session.Queue
+---@param target string
+---@param cancelled boolean
+function Queue:target_result(target, cancelled)
+  if self.replacement_target ~= target then
+    return
+  end
+  enqueue_operation(self, function()
+    local state = self:inspect()
+    if
+      state.replacement == nil
+      or state.replacement.target_turn_id ~= target
+      or (state.replacement.status ~= "cancelling" and state.replacement.status ~= "unsent")
+    then
+      next_operation(self)
+      return
+    end
+    state.replacement.cancellation = cancelled and "acknowledged" or "completed"
+    if
+      cancelled
+      and self.replacement_cancel_requested
+      and not self.replacement_vetoed
+      and state.replacement.status == "cancelling"
+    then
+      state.replacement.status = "acknowledged"
+      state.reason = "cancellation acknowledged; ordinary queue remains paused"
+    else
+      state.replacement.status = "unsent"
+      state.replacement.reason = cancelled and "replacement stopped before dispatch"
+        or "target did not acknowledge cancellation"
+      state.reason = state.replacement.reason
+    end
+    state.paused = true
+    state.revision = state.revision + 1
+    commit(self, state)
+  end)
+end
+
+---Recheck the live desktop authorization immediately before the transport write.
+---@param self louiselm.session.Queue
+---@param turn_id string
+---@return boolean authorized
+function Queue:replacement_authorized(turn_id)
+  local replacement = self.state.replacement
+  return self.replacement_turn_id == turn_id
+    and replacement ~= nil
+    and replacement.status == "admitting"
+    and not self.replacement_vetoed
+    and not self.state.uncertain
+    and not self.stopped
+    and self.session.state.turn_id == turn_id
+    and self.session.permission_active == nil
+    and #self.session.permission_queue == 0
+    and #self.session.interactions == 0
+end
+
 local function change(self, revision, callback, apply)
   if self.stopped or self.state.uncertain then
     return false, self.state.reason or "queue is unavailable"
@@ -503,7 +789,16 @@ end
 ---@return boolean started
 ---@return string? error_message
 function Queue:cancel(id, revision, callback)
-  return change(self, revision, callback, function(state)
+  return change(self, revision, function(changed, err)
+    if changed and self.state.replacement == nil then
+      self.replacement_target, self.replacement_turn_id = nil, nil
+    end
+    callback(changed, err)
+  end, function(state)
+    if state.replacement ~= nil and state.replacement.entry.id == id and state.replacement.status == "unsent" then
+      state.replacement = nil
+      return true
+    end
     local index = find(state.entries, id)
     if index == nil then
       if state.active ~= nil and state.active.id == id and state.active_status == "not_sent" then
@@ -620,14 +915,104 @@ function Queue:continue(revision, callback)
     if state.active ~= nil then
       return false, "active queue entry has not settled"
     end
+    if state.replacement ~= nil then
+      return false, "replacement requires review"
+    end
     state.paused, state.reason = false, nil
     self.pause_requested = false
     return true
   end)
 end
 
+local function dispatch_replacement(self)
+  local state = self:inspect()
+  local replacement = state.replacement
+  if replacement == nil or replacement.status ~= "acknowledged" then
+    return false
+  end
+  if self.replacement_vetoed or self.session.state.turn_id ~= replacement.target_turn_id then
+    replacement_unsent(self, replacement.target_turn_id, "replacement no longer authorized")
+    return true
+  end
+  if
+    self.session.state.status ~= "ready"
+    or self.state.active ~= nil
+    or self.session.permission_active ~= nil
+    or #self.session.permission_queue > 0
+    or #self.session.interactions > 0
+  then
+    return false
+  end
+  replacement.status = "admitting"
+  state.revision = state.revision + 1
+  commit(self, state, function(err)
+    if err ~= nil or self.stopped then
+      return
+    end
+    if
+      self.replacement_vetoed
+      or self.session.state.turn_id ~= replacement.target_turn_id
+      or self.session.state.status ~= "ready"
+    then
+      replacement_unsent(self, replacement.target_turn_id, "replacement no longer authorized")
+      return
+    end
+    local entry = replacement.entry
+    self.replacement_starting = true
+    local turn_id, prompt_error = self.session:prompt(entry.prompt, function(result, turn_error)
+      if self.stopped then
+        return
+      end
+      local dispatched = self.replacement_dispatched == true
+      local delivery_unknown = turn_error ~= nil and dispatched and self.session.state.status == "error"
+      enqueue_operation(self, function()
+        local completed = self:inspect()
+        if completed.replacement == nil or completed.replacement.entry.id ~= entry.id then
+          next_operation(self)
+          return
+        end
+        if delivery_unknown then
+          completed.replacement.status = "uncertain"
+          completed.replacement.reason = "replacement delivery outcome is unknown"
+          completed.uncertain = true
+        elseif not dispatched then
+          completed.replacement.status = "unsent"
+          completed.replacement.reason = turn_error or "replacement stopped before dispatch"
+        else
+          completed.replacement = nil
+          self.replacement_target, self.replacement_turn_id = nil, nil
+        end
+        completed.paused = true
+        completed.reason = turn_error or "replacement settled; review the queue"
+        completed.revision = completed.revision + 1
+        commit(self, completed)
+      end)
+    end, entry.metadata, entry.display_text)
+    self.replacement_starting = false
+    if turn_id == nil then
+      replacement_unsent(self, replacement.target_turn_id, prompt_error or "replacement was not sent")
+      return
+    end
+    self.replacement_turn_id = turn_id
+    enqueue_operation(self, function()
+      local admitting = self:inspect()
+      if admitting.replacement == nil or admitting.replacement.entry.id ~= entry.id then
+        next_operation(self)
+        return
+      end
+      admitting.replacement.turn_id = turn_id
+      admitting.revision = admitting.revision + 1
+      commit(self, admitting)
+    end)
+  end)
+  return true
+end
+
 pump = function(self)
   local session = self.session
+  if not self.stopped and not self.busy and not self.state.uncertain and dispatch_replacement(self) then
+    return
+  end
   if
     self.stopped
     or self.busy
@@ -727,8 +1112,32 @@ end
 function Queue:observe(event)
   if event.type == "error" or event.type == "prompt_rejected" then
     self:pause("turn failed; review the queue")
+    if self.replacement_target ~= nil and self.replacement_turn_id == nil then
+      replacement_unsent(
+        self,
+        self.replacement_target,
+        "target cancellation outcome is unknown; replacement was not sent",
+        "unknown"
+      )
+    end
   elseif event.type == "turn_done" and type(event.data) == "table" and event.data.stopReason == "cancelled" then
     self:pause("turn cancelled; review the queue")
+  elseif event.type == "admission_settled" and self.replacement_turn_id == event.data.turn_id then
+    local data = event.data
+    if data.result == "dispatched" then
+      self.replacement_dispatched = true
+    end
+    enqueue_operation(self, function()
+      local state = self:inspect()
+      if state.replacement == nil or state.replacement.turn_id ~= data.turn_id then
+        next_operation(self)
+        return
+      end
+      state.replacement.status = data.result == "dispatched" and "dispatched"
+        or (data.result == "uncertain" and "uncertain" or "unsent")
+      state.revision = state.revision + 1
+      commit(self, state)
+    end)
   elseif event.type == "admission_settled" and self.state.active ~= nil then
     local data = event.data
     enqueue_operation(self, function()

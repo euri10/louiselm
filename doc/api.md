@@ -306,6 +306,8 @@ string|table
 - `start_timeout_ms: integer` -- Milliseconds to wait for the ACP handshake before failing a Session stuck "starting".
 - `state: louiselm.session.State` -- Internal mutable state.
 - `stderr_buffer: string` -- Recent stderr output from the agent process, most-recent-last.
+- `stop: fun(self: louiselm.session.Session, turn_id: string):boolean, string?` -- Stop an exact reviewed turn.
+- `stop_and_send: fun(self: louiselm.session.Session, turn_id: string, prompt: string|table, callback: fun(id?: string, error_message?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string, contexts?: table[]):boolean, string?` -- Reserve one replacement and stop the exact turn.
 - `transcript: louiselm.session.Transcript` -- Conversation owned for this Session's lifetime.
 - `transcript_turn: integer` -- Observed replay turns plus locally dispatched prompts, excluding unsent attempts.
 - `turn_done_turn: integer?` -- Turn for which the completion event was emitted.

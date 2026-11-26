@@ -11,7 +11,7 @@ local function wait_for(predicate)
   assert(nvim.wait(10000, predicate, 10), "queue transition did not finish")
 end
 
-local function fixture(directory, load_id, mode, interaction_file)
+local function fixture(directory, load_id, mode, interaction_file, permission_policy)
   directory = directory or nvim.fn.tempname()
   local root = nvim.fn.getcwd()
   local definition = {
@@ -54,8 +54,9 @@ local function fixture(directory, load_id, mode, interaction_file)
     end)
     nvim.fn.delete(directory, "rf")
   end)
-  local session = load_id and assert(api:load_session("mock", load_id, { cwd = root }))
-    or assert(api:create_session("mock", { cwd = root }))
+  local options = { cwd = root, permission_policy = permission_policy }
+  local session = load_id and assert(api:load_session("mock", load_id, options))
+    or assert(api:create_session("mock", options))
   wait_for(function()
     return session:inspect().status == "ready"
   end)
@@ -84,7 +85,7 @@ local function change(start)
   return changed, failure
 end
 
-local function crash_editor(directory, settled, graceful)
+local function crash_editor(directory, settled, graceful, replacement_phase)
   local output = ""
   local process = nvim.system({
     "python3",
@@ -93,6 +94,7 @@ local function crash_editor(directory, settled, graceful)
     directory,
     settled and "1" or "0",
     graceful and "1" or "0",
+    replacement_phase or "",
   }, {
     stdin = true,
     text = true,
@@ -842,6 +844,483 @@ T["VimLeavePre retains the saved queue for paused restart recovery"] = function(
   MiniTest.expect.equality(queue.paused, true)
   MiniTest.expect.equality(queue.uncertain, false)
   MiniTest.expect.equality(restored:inspect().current_turn, 0)
+end
+
+T["Stop-and-send waits for cancellation and keeps ordinary work paused"] = function()
+  local _, session = fixture()
+  local permissions, dispatched = {}, {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    elseif event.type == "prompt_dispatched" then
+      dispatched[#dispatched + 1] = event.data
+    end
+  end)
+  assert(session:prompt("active"))
+  wait_for(function()
+    return #permissions == 1
+  end)
+  local target = assert(session:inspect().turn_id)
+  assert(admit(session, "ordinary waiting"))
+  local replacement = { { type = "text", text = "reviewed replacement" } }
+  local accepted, failure
+  assert(session:stop_and_send(target, replacement, function(id, err)
+    accepted, failure = id, err
+  end, nil, "reviewed replacement", {}))
+  replacement[1].text = "changed after submission"
+  wait_for(function()
+    return accepted ~= nil or failure ~= nil
+  end)
+  assert(accepted, failure)
+  wait_for(function()
+    return #dispatched == 2 and #permissions == 2
+  end)
+  MiniTest.expect.equality(dispatched[2].prompt[1].text, "reviewed replacement")
+  local queue = session:queue_inspect()
+  MiniTest.expect.equality(queue.paused, true)
+  MiniTest.expect.equality(queue.entries[1].display_text, "ordinary waiting")
+  assert(permissions[2].respond({ outcome = { outcome = "selected", optionId = "allow-once" } }))
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  nvim.wait(50)
+  MiniTest.expect.equality(#dispatched, 2)
+  assert(change(function(callback)
+    return session:queue_continue(session:queue_inspect().revision, callback)
+  end))
+  wait_for(function()
+    return #dispatched == 3
+  end)
+end
+
+T["a full queue reserves one replacement and old Stops cannot cancel its new turn"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local dispatched = {}
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched[#dispatched + 1] = event.data
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return #dispatched == 1
+  end)
+  for i = 1, 20 do
+    assert(admit(session, "waiting " .. i))
+  end
+  local client = assert(session.client)
+  local original_cancel, held = client.cancel, nil
+  client.cancel = function(_, params)
+    held = params
+    return true
+  end
+  local accepted
+  assert(session:stop_and_send(target, "replacement", function(id)
+    accepted = id
+  end))
+  wait_for(function()
+    return accepted ~= nil and held ~= nil
+  end)
+  MiniTest.expect.equality(#session:queue_inspect().entries, 20)
+  MiniTest.expect.equality(#dispatched, 1)
+  wait_for(function()
+    return session:queue_inspect().replacement.cancellation == "requested"
+  end)
+  local second, second_error = session:stop_and_send(target, "competing", function() end)
+  MiniTest.expect.equality(second, false)
+  assert(second_error ~= nil)
+  local continued, continue_error = change(function(callback)
+    return session:queue_continue(session:queue_inspect().revision, callback)
+  end)
+  MiniTest.expect.equality({ continued, continue_error }, { false, "replacement requires review" })
+  client.cancel = original_cancel
+  assert(original_cancel(client, assert(held)))
+  wait_for(function()
+    return #dispatched == 2
+  end)
+  local stopped, stale_error = session:stop(target)
+  MiniTest.expect.equality({ stopped, stale_error }, { false, "turn changed; review it again" })
+  MiniTest.expect.equality(session:inspect().turn_id, dispatched[2].turn_id)
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+  MiniTest.expect.equality(#session:queue_inspect().entries, 20)
+end
+
+T["a queued active turn settles before its replacement is dispatched"] = function()
+  local _, session = fixture()
+  local permissions, dispatched = {}, {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    elseif event.type == "prompt_dispatched" then
+      dispatched[#dispatched + 1] = event.data
+    end
+  end)
+  assert(admit(session, "active queued entry"))
+  wait_for(function()
+    return #permissions == 1
+  end)
+  local target = assert(session:inspect().turn_id)
+  assert(admit(session, "older waiting entry"))
+  assert(session:stop_and_send(target, "replacement", function() end))
+  wait_for(function()
+    return #dispatched == 2 and #permissions == 2
+  end)
+  MiniTest.expect.equality(dispatched[2].display_text, "replacement")
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "older waiting entry")
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+end
+
+T["replacement preserves the configured automatic permission policy"] = function()
+  local evaluations = 0
+  local policy = {
+    name = "fixture-policy",
+    evaluate = function()
+      evaluations = evaluations + 1
+      return evaluations == 1 and "ask" or "allow"
+    end,
+  }
+  local _, session = fixture(nil, nil, "permission", nil, policy)
+  local permissions, dispatched = 0, 0
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions = permissions + 1
+    elseif event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return permissions == 1
+  end)
+  assert(session:stop_and_send(target, "auto-approved replacement", function() end))
+  wait_for(function()
+    return dispatched == 2 and session:inspect().status == "ready"
+  end)
+  MiniTest.expect.equality(evaluations, 2)
+  MiniTest.expect.equality(permissions, 1)
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+end
+
+T["ordinary completion after a cancellation request leaves the replacement unsent"] = function()
+  local _, session = fixture()
+  local permission, dispatched
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission = event
+    elseif event.type == "prompt_dispatched" then
+      dispatched = (dispatched or 0) + 1
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return permission ~= nil
+  end)
+  local client = assert(session.client)
+  local original_cancel = client.cancel
+  client.cancel = function()
+    return true
+  end
+  local accepted
+  assert(session:stop_and_send(target, "must remain unsent", function(id)
+    accepted = id
+  end))
+  wait_for(function()
+    local replacement = session:queue_inspect().replacement
+    return accepted ~= nil and replacement ~= nil and replacement.status == "unsent"
+  end)
+  client.cancel = original_cancel
+  MiniTest.expect.equality(dispatched, 1)
+  MiniTest.expect.equality(session:queue_inspect().replacement.reason, "target did not acknowledge cancellation")
+  MiniTest.expect.equality(session:queue_inspect().replacement.cancellation, "completed")
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+  local queue = session:queue_inspect()
+  assert(change(function(callback)
+    return session:queue_cancel(queue.replacement.entry.id, queue.revision, callback)
+  end))
+  assert(change(function(callback)
+    return session:queue_continue(session:queue_inspect().revision, callback)
+  end))
+end
+
+T["local cancellation before prompt dispatch is not an Agent acknowledgement"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local recording = session.owner.recording
+  local flush, pending = recording.flush, nil
+  recording.flush = function(_, callback)
+    pending = callback
+  end
+  local dispatched = 0
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    end
+  end)
+  local target = assert(session:prompt("never sent"))
+  assert(session:stop_and_send(target, "replacement", function() end))
+  wait_for(function()
+    local replacement = session:queue_inspect().replacement
+    return replacement ~= nil and replacement.status == "unsent"
+  end)
+  recording.flush = flush
+  assert(pending)()
+  nvim.wait(50)
+  MiniTest.expect.equality(dispatched, 0)
+  MiniTest.expect.equality(session:queue_inspect().replacement.cancellation, "not_sent")
+  MiniTest.expect.equality(
+    session:queue_inspect().replacement.reason,
+    "target was not sent; cancellation was not acknowledged"
+  )
+end
+
+T["lost Agent response leaves cancellation unknown and the replacement unsent"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local dispatched = 0
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return dispatched == 1
+  end)
+  local client = assert(session.client)
+  client.cancel = function()
+    return true
+  end
+  assert(session:stop_and_send(target, "replacement", function() end))
+  wait_for(function()
+    local replacement = session:queue_inspect().replacement
+    return replacement ~= nil and replacement.cancellation == "requested"
+  end)
+  client.transport.handle:kill("sigkill")
+  wait_for(function()
+    local replacement = session:queue_inspect().replacement
+    return session:inspect().status == "error"
+      and replacement ~= nil
+      and replacement.status == "unsent"
+      and replacement.cancellation == "unknown"
+  end)
+  MiniTest.expect.equality(dispatched, 1)
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+end
+
+T["plain Stop wins while the replacement dispatch fence is awaiting storage"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local dispatched = 0
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return dispatched == 1
+  end)
+  assert(admit(session, "ordinary waiting"))
+  local store = session.owner.queue_store
+  local save, release = store.save, nil
+  store.save = function(owner, id, revision, snapshot, callback)
+    if snapshot.state.replacement ~= nil and snapshot.state.replacement.status == "admitting" and release == nil then
+      save(owner, id, revision, snapshot, function(err)
+        release = function()
+          callback(err)
+        end
+      end)
+    else
+      save(owner, id, revision, snapshot, callback)
+    end
+  end
+  assert(session:stop_and_send(target, "replacement", function() end))
+  wait_for(function()
+    return release ~= nil
+  end)
+  assert(session:stop(target))
+  assert(release)()
+  wait_for(function()
+    local replacement = session:queue_inspect().replacement
+    return replacement ~= nil and replacement.status == "unsent" and not session:queue_inspect().pending
+  end)
+  MiniTest.expect.equality(dispatched, 1)
+  MiniTest.expect.equality(session:queue_inspect().entries[1].display_text, "ordinary waiting")
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+end
+
+T["plain Stop can veto after replacement admission but before its transport write"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local dispatched, target, stopped = 0, nil, false
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    elseif
+      event.type == "state_changed"
+      and event.data.status == "preparing"
+      and target ~= nil
+      and session:inspect().turn_id ~= target
+    then
+      stopped = session:stop(target)
+    end
+  end)
+  target = assert(session:prompt("active"))
+  wait_for(function()
+    return dispatched == 1
+  end)
+  assert(session:stop_and_send(target, "replacement", function() end))
+  wait_for(function()
+    local replacement = session:queue_inspect().replacement
+    return stopped and replacement ~= nil and replacement.status == "unsent" and not session:queue_inspect().pending
+  end)
+  MiniTest.expect.equality(dispatched, 1)
+  MiniTest.expect.equality(session:queue_inspect().paused, true)
+end
+
+T["lost reservation reply retains the proposed replacement without cancelling"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local dispatched = 0
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    end
+  end)
+  local target = assert(session:prompt("active"))
+  wait_for(function()
+    return dispatched == 1
+  end)
+  assert(admit(session, "waiting"))
+  local store, original = session.owner.queue_store, session.owner.queue_store.save
+  store.save = function(owner, id, revision, snapshot, callback)
+    if snapshot.state.replacement ~= nil then
+      original(owner, id, revision, snapshot, function(err)
+        assert(err == nil)
+        callback("reservation acknowledgement lost")
+      end)
+    else
+      original(owner, id, revision, snapshot, callback)
+    end
+  end
+  local accepted, failure
+  assert(session:stop_and_send(target, "retain this replacement", function(id, err)
+    accepted, failure = id, err
+  end))
+  wait_for(function()
+    return failure ~= nil
+  end)
+  local state = session:queue_inspect()
+  MiniTest.expect.equality(accepted, nil)
+  MiniTest.expect.equality(failure, "reservation acknowledgement lost")
+  MiniTest.expect.equality(state.uncertain, true)
+  MiniTest.expect.equality(state.uncertain_proposal.replacement.entry.display_text, "retain this replacement")
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(dispatched, 1)
+end
+
+T["an old Stop cannot retarget a newer turn after a reentrant veto"] = function()
+  local _, session = fixture(nil, nil, "hold")
+  local target, newer, late_error, attempted, dispatched = nil, nil, nil, false, 0
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = dispatched + 1
+    elseif
+      event.type == "state_changed"
+      and event.data.status == "preparing"
+      and target ~= nil
+      and session:inspect().turn_id ~= target
+      and not attempted
+    then
+      attempted = true
+      assert(session:stop(target))
+      newer = assert(session:prompt("independent new turn"))
+      local stopped
+      stopped, late_error = session:stop(target)
+      MiniTest.expect.equality(stopped, false)
+    end
+  end)
+  target = assert(session:prompt("active"))
+  wait_for(function()
+    return dispatched == 1
+  end)
+  assert(session:stop_and_send(target, "replacement", function() end))
+  wait_for(function()
+    return newer ~= nil and dispatched == 2
+  end)
+  MiniTest.expect.equality(late_error, "turn changed; review it again")
+  MiniTest.expect.equality(session:inspect().turn_id, newer)
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+end
+
+T["crash never replays reserved or possibly dispatched replacements"] = function()
+  for _, phase in ipairs({ "cancelling", "admitting", "dispatched" }) do
+    local directory = nvim.fn.tempname()
+    local acp_id = crash_editor(directory, false, false, phase)
+    local _, restored = fixture(directory, acp_id)
+    local queue = restored:queue_inspect()
+    MiniTest.expect.equality(queue.paused, true)
+    MiniTest.expect.equality(queue.uncertain, true)
+    MiniTest.expect.equality(queue.entries[1].display_text, "saved for review")
+    MiniTest.expect.equality(queue.replacement.entry.display_text, "saved replacement")
+    MiniTest.expect.equality(queue.replacement.status, phase == "cancelling" and "unsent" or "uncertain")
+    MiniTest.expect.equality(queue.replacement.cancellation, phase == "cancelling" and "unknown" or "acknowledged")
+    MiniTest.expect.equality(restored:queue_continue(queue.revision, function() end), false)
+    nvim.wait(50)
+    MiniTest.expect.equality(restored:inspect().current_turn, 0)
+  end
+end
+
+T["two desktop views keep private drafts when replacements compete"] = function()
+  local api, session = fixture(nil, nil, "hold")
+  local dispatched = {}
+  session:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched[#dispatched + 1] = event.data
+    end
+  end)
+  local first = assert(Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false }))
+  local second = assert(Chat.new(api, { markdown_highlighting = false, start_insert_on_switch = false }))
+  MiniTest.finally(function()
+    first:dispose()
+    second:dispose()
+  end)
+  assert(first:attach(session))
+  assert(second:attach(session))
+  assert(session:prompt("active"))
+  wait_for(function()
+    return #dispatched == 1
+  end)
+  local first_view, second_view = first.views[session:inspect().id], second.views[session:inspect().id]
+  assert(first:queue_context({ label = "first", text = "first private context" }))
+  assert(second:queue_context({ label = "second", text = "second private context" }))
+  first_view.renderer:replace_prompt("reviewed first draft")
+  second_view.renderer:replace_prompt("private second draft")
+  local client = assert(session.client)
+  local original_cancel, held = client.cancel, nil
+  client.cancel = function(_, params)
+    held = params
+    return true
+  end
+  assert(first:stop_and_send())
+  wait_for(function()
+    return held ~= nil and session:queue_inspect().replacement ~= nil
+  end)
+  local accepted = second:stop_and_send()
+  MiniTest.expect.equality(accepted, nil)
+  MiniTest.expect.equality(second_view.renderer:prompt_text(), "private second draft")
+  MiniTest.expect.equality(second_view.draft.contexts[1].text, "second private context")
+  first_view.renderer:replace_prompt("new first draft")
+  client.cancel = original_cancel
+  assert(original_cancel(client, assert(held)))
+  wait_for(function()
+    return #dispatched == 2
+  end)
+  MiniTest.expect.equality(dispatched[2].prompt, {
+    { type = "text", text = "first private context" },
+    { type = "text", text = "reviewed first draft" },
+  })
+  MiniTest.expect.equality(first_view.renderer:prompt_text(), "new first draft")
+  MiniTest.expect.equality(second_view.renderer:prompt_text(), "private second draft")
+  first:dispose()
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(second_view.renderer.buffer), true)
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(second_view.renderer:prompt_text(), "private second draft")
 end
 
 T["a live owner cannot be displaced and a reused local ID cannot adopt its queue"] = function()

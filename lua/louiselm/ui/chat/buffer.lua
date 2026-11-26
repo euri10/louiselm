@@ -1172,7 +1172,14 @@ end
 function M.new(state, options)
   local window = nvim.api.nvim_get_current_win()
   local buffer = nvim.api.nvim_create_buf(false, true)
-  nvim.api.nvim_buf_set_name(buffer, "louiselm://" .. state.id)
+  local name = "louiselm://" .. state.id
+  for _, existing in ipairs(nvim.api.nvim_list_bufs()) do
+    if nvim.api.nvim_buf_get_name(existing) == name then
+      name = name .. "/view-" .. buffer
+      break
+    end
+  end
+  nvim.api.nvim_buf_set_name(buffer, name)
   nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
   nvim.api.nvim_set_option_value("bufhidden", "hide", { buf = buffer })
   nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })

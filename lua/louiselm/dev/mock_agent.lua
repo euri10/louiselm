@@ -1,5 +1,5 @@
 ---@class louiselm.dev.MockAgentOptions
----@field mode? "echo"|"static"|"permission"|"crash" Response behavior. Defaults to echo.
+---@field mode? "echo"|"static"|"permission"|"crash"|"hold" Response behavior. Defaults to echo.
 ---@field response? string Static response text.
 ---@field crash_on? "initialize"|"session/new"|"session/load"|"session/prompt" Crash before handling a request.
 ---@field fail_session_load? boolean Respond to `session/load` with an ACP `RequestError.resourceNotFound`
@@ -349,7 +349,7 @@ local function handle_message(message, state, options, interaction)
           { optionId = "reject", kind = "reject" },
         },
       })
-    else
+    elseif options.mode ~= "hold" then
       local generated = generate_work(options)
       local response = configured_response(options)
       if options.recording_probe ~= nil then
