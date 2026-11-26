@@ -28,6 +28,8 @@ use tokio::{
 use super::{
     MAX_FRAME, MAX_INTEGER, Request,
     authority::{Authority, EnrollmentStatus, LegacyScopeApproval, Refusal, Scope, random_hex},
+    barrier::{CutoffError, ReceiverBarrier},
+    barrier_log::CutoffKind,
     fixed,
     prepared_owner::{OwnerPreparedError, PreparedAdmission, PreparedOwner, Publication},
     source::PhoneSourceError,
@@ -118,14 +120,33 @@ impl LockedListener {
     }
 }
 
-#[derive(Default)]
 pub(super) struct ControllerRegistry {
     attached: Mutex<BTreeMap<String, ControllerEntry>>,
+    barrier: Option<RegistrationBarrier>,
+    #[cfg(test)]
+    allow_unbound_cutoff: bool,
+}
+
+impl Default for ControllerRegistry {
+    fn default() -> Self {
+        Self {
+            attached: Mutex::new(BTreeMap::new()),
+            barrier: None,
+            #[cfg(test)]
+            allow_unbound_cutoff: true,
+        }
+    }
+}
+
+struct RegistrationBarrier {
+    generation: String,
+    owner: Arc<ReceiverBarrier>,
 }
 
 struct ControllerEntry {
     sender: Option<mpsc::Sender<Dispatch>>,
     socket: Option<StdUnixStream>,
+    gate_capable: bool,
 }
 
 impl ControllerEntry {
@@ -395,6 +416,106 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
 }
 
 impl ControllerRegistry {
+    pub(super) fn new(registration: Option<(String, ReceiverBarrier)>) -> Self {
+        Self {
+            attached: Mutex::new(BTreeMap::new()),
+            barrier: registration.map(|(generation, owner)| RegistrationBarrier {
+                generation,
+                owner: Arc::new(owner),
+            }),
+            #[cfg(test)]
+            allow_unbound_cutoff: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn test_admin() -> Self {
+        Self {
+            attached: Mutex::new(BTreeMap::new()),
+            barrier: None,
+            allow_unbound_cutoff: true,
+        }
+    }
+
+    fn attach(
+        &self,
+        sender: mpsc::Sender<Dispatch>,
+        socket: StdUnixStream,
+    ) -> Result<String, Refusal> {
+        let gate_capable = self.barrier.is_some();
+        let insert = || {
+            let mut attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+            for _ in 0..8 {
+                let id = random_hex(16)?;
+                if id != "00".repeat(16) && !attached.contains_key(&id) {
+                    attached.insert(
+                        id.clone(),
+                        ControllerEntry {
+                            sender: Some(sender),
+                            socket: Some(socket),
+                            gate_capable,
+                        },
+                    );
+                    return Ok(id);
+                }
+            }
+            Err(Refusal::Unavailable)
+        };
+        match &self.barrier {
+            Some(barrier) => barrier
+                .owner
+                .register(&barrier.generation, insert)
+                .map_err(|_| Refusal::Unavailable)?,
+            None => insert(),
+        }
+    }
+
+    pub(super) fn cutoff<T>(
+        &self,
+        kind: CutoffKind,
+        device_id: &str,
+        operation: impl FnOnce() -> Result<T, Refusal>,
+    ) -> Result<T, Refusal> {
+        #[cfg(test)]
+        if self.allow_unbound_cutoff {
+            self.cut_all()?;
+            return operation();
+        }
+        let barrier = self.barrier.as_ref().ok_or(Refusal::Unavailable)?;
+        barrier
+            .owner
+            .cutoff(
+                &barrier.generation,
+                kind,
+                device_id,
+                || self.cut_all(),
+                operation,
+            )
+            .map_err(|error| match error {
+                CutoffError::Barrier(_) => Refusal::Unavailable,
+                CutoffError::Operation(error) => error,
+            })
+    }
+
+    pub(super) fn invalidate<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, Refusal>,
+    ) -> Result<T, Refusal> {
+        #[cfg(test)]
+        if self.allow_unbound_cutoff {
+            self.cut_all()?;
+            return operation();
+        }
+        let barrier = self.barrier.as_ref().ok_or(Refusal::Unavailable)?;
+        barrier
+            .owner
+            .invalidate(&barrier.generation, || self.cut_all(), operation)
+            .map_err(|error| match error {
+                CutoffError::Barrier(_) => Refusal::Unavailable,
+                CutoffError::Operation(error) => error,
+            })
+    }
+
     pub(super) fn list_after(&self, after: &str, limit: usize) -> Result<Vec<String>, Refusal> {
         let entries = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
         Ok(entries
@@ -412,13 +533,20 @@ impl ControllerRegistry {
     }
 
     pub(super) async fn dispatch(&self, id: &str, frame: Vec<u8>) -> Result<Vec<u8>, Refusal> {
-        let sender = self
-            .attached
-            .lock()
-            .map_err(|_| Refusal::Unavailable)?
-            .get(id)
-            .and_then(|entry| entry.sender.clone())
-            .ok_or(Refusal::StaleSubject)?;
+        let (sender, gate_capable) = {
+            let attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+            let entry = attached.get(id).ok_or(Refusal::StaleSubject)?;
+            (
+                entry.sender.clone().ok_or(Refusal::StaleSubject)?,
+                entry.gate_capable,
+            )
+        };
+        let kind = serde_json::from_slice::<Value>(&frame)
+            .ok()
+            .and_then(|value| value["type"].as_str().map(str::to_owned));
+        if matches!(kind.as_deref(), Some("send_prompt" | "action_commit")) && !gate_capable {
+            return Err(Refusal::Unavailable);
+        }
         let (response, received) = oneshot::channel();
         sender
             .try_send(Dispatch { frame, response })
@@ -548,31 +676,7 @@ async fn serve_controller(
         Ok(request) if !verify_capability(hash, &request.capability) => {
             Err(Refusal::Unauthenticated)
         }
-        Ok(_) => {
-            let mut attached = registry
-                .attached
-                .lock()
-                .map_err(|_| io::Error::other("controller registry unavailable"))?;
-            let mut created = Err(Refusal::Unavailable);
-            for _ in 0..8 {
-                let candidate = random_hex(16);
-                let Ok(id) = candidate else {
-                    break;
-                };
-                if id != "00".repeat(16) && !attached.contains_key(&id) {
-                    attached.insert(
-                        id.clone(),
-                        ControllerEntry {
-                            sender: Some(sender),
-                            socket: Some(shutdown_socket),
-                        },
-                    );
-                    created = Ok(id);
-                    break;
-                }
-            }
-            created
-        }
+        Ok(_) => registry.attach(sender, shutdown_socket),
     };
     let id = match result {
         Ok(id) => id,
@@ -625,6 +729,7 @@ pub(super) struct AdminSocket {
     socket: LockedListener,
     authority: Arc<Authority>,
     pairing: Arc<PairingRegistry>,
+    controllers: Arc<ControllerRegistry>,
     prepared: Option<PreparedOwner>,
 }
 
@@ -634,11 +739,13 @@ impl AdminSocket {
         capability: &Path,
         authority: Arc<Authority>,
         pairing: Arc<PairingRegistry>,
+        controllers: Arc<ControllerRegistry>,
     ) -> io::Result<Self> {
         Ok(Self {
             socket: LockedListener::bind(path, capability).await?,
             authority,
             pairing,
+            controllers,
             prepared: None,
         })
     }
@@ -657,9 +764,10 @@ impl AdminSocket {
                     if clients.len() >= 64 { continue; }
                     let authority = self.authority.clone();
                     let pairing = self.pairing.clone();
+                    let controllers = self.controllers.clone();
                     let prepared = self.prepared.clone();
                     let hash = self.socket.operator_hash.clone();
-                    clients.spawn(async move { serve_admin(stream, authority, pairing, prepared, &hash).await });
+                    clients.spawn(async move { serve_admin(stream, authority, pairing, controllers, prepared, &hash).await });
                 }
                 Some(_) = clients.join_next(), if !clients.is_empty() => {}
             }
@@ -947,6 +1055,7 @@ async fn serve_admin(
     stream: UnixStream,
     authority: Arc<Authority>,
     pairing: Arc<PairingRegistry>,
+    controllers: Arc<ControllerRegistry>,
     prepared: Option<PreparedOwner>,
     hash: &str,
 ) -> io::Result<()> {
@@ -971,7 +1080,13 @@ async fn serve_admin(
                 Err(Refusal::Malformed)
             } else {
                 tokio::task::spawn_blocking(move || {
-                    process_admin(&authority, &pairing, prepared.as_ref(), request)
+                    process_admin(
+                        &authority,
+                        &pairing,
+                        &controllers,
+                        prepared.as_ref(),
+                        request,
+                    )
                 })
                 .await
                 .unwrap_or(Err(Refusal::Unavailable))
@@ -985,9 +1100,14 @@ async fn serve_admin(
     writer.write_all(b"\n").await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the closed administration protocol keeps related authority transitions together"
+)]
 fn process_admin(
     authority: &Authority,
     pairing: &PairingRegistry,
+    controllers: &ControllerRegistry,
     prepared: Option<&PreparedOwner>,
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
@@ -1024,7 +1144,7 @@ fn process_admin(
         | AdminRequest::ApproveLegacyScope { .. }
         | AdminRequest::ConfirmLegacyProject { .. }
         | AdminRequest::RecoverLegacyProject { .. }) => {
-            process_project_admin(authority, pairing, request)
+            process_project_admin(authority, pairing, controllers, request)
         }
         AdminRequest::Start { device_id, .. } => {
             let offer = authority.start(&device_id, Instant::now(), now_ms())?;
@@ -1053,14 +1173,16 @@ fn process_admin(
             project_root_ids,
             ..
         } => {
-            let grant = authority.approve(
-                &device_id,
-                &enrollment_id,
-                &enrolled_key,
-                scope,
-                &project_root_ids,
-                Instant::now(),
-            )?;
+            let grant = controllers.invalidate(|| {
+                authority.approve(
+                    &device_id,
+                    &enrollment_id,
+                    &enrolled_key,
+                    scope,
+                    &project_root_ids,
+                    Instant::now(),
+                )
+            })?;
             let project_root_ids = grant.project_roots()?.ok_or(Refusal::Unavailable)?;
             Ok(
                 json!({"v":2,"type":"enrollment_approved","device_id":device_id,
@@ -1069,7 +1191,9 @@ fn process_admin(
             )
         }
         AdminRequest::Disable { device_id, .. } => {
-            authority.disable(&device_id)?;
+            controllers.cutoff(CutoffKind::Disable, &device_id, || {
+                authority.disable(&device_id)
+            })?;
             Ok(json!({"v":1,"type":"disabled","device_id":device_id}))
         }
         AdminRequest::Cancel {
@@ -1083,7 +1207,9 @@ fn process_admin(
             )
         }
         AdminRequest::Forget { device_id, .. } => {
-            authority.forget(pairing, &device_id)?;
+            controllers.cutoff(CutoffKind::Forget, &device_id, || {
+                authority.forget(pairing, &device_id)
+            })?;
             Ok(json!({"v":1,"type":"forgotten","device_id":device_id}))
         }
     }
@@ -1246,6 +1372,7 @@ fn prepared_refusal(error: &OwnerPreparedError) -> Refusal {
 fn process_project_admin(
     authority: &Authority,
     pairing: &PairingRegistry,
+    controllers: &ControllerRegistry,
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
     let recover = matches!(&request, AdminRequest::RecoverLegacyProject { .. });
@@ -1289,7 +1416,7 @@ fn process_project_admin(
             )
         }
         AdminRequest::RegisterProject { path, root_ids, .. } => {
-            let id = authority.register_project(&path, &root_ids)?;
+            let id = controllers.invalidate(|| authority.register_project(&path, &root_ids))?;
             Ok(json!({"v":1,"type":"project_registered","project_id":id}))
         }
         AdminRequest::LinkProjectRoots {
@@ -1297,11 +1424,11 @@ fn process_project_admin(
             root_ids,
             ..
         } => {
-            authority.link_project_roots(&project_id, &root_ids)?;
+            controllers.invalidate(|| authority.link_project_roots(&project_id, &root_ids))?;
             Ok(json!({"v":1,"type":"project_roots_linked","project_id":project_id}))
         }
         AdminRequest::RegisterRoot { path, .. } => {
-            let id = authority.register_root(&path)?;
+            let id = controllers.invalidate(|| authority.register_root(&path))?;
             Ok(json!({"v":1,"type":"root_registered","root_id":id}))
         }
         AdminRequest::InspectGrant { device_id, .. } => {
@@ -1320,8 +1447,8 @@ fn process_project_admin(
             approval,
             ..
         } => {
-            let (scope, project_confirmations_valid) =
-                authority.approve_legacy_scope(pairing, &device_id, approval)?;
+            let (scope, project_confirmations_valid) = controllers
+                .invalidate(|| authority.approve_legacy_scope(pairing, &device_id, approval))?;
             Ok(
                 json!({"v":1,"type":"legacy_scope_approved","device_id":device_id,
                 "scope":scope,"project_confirmations_valid":project_confirmations_valid}),
@@ -1343,15 +1470,17 @@ fn process_project_admin(
             project_id,
             ..
         } => {
-            authority.confirm_legacy_project(
-                pairing,
-                &device_id,
-                &grant_id,
-                grant_revision,
-                &scope_digest,
-                &project_id,
-                recover,
-            )?;
+            controllers.invalidate(|| {
+                authority.confirm_legacy_project(
+                    pairing,
+                    &device_id,
+                    &grant_id,
+                    grant_revision,
+                    &scope_digest,
+                    &project_id,
+                    recover,
+                )
+            })?;
             let kind = if recover {
                 "legacy_project_recovered"
             } else {
@@ -1477,10 +1606,15 @@ mod tests {
         .router();
         let path = root.path().join("operator.sock");
         let capability = root.path().join("operator-capability");
-        let server =
-            super::AdminSocket::bind(&path, &capability, authority.clone(), pairing.clone())
-                .await
-                .unwrap();
+        let server = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority.clone(),
+            pairing.clone(),
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap();
         let token = std::fs::read_to_string(capability).unwrap();
         let task = tokio::spawn(server.serve());
         let inspect =
@@ -1687,9 +1821,15 @@ mod tests {
         let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
         let path = root.path().join("operator.sock");
         let capability = root.path().join("operator-capability");
-        let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
-            .await
-            .unwrap();
+        let server = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority,
+            pairing,
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap();
         let token = std::fs::read_to_string(&capability).unwrap();
         let task = tokio::spawn(server.serve());
         let denied = exchange(
@@ -1814,9 +1954,15 @@ mod tests {
             .path()
             .join("louiselm/workflow/phone-control-admin.sock");
         let capability = root.path().join("louiselm/workflow/operator-capability");
-        let server = super::AdminSocket::bind(&path, &capability, authority, pairing.clone())
-            .await
-            .unwrap();
+        let server = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority,
+            pairing.clone(),
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap();
         let token = std::fs::read_to_string(&capability).unwrap();
         let task = tokio::spawn(server.serve());
         let selected = exchange(
@@ -1854,9 +2000,15 @@ mod tests {
         let authority = Arc::new(Authority::open(&grants, &"01".repeat(32)).unwrap());
         let runs = crate::RunStore::new(root.path().join("runs")).unwrap();
         let prepared = super::PreparedOwner::new(root.path().join("grants"), runs.clone());
-        let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
-            .await
-            .unwrap();
+        let server = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority,
+            pairing,
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap();
         let task = tokio::spawn(server.serve());
         let restored = exchange(
             &path,
@@ -1870,10 +2022,16 @@ mod tests {
         assert!(task.await.unwrap_err().is_cancelled());
         let authority = Arc::new(Authority::open(&grants, &"01".repeat(32)).unwrap());
         let pairing = Arc::new(PairingRegistry::open(root.path().join("pairing")).unwrap());
-        let server = super::AdminSocket::bind(&path, &capability, authority, pairing)
-            .await
-            .unwrap()
-            .with_prepared(Some(prepared));
+        let server = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority,
+            pairing,
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap()
+        .with_prepared(Some(prepared));
         let task = tokio::spawn(server.serve());
         let restored_checkout = exchange(
             &path,
@@ -2038,10 +2196,15 @@ mod tests {
             Arc::new(Authority::open(&root.path().join("grants/state"), &identity).unwrap());
         let path = root.path().join("operator.sock");
         let capability = root.path().join("operator-capability");
-        let server =
-            super::AdminSocket::bind(&path, &capability, authority.clone(), pairing.clone())
-                .await
-                .unwrap();
+        let server = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority.clone(),
+            pairing.clone(),
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap();
         let token = std::fs::read_to_string(&capability).unwrap();
         let task = tokio::spawn(server.serve());
         let wrong = exchange(
@@ -2339,15 +2502,26 @@ mod tests {
             Arc::new(Authority::open(&root.path().join("grants/state"), &"01".repeat(32)).unwrap());
         let path = root.path().join("operator.sock");
         let capability = root.path().join("operator-capability");
-        let first =
-            super::AdminSocket::bind(&path, &capability, authority.clone(), pairing.clone())
-                .await
-                .unwrap();
+        let first = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority.clone(),
+            pairing.clone(),
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap();
         let cloned = first.socket._lock.0.try_clone().unwrap();
         drop(first);
-        let second = super::AdminSocket::bind(&path, &capability, authority, pairing)
-            .await
-            .unwrap();
+        let second = super::AdminSocket::bind(
+            &path,
+            &capability,
+            authority,
+            pairing,
+            Arc::new(super::ControllerRegistry::test_admin()),
+        )
+        .await
+        .unwrap();
         drop(second);
         drop(cloned);
     }

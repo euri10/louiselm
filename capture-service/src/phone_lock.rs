@@ -261,6 +261,13 @@ impl Drop for PhoneFile {
 }
 
 impl PhoneLock {
+    #[cfg(test)]
+    pub(crate) fn file(&self) -> io::Result<&File> {
+        self.file
+            .as_ref()
+            .ok_or_else(|| io::Error::other("phone lock was released"))
+    }
+
     pub(crate) fn validate(&self) -> io::Result<()> {
         let file = self
             .file

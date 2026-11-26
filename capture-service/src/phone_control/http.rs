@@ -216,6 +216,7 @@ async fn process_http(
         }
         process(
             &initial_state.authority,
+            &initial_state.controllers,
             &initial_state.evidence,
             &device,
             &path,
@@ -447,6 +448,7 @@ fn controller_page(
 
 fn process(
     authority: &Authority,
+    controllers: &ControllerRegistry,
     evidence: &Result<ActionEvidenceStore, ActionEvidenceError>,
     device: &str,
     path: &str,
@@ -516,7 +518,9 @@ fn process(
         }
         "/v1/phone-control/unlock" => {
             let request: UnlockRequest = decode(body, "unlock")?;
-            let lease = authority.unlock(device, &request.proof, Instant::now(), now_ms())?;
+            let lease = controllers.invalidate(|| {
+                authority.unlock(device, &request.proof, Instant::now(), now_ms())
+            })?;
             Ok(
                 json!({"v":1,"type":"unlocked", "grant_id":request.proof.grant_id,
                 "grant_revision":request.proof.grant_revision, "period_id":lease.period_id,
@@ -723,20 +727,6 @@ mod tests {
             .unwrap();
             let token = std::fs::read_to_string(&cap).unwrap();
             let server_task = tokio::spawn(server.serve());
-            let mut stream = UnixStream::connect(&socket).await.unwrap();
-            stream
-                .write_all(
-                    format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes(),
-                )
-                .await
-                .unwrap();
-            let mut line = String::new();
-            BufReader::new(&mut stream)
-                .read_line(&mut line)
-                .await
-                .unwrap();
-            let attached: Value = serde_json::from_str(&line).unwrap();
-            let controller = attached["controller_id"].as_str().unwrap().to_owned();
             let app = service.router();
             let fixture: Value = serde_json::from_str(include_str!(
                 "../../../android/app/src/test/resources/phone-control-v1.json"
@@ -751,6 +741,20 @@ mod tests {
                 vec!["read".into()],
             )
             .await;
+            let mut stream = UnixStream::connect(&socket).await.unwrap();
+            stream
+                .write_all(
+                    format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(&mut stream)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            let attached: Value = serde_json::from_str(&line).unwrap();
+            let controller = attached["controller_id"].as_str().unwrap().to_owned();
             let subject = "02".repeat(16);
             let request = signed_read(&fixture, &grant, &period, &controller, &subject, 1);
             let worker = tokio::spawn(async move {

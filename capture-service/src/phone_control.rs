@@ -2,6 +2,7 @@
 
 mod authority;
 mod barrier;
+mod barrier_log;
 mod discovery;
 mod evidence;
 mod http;
@@ -41,6 +42,38 @@ use thiserror::Error;
 
 use crate::{PairingRegistry, RunStore};
 
+pub(crate) fn offline_forget(
+    authority_path: &Path,
+    pairing_path: &Path,
+    tls: &Path,
+    receiver: &str,
+    device_id: &str,
+) -> Result<(), ()> {
+    let (generation, binding) = evidence::receiver_barrier_state(
+        &tls.join("phone-action-evidence.json"),
+        receiver,
+        ActionEvidenceKind::Archive,
+    )
+    .map_err(|_| ())?;
+    let barrier = barrier::Barrier::existing(tls, receiver, binding).map_err(|_| ())?;
+    barrier
+        .offline_cutoff(
+            &generation,
+            barrier_log::CutoffKind::Forget,
+            device_id,
+            || {
+                let pairing = PairingRegistry::open(pairing_path).map_err(|_| ())?;
+                let authority =
+                    authority::Authority::open(authority_path, receiver).map_err(|_| ())?;
+                authority.forget(&pairing, device_id).map_err(|_| ())
+            },
+        )
+        .map_err(|error| match error {
+            barrier::CutoffError::Barrier(_error) => (),
+            barrier::CutoffError::Operation(()) => (),
+        })
+}
+
 pub(crate) struct Service {
     authority: Arc<authority::Authority>,
     pairing: Arc<PairingRegistry>,
@@ -74,16 +107,41 @@ impl Service {
             .parent()
             .ok_or_else(|| io::Error::other("receiver identity state has no parent"))?
             .join("tls/phone-action-evidence.json");
+        let evidence = ActionEvidenceStore::open_bound(
+            evidence_path,
+            guard_path,
+            receiver,
+            ActionEvidenceKind::Archive,
+        );
+        let registration = evidence
+            .as_ref()
+            .ok()
+            .and_then(|store| {
+                Some((
+                    store.bound_generation()?.to_owned(),
+                    store.bound_barrier()?.clone(),
+                ))
+            })
+            .and_then(|(generation, binding)| {
+                barrier::Barrier::existing(
+                    state_root.parent().map(|root| root.join("tls"))?.as_path(),
+                    receiver,
+                    binding,
+                )
+                .ok()?
+                .receiver(&generation)
+                .ok()
+                .map(|barrier| (generation, barrier))
+            });
+        let controllers = match registration {
+            Some(registration) => socket::ControllerRegistry::new(Some(registration)),
+            None => socket::ControllerRegistry::default(),
+        };
         Ok(Self {
             authority: Arc::new(authority),
             pairing,
-            controllers: Arc::default(),
-            evidence: Arc::new(ActionEvidenceStore::open_bound(
-                evidence_path,
-                guard_path,
-                receiver,
-                ActionEvidenceKind::Archive,
-            )),
+            controllers: Arc::new(controllers),
+            evidence: Arc::new(evidence),
             state_root: state_root.to_owned(),
             prepared: None,
             authority_available,
@@ -123,6 +181,7 @@ impl Service {
             capability,
             self.authority.clone(),
             self.pairing.clone(),
+            self.controllers.clone(),
         )
         .await?
         .with_prepared(self.prepared.clone());

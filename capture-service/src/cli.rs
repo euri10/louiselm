@@ -1001,11 +1001,16 @@ async fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
             ) =>
         {
-            // No offline cutoff proof is installed yet. Revoking the pairing
-            // alone would incorrectly claim that all old gates were excluded.
-            return Err(CliError::RevocationUnconfirmed(
-                "admission cutoff is unavailable",
-            ));
+            let receiver = TlsIdentity::existing_public_key_sha256(&paths.tls())
+                .map_err(|_| CliError::RevocationUnconfirmed("admission cutoff is unavailable"))?;
+            crate::phone_control::offline_forget(
+                &paths.phone_control_store(),
+                &paths.pairing(),
+                &paths.tls(),
+                &receiver,
+                id,
+            )
+            .map_err(|()| CliError::RevocationUnconfirmed("admission cutoff is unavailable"))?;
         }
         Err(_) => {
             return Err(CliError::RevocationUnconfirmed(

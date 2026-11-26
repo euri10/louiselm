@@ -57,7 +57,13 @@ async fn exchange_probe(
 
 async fn read_probe(stream: &mut UnixStream) -> Value {
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        BufReader::new(stream).read_line(&mut line),
+    )
+    .await
+    .expect("controller probe timed out")
+    .unwrap();
     serde_json::from_str(&line).unwrap()
 }
 
@@ -826,6 +832,29 @@ async fn durable_run_reads_are_scoped_and_fenced_against_contributor_growth() {
         vec!["control_runs".into()],
     )
     .await;
+    let mut closed = String::new();
+    assert_eq!(
+        BufReader::new(&mut stream)
+            .read_line(&mut closed)
+            .await
+            .unwrap(),
+        0
+    );
+    stream = UnixStream::connect(&socket).await.unwrap();
+    stream
+        .write_all(format!("{}\n", json!({"v":1,"type":"attach","capability":token})).as_bytes())
+        .await
+        .unwrap();
+    let mut attached = String::new();
+    BufReader::new(&mut stream)
+        .read_line(&mut attached)
+        .await
+        .unwrap();
+    controller = serde_json::from_str::<Value>(&attached).unwrap()["controller_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    observed["controller_id"] = controller.clone().into();
     let no_read_request = signed_run(
         &fixture,
         &no_read,

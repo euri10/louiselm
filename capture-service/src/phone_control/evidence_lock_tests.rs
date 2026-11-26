@@ -79,7 +79,7 @@ fn evidence_lock_holder() {
     let lock = if std::env::var("LOUISELM_TEST_EVIDENCE_LOCK").unwrap() == "store" {
         &store.lock
     } else {
-        &store.guard_lock.as_ref().unwrap().1
+        store.guard_lock.as_ref().unwrap()
     };
     let peer = UnixStream::connect(root.join("descriptor.sock")).unwrap();
     let rights = [lock.0.file().unwrap().as_fd()];
@@ -103,13 +103,11 @@ fn evidence_lock_holder() {
 }
 
 #[test]
-#[ignore = "process-owned evidence lock is not yet implemented"]
 fn store_lock_recovers_after_owner_death_with_transferred_descriptor() {
     recover_after_owner_death("store");
 }
 
 #[test]
-#[ignore = "process-owned receiver-guard lock is not yet implemented"]
 fn receiver_guard_lock_recovers_after_owner_death_with_transferred_descriptor() {
     recover_after_owner_death("guard");
 }

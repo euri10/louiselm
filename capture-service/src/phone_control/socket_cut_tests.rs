@@ -1,6 +1,30 @@
+#![allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
+
 use super::{ControllerEntry, ControllerRegistry, ControllerSocket, Registration};
 use std::{io::Write, os::unix::net::UnixStream, sync::Arc};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+async fn attach(
+    path: &std::path::Path,
+    token: &str,
+) -> (tokio::net::UnixStream, serde_json::Value) {
+    let mut peer = tokio::net::UnixStream::connect(path).await.unwrap();
+    peer.write_all(
+        format!(
+            "{}\n",
+            serde_json::json!({"v":1,"type":"attach","capability":token})
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut response = String::new();
+    BufReader::new(&mut peer)
+        .read_line(&mut response)
+        .await
+        .unwrap();
+    (peer, serde_json::from_str(&response).unwrap())
+}
 
 #[test]
 #[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
@@ -15,6 +39,7 @@ fn detach_shuts_the_original_connection_before_discarding_it() {
         ControllerEntry {
             sender: Some(sender),
             socket: Some(receiver),
+            gate_capable: false,
         },
     );
     let registration = Registration {
@@ -43,6 +68,7 @@ fn invalidation_cuts_all_active_controller_connections() {
             ControllerEntry {
                 sender: Some(sender),
                 socket: Some(receiver),
+                gate_capable: false,
             },
         );
         peers.push(owner);
@@ -65,6 +91,7 @@ fn failed_shutdown_refuses_dispatch_but_retains_the_handle_for_retry() {
     let mut entry = ControllerEntry {
         sender: Some(sender),
         socket: Some(socket),
+        gate_capable: false,
     };
     assert!(entry.cut().is_err());
     assert!(entry.sender.is_none());
@@ -87,6 +114,7 @@ fn poisoned_registry_still_cuts_the_original_connection() {
         ControllerEntry {
             sender: Some(sender),
             socket: Some(receiver),
+            gate_capable: false,
         },
     );
     let registration = Registration {
@@ -126,6 +154,7 @@ fn detach_still_cuts_a_connection_when_the_registry_is_poisoned() {
         ControllerEntry {
             sender: Some(sender),
             socket: Some(receiver),
+            gate_capable: false,
         },
     );
     let registration = Registration {
@@ -184,6 +213,132 @@ async fn invalidation_shuts_a_real_attached_controller_socket() {
         peer.write_all(b"gate\n").await.unwrap_err().kind(),
         std::io::ErrorKind::BrokenPipe
     );
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+#[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
+async fn gate_capable_registration_and_cutoff_share_the_real_barrier() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
+    let path = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let registry = Arc::new(ControllerRegistry::new(Some((generation, owner))));
+    let server = ControllerSocket::bind(&path, &capability, Arc::clone(&registry))
+        .await
+        .unwrap();
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let task = tokio::spawn(server.serve());
+    let (mut first, response) = attach(&path, &token).await;
+    let id = response["controller_id"].as_str().unwrap();
+    assert!(
+        registry
+            .attached
+            .lock()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .gate_capable
+    );
+    registry
+        .cutoff(
+            super::super::barrier_log::CutoffKind::Disable,
+            "11111111-1111-4111-8111-111111111111",
+            || {
+                std::fs::write(root.path().join("durable-authority"), b"disabled")
+                    .map_err(|_| super::super::authority::Refusal::Unavailable)
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        first.write_all(b"gate\n").await.unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("durable-authority")).unwrap(),
+        b"disabled"
+    );
+    let (_second, response) = attach(&path, &token).await;
+    assert_eq!(response["type"], "attached");
+    task.abort();
+    let _ = task.await;
+}
+
+#[tokio::test]
+#[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
+async fn gate_capable_registration_and_authority_invalidation_share_the_real_barrier() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
+    let path = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let registry = Arc::new(ControllerRegistry::new(Some((generation, owner))));
+    let server = ControllerSocket::bind(&path, &capability, Arc::clone(&registry))
+        .await
+        .unwrap();
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let task = tokio::spawn(server.serve());
+    let (mut old, response) = attach(&path, &token).await;
+    assert_eq!(response["type"], "attached");
+    registry
+        .invalidate(|| {
+            std::fs::write(root.path().join("authority-generation"), b"next")
+                .map_err(|_| super::super::authority::Refusal::Unavailable)
+        })
+        .unwrap();
+    assert_eq!(
+        old.write_all(b"gate\n").await.unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("authority-generation")).unwrap(),
+        b"next"
+    );
+    let (_fresh, response) = attach(&path, &token).await;
+    assert_eq!(response["type"], "attached");
+    task.abort();
+    let _ = task.await;
+}
+
+#[test]
+fn missing_barrier_refuses_authority_invalidation_without_running_it() {
+    let registry = ControllerRegistry::new(None);
+    let mut called = false;
+    assert_eq!(
+        registry.invalidate(|| {
+            called = true;
+            Ok(())
+        }),
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    assert!(!called);
+}
+
+#[tokio::test]
+#[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
+async fn failed_storage_keeps_new_gate_capable_registrations_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
+    let path = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let registry = Arc::new(ControllerRegistry::new(Some((generation, owner))));
+    let server = ControllerSocket::bind(&path, &capability, Arc::clone(&registry))
+        .await
+        .unwrap();
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let task = tokio::spawn(server.serve());
+    assert_eq!(
+        registry.cutoff(
+            super::super::barrier_log::CutoffKind::Forget,
+            "11111111-1111-4111-8111-111111111111",
+            || Err::<(), _>(super::super::authority::Refusal::Unavailable),
+        ),
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    let (_peer, response) = attach(&path, &token).await;
+    assert_eq!(response["type"], "error");
+    assert_eq!(response["code"], "unavailable");
+    assert!(registry.attached.lock().unwrap().is_empty());
     task.abort();
     let _ = task.await;
 }

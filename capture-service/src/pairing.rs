@@ -7,7 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -17,7 +16,7 @@ use uuid::Uuid;
 
 use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
-use crate::phone_lock::{PHONE_LOCKS, PhoneFile};
+use crate::phone_lock::{FileIdentity, PHONE_LOCKS, PhoneLock};
 
 #[path = "notifications.rs"]
 mod notifications;
@@ -131,6 +130,7 @@ pub enum PairingError {
 pub struct PairingRegistry {
     path: PathBuf,
     lock_path: PathBuf,
+    lock_identity: FileIdentity,
     process_lock: Mutex<()>,
 }
 
@@ -144,9 +144,21 @@ impl PairingRegistry {
         fs::create_dir_all(directory.as_ref())?;
         set_private_permissions(directory.as_ref(), true)?;
         let path = directory.as_ref().join("pairing.json");
+        let lock_path = directory.as_ref().join("pairing.lock");
+        let lock_file = match PHONE_LOCKS.open_rw(&lock_path, true) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                PHONE_LOCKS.open_rw(&lock_path, false)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        set_private_permissions(&lock_path, false)?;
+        let lock_identity = FileIdentity::from_metadata(&lock_file.file()?.metadata()?)?;
+        drop(lock_file);
         let registry = Self {
             path,
-            lock_path: directory.as_ref().join("pairing.lock"),
+            lock_path,
+            lock_identity,
             process_lock: Mutex::new(()),
         };
         {
@@ -160,7 +172,7 @@ impl PairingRegistry {
                     ..RegistryState::default()
                 })
             };
-            FileExt::unlock(lock.file()?)?;
+            lock.release()?;
             result?;
         }
         Ok(registry)
@@ -382,33 +394,20 @@ impl PairingRegistry {
             }
             Ok(result)
         })();
-        FileExt::unlock(lock.file()?)?;
+        lock.release()?;
         result
     }
 
-    fn lock_file(&self) -> Result<PhoneFile, PairingError> {
-        let file = match PHONE_LOCKS.open_rw(&self.lock_path, true) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                PHONE_LOCKS.open_rw(&self.lock_path, false)?
-            }
-            Err(error) => return Err(error.into()),
-        };
-        set_private_permissions(&self.lock_path, false)?;
-        let deadline = Instant::now() + LOCK_TIMEOUT;
-        loop {
-            match file.file()?.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(PairingError::Lock);
-                    }
-                    thread::sleep(LOCK_RETRY);
+    fn lock_file(&self) -> Result<PhoneLock, PairingError> {
+        PHONE_LOCKS
+            .acquire(&self.lock_path, self.lock_identity, LOCK_TIMEOUT)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    PairingError::Lock
+                } else {
+                    error.into()
                 }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(file)
+            })
     }
 
     fn process_guard(&self) -> Result<MutexGuard<'_, ()>, PairingError> {

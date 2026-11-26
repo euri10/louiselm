@@ -10,9 +10,9 @@ use std::{
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::Mutex,
+    time::Duration,
 };
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -21,12 +21,13 @@ use super::{MAX_INTEGER, barrier::BarrierBinding, fixed, valid_string};
 use crate::{
     hex::lower_hex,
     permissions::set_private_permissions,
-    phone_lock::{FileIdentity, PHONE_LOCKS, PhoneFile},
+    phone_lock::{FileIdentity, PHONE_LOCKS, PhoneLock},
 };
 
 // ponytail: one bounded snapshot; partition records if 16 MiB becomes limiting.
 // Exhaustion refuses new writes; it never evicts unresolved or finished records.
 const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;
+const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Signed action identity and the native owner's locally established scope.
 ///
@@ -204,15 +205,7 @@ struct GuardBinding {
     kind: ActionEvidenceKind,
 }
 
-struct StoreLock(PhoneFile);
-
-impl Drop for StoreLock {
-    fn drop(&mut self) {
-        if let Err(error) = self.0.file().and_then(FileExt::unlock) {
-            eprintln!("action evidence lock release failed: {error}");
-        }
-    }
-}
+struct StoreLock(PhoneLock);
 
 /// Exclusive, synchronous filesystem owner of durable action evidence.
 ///
@@ -220,11 +213,10 @@ impl Drop for StoreLock {
 /// the service lifetime; its advisory lock is explicitly released on drop.
 pub struct ActionEvidenceStore {
     directory: PathBuf,
-    lock_path: PathBuf,
     lock: StoreLock,
     failed: Mutex<bool>,
     guard: Option<GuardBinding>,
-    guard_lock: Option<(PathBuf, StoreLock)>,
+    guard_lock: Option<StoreLock>,
 }
 
 impl ActionEvidenceStore {
@@ -257,14 +249,22 @@ impl ActionEvidenceStore {
         let guard_file = PHONE_LOCKS
             .open_rw(&guard_lock_path, false)
             .map_err(unavailable)?;
-        guard_file
-            .file()
-            .map_err(unavailable)?
-            .try_lock_exclusive()
-            .map_err(unavailable)?;
-        let guard_lock = StoreLock(guard_file);
+        let guard_identity = FileIdentity::from_metadata(
+            &guard_file
+                .file()
+                .map_err(unavailable)?
+                .metadata()
+                .map_err(unavailable)?,
+        )
+        .map_err(unavailable)?;
+        drop(guard_file);
+        let guard_lock = StoreLock(
+            PHONE_LOCKS
+                .acquire(&guard_lock_path, guard_identity, LOCK_TIMEOUT)
+                .map_err(unavailable)?,
+        );
         let mut store = Self::open_inner(directory.as_ref(), false)?;
-        store.guard_lock = Some((guard_lock_path, guard_lock));
+        store.guard_lock = Some(guard_lock);
         store.verify_lock()?;
         let record = read_guard(guard.as_ref(), receiver, kind)?;
         if record.pending.is_some() {
@@ -333,11 +333,20 @@ impl ActionEvidenceStore {
         if initialize {
             set_private_permissions(&lock_path, false).map_err(unavailable)?;
         }
-        file.file()
-            .map_err(unavailable)?
-            .try_lock_exclusive()
-            .map_err(unavailable)?;
-        let lock = StoreLock(file);
+        let lock_identity = FileIdentity::from_metadata(
+            &file
+                .file()
+                .map_err(unavailable)?
+                .metadata()
+                .map_err(unavailable)?,
+        )
+        .map_err(unavailable)?;
+        drop(file);
+        let lock = StoreLock(
+            PHONE_LOCKS
+                .acquire(&lock_path, lock_identity, LOCK_TIMEOUT)
+                .map_err(unavailable)?,
+        );
         let exists = directory.try_exists().map_err(unavailable)?;
         if created == exists {
             return Err(ActionEvidenceError::Unavailable);
@@ -358,7 +367,6 @@ impl ActionEvidenceStore {
         }
         Ok(Self {
             directory: directory.to_owned(),
-            lock_path,
             lock,
             failed: Mutex::new(false),
             guard: None,
@@ -645,9 +653,9 @@ impl ActionEvidenceStore {
     }
 
     fn verify_lock(&self) -> Result<(), ActionEvidenceError> {
-        verify_lock(&self.lock_path, &self.lock)?;
-        if let Some((path, lock)) = &self.guard_lock {
-            verify_lock(path, lock)?;
+        verify_lock(&self.lock)?;
+        if let Some(lock) = &self.guard_lock {
+            verify_lock(lock)?;
         }
         Ok(())
     }
@@ -659,18 +667,8 @@ fn guard_lock_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn verify_lock(path: &Path, lock: &StoreLock) -> Result<(), ActionEvidenceError> {
-    let held = lock
-        .0
-        .file()
-        .and_then(File::metadata)
-        .map_err(unavailable)?;
-    if FileIdentity::from_metadata(&held).map_err(unavailable)?
-        != FileIdentity::at(path).map_err(unavailable)?
-    {
-        return Err(ActionEvidenceError::Unavailable);
-    }
-    Ok(())
+fn verify_lock(lock: &StoreLock) -> Result<(), ActionEvidenceError> {
+    lock.0.validate().map_err(unavailable)
 }
 
 fn verify_guard(
@@ -719,6 +717,18 @@ pub(super) fn receiver_barrier_binding(
     read_guard(path, receiver, kind)?
         .barrier
         .ok_or(ActionEvidenceError::Unavailable)
+}
+
+pub(super) fn receiver_barrier_state(
+    path: &Path,
+    receiver: &str,
+    kind: ActionEvidenceKind,
+) -> Result<(String, BarrierBinding), ActionEvidenceError> {
+    let record = read_guard(path, receiver, kind)?;
+    Ok((
+        record.generation,
+        record.barrier.ok_or(ActionEvidenceError::Unavailable)?,
+    ))
 }
 
 fn write_guard(guard: &GuardBinding, bytes: &[u8]) -> Result<(), ActionEvidenceError> {

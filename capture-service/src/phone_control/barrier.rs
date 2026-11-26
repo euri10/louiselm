@@ -7,10 +7,17 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use std::fs;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::fixed;
+use super::{
+    authority::random_hex,
+    barrier_log::{self, CutoffIntent, CutoffKind},
+};
 use crate::{
     hex::lower_hex,
     phone_lock::{FileIdentity, PHONE_LOCKS, PhoneFile, PhoneLock},
@@ -26,8 +33,12 @@ struct AnchorBody {
     receiver: String,
     generation: String,
     lock_nonce: String,
+    registrar_nonce: String,
+    cutoff_nonce: String,
     anchor: FileIdentity,
     lock: FileIdentity,
+    registrar: FileIdentity,
+    cutoff: FileIdentity,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -44,12 +55,19 @@ pub(super) struct BarrierBinding {
     pub(super) anchor: FileIdentity,
     pub(super) lock: FileIdentity,
     pub(super) lock_nonce: String,
+    pub(super) registrar: FileIdentity,
+    pub(super) registrar_nonce: String,
+    pub(super) cutoff: FileIdentity,
+    pub(super) cutoff_nonce: String,
 }
 
 /// A receiver's existing barrier; construction never initializes storage.
+#[derive(Clone)]
 pub(super) struct Barrier {
     anchor_path: PathBuf,
     lock_path: PathBuf,
+    registrar_path: PathBuf,
+    cutoff_path: PathBuf,
     receiver: String,
     binding: BarrierBinding,
 }
@@ -60,6 +78,20 @@ struct HeldBarrier {
     receiver: String,
     record: AnchorRecord,
     lock: PhoneLock,
+    cutoff: PhoneFile,
+    cutoff_state: barrier_log::State,
+}
+
+/// An established receiver which alone may register new gate-capable owners.
+pub(super) struct ReceiverBarrier {
+    barrier: Barrier,
+    registrar: PhoneLock,
+}
+
+#[derive(Debug)]
+pub(super) enum CutoffError<E> {
+    Barrier(io::Error),
+    Operation(E),
 }
 
 impl Barrier {
@@ -76,9 +108,26 @@ impl Barrier {
         if binding.anchor == binding.lock {
             return Err(io::Error::other("barrier binding is invalid"));
         }
+        if [
+            binding.anchor,
+            binding.lock,
+            binding.registrar,
+            binding.cutoff,
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+            != 4
+            || fixed::<16>(&binding.registrar_nonce).is_err()
+            || fixed::<16>(&binding.cutoff_nonce).is_err()
+        {
+            return Err(io::Error::other("barrier binding is invalid"));
+        }
         Ok(Self {
             anchor_path: tls.join("phone-admission-barrier.json"),
             lock_path: tls.join("phone-admission-barrier.lock"),
+            registrar_path: tls.join("phone-admission-registrar.lock"),
+            cutoff_path: tls.join("phone-admission-cutoff.json"),
             receiver: receiver.to_owned(),
             binding,
         })
@@ -91,12 +140,24 @@ impl Barrier {
             return Err(io::Error::other("barrier binding changed"));
         }
         let lock = PHONE_LOCKS.acquire(&self.lock_path, record.body.lock, LOCK_TIMEOUT)?;
+        let mut cutoff = PHONE_LOCKS.open_rw(&self.cutoff_path, false)?;
+        if FileIdentity::from_metadata(&cutoff.file()?.metadata()?)? != record.body.cutoff {
+            return Err(io::Error::other("barrier cutoff identity changed"));
+        }
+        let cutoff_state = barrier_log::read(
+            cutoff.file_mut()?,
+            &self.receiver,
+            &record.body.generation,
+            &record.body.cutoff_nonce,
+        )?;
         let mut held = HeldBarrier {
             anchor,
             anchor_path: self.anchor_path.clone(),
             receiver: self.receiver.clone(),
             record,
             lock,
+            cutoff,
+            cutoff_state,
         };
         held.validate()?;
         Ok(held)
@@ -114,10 +175,145 @@ impl Barrier {
         if held.record.body.generation != generation {
             return Err(io::Error::other("generation is stale"));
         }
+        if held.cutoff_state.pending.is_some() {
+            return Err(io::Error::other("barrier cutoff is pending"));
+        }
         let result = operation();
         held.validate()?;
         held.lock.release()?;
         Ok(result)
+    }
+
+    /// Bind gate-capable registration to the exact established receiver.
+    pub(super) fn receiver(self, generation: &str) -> io::Result<ReceiverBarrier> {
+        fixed::<16>(generation).map_err(|_| io::Error::other("generation is invalid"))?;
+        let registrar =
+            PHONE_LOCKS.acquire(&self.registrar_path, self.binding.registrar, LOCK_TIMEOUT)?;
+        registrar.validate_contents(self.binding.registrar_nonce.as_bytes())?;
+        self.with_generation(generation, || ())?;
+        Ok(ReceiverBarrier {
+            barrier: self,
+            registrar,
+        })
+    }
+
+    /// Prove the old receiver process ended, then durably perform its cutoff.
+    pub(super) fn offline_cutoff<T, E>(
+        &self,
+        generation: &str,
+        kind: CutoffKind,
+        device_id: &str,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, CutoffError<E>> {
+        let registrar = PHONE_LOCKS
+            .acquire(&self.registrar_path, self.binding.registrar, LOCK_TIMEOUT)
+            .map_err(CutoffError::Barrier)?;
+        registrar
+            .validate_contents(self.binding.registrar_nonce.as_bytes())
+            .map_err(CutoffError::Barrier)?;
+        let result = self.cutoff(generation, kind, device_id, || Ok(()), operation);
+        drop(registrar);
+        result
+    }
+
+    fn cutoff<T, E>(
+        &self,
+        generation: &str,
+        kind: CutoffKind,
+        device_id: &str,
+        cut: impl FnOnce() -> Result<(), E>,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, CutoffError<E>> {
+        fixed::<16>(generation)
+            .map_err(|_| CutoffError::Barrier(io::Error::other("generation is invalid")))?;
+        let mut held = self.acquire().map_err(CutoffError::Barrier)?;
+        if held.record.body.generation != generation {
+            return Err(CutoffError::Barrier(io::Error::other(
+                "generation is stale",
+            )));
+        }
+        cut().map_err(CutoffError::Operation)?;
+        let existing = held.cutoff_state.pending.clone();
+        if let Some(intent) = &existing
+            && (intent.kind != kind || intent.device_id != device_id)
+        {
+            return Err(CutoffError::Barrier(io::Error::other(
+                "another barrier cutoff is pending",
+            )));
+        }
+        if existing.is_none() {
+            let intent = CutoffIntent {
+                kind,
+                device_id: device_id.to_owned(),
+                intent_id: random_hex(16).map_err(|_| {
+                    CutoffError::Barrier(io::Error::other("cutoff identity unavailable"))
+                })?,
+            };
+            barrier_log::append_pending(
+                held.cutoff.file_mut().map_err(CutoffError::Barrier)?,
+                &mut held.cutoff_state,
+                &self.receiver,
+                generation,
+                &held.record.body.cutoff_nonce,
+                &intent,
+            )
+            .map_err(CutoffError::Barrier)?;
+        }
+        let result = operation().map_err(CutoffError::Operation)?;
+        barrier_log::append_complete(
+            held.cutoff.file_mut().map_err(CutoffError::Barrier)?,
+            &mut held.cutoff_state,
+            &self.receiver,
+            generation,
+            &held.record.body.cutoff_nonce,
+        )
+        .map_err(CutoffError::Barrier)?;
+        held.validate().map_err(CutoffError::Barrier)?;
+        held.lock.release().map_err(CutoffError::Barrier)?;
+        Ok(result)
+    }
+}
+
+impl ReceiverBarrier {
+    pub(super) fn register<T>(
+        &self,
+        generation: &str,
+        operation: impl FnOnce() -> T,
+    ) -> io::Result<T> {
+        self.registrar
+            .validate_contents(self.barrier.binding.registrar_nonce.as_bytes())?;
+        self.barrier.with_generation(generation, operation)
+    }
+
+    pub(super) fn cutoff<T, E>(
+        &self,
+        generation: &str,
+        kind: CutoffKind,
+        device_id: &str,
+        cut: impl FnOnce() -> Result<(), E>,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, CutoffError<E>> {
+        self.registrar
+            .validate_contents(self.barrier.binding.registrar_nonce.as_bytes())
+            .map_err(CutoffError::Barrier)?;
+        self.barrier
+            .cutoff(generation, kind, device_id, cut, operation)
+    }
+
+    /// Serialize a non-revoke authority change with registration and gate cut.
+    pub(super) fn invalidate<T, E>(
+        &self,
+        generation: &str,
+        cut: impl FnOnce() -> Result<(), E>,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, CutoffError<E>> {
+        self.registrar
+            .validate_contents(self.barrier.binding.registrar_nonce.as_bytes())
+            .map_err(CutoffError::Barrier)?;
+        self.barrier
+            .with_generation(generation, || cut().and_then(|()| operation()))
+            .map_err(CutoffError::Barrier)?
+            .map_err(CutoffError::Operation)
     }
 }
 
@@ -127,6 +323,10 @@ impl AnchorRecord {
             anchor: self.body.anchor,
             lock: self.body.lock,
             lock_nonce: self.body.lock_nonce.clone(),
+            registrar: self.body.registrar,
+            registrar_nonce: self.body.registrar_nonce.clone(),
+            cutoff: self.body.cutoff,
+            cutoff_nonce: self.body.cutoff_nonce.clone(),
         }
     }
 }
@@ -135,6 +335,26 @@ impl HeldBarrier {
     fn validate(&mut self) -> io::Result<()> {
         self.lock
             .validate_contents(self.record.body.lock_nonce.as_bytes())?;
+        if FileIdentity::from_metadata(&self.cutoff.file()?.metadata()?)? != self.record.body.cutoff
+            || FileIdentity::at(
+                &self
+                    .anchor_path
+                    .with_file_name("phone-admission-cutoff.json"),
+            )? != self.record.body.cutoff
+        {
+            return Err(io::Error::other("barrier cutoff identity changed"));
+        }
+        let current = barrier_log::read(
+            self.cutoff.file_mut()?,
+            &self.receiver,
+            &self.record.body.generation,
+            &self.record.body.cutoff_nonce,
+        )?;
+        if current.pending != self.cutoff_state.pending
+            || current.next_seq != self.cutoff_state.next_seq
+        {
+            return Err(io::Error::other("barrier cutoff changed"));
+        }
         if read_anchor(self.anchor.file_mut()?, &self.anchor_path, &self.receiver)? != self.record {
             return Err(io::Error::other("barrier anchor changed"));
         }
@@ -163,12 +383,70 @@ fn read_anchor(file: &mut File, path: &Path, receiver: &str) -> io::Result<Ancho
         || record.body.receiver != receiver
         || fixed::<16>(&record.body.generation).is_err()
         || fixed::<16>(&record.body.lock_nonce).is_err()
+        || fixed::<16>(&record.body.registrar_nonce).is_err()
+        || fixed::<16>(&record.body.cutoff_nonce).is_err()
         || record.sha256 != digest
+        || record.binding().anchor == record.binding().lock
+        || [
+            record.body.anchor,
+            record.body.lock,
+            record.body.registrar,
+            record.body.cutoff,
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+            != 4
         || FileIdentity::at(path)? != identity
     {
         return Err(io::Error::other("barrier anchor is corrupt or unbound"));
     }
     Ok(record)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test fixture setup")]
+pub(super) fn receiver_fixture(root: &Path) -> (String, String, ReceiverBarrier) {
+    use std::io::Write;
+
+    let receiver = "02".repeat(32);
+    let generation = "09".repeat(16);
+    let lock = root.join("phone-admission-barrier.lock");
+    let registrar = root.join("phone-admission-registrar.lock");
+    let cutoff = root.join("phone-admission-cutoff.json");
+    let anchor = root.join("phone-admission-barrier.json");
+    fs::write(&lock, "ab".repeat(16)).unwrap();
+    fs::write(&registrar, "cd".repeat(16)).unwrap();
+    fs::write(
+        &cutoff,
+        barrier_log::initialized_bytes(&receiver, &generation, &"ef".repeat(16)),
+    )
+    .unwrap();
+    let mut file = File::create(&anchor).unwrap();
+    let body = AnchorBody {
+        v: 1,
+        receiver: receiver.clone(),
+        generation: generation.clone(),
+        lock_nonce: "ab".repeat(16),
+        registrar_nonce: "cd".repeat(16),
+        cutoff_nonce: "ef".repeat(16),
+        anchor: FileIdentity::from_metadata(&file.metadata().unwrap()).unwrap(),
+        lock: FileIdentity::at(&lock).unwrap(),
+        registrar: FileIdentity::at(&registrar).unwrap(),
+        cutoff: FileIdentity::at(&cutoff).unwrap(),
+    };
+    let record = AnchorRecord {
+        sha256: lower_hex(&Sha256::digest(serde_json::to_vec(&body).unwrap())),
+        body,
+    };
+    file.write_all(&serde_json::to_vec(&record).unwrap())
+        .unwrap();
+    file.sync_all().unwrap();
+    let receiver_barrier = Barrier::existing(root, &receiver, record.binding())
+        .unwrap()
+        .receiver(&generation)
+        .unwrap();
+    (receiver, generation, receiver_barrier)
 }
 
 #[cfg(test)]
@@ -183,7 +461,8 @@ mod tests {
 
     use sha2::{Digest, Sha256};
 
-    use super::{AnchorBody, AnchorRecord, Barrier, BarrierBinding};
+    use super::{AnchorBody, AnchorRecord, Barrier, BarrierBinding, CutoffError, CutoffKind};
+    use crate::phone_control::barrier_log;
     use crate::{hex::lower_hex, phone_lock::FileIdentity};
 
     struct OwnedChild(Child);
@@ -202,16 +481,28 @@ mod tests {
         let receiver = "02".repeat(32);
         let generation = "09".repeat(16);
         let lock = root.join("phone-admission-barrier.lock");
+        let registrar = root.join("phone-admission-registrar.lock");
+        let cutoff = root.join("phone-admission-cutoff.json");
         let anchor = root.join("phone-admission-barrier.json");
         fs::write(&lock, "ab".repeat(16)).unwrap();
+        fs::write(&registrar, "cd".repeat(16)).unwrap();
+        fs::write(
+            &cutoff,
+            barrier_log::initialized_bytes(&receiver, &generation, &"ef".repeat(16)),
+        )
+        .unwrap();
         let mut file = fs::File::create(&anchor).unwrap();
         let body = AnchorBody {
             v: 1,
             receiver: receiver.clone(),
             generation: generation.clone(),
             lock_nonce: "ab".repeat(16),
+            registrar_nonce: "cd".repeat(16),
+            cutoff_nonce: "ef".repeat(16),
             anchor: FileIdentity::from_metadata(&file.metadata().unwrap()).unwrap(),
             lock: FileIdentity::at(&lock).unwrap(),
+            registrar: FileIdentity::at(&registrar).unwrap(),
+            cutoff: FileIdentity::at(&cutoff).unwrap(),
         };
         let record = AnchorRecord {
             sha256: lower_hex(&Sha256::digest(serde_json::to_vec(&body).unwrap())),
@@ -260,6 +551,16 @@ mod tests {
                 inode: 2,
             },
             lock_nonce: "ab".repeat(16),
+            registrar: FileIdentity {
+                device: 1,
+                inode: 3,
+            },
+            registrar_nonce: "cd".repeat(16),
+            cutoff: FileIdentity {
+                device: 1,
+                inode: 4,
+            },
+            cutoff_nonce: "ef".repeat(16),
         };
         let barrier = Barrier::existing(root.path(), &"02".repeat(32), binding).unwrap();
         let error = barrier
@@ -314,6 +615,22 @@ mod tests {
     }
 
     #[test]
+    fn missing_lock_or_anchor_is_never_recreated() {
+        for target in [
+            "phone-admission-barrier.lock",
+            "phone-admission-barrier.json",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (receiver, generation, binding) = fixture(root.path());
+            let path = root.path().join(target);
+            fs::remove_file(&path).unwrap();
+            let barrier = Barrier::existing(root.path(), &receiver, binding).unwrap();
+            assert!(barrier.with_generation(&generation, || ()).is_err());
+            assert!(!path.exists(), "missing {target} was recreated");
+        }
+    }
+
+    #[test]
     fn loss_during_an_operation_is_reported_as_unavailable() {
         let root = tempfile::tempdir().unwrap();
         let (receiver, generation, binding) = fixture(root.path());
@@ -347,6 +664,146 @@ mod tests {
         });
         peer.write_all(if result.is_ok() { b"B" } else { b"U" })
             .unwrap();
+    }
+
+    #[test]
+    fn receiver_owner_child() {
+        let Ok(root) = std::env::var("LOUISELM_TEST_RECEIVER_BARRIER_ROOT") else {
+            return;
+        };
+        let root = std::path::Path::new(&root);
+        let binding =
+            serde_json::from_slice(&fs::read(root.join("test-binding.json")).unwrap()).unwrap();
+        let _receiver = Barrier::existing(root, &"02".repeat(32), binding)
+            .unwrap()
+            .receiver(&"09".repeat(16))
+            .unwrap();
+        let mut peer = UnixStream::connect(root.join("receiver.sock")).unwrap();
+        peer.write_all(b"R").unwrap();
+        let mut finish = [0];
+        peer.read_exact(&mut finish).unwrap();
+    }
+
+    #[test]
+    fn offline_cutoff_requires_receiver_death_despite_a_surviving_duplicate() {
+        let root = tempfile::tempdir().unwrap();
+        let (receiver, generation, binding) = fixture(root.path());
+        let listener = UnixListener::bind(root.path().join("receiver.sock")).unwrap();
+        let duplicate = fs::File::open(root.path().join("phone-admission-registrar.lock")).unwrap();
+        let mut child = OwnedChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "phone_control::barrier::tests::receiver_owner_child",
+                    "--nocapture",
+                ])
+                .env("LOUISELM_TEST_RECEIVER_BARRIER_ROOT", root.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let (mut peer, _) = listener.accept().unwrap();
+        let mut ready = [0];
+        peer.read_exact(&mut ready).unwrap();
+        assert_eq!(ready, *b"R");
+        let barrier = Barrier::existing(root.path(), &receiver, binding.clone()).unwrap();
+        assert!(matches!(
+            barrier.offline_cutoff(
+                &generation,
+                CutoffKind::Forget,
+                "11111111-1111-4111-8111-111111111111",
+                || Ok::<_, ()>(())
+            ),
+            Err(CutoffError::Barrier(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        Command::new("kill")
+            .args(["-STOP", &child.0.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(matches!(
+            barrier.offline_cutoff(
+                &generation,
+                CutoffKind::Forget,
+                "11111111-1111-4111-8111-111111111111",
+                || Ok::<_, ()>(())
+            ),
+            Err(CutoffError::Barrier(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        barrier
+            .offline_cutoff(
+                &generation,
+                CutoffKind::Forget,
+                "11111111-1111-4111-8111-111111111111",
+                || Ok::<_, ()>(()),
+            )
+            .unwrap();
+        assert!(duplicate.metadata().is_ok());
+        drop(duplicate);
+        drop(peer);
+    }
+
+    #[test]
+    fn failed_storage_leaves_a_durable_cutoff_and_only_exact_retry_completes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let (receiver, generation, binding) = fixture(root.path());
+        let barrier = Barrier::existing(root.path(), &receiver, binding).unwrap();
+        let device = "11111111-1111-4111-8111-111111111111";
+        assert!(matches!(
+            barrier.offline_cutoff(&generation, CutoffKind::Disable, device, || {
+                Err::<(), _>("storage")
+            }),
+            Err(CutoffError::Operation("storage"))
+        ));
+        assert_eq!(
+            barrier
+                .with_generation(&generation, || ())
+                .unwrap_err()
+                .to_string(),
+            "barrier cutoff is pending"
+        );
+        let other = "22222222-2222-4222-8222-222222222222";
+        assert!(matches!(
+            barrier.offline_cutoff(&generation, CutoffKind::Disable, other, || Ok::<_, ()>(())),
+            Err(CutoffError::Barrier(error)) if error.to_string() == "another barrier cutoff is pending"
+        ));
+        barrier
+            .offline_cutoff(&generation, CutoffKind::Disable, device, || Ok::<_, ()>(()))
+            .unwrap();
+        barrier.with_generation(&generation, || ()).unwrap();
+    }
+
+    #[test]
+    fn corrupt_or_replaced_cutoff_and_registrar_anchors_fail_closed() {
+        for target in [
+            "phone-admission-cutoff.json",
+            "phone-admission-registrar.lock",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (receiver, generation, binding) = fixture(root.path());
+            let path = root.path().join(target);
+            fs::rename(&path, root.path().join(format!("old-{target}"))).unwrap();
+            fs::write(&path, b"replacement").unwrap();
+            let barrier = Barrier::existing(root.path(), &receiver, binding).unwrap();
+            let result = if target.ends_with("cutoff.json") {
+                barrier.with_generation(&generation, || ())
+            } else {
+                barrier.receiver(&generation).map(drop)
+            };
+            assert!(result.is_err(), "replacement {target} was accepted");
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let (receiver, generation, binding) = fixture(root.path());
+        fs::write(
+            root.path().join("phone-admission-cutoff.json"),
+            b"corrupt\n",
+        )
+        .unwrap();
+        let barrier = Barrier::existing(root.path(), &receiver, binding).unwrap();
+        assert!(barrier.with_generation(&generation, || ()).is_err());
     }
 
     #[test]
