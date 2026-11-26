@@ -1,0 +1,13 @@
+[Unit]
+Description=On-demand LouiseLM managed receiver registration
+
+[Socket]
+ListenStream=/run/louiselm-phone-host/registration.sock
+SocketUser=@OPERATOR_UID@
+SocketGroup=@OPERATOR_GID@
+SocketMode=0600
+Accept=yes
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

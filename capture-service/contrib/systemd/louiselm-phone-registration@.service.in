@@ -1,0 +1,37 @@
+[Unit]
+Description=Register a receiver through the held capture directories
+Requires=louiselm-phone-host.service
+After=louiselm-phone-host.service
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/local/lib/louiselm-phone-host/phone-writer serve
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+OpenFile=/run/louiselm-phone-host/root:root:read-only
+OpenFile=/run/louiselm-phone-host/owner-parent:parent:read-only
+OpenFile=/run/louiselm-phone-host/capture-stage:capture_stage:read-only
+OpenFile=/run/louiselm-phone-host/parent-stage:parent_stage:read-only
+OpenFile=/var/lib/louiselm-phone-authority:authority:read-only
+OpenFile=/var/lib/louiselm-phone-host/catalog.json:catalog:read-only
+OpenFile=/run/louiselm-phone-host/reference.json:reference:read-only
+OpenFile=/proc:hostproc:read-only
+OpenFile=/proc/1/ns/net:hostnet:read-only
+StateDirectory=louiselm-phone-authority
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateNetwork=no
+PrivateUsers=no
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/louiselm-phone-host/root /run/louiselm-phone-host/owner-parent /run/louiselm-phone-host/capture-stage /run/louiselm-phone-host/parent-stage
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RuntimeMaxSec=30s

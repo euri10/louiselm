@@ -38,6 +38,38 @@ and the rendered units, then enables the boot unit and on-demand socket. It
 refuses conflicting installed files; replacement of a root, receiver, program,
 or unit is not an automatic migration or recovery procedure.
 
+For a new managed candidate, the administrator may instead run the separate
+first-install command before any receiver identity is published:
+
+```sh
+sudo /usr/bin/python3 -I scripts/phone-host.py install-first \
+  /absolute/capture/state/directory --operator OPERATOR_LOGIN \
+  --capture-binary /absolute/path/to/louiselm-capture \
+  --writer-binary /absolute/trusted/path/to/louiselm-phone-writer
+```
+
+The writer must be a regular administrator-owned executable with no group or
+world write access, under administrator-owned non-writable directories. The
+installer copies its exact bytes into a fixed root-owned location; it never
+executes the operator-owned capture binary as root. It records the opened
+capture directory, its actual parent, the operator UID/GID, and private staging
+directories on the destination filesystems. Each staging directory is created
+under a root-owned, non-writable ext4 host mount and remains mode 0700. A
+filesystem without such a verified mount is unavailable for this setup. The
+candidate TLS key and certificate are generated under separately protected
+mode-0700 host state, and repeat setup accepts only the exact retained binding
+and candidate. A known existing receiver or conflicting catalog follows
+explicit recovery; this command does not adopt or replace it. An interrupted
+candidate whose exact state cannot be verified remains unavailable.
+
+This first-install path prepares a real private candidate and installs the
+on-demand writer, but it does not yet establish historical first origin. Until
+the independent native authority and complete old-registrar proof exist, the
+registration request returns unavailable and the fixed store transaction is
+not invoked. Ordinary capture-only behavior remains available; if it creates
+or publishes a different receiver in the meantime, that installation cannot
+later be assumed fresh. Send remains disabled.
+
 ## Held directory interface
 
 The root `louiselm-phone-host.service` runs after local filesystems are mounted.
@@ -65,6 +97,19 @@ directory. The manager-launched process and inherited descriptor establish the
 handoff; a path, environment variable, or descriptor number supplied by an
 arbitrary process does not. Pairing data returned by the query is not a scope
 token and must not be used to authorize phone actions.
+
+For a new managed catalog, the boot publisher also reopens and holds the
+original capture parent and the root-private staging directory for each
+destination filesystem. It requires the parent's direct `capture` child to
+remain the registered object; aliases of that same object work, while a moved
+or reparented root requires the separately authorized changed-root recovery.
+The on-demand registration unit receives these directories, the private
+authority directory, catalog, reference, host procfs and host network namespace
+as manager-opened descriptors. Its socket accepts one `R` byte with exactly one
+opened capture-root descriptor. The closed v1 response is `committed` with the
+public fingerprint, `unavailable`, or `root_mismatch`; it is a description of
+the fixed operation, never a transferable permit. The current implementation
+cannot produce `committed` until independent first-origin proof is available.
 
 `phone-host.py check ROOT RECEIVER_SHA256` is an unprivileged diagnostic. It
 always returns JSON `status: "unavailable"` and exit status 2, including for a

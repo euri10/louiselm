@@ -8,6 +8,7 @@ mod evidence;
 mod http;
 #[cfg(test)]
 mod legacy_recovery_tests;
+mod managed_registration;
 pub(crate) mod owner_journal;
 mod prepared_owner;
 #[cfg(test)]
@@ -25,6 +26,8 @@ mod source_tests;
 mod voice_job;
 #[cfg(test)]
 mod voice_job_tests;
+
+pub use managed_registration::run_managed_registration_writer;
 
 pub use evidence::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceKind, ActionEvidenceStore, ActionIdentity,

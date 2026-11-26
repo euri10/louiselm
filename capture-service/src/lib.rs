@@ -51,7 +51,8 @@ pub use pairing::{
 };
 pub use phone_control::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceKind, ActionEvidenceStore, ActionIdentity,
-    ActionOutcome, ActionReservation, PhoneControlError, verify_phone_control_frame,
+    ActionOutcome, ActionReservation, PhoneControlError, run_managed_registration_writer,
+    verify_phone_control_frame,
 };
 pub use phone_projects::{
     PhoneProjectError, PhoneProjectIdentity, PhoneProjectPage, PhoneProjectRoot,

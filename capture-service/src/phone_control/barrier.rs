@@ -358,6 +358,29 @@ impl AnchorRecord {
     }
 }
 
+pub(super) fn initialized_anchor(
+    receiver: &str,
+    generation: &str,
+    binding: &BarrierBinding,
+) -> io::Result<Vec<u8>> {
+    let body = AnchorBody {
+        v: 1,
+        receiver: receiver.to_owned(),
+        generation: generation.to_owned(),
+        lock_nonce: binding.lock_nonce.clone(),
+        registrar_nonce: binding.registrar_nonce.clone(),
+        cutoff_nonce: binding.cutoff_nonce.clone(),
+        anchor: binding.anchor,
+        lock: binding.lock,
+        registrar: binding.registrar,
+        cutoff: binding.cutoff,
+    };
+    let sha256 = lower_hex(&Sha256::digest(
+        serde_json::to_vec(&body).map_err(io::Error::other)?,
+    ));
+    serde_json::to_vec(&AnchorRecord { body, sha256 }).map_err(io::Error::other)
+}
+
 impl HeldBarrier {
     fn validate(&mut self) -> io::Result<()> {
         self.lock
@@ -446,7 +469,7 @@ pub(super) fn receiver_fixture(root: &Path) -> (String, String, ReceiverBarrier)
     fs::write(&registrar, "cd".repeat(16)).unwrap();
     fs::write(
         &cutoff,
-        barrier_log::initialized_bytes(&receiver, &generation, &"ef".repeat(16)),
+        barrier_log::initialized_bytes(&receiver, &generation, &"ef".repeat(16)).unwrap(),
     )
     .unwrap();
     let mut file = File::create(&anchor).unwrap();
@@ -515,7 +538,7 @@ mod tests {
         fs::write(&registrar, "cd".repeat(16)).unwrap();
         fs::write(
             &cutoff,
-            barrier_log::initialized_bytes(&receiver, &generation, &"ef".repeat(16)),
+            barrier_log::initialized_bytes(&receiver, &generation, &"ef".repeat(16)).unwrap(),
         )
         .unwrap();
         let mut file = fs::File::create(&anchor).unwrap();

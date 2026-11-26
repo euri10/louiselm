@@ -40,7 +40,7 @@ impl Startup {
     }
 
     #[cfg(test)]
-    pub(super) fn for_fixture(root: &std::path::Path) -> io::Result<Self> {
+    pub(crate) fn for_fixture(root: &std::path::Path) -> io::Result<Self> {
         use std::os::unix::ffi::OsStrExt;
 
         use sha2::{Digest, Sha256};

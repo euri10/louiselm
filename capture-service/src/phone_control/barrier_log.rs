@@ -256,9 +256,11 @@ fn valid_device(device: &str) -> bool {
     uuid::Uuid::parse_str(device).is_ok_and(|parsed| parsed.to_string() == device)
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "test fixture serialization")]
-pub(super) fn initialized_bytes(receiver: &str, generation: &str, nonce: &str) -> Vec<u8> {
+pub(super) fn initialized_bytes(
+    receiver: &str,
+    generation: &str,
+    nonce: &str,
+) -> io::Result<Vec<u8>> {
     let body = EntryBody::Initialized {
         v: 1,
         seq: 0,
@@ -266,8 +268,10 @@ pub(super) fn initialized_bytes(receiver: &str, generation: &str, nonce: &str) -
         generation: generation.to_owned(),
         nonce: nonce.to_owned(),
     };
-    let sha256 = lower_hex(&Sha256::digest(serde_json::to_vec(&body).unwrap()));
-    let mut bytes = serde_json::to_vec(&Entry { body, sha256 }).unwrap();
+    let sha256 = lower_hex(&Sha256::digest(
+        serde_json::to_vec(&body).map_err(io::Error::other)?,
+    ));
+    let mut bytes = serde_json::to_vec(&Entry { body, sha256 }).map_err(io::Error::other)?;
     bytes.push(b'\n');
-    bytes
+    Ok(bytes)
 }

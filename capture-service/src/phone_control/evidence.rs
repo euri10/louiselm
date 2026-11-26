@@ -4,6 +4,9 @@
 #[path = "evidence_lock_tests.rs"]
 mod lock_tests;
 
+#[path = "evidence_init.rs"]
+pub(crate) mod first_init;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
