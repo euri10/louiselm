@@ -466,6 +466,7 @@ T["mock agent"]["completes a prompt after a permission response"] = function()
     "admission_settled",
     "prompt_dispatched",
     "permission_requested",
+    "permission_resolved",
     "chunk",
     "turn_done",
   })
