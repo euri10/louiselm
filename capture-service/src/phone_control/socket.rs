@@ -1,9 +1,15 @@
 //! Authenticated local phone-control administration and controller sockets.
 
+#[cfg(test)]
+#[path = "socket_cut_tests.rs"]
+mod cut_tests;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io,
+    net::Shutdown,
+    os::unix::net::UnixStream as StdUnixStream,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -114,7 +120,26 @@ impl LockedListener {
 
 #[derive(Default)]
 pub(super) struct ControllerRegistry {
-    attached: Mutex<BTreeMap<String, Option<mpsc::Sender<Dispatch>>>>,
+    attached: Mutex<BTreeMap<String, ControllerEntry>>,
+}
+
+struct ControllerEntry {
+    sender: Option<mpsc::Sender<Dispatch>>,
+    socket: Option<StdUnixStream>,
+}
+
+impl ControllerEntry {
+    fn cut(&mut self) -> Result<(), Refusal> {
+        // A failed shutdown must not leave the controller discoverable.
+        self.sender = None;
+        if let Some(socket) = &self.socket {
+            socket
+                .shutdown(Shutdown::Both)
+                .map_err(|_| Refusal::Unavailable)?;
+        }
+        self.socket = None;
+        Ok(())
+    }
 }
 
 struct Dispatch {
@@ -374,7 +399,7 @@ impl ControllerRegistry {
         let entries = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
         Ok(entries
             .iter()
-            .filter(|(id, sender)| id.as_str() > after && sender.is_some())
+            .filter(|(id, entry)| id.as_str() > after && entry.sender.is_some())
             .take(limit)
             .map(|(id, _)| id.clone())
             .collect())
@@ -383,7 +408,7 @@ impl ControllerRegistry {
     pub(super) fn contains(&self, id: &str) -> bool {
         self.attached
             .lock()
-            .is_ok_and(|entries| entries.get(id).is_some_and(Option::is_some))
+            .is_ok_and(|entries| entries.get(id).is_some_and(|entry| entry.sender.is_some()))
     }
 
     pub(super) async fn dispatch(&self, id: &str, frame: Vec<u8>) -> Result<Vec<u8>, Refusal> {
@@ -392,7 +417,7 @@ impl ControllerRegistry {
             .lock()
             .map_err(|_| Refusal::Unavailable)?
             .get(id)
-            .and_then(Clone::clone)
+            .and_then(|entry| entry.sender.clone())
             .ok_or(Refusal::StaleSubject)?;
         let (response, received) = oneshot::channel();
         sender
@@ -403,6 +428,32 @@ impl ControllerRegistry {
             .map_err(|_| Refusal::Unavailable)?
             .map_err(|_| Refusal::Unavailable)
     }
+
+    /// Cut every retained original socket, retaining failed handles for retry.
+    /// This does not block new attachments or prove a pending action had no effect;
+    /// a caller must separately serialize registration and durable invalidation.
+    pub(super) fn cut_all(&self) -> Result<(), Refusal> {
+        let (mut entries, mut failed) = match self.attached.lock() {
+            Ok(entries) => (entries, false),
+            Err(error) => (error.into_inner(), true),
+        };
+        for entry in entries.values_mut() {
+            failed |= entry.cut().is_err();
+        }
+        if failed {
+            Err(Refusal::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for ControllerRegistry {
+    fn drop(&mut self) {
+        if self.cut_all().is_err() {
+            eprintln!("phone controller shutdown failed");
+        }
+    }
 }
 
 struct Registration {
@@ -412,10 +463,17 @@ struct Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        if let Ok(mut attached) = self.registry.attached.lock()
-            && let Some(active) = attached.get_mut(&self.id)
+        let mut attached = match self.registry.attached.lock() {
+            Ok(attached) => attached,
+            Err(error) => {
+                eprintln!("phone controller registry unavailable during detach");
+                error.into_inner()
+            }
+        };
+        if let Some(active) = attached.get_mut(&self.id)
+            && active.cut().is_err()
         {
-            *active = None;
+            eprintln!("phone controller shutdown failed; connection retained");
         }
     }
 }
@@ -468,6 +526,9 @@ async fn serve_controller(
     hash: &str,
     registry: Arc<ControllerRegistry>,
 ) -> io::Result<()> {
+    let stream = stream.into_std()?;
+    let shutdown_socket = stream.try_clone()?;
+    let stream = UnixStream::from_std(stream)?;
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let bytes = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut reader))
@@ -499,7 +560,13 @@ async fn serve_controller(
                     break;
                 };
                 if id != "00".repeat(16) && !attached.contains_key(&id) {
-                    attached.insert(id.clone(), Some(sender));
+                    attached.insert(
+                        id.clone(),
+                        ControllerEntry {
+                            sender: Some(sender),
+                            socket: Some(shutdown_socket),
+                        },
+                    );
                     created = Ok(id);
                     break;
                 }
