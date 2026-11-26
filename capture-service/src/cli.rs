@@ -77,9 +77,9 @@ pub enum CliError {
     /// Pairing operation failed.
     #[error(transparent)]
     Pairing(#[from] PairingError),
-    /// Offline phone revocation could not be confirmed.
+    /// Phone revocation could not be confirmed.
     #[error("phone revocation unconfirmed: {0}")]
-    RevocationUnconfirmed(#[source] PairingError),
+    RevocationUnconfirmed(&'static str),
     /// TLS identity operation failed.
     #[error(transparent)]
     Identity(#[from] IdentityError),
@@ -980,7 +980,7 @@ async fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
         tokio::net::UnixStream::connect(paths.phone_control_admin_socket()),
     )
     .await
-    .map_err(|_| CliError::Invalid("phone-control administration timed out".into()))?;
+    .map_err(|_| CliError::RevocationUnconfirmed("authority did not confirm the operation"))?;
     match connection {
         Ok(stream) => {
             phone_control_admin_stream(
@@ -990,7 +990,10 @@ async fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
                 },
                 stream,
             )
-            .await?;
+            .await
+            .map_err(|_| {
+                CliError::RevocationUnconfirmed("authority did not confirm the operation")
+            })?;
         }
         Err(error)
             if matches!(
@@ -998,14 +1001,17 @@ async fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
             ) =>
         {
-            let path = paths.pairing();
-            let device = id.to_owned();
-            tokio::task::spawn_blocking(move || PairingRegistry::open(path)?.revoke(&device))
-                .await
-                .map_err(std::io::Error::other)?
-                .map_err(CliError::RevocationUnconfirmed)?;
+            // No offline cutoff proof is installed yet. Revoking the pairing
+            // alone would incorrectly claim that all old gates were excluded.
+            return Err(CliError::RevocationUnconfirmed(
+                "admission cutoff is unavailable",
+            ));
         }
-        Err(error) => return Err(error.into()),
+        Err(_) => {
+            return Err(CliError::RevocationUnconfirmed(
+                "authority did not confirm the operation",
+            ));
+        }
     }
     println!("{id}");
     Ok(())

@@ -133,8 +133,10 @@ If the grant store is unreadable, structurally invalid, or has an invalid base
 scope seal, capture and pairing remain available, but phone control returns
 `unavailable` for every phone. The service logs a warning and leaves the
 damaged store untouched.
-`revoke-device` or `phone-control forget` still revokes a phone's pairing;
-workspace-only `disable` cannot safely edit an unreadable store.
+With the receiver reachable, `revoke-device` or `phone-control forget` still
+revokes a phone's pairing; workspace-only `disable` cannot safely edit an
+unreadable store. Offline `revoke-device` currently reports unconfirmed and
+does not change pairing, because the admission cutoff cannot yet be proved.
 
 To reset an unrecoverable store, the desktop operator must stop the receiver,
 move `louiselm/capture/phone-control/grants.json` under the capture state root
@@ -520,8 +522,9 @@ devices. Registration, rotation, and revocation share the pairing transaction.
 FIDs and submission state are private fields in `pairing/pairing.json`, and
 `revoke-device` removes them with the device credential. Revocation waits for an
 already-started bounded submission; after it returns, no future submission can
-use that pairing. HTTP pairing/authentication runs off the async executor while
-waiting for this lock.
+use that pairing. This applies to confirmed revocation; an offline unconfirmed
+result leaves the pairing and registration active. HTTP pairing/authentication
+runs off the async executor while waiting for this lock.
 
 The data-only FCM message contains only the HTTP v1 `message.fid` routing field, a
 decimal-string `generation`, high Android priority, and collapse key

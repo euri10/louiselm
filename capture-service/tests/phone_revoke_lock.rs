@@ -8,8 +8,9 @@
 )]
 
 use std::{
-    fs::OpenOptions,
-    io::{BufRead, BufReader},
+    fs::{self, OpenOptions},
+    io::{self, BufRead, BufReader},
+    os::unix::net::UnixListener,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -19,7 +20,6 @@ use fs2::FileExt;
 use louiselm_capture::PairingRegistry;
 
 #[test]
-#[ignore = "offline cutoff proof is not yet implemented"]
 fn offline_forget_without_a_provable_cutoff_is_unconfirmed() {
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("state");
@@ -47,6 +47,61 @@ fn offline_forget_without_a_provable_cutoff_is_unconfirmed() {
             .unwrap(),
         Some(phone.device_id)
     );
+}
+
+#[test]
+fn unanswered_live_administration_is_bounded_and_unconfirmed() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let workflow = state.join("louiselm/workflow");
+    fs::create_dir_all(&workflow).unwrap();
+    fs::write(workflow.join("operator-capability"), "a".repeat(64)).unwrap();
+    let listener = UnixListener::bind(workflow.join("phone-control-admin.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut revoke = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
+        .env("LOUISELM_CAPTURE_DATA_DIR", root.path().join("data"))
+        .env("LOUISELM_CAPTURE_STATE_DIR", &state)
+        .env("LOUISELM_CAPTURE_CONFIG_DIR", &state)
+        .args(["revoke-device", "22222222-2222-4222-8222-222222222222"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let peer = loop {
+        match listener.accept() {
+            Ok((peer, _)) => break peer,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    revoke.kill().unwrap();
+                    revoke.wait().unwrap();
+                    panic!("administration was not contacted");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("administration accept failed: {error}"),
+        }
+    };
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut request = String::new();
+    BufReader::new(&peer).read_line(&mut request).unwrap();
+    assert!(request.contains("forget"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let exited = loop {
+        if revoke.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            revoke.kill().unwrap();
+            break false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let output = revoke.wait_with_output().unwrap();
+    assert!(exited, "unanswered administration hung");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unconfirmed"));
+    drop(peer);
 }
 
 #[test]
