@@ -119,11 +119,11 @@ The child gets its own Chat buffer and appears in the Session switcher without
 taking focus. The owner reuses configured Agents, MCP selection, permission
 handling and Session lifecycle. Initialization, ordered configuration and one
 initial prompt are one operation. Failed or cancelled pre-dispatch children are
-disposed, and their untouched background views are removed. If a person has
-focused the view or entered a draft, the view remains available. Completed
-children and children whose dispatch is uncertain stay available for human
-follow-up; later human turns do not reactivate that operation. If a different
-turn takes over a child, a delayed failure, cancellation or operation deadline
+disposed, and their untouched background views are removed. Chat keeps the
+current view and views with a draft, staged context, a selected skill or queued
+work. Completed children and children whose dispatch is uncertain stay available
+for human follow-up. Later human turns do not reactivate that operation. If a
+different turn takes over a child, a delayed failure, cancellation or operation deadline
 leaves that turn alone and reports the child's current status.
 
 Snapshots contain operation/Session/turn IDs, `revision`, `phase`, latest
@@ -257,6 +257,149 @@ visible in the Session status. Choose a finite monitoring budget independently
 of the child's deadline. No live snapshot or local disposal return proves
 containment or remote Provider cancellation.
 
+## Following up and closing delegated Sessions
+
+Design review for **louiselm-6twgs.3**, 2026-11-26.
+
+### What works today
+
+The installed package (`20096991`) and checkout (`a1d5465c`) have identical
+helper and controller files. `start`/`batch` launch children, `discover`
+reads advertisements, and `inspect`/`watch` report the original operation.
+In `lua/louiselm/ui/session_control.lua:530`, normal success calls `finish`
+without cleanup. It releases the observer and clears `op.session` (407–417).
+Terminal `cancel` reaches disposal only if unsuccessful cleanup retained that
+reference (668). Normally it returns the frozen result. Active cancel targets
+the owned turn.
+
+Humans can submit in Chat and use `:LouiselmSessionClose` with explicit local
+IDs and Close/Keep confirmation. `Chat:submit(text)` writes the current
+composer. The orchestrator needs separate operation, Session and issue lookups,
+plus slot status for a VM. The helper has no addressed follow-up or verified close.
+
+### Proposed controls
+
+**1. Can the orchestrator send the next message?** Add `followup FILE` to
+`scripts/session-control`. Extend `inspect <launch-id>` with live parent/child
+ACP identities, latest turn, revision, blockers and permitted action alongside
+the original result. Bind control to the verified caller and operator's scope
+at launch. Neither the key nor `parent_turn_id` grants authority. When 53
+became 76 the same ACP actor could continue monitoring (`louiselm-qbr.12:5696`).
+A different actor needs an explicit transfer naming child, issue, turn and scope.
+
+Both new commands take an action `id`, original `target` launch ID and
+`if_revision` from live inspect. At the point of action the configured owner
+rechecks registration, child ACP, turn and Chat input/queue state. Follow-up
+sends explicit text/context through the idle Session's admission and Chat's
+`prompt_dispatched` event. Return the new turn ID and delivery outcome.
+A human takeover, draft, staged skill/context, queued work, active turn or
+pending decision yields a conflict. In 55 the original `qbr12-recovery-1`
+was terminal (`failed/ready`), yet the person who continued it still had a
+live worker on `louiselm-qbr.12.4.11`.
+
+Identical retries return the original receipt. Changed input conflicts. Inspect
+the same action ID after a lost reply. A lost registration leaves delivery
+unknown. Reconcile with the live owner and issue before explicit rebinding.
+A stopped, loadable conversation already has the operator-directed Resume path.
+
+**2. Can it close a finished child?** Add `close FILE` with the same guards
+and a reference to accepted work or a handback. The skill checks the delivered
+scope or recorded remainder, claim disposition and resource receipts. The
+owner checks for a later turn, visible human work, draft, queue and pending
+decisions. Missing proof or takeover returns “keep” with a reason. Await the
+`Session:dispose` callback and saved-queue fence, recheck the view, and report
+Session disposal and view removal or retention separately from external
+cleanup. A missing view without an owner receipt, or a failed callback, leaves closure unconfirmed.
+
+A grill can launch with “return on final confirmation.” Its usual final
+“Confirm and return” records decision revision, Session and turn and authorizes
+closing that view once idle. A new draft, later human turn or “keep discussing”
+wins. An unplanned takeover lasts until the person hands the child back.
+
+74's operation still reads `completed/ready` after manual close. Its exact
+`8df311cf` gates, two returned claims and cleaned VM established handback while
+integration stayed open (`louiselm-qbr.12.4.15.5:5913,5917`,
+`louiselm-qbr.12.4.15:5920`). When issue, inputs, environment, issuer and
+result match, consume confirmed evidence directly. Examples include the
+confined controls in `louiselm-6twgs.1`, human-confirmed prompt/draft/export
+in `louiselm-6twgs.2` and `louiselm-jzw3h`, two-guest pairing receipts in
+`louiselm-qbr.12:5661` and the host-scope decision in `louiselm-qbr.12.4.13`.
+Installed writer integration, physical acceptance (`louiselm-qbr.12.22`) and
+historical-cause judgment (`louiselm-qbr.12.48`) have separate gates.
+
+**3. What if the worker cannot take another turn?** 46 needed a maintainer
+relay after a policy interruption and held a disposable VM until handback
+(`louiselm-qbr.12.48:5360`). This supplied no quota diagnosis. A failed turn
+can leave a ready Session and record measured usage once. Surface the Session's
+typed failure (ID, revision, severity, title) and admission in the receipt.
+Today the helper reduces the diagnostic to text. Show an unclassified title as such.
+
+| Evidence | Next action |
+| --- | --- |
+| Reported temporary Model/Provider capacity | Honour a retry time or bounded backoff. With authority, try one same-Model continuation within the deadline after checking what ran. Hand back if still unavailable. |
+| Fresh exhausted bucket from Agent-advertised ACP `accountLimits` | Show the window and reset. Return held work before a long wait. Recheck at reset or use an approved alternative. Extra spend, account or Provider changes need explicit authority. |
+| Refusal, uncertain delivery or missing/stale limits | Respect the stop. Reconcile action, turn and tool effects. Never replay potentially effectful work or infer quota from tokens or context occupancy. |
+| Local limit | At 128 operation IDs, inspect existing work and stop allocating IDs in that registration. At the VM cap/disk floor, wait or release an owned slot. Closing a Chat frees neither reservation. |
+
+Wake the parent ACP's bounded watch with a typed change. On reconnect inspect
+outstanding conditions by child/turn/revision. After registration loss, use
+recorded turns, Beads and slot receipts, retaining unknowns. Only when a person
+must act, show one updated status with cause, retry/reset time, held resources
+and the decision needed. Reuse the Session-failure Attention item where applicable.
+
+The child records the commit, evidence and remaining work, then returns its own claim with
+`br update --if-unchanged`. The verified VM holder runs
+`scripts/launcher-vm --slot cleanup` and checks the allocation is absent and
+unit inactive. To release without a Model turn, let the holder enroll a
+release-only action at allocation. Under the slot locks recheck owner, exact
+allocation, quiescent gate and permission to discard. Keep base and logs.
+Existing `--slot cleanup --gone` checks the whole pool for provably gone owners.
+Protect live/unknown holders and retained/persistent guests.
+
+A future exact-claim return without a Model turn needs tracker support for
+one-use authority from the holder, bound to issue, assignee and version, audited
+under the actual caller. A changed claim conflicts. Until then report “claim
+retained” and its holder. Current takeover requires a fresh liveness snapshot,
+`abandoned_likely`, policy permission and guarded reclaim.
+
+**4. Can coding and grills use different defaults?** Propose optional
+`agents.<name>.delegation_defaults` keyed by declared phase. Coding
+(`implementation`) could select **6.1 Terra / max**, a grill (`design`)
+**6.2 Astra**. Inherit unspecified effort and access. Read-only discovery confirmed this review's explicit
+**6.2 Astra / max / Full access**. Codex Auto is
+unset in the maintainer's configuration.
+
+Explicit launch values win, then applicable phase preferences, then Agent
+defaults. Set Model first, validate dependent effort against the replacement
+advertisement and confirm the final tuple before dispatch. An unavailable
+requested value keeps the brief unsent. Show phase, effective Model, effort,
+access and each value's source in Chat and inspect. Apply presets at creation.
+A manual Model or effort choice pins the whole pair in Auto. Preserve
+permission policy, advisory phase ranking
+(`louiselm-mubf`) and opt-in qualified Auto (`louiselm-economical-routing-1ig31.1`).
+
+### Implementation order and acceptance
+
+1. **Inspect and follow up.** With mock ACP, switch focus and lose an ACK.
+   Retry once and require one exported instruction, the right child and intact
+   draft. Exercise 55's takeover and 53/76's stable ACP.
+2. **Close.** Replay 74's handback and a grill's final confirmation. Compare
+   clean disposal with typing during close and a failed disposal fence.
+3. **Recover.** Exercise overload with quota left, exhaustion and 128 spent
+   IDs. Reconnect the parent and require one actionable status. Use a 46-style
+   slot and a changed claim to check exact release, refusal and retained ownership.
+4. **Configure defaults and update the source-catalog skill.** Check unset,
+   coding, grill, override and unavailable effort on single and batch starts
+   against the dispatched turn or unsent brief.
+
+### Operator choices
+
+Choose which assignments close on verified handback, which grills return on
+confirmation, the retry budget and approved alternatives, and the phase
+preferences. A standing choice covers matching children. With matching
+receipts the target is one inspection and one guarded action plus its result,
+with zero human relays or manual closes.
+
 ## AX rationale and skill ownership
 
 The configured-owner facade replaces source archaeology, picker keystrokes,
@@ -270,7 +413,8 @@ The **louiselm-jzw3h** fix observes dispatched prompts at the shared Session
 boundary. Chat can record/render direct submission once, preserve unrelated
 drafts and deduplicate live ACP echoes. Rejected or pre-dispatch-cancelled
 prompts create no submitted history; cancellation after dispatch retains it.
-The maintainer's original screenshot reproduction still requires live acceptance.
+The maintainer confirmed the original visible prompt, draft/context preservation
+and Markdown export in **louiselm-jzw3h** and **louiselm-6twgs.2**.
 
 For multiple workers or durable supervision, compose the existing
 `workflow.Run` ownership/cancel/Park lifecycle and generated-work ledger.
@@ -306,8 +450,9 @@ The compact brief from the observed task remains a useful example:
 
 Executable slices follow `docs/agent-testing.md`: red/green focused Session and
 Chat regressions with the mock ACP Agent, complete Lua suite, StyLua, LuaLS,
-generated API/type/doc checks, and applicable installed gates. The skill needs
-one realistic invocation and maintainer confirmation of visible prompt/context.
+generated API/type/doc checks, and applicable installed gates. The accepted
+initial-turn skill exercise and visible prompt/context checks are recorded in
+**louiselm-6twgs.2**. The proposed follow-up and close need their own coverage.
 Disposable mock-Agent checks are not evidence of live Provider behavior or the
 maintainer's installed plugin revision. Documentation and generated output need
 no artificial failing behavior test.
