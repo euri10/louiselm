@@ -2,7 +2,7 @@
 
 use super::{ControllerEntry, ControllerRegistry, ControllerSocket, Registration};
 use std::{io::Write, os::unix::net::UnixStream, sync::Arc};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 async fn attach(
     path: &std::path::Path,
@@ -24,6 +24,164 @@ async fn attach(
         .await
         .unwrap();
     (peer, serde_json::from_str(&response).unwrap())
+}
+
+#[tokio::test]
+async fn ordinary_service_keeps_read_attachments_across_concurrent_start_and_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let pairing = Arc::new(crate::PairingRegistry::open(root.path().join("pairing")).unwrap());
+    // This capture-only fixture has no separately provisioned managed authority.
+    let service = super::super::Service::open(
+        &root.path().join("phone-control/grants"),
+        &"02".repeat(32),
+        pairing,
+    )
+    .unwrap();
+    let admin = root.path().join("admin.sock");
+    let path = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let sockets = service.bind(&admin, &path, &capability).await.unwrap();
+    let competing = service
+        .bind(&admin, &path, &capability)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(competing.kind(), std::io::ErrorKind::AddrInUse);
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let task = tokio::spawn(sockets.serve());
+    let (first, second) = tokio::join!(attach(&path, &token), attach(&path, &token));
+    let (mut first, first_reply) = first;
+    let (mut second, second_reply) = second;
+    let first_id = first_reply["controller_id"].as_str().unwrap();
+    let second_id = second_reply["controller_id"].as_str().unwrap();
+    assert_eq!(first_reply["type"], "attached");
+    assert_eq!(second_reply["type"], "attached");
+    assert_ne!(first_id, second_id);
+    let read = tokio::spawn({
+        let registry = Arc::clone(&service.controllers);
+        let id = first_id.to_owned();
+        async move {
+            registry
+                .dispatch(&id, br#"{"type":"read_session"}"#.to_vec())
+                .await
+        }
+    });
+    let mut frame = String::new();
+    BufReader::new(&mut first)
+        .read_line(&mut frame)
+        .await
+        .unwrap();
+    assert_eq!(frame, "{\"type\":\"read_session\"}\n");
+    first.write_all(b"read response\n").await.unwrap();
+    assert_eq!(read.await.unwrap().unwrap(), b"read response");
+    for id in [first_id, second_id] {
+        assert!(service.controllers.contains(id));
+        for kind in ["send_prompt", "action_commit"] {
+            let frame = serde_json::to_vec(&serde_json::json!({"type":kind})).unwrap();
+            assert_eq!(
+                service.controllers.dispatch(id, frame).await,
+                Err(super::super::authority::Refusal::Unavailable)
+            );
+        }
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    for peer in [&mut first, &mut second] {
+        let mut byte = [0];
+        let count = tokio::time::timeout(std::time::Duration::from_secs(2), peer.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+    assert!(!service.controllers.contains(first_id));
+    assert!(!service.controllers.contains(second_id));
+    let sockets = service.bind(&admin, &path, &capability).await.unwrap();
+    let task = tokio::spawn(sockets.serve());
+    let (_peer, reply) = attach(&path, &token).await;
+    assert_eq!(reply["type"], "attached");
+    assert_ne!(reply["controller_id"], first_id);
+    assert_ne!(reply["controller_id"], second_id);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn receiver_barrier_outlives_a_controller_and_the_server_until_last_registry_owner() {
+    let root = tempfile::tempdir().unwrap();
+    // The fixture supplies a bound barrier; it makes no host or origin claim.
+    let (receiver_id, generation, receiver) = super::super::barrier::receiver_fixture(root.path());
+    let binding = super::super::barrier::BarrierBinding {
+        anchor: crate::phone_lock::FileIdentity::at(
+            &root.path().join("phone-admission-barrier.json"),
+        )
+        .unwrap(),
+        lock: crate::phone_lock::FileIdentity::at(
+            &root.path().join("phone-admission-barrier.lock"),
+        )
+        .unwrap(),
+        lock_nonce: "ab".repeat(16),
+        registrar: crate::phone_lock::FileIdentity::at(
+            &root.path().join("phone-admission-registrar.lock"),
+        )
+        .unwrap(),
+        registrar_nonce: "cd".repeat(16),
+        cutoff: crate::phone_lock::FileIdentity::at(
+            &root.path().join("phone-admission-cutoff.json"),
+        )
+        .unwrap(),
+        cutoff_nonce: "ef".repeat(16),
+    };
+    let next =
+        super::super::barrier::Barrier::existing(root.path(), &receiver_id, binding).unwrap();
+    let registry = Arc::new(ControllerRegistry::new(Some((
+        generation.clone(),
+        receiver,
+    ))));
+    let path = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let server = ControllerSocket::bind(&path, &capability, Arc::clone(&registry))
+        .await
+        .unwrap();
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let task = tokio::spawn(server.serve());
+    let (mut peer, reply) = attach(&path, &token).await;
+    let id = reply["controller_id"].as_str().unwrap();
+    assert_eq!(
+        next.clone().receiver(&generation).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), peer.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert!(!registry.contains(id));
+    assert_eq!(
+        next.clone().receiver(&generation).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(registry);
+    let replacement_receiver = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match next.clone().receiver(&generation) {
+                Ok(receiver) => break Ok(receiver),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => break Err(error),
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    drop(replacement_receiver);
 }
 
 #[test]
