@@ -442,7 +442,6 @@ impl ControllerRegistry {
         sender: mpsc::Sender<Dispatch>,
         socket: StdUnixStream,
     ) -> Result<String, Refusal> {
-        let gate_capable = self.barrier.is_some();
         let insert = || {
             let mut attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
             for _ in 0..8 {
@@ -453,7 +452,9 @@ impl ControllerRegistry {
                         ControllerEntry {
                             sender: Some(sender),
                             socket: Some(socket),
-                            gate_capable,
+                            // A read attachment is not a registered admission gate.
+                            // Send remains unavailable until .4.5 supplies one.
+                            gate_capable: false,
                         },
                     );
                     return Ok(id);
@@ -516,6 +517,24 @@ impl ControllerRegistry {
             })
     }
 
+    pub(super) fn replace_period<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, Refusal>,
+    ) -> Result<T, Refusal> {
+        let cut = || self.cut_matching(|entry| entry.gate_capable);
+        match &self.barrier {
+            Some(barrier) => barrier
+                .owner
+                .invalidate(&barrier.generation, cut, operation)
+                .map_err(|error| match error {
+                    CutoffError::Barrier(_) => Refusal::Unavailable,
+                    CutoffError::Operation(error) => error,
+                }),
+            // Without a barrier this registry cannot register any write gate.
+            None => cut().and_then(|()| operation()),
+        }
+    }
+
     pub(super) fn list_after(&self, after: &str, limit: usize) -> Result<Vec<String>, Refusal> {
         let entries = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
         Ok(entries
@@ -561,11 +580,15 @@ impl ControllerRegistry {
     /// This does not block new attachments or prove a pending action had no effect;
     /// a caller must separately serialize registration and durable invalidation.
     pub(super) fn cut_all(&self) -> Result<(), Refusal> {
+        self.cut_matching(|_| true)
+    }
+
+    fn cut_matching(&self, matches: impl Fn(&ControllerEntry) -> bool) -> Result<(), Refusal> {
         let (mut entries, mut failed) = match self.attached.lock() {
             Ok(entries) => (entries, false),
             Err(error) => (error.into_inner(), true),
         };
-        for entry in entries.values_mut() {
+        for entry in entries.values_mut().filter(|entry| matches(entry)) {
             failed |= entry.cut().is_err();
         }
         if failed {

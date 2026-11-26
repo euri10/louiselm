@@ -122,6 +122,13 @@ class PhoneControlEndToEndTest {
                 .single { it.text.toString() == phoneActivity.getString(R.string.phone_unlock) }
             unlock.performClick()
             repeat(8) { drain(phoneExecutor) }
+            if (System.getenv("LOUISELM_E2E_STALE") == "1") {
+                assertTrue(views(phoneActivity.window.decorView).filterIsInstance<TextView>()
+                    .any { it.text.toString() == phoneActivity.getString(R.string.phone_stale) })
+                assertFalse(views(phoneActivity.window.decorView).filterIsInstance<TextView>()
+                    .any { it.text.toString().contains("fixture request") })
+                return
+            }
             assertTrue(views(phoneActivity.window.decorView).filterIsInstance<TextView>()
                 .any { it.text.toString().contains("fixture request") })
             val store = PhoneOfflineStore(File(app.filesDir, "phone-offline-v1"))

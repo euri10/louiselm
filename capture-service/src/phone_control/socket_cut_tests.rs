@@ -219,7 +219,7 @@ async fn invalidation_shuts_a_real_attached_controller_socket() {
 
 #[tokio::test]
 #[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
-async fn gate_capable_registration_and_cutoff_share_the_real_barrier() {
+async fn read_registration_and_cutoff_share_the_real_barrier() {
     let root = tempfile::tempdir().unwrap();
     let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
     let path = root.path().join("controller.sock");
@@ -233,7 +233,7 @@ async fn gate_capable_registration_and_cutoff_share_the_real_barrier() {
     let (mut first, response) = attach(&path, &token).await;
     let id = response["controller_id"].as_str().unwrap();
     assert!(
-        registry
+        !registry
             .attached
             .lock()
             .unwrap()
@@ -298,6 +298,100 @@ async fn gate_capable_registration_and_authority_invalidation_share_the_real_bar
     assert_eq!(response["type"], "attached");
     task.abort();
     let _ = task.await;
+}
+
+#[tokio::test]
+async fn period_replacement_cuts_old_gate_connections_but_keeps_read_attachments() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
+    let path = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let registry = Arc::new(ControllerRegistry::new(Some((generation, owner))));
+    let server = ControllerSocket::bind(&path, &capability, Arc::clone(&registry))
+        .await
+        .unwrap();
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let task = tokio::spawn(server.serve());
+    let (_read, read_response) = attach(&path, &token).await;
+    let (mut gate, gate_response) = attach(&path, &token).await;
+    let read_id = read_response["controller_id"].as_str().unwrap();
+    let gate_id = gate_response["controller_id"].as_str().unwrap();
+    for kind in ["send_prompt", "action_commit"] {
+        let frame = serde_json::to_vec(&serde_json::json!({"type":kind})).unwrap();
+        assert_eq!(
+            registry.dispatch(read_id, frame).await,
+            Err(super::super::authority::Refusal::Unavailable)
+        );
+    }
+    // Model an existing gate-bearing registration; ordinary attach never grants it.
+    registry
+        .attached
+        .lock()
+        .unwrap()
+        .get_mut(gate_id)
+        .unwrap()
+        .gate_capable = true;
+    registry
+        .replace_period(|| {
+            assert!(!registry.contains(gate_id));
+            assert!(registry.contains(read_id));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        gate.write_all(b"gate\n").await.unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    assert!(registry.contains(read_id));
+    task.abort();
+    let _ = task.await;
+}
+
+#[test]
+fn period_replacement_refuses_if_an_old_gate_cannot_be_cut() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
+    let registry = ControllerRegistry::new(Some((generation, owner)));
+    let socket = UnixStream::from(std::os::fd::OwnedFd::from(tempfile::tempfile().unwrap()));
+    let (sender, _responses) = tokio::sync::mpsc::channel(1);
+    registry.attached.lock().unwrap().insert(
+        "01".repeat(16),
+        ControllerEntry {
+            sender: Some(sender),
+            socket: Some(socket),
+            gate_capable: true,
+        },
+    );
+    let mut called = false;
+    assert_eq!(
+        registry.replace_period(|| {
+            called = true;
+            Ok(())
+        }),
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    assert!(!called);
+}
+
+#[test]
+fn period_replacement_refuses_a_lost_barrier_before_changing_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
+    let registry = ControllerRegistry::new(Some((generation, owner)));
+    std::fs::rename(
+        root.path().join("phone-admission-barrier.json"),
+        root.path().join("old-anchor"),
+    )
+    .unwrap();
+    let mut called = false;
+    assert_eq!(
+        registry.replace_period(|| {
+            called = true;
+            Ok(())
+        }),
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    assert!(!called);
 }
 
 #[test]
