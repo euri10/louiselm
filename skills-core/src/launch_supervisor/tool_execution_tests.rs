@@ -181,13 +181,14 @@ fn privileged_confined_lua_gates_from_clean_snapshot() {
     for gate in [
         "stylua --check .",
         "lua-language-server --check . --checklevel=Warning",
-        "nvim --headless --noplugin -u ./tests/minimal_init.lua -c 'lua MiniTest.run()' -c 'qa!'",
+        "python3 scripts/test-lua-runner.py",
+        "./scripts/test-lua",
         "./scripts/generate-api-appendix --check",
         "./scripts/generate-luacats --check",
         "./scripts/generate-vimdoc --check",
         "./scripts/generate-plugin-version --check",
     ] {
-        let observed = observed_lua_gate(gate);
+        let observed = observed_lua_gate(gate, gate == "./scripts/test-lua");
         let output =
             command_with_plan(&backend, &verifier, &observed, Duration::from_mins(3)).unwrap();
         assert_eq!(
@@ -196,14 +197,23 @@ fn privileged_confined_lua_gates_from_clean_snapshot() {
             output.stdout, output.stderr
         );
         assert!(!output.timed_out, "{gate} timed out");
+        if gate == "./scripts/test-lua" {
+            eprintln!("{gate} completed:\n{}", output.stdout);
+        }
     }
 }
 
-fn observed_lua_gate(gate: &str) -> String {
+fn observed_lua_gate(gate: &str, report_summary: bool) -> String {
     // Long progress lines must not fill the collector's prefix before the failure summary.
-    format!(
+    let mut command = format!(
         "{gate} > /tmp/louiselm-verifier-gate.log 2>&1 || {{ status=$?; tail -c {MAX_TOOL_OUTPUT_BYTES} /tmp/louiselm-verifier-gate.log; exit \"$status\"; }}"
-    )
+    );
+    if report_summary {
+        // Successful suite output must show both how many cases ran and the
+        // final report; absence of either is not a completed test run.
+        command.push_str("; grep -am 1 -E 'Total number of cases:.*[1-9][0-9]*$' /tmp/louiselm-verifier-gate.log && grep -am 1 -F 'Fails (0) and Notes (' /tmp/louiselm-verifier-gate.log");
+    }
+    command
 }
 
 #[test]
@@ -214,7 +224,7 @@ fn lua_gate_failure_report_survives_long_progress() {
         format!("sh -c 'printf \"%8192s\\n\" progress; printf \"{failure}\\n\" >&2; exit 7'");
     let output = command(
         &executor,
-        &observed_lua_gate(&gate),
+        &observed_lua_gate(&gate, false),
         Duration::from_secs(10),
     )
     .unwrap();
@@ -230,7 +240,7 @@ fn lua_gate_failure_report_survives_long_progress() {
 
     let output = command(
         &executor,
-        &observed_lua_gate("sh -c 'printf success; printf diagnostic >&2'"),
+        &observed_lua_gate("sh -c 'printf success; printf diagnostic >&2'", false),
         Duration::from_secs(10),
     )
     .unwrap();
@@ -238,6 +248,39 @@ fn lua_gate_failure_report_survives_long_progress() {
     assert!(!output.timed_out && !output.truncated);
     assert_eq!(output.stdout, "");
     assert_eq!(output.stderr, "");
+}
+
+#[test]
+fn lua_gate_success_requires_and_reports_the_completed_summary() {
+    let (_root, executor) = fixture();
+    let gate = "printf 'Total number of cases: 2\\nFails (0) and Notes (0)\\n'";
+    let output = command(
+        &executor,
+        &observed_lua_gate(gate, true),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(output.exit_code, 0);
+    assert!(output.stdout.contains("Total number of cases: 2"));
+    assert!(output.stdout.contains("Fails (0) and Notes (0)"));
+
+    let gate = "printf 'Total number of cases: 2\\n'";
+    let output = command(
+        &executor,
+        &observed_lua_gate(gate, true),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_ne!(output.exit_code, 0, "a missing final report is not success");
+
+    let gate = "printf 'Total number of cases: 0\\nFails (0) and Notes (0)\\n'";
+    let output = command(
+        &executor,
+        &observed_lua_gate(gate, true),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_ne!(output.exit_code, 0, "an empty test run is not success");
 }
 
 fn command(

@@ -13,7 +13,7 @@
 # path was never exercised is indistinguishable from no check):
 #   stylua --check .                             0 clean / 1 misformatted
 #   lua-language-server --check --checklevel=Warning  0 clean / 1 on warning
-#   nvim --headless ... MiniTest.run()           0 clean / 1 on test failure
+#   ./scripts/test-lua                           0 clean / 1 on test failure
 #   cargo fmt --check                            0 clean / 1 misformatted
 #   cargo clippy (all targets/features, locked)  0 clean / 101 on a lint
 #   cargo test (all features, locked)           0 clean / 101 on test failure
@@ -693,8 +693,8 @@ jobs:
 
       - name: Run tests
         run: |
-          nvim --headless --noplugin -u ./tests/minimal_init.lua \
-            -c "lua MiniTest.run()" -c "qa!"
+          python3 scripts/test-lua-runner.py
+          ./scripts/test-lua
 
       - name: Verify usage benchmark failure artifacts
         run: python3 scripts/test-usage-benchmark.py
@@ -782,17 +782,13 @@ jobs:
           cargo build --manifest-path capture-service/Cargo.toml --locked --bin louiselm-capture
           ./scripts/install-test-deps
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
-            nvim --headless --noplugin -u ./tests/minimal_init.lua \
-              -c 'lua MiniTest.run_file("tests/phone_control/real_verifier_spec.lua")' -c 'qa!'
+            ./scripts/test-lua tests/phone_control/real_verifier_spec.lua
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
-            nvim --headless --noplugin -u ./tests/minimal_init.lua \
-              -c 'lua MiniTest.run_file("tests/phone_control/action_journal_spec.lua")' -c 'qa!'
+            ./scripts/test-lua tests/phone_control/action_journal_spec.lua
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
-            nvim --headless --noplugin -u ./tests/minimal_init.lua \
-              -c 'lua MiniTest.run_file("tests/phone_control/action_dispatch_spec.lua")' -c 'qa!'
+            ./scripts/test-lua tests/phone_control/action_dispatch_spec.lua
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
-            nvim --headless --noplugin -u ./tests/minimal_init.lua \
-              -c 'lua MiniTest.run_file("tests/phone_control/action_controller_spec.lua")' -c 'qa!'
+            ./scripts/test-lua tests/phone_control/action_controller_spec.lua
           LOUISELM_TEST_NVIM="$(command -v nvim)" \
             LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib \

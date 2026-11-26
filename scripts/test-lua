@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "$#" -gt 1 ]; then
+  echo "usage: $0 [test-file]" >&2
+  exit 2
+fi
+
+if [ "$#" -eq 1 ]; then
+  export LOUISELM_TEST_FILE="$1"
+  command='lua MiniTest.run_file(vim.env.LOUISELM_TEST_FILE)'
+else
+  command='lua MiniTest.run()'
+fi
+
+# MiniTest's reporter exits after asynchronous execution. Reaching this fallback
+# means collection failed or found no cases, so it must not report success.
+exec nvim --headless --noplugin -u ./tests/minimal_init.lua -c "$command" -c '1cquit'

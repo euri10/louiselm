@@ -120,8 +120,7 @@ seven-day retention policy. Choose a disclosure scope that permits that retentio
 ```sh
 python3 scripts/test-qualification-preview.py
 python3 scripts/test-qualification-run.py
-nvim --headless --noplugin -u ./tests/minimal_init.lua \
-  -c "lua MiniTest.run_file('tests/routing/trial_spec.lua')" -c 'qa!'
+./scripts/test-lua tests/routing/trial_spec.lua
 ```
 
 CI requires both installed gates in a disposable VM with private mount/network

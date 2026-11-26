@@ -44,8 +44,8 @@ The direct quality gates are:
 ```bash
 stylua --check .
 lua-language-server --check . --checklevel=Warning
-nvim --headless --noplugin -u ./tests/minimal_init.lua \
-  -c "lua MiniTest.run()" -c "qa!"
+python3 scripts/test-lua-runner.py
+./scripts/test-lua
 ./scripts/generate-api-appendix --check
 ./scripts/generate-luacats --check
 ./scripts/generate-vimdoc --check
@@ -465,8 +465,7 @@ Manual test workflow from the repository root:
 
 ```bash
 ./scripts/install-test-deps
-nvim --headless --noplugin -u "$PWD/tests/minimal_init.lua" \
-  -c 'lua MiniTest.run()' -c 'qa!'
+./scripts/test-lua
 ```
 
 `install-test-deps` provisions pinned mini.nvim and Snacks checkouts. Real-Snacks
@@ -490,7 +489,11 @@ reporting one missing dependency, because `skills/discovery.lua` degrades to a
 data. CI installs `lyaml` itself, so this gap is only ever hit locally
 (louiselm-zpsj).
 
-Run one file with `MiniTest.run_file("tests/schema/dsl_spec.lua")`. For
+Run one file with `./scripts/test-lua tests/schema/dsl_spec.lua`. The runner
+returns nonzero if collection fails or finds no cases, and lets MiniTest's
+reporter finish the asynchronous run and report test failures. Its offline
+regression is `python3 scripts/test-lua-runner.py`; CI and the confined verifier
+run it alongside the suite. For
 interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
 `:lua MiniTest.run()`; starting Neovim without `--headless` intentionally keeps
 the editor open.
