@@ -183,9 +183,11 @@ enum ReadResponse {
         revision: u64,
         status: String,
         #[serde(default)]
-        settings: ReadSettings,
+        settings: Box<ReadSettings>,
         #[serde(default, deserialize_with = "deserialize_permission")]
         current_permission: Option<Box<ReadPermission>>,
+        #[serde(default, deserialize_with = "deserialize_current_interactions")]
+        current_interactions: Option<Box<ReadCurrentInteractions>>,
         entries: Vec<ReadEntry>,
         next_before: u64,
         complete: bool,
@@ -199,6 +201,44 @@ struct ReadPermission {
     title: String,
     options: Vec<String>,
     incomplete: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadCurrentInteractions {
+    entries: Vec<ReadEntry>,
+    incomplete: bool,
+}
+
+impl ReadCurrentInteractions {
+    fn valid(&self, entries: &[ReadEntry], complete: bool) -> bool {
+        let mut previous = 0;
+        self.entries.len() <= 50
+            && (self.incomplete || !self.entries.is_empty())
+            && (!complete || !self.incomplete)
+            && self.entries.iter().all(|entry| {
+                let Some(seq) = entry.valid_sequence() else {
+                    return false;
+                };
+                let valid = entry.is_current_interaction()
+                    && (!entry.truncated() || self.incomplete)
+                    && seq > previous
+                    && !entries
+                        .iter()
+                        .any(|history| history.valid_sequence() == Some(seq) && history != entry);
+                previous = seq;
+                valid
+            })
+    }
+}
+
+fn deserialize_current_interactions<'de, D>(
+    deserializer: D,
+) -> Result<Option<Box<ReadCurrentInteractions>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    ReadCurrentInteractions::deserialize(deserializer).map(|current| Some(Box::new(current)))
 }
 
 fn deserialize_permission<'de, D>(deserializer: D) -> Result<Option<Box<ReadPermission>>, D::Error>
@@ -268,15 +308,14 @@ enum RedactionSource {
     Unknown,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ReadEntry {
     Message {
         seq: u64,
         role: String,
         text: String,
-        #[serde(rename = "truncated")]
-        _truncated: bool,
+        truncated: bool,
     },
     Tool {
         seq: u64,
@@ -284,8 +323,7 @@ enum ReadEntry {
         title: String,
         status: String,
         content: String,
-        #[serde(rename = "truncated")]
-        _truncated: bool,
+        truncated: bool,
     },
     Question {
         seq: u64,
@@ -294,19 +332,17 @@ enum ReadEntry {
         options: Vec<ReadOption>,
         #[serde(rename = "multi_select")]
         _multi_select: bool,
-        #[serde(rename = "truncated")]
-        _truncated: bool,
+        truncated: bool,
     },
     Plan {
         seq: u64,
         request_id: String,
         text: String,
-        #[serde(rename = "truncated")]
-        _truncated: bool,
+        truncated: bool,
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct ReadOption {
     label: String,
@@ -315,6 +351,19 @@ struct ReadOption {
 }
 
 impl ReadEntry {
+    fn is_current_interaction(&self) -> bool {
+        matches!(self, Self::Question { .. } | Self::Plan { .. })
+    }
+
+    fn truncated(&self) -> bool {
+        match self {
+            Self::Message { truncated, .. }
+            | Self::Tool { truncated, .. }
+            | Self::Question { truncated, .. }
+            | Self::Plan { truncated, .. } => *truncated,
+        }
+    }
+
     fn valid_sequence(&self) -> Option<u64> {
         let (seq, valid) = match self {
             Self::Message {
@@ -368,6 +417,19 @@ impl ReadEntry {
     }
 }
 
+fn valid_page_entries(entries: &[ReadEntry], before: u64, limit: usize) -> bool {
+    let mut previous = 0;
+    entries.len() <= limit
+        && entries.iter().all(|entry| {
+            let Some(seq) = entry.valid_sequence() else {
+                return false;
+            };
+            let valid = seq > previous && (before == 0 || seq < before);
+            previous = seq;
+            valid
+        })
+}
+
 pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<Value, Refusal> {
     if bytes.len() >= MAX_FRAME {
         return Err(Refusal::Unavailable);
@@ -393,6 +455,7 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
             status,
             settings,
             current_permission,
+            current_interactions,
             entries,
             next_before,
             complete,
@@ -410,14 +473,6 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
                     usize::from(u16::from_be_bytes([payload[8], payload[9]])),
                 )
             };
-            let mut previous = 0;
-            for entry in &entries {
-                let seq = entry.valid_sequence().ok_or(Refusal::Unavailable)?;
-                if seq <= previous || (before != 0 && seq >= before) {
-                    return Err(Refusal::Unavailable);
-                }
-                previous = seq;
-            }
             if controller_id != request.controller_id
                 || subject_id != request.subject_id
                 || operation_id != request.operation_id
@@ -429,8 +484,11 @@ pub(super) fn validate_read_response(bytes: &[u8], request: &Request) -> Result<
                         || !permission.valid()
                         || (complete && permission.incomplete)
                 })
+                || current_interactions
+                    .as_ref()
+                    .is_some_and(|current| !current.valid(&entries, complete))
                 || (request.expected_revision != 0 && revision != request.expected_revision)
-                || entries.len() > limit
+                || !valid_page_entries(&entries, before, limit)
                 || (complete
                     && (source.replay != ReplaySource::NotApplicable
                         || source.redaction != RedactionSource::Unknown
@@ -2539,6 +2597,44 @@ mod tests {
             super::validate_read_response(&serde_json::to_vec(&stale).unwrap(), &request),
             Err(super::Refusal::Unavailable)
         );
+    }
+
+    #[test]
+    fn current_interactions_are_closed_bounded_and_consistent_with_history() {
+        let request: super::super::Request = serde_json::from_value(json!({
+            "grant_id":"04".repeat(16), "grant_revision":1, "period_id":"05".repeat(16),
+            "receiver_identity":"06".repeat(32), "controller_id":"01".repeat(16), "subject_id":"02".repeat(16),
+            "action":1, "payload":"00000000000000000032", "payload_hash":"07".repeat(32),
+            "operation_id":"03".repeat(16), "expected_revision":0, "interaction":1, "signature":"3006020101020101"
+        })).unwrap();
+        let question = json!({"kind":"question","seq":1,"request_id":"7","question":"Choose?",
+            "options":[{"label":"Yes","description":"Proceed","preview":"preview"}],"multi_select":true,"truncated":false});
+        let page = json!({"v":2,"type":"session_page","controller_id":request.controller_id,
+            "subject_id":request.subject_id,"operation_id":request.operation_id,"revision":1,"status":"prompting",
+            "entries":[question.clone()],"next_before":0,"complete":true,"source":{"replay":"not_applicable",
+                "archive":"unavailable","redaction":"unknown","missing":false,"truncated":false},
+            "current_interactions":{"entries":[question.clone()],"incomplete":false}});
+        assert_eq!(
+            super::validate_read_response(&serde_json::to_vec(&page).unwrap(), &request).unwrap(),
+            page
+        );
+        for invalid in [
+            json!(null),
+            json!({"entries":[question.clone()],"incomplete":false,"respond":"secret"}),
+            json!({"entries":[],"incomplete":false}),
+            json!({"entries":[question.clone(),question.clone()],"incomplete":false}),
+            json!({"entries":[{"kind":"message","seq":2,"role":"assistant","text":"ordinary?","truncated":false}],"incomplete":false}),
+            json!({"entries":[{"kind":"plan","seq":1,"request_id":"7","text":"wrong","truncated":false}],"incomplete":false}),
+            json!({"entries":[question.clone()],"incomplete":true}),
+            json!({"entries":vec![question.clone(); 51],"incomplete":false}),
+        ] {
+            let mut bad = page.clone();
+            bad["current_interactions"] = invalid;
+            assert_eq!(
+                super::validate_read_response(&serde_json::to_vec(&bad).unwrap(), &request),
+                Err(super::Refusal::Unavailable)
+            );
+        }
     }
 
     #[test]

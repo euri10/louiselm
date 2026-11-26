@@ -31,6 +31,6 @@ internal fun encodePhoneOfflinePage(page: PhoneControlReply.SessionPage): ByteAr
         .put("source", JSONObject().put("replay", source.replay).put("archive", source.archive)
             .put("redaction", source.redaction).put("missing", source.missing).put("truncated", source.truncated))
     val encoded = json.toString().toByteArray(Charsets.UTF_8)
-    require(parsePhoneControlReply(encoded) == page.copy(settings = PhoneSessionSettings(), currentPermission = null)) { "invalid offline Session page" }
+    require(parsePhoneControlReply(encoded) == page.copy(settings = PhoneSessionSettings(), currentPermission = null, currentInteractions = null)) { "invalid offline Session page" }
     return encoded
 }

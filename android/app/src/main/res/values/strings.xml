@@ -117,6 +117,10 @@
     <string name="phone_current_permission">Current permission request: %1$s</string>
     <string name="phone_permission_option">Offered choice: %1$s</string>
     <string name="phone_permission_incomplete">Some permission information is unavailable or shortened.</string>
+    <string name="phone_current_interactions">Awaiting a desktop response</string>
+    <string name="phone_interaction_incomplete">Some current question or plan information is unavailable or shortened.</string>
+    <string name="phone_question_multiple">Multiple selections offered</string>
+    <string name="phone_history_heading">Conversation history</string>
     <string name="phone_state_starting">Starting</string>
     <string name="phone_state_ready">Ready</string>
     <string name="phone_state_admitting">Checking admission</string>
@@ -135,9 +139,9 @@
     <string name="phone_user_message">You: %1$s</string>
     <string name="phone_agent_message">Agent: %1$s</string>
     <string name="phone_tool">Tool: %1$s (%2$s)\n%3$s</string>
-    <string name="phone_question">Question: %1$s</string>
+    <string name="phone_question">Question #%1$d: %2$s</string>
     <string name="phone_option">%1$s %2$s %3$s</string>
-    <string name="phone_plan">Plan: %1$s</string>
+    <string name="phone_plan">Plan #%1$d: %2$s</string>
     <string name="phone_truncated">Some content was shortened.</string>
     <string name="phone_offline_unlock">Unlock offline copies</string>
     <string name="phone_offline_unlocked">Offline copies unlocked.</string>

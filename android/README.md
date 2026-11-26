@@ -140,6 +140,11 @@ and offers Refresh to return to the newest messages.
 The selected live Session also shows the Agent-confirmed Model, reasoning effort
 and access mode when advertised. Unavailable values are identified as such;
 these labels do not change Agent settings or LouiseLM permission policy.
+Current structured questions and plan reviews awaiting a desktop response appear
+above the conversation history, including offered options and available previews.
+Matching entry numbers identify them in the history. After a desktop response
+they remain readable there; saved offline copies
+never claim that a request is still current. This view does not answer them.
 Background refresh does not extend the working period.
 Opening a card does not clear or answer Attention. Old cards may no longer
 point to a live Session; refresh the inbox instead of assuming the condition

@@ -67,11 +67,16 @@ local MAX_BYTES = 245760
 ---@field options string[] Offered labels, without response identifiers.
 ---@field incomplete boolean Some display information was unavailable or shortened.
 
+---@class louiselm.session.CurrentInteractions
+---@field entries (louiselm.session.HistoryQuestion|louiselm.session.HistoryPlan)[] Display-only entries, with their original history sequences.
+---@field incomplete boolean Some current request information was unavailable or shortened.
+
 ---@class louiselm.session.HistoryPage
 ---@field subject string Exact Session incarnation; never authority on its own.
 ---@field revision integer Snapshot revision, invalidated by a projected update.
 ---@field status louiselm.session.Status Session status at this revision.
 ---@field current_permission? louiselm.session.CurrentPermission Active request at this revision, never response authority.
+---@field current_interactions? louiselm.session.CurrentInteractions Pending questions and plans at this revision, never response authority.
 ---@field entries louiselm.session.HistoryEntry[] Closed variants, ascending by sequence.
 ---@field next_before integer Exclusive cursor, or zero when no older entries remain.
 ---@field complete boolean Whether the projected snapshot and this page have no known gaps.
@@ -101,6 +106,8 @@ local relevant = {
   tool_call_started = true,
   tool_call_finished = true,
   interaction_requested = true,
+  interaction_retired = true,
+  interaction_cancelled = true,
   permission_requested = true,
   permission_resolved = true,
   permission_cancelled = true,
@@ -116,7 +123,9 @@ local function project(event)
   return page.entries, projection.omitted
 end
 
-local function interaction(self, data)
+local function interaction(self, event)
+  local data = event.data
+  local first = #self.entries + 1
   local selected = data
   if data.kind == "question" and type(data.questions) == "table" and #data.questions > 50 then
     selected = { kind = data.kind, request_id = data.request_id, questions = {} }
@@ -130,6 +139,14 @@ local function interaction(self, data)
   for _, entry in ipairs(entries) do
     entry.seq = nil
     self.entries[#self.entries + 1] = { projection = entry }
+  end
+  for _, pending in ipairs(self.session.interactions) do
+    if pending.event == event then
+      pending.history_first = first
+      pending.history_last = #self.entries
+      pending.history_incomplete = omitted or selected ~= data
+      break
+    end
   end
 end
 
@@ -160,7 +177,7 @@ function History:record(event)
   end
   self.recorded = #transcript
   if event.type == "interaction_requested" then
-    interaction(self, event.data)
+    interaction(self, event)
   elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
     local data = event.data
     local id = type(data) == "table" and (data.toolCallId or data.tool_call_id) or nil
@@ -272,6 +289,33 @@ local function entry_for(item, sequence)
   return result, redacted or omitted, missing or result == nil
 end
 
+local function current_interactions(self)
+  if #self.session.interactions == 0 then
+    return nil
+  end
+  local current = { entries = {}, incomplete = false }
+  local bytes = 0
+  for _, pending in ipairs(self.session.interactions) do
+    current.incomplete = current.incomplete or pending.history_incomplete or pending.history_first == nil
+    for index = pending.history_first or 1, pending.history_last or 0 do
+      local entry = entry_for(self.entries[index], index)
+      if entry == nil then
+        current.incomplete = true
+      else
+        local size = #nvim.json.encode(entry) + 1
+        if #current.entries >= 50 or bytes + size > 65536 then
+          current.incomplete = true
+          break
+        end
+        current.entries[#current.entries + 1] = entry
+        bytes = bytes + size
+        current.incomplete = current.incomplete or entry.truncated
+      end
+    end
+  end
+  return current
+end
+
 local function page(self, request)
   local session = self.session
   local subject = session.option_observer_id
@@ -290,6 +334,9 @@ local function page(self, request)
   then
     return nil, "stale_subject"
   end
+  local permission = session.permission_event and Projection.permission(session.permission_event.data) or nil
+  local current = current_interactions(self)
+  local reserved = (permission and #nvim.json.encode(permission) or 0) + (current and #nvim.json.encode(current) or 0)
   local last = request.before == 0 and #self.entries or request.before - 1
   local entries, bytes = {}, 0
   local first = last + 1
@@ -298,7 +345,7 @@ local function page(self, request)
     local entry, hidden, absent = entry_for(self.entries[index], index)
     if entry ~= nil then
       local size = #nvim.json.encode(entry) + 1
-      if bytes + size > MAX_BYTES then
+      if bytes + size + reserved > MAX_BYTES then
         break
       end
       bytes = bytes + size
@@ -313,19 +360,20 @@ local function page(self, request)
     return nil, "unavailable"
   end
   local replay = session.state.source == "loaded" and "unverified" or "not_applicable"
-  local permission = session.permission_event and Projection.permission(session.permission_event.data) or nil
   return {
     subject = subject,
     revision = self.revision,
     status = session.state.status,
     current_permission = permission,
+    current_interactions = current,
     entries = entries,
     next_before = first > 1 and first or 0,
     complete = replay == "not_applicable"
       and not redacted
       and not missing
       and not truncated
-      and (permission == nil or not permission.incomplete),
+      and (permission == nil or not permission.incomplete)
+      and (current == nil or not current.incomplete),
     source = {
       replay = replay,
       archive = "unavailable",

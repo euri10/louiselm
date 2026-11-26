@@ -99,6 +99,9 @@ local nvim = vim
 ---@field claimed boolean Whether an asynchronous consumer owns the response.
 ---@field claim_owner? "chat" Whether the claim is shared by desktop Chat views.
 ---@field event? louiselm.session.InteractionRequestedEvent Live request for newly attached views.
+---@field history_first? integer First bounded history entry belonging to this exact request.
+---@field history_last? integer Last bounded history entry belonging to this exact request.
+---@field history_incomplete? boolean Whether its display projection omitted information.
 
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.

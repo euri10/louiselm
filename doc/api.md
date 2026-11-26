@@ -250,6 +250,9 @@ string|table
 - `claimed: boolean` -- Whether an asynchronous consumer owns the response.
 - `data: louiselm.session.InteractionData` -- Owned request retained for response validation.
 - `event: (louiselm.session.InteractionRequestedEvent)?` -- Live request for newly attached views.
+- `history_first: integer?` -- First bounded history entry belonging to this exact request.
+- `history_incomplete: boolean?` -- Whether its display projection omitted information.
+- `history_last: integer?` -- Last bounded history entry belonging to this exact request.
 - `respond: fun(result: unknown):boolean, string?` -- Raw ACP responder.
 
 ### louiselm.session.Session
@@ -414,9 +417,15 @@ louiselm.session.HistoryMessage|louiselm.session.HistoryPlan|louiselm.session.Hi
 - `options: string[]` -- Offered labels, without response identifiers.
 - `title: string` -- Bounded tool title, or empty when unavailable.
 
+### louiselm.session.CurrentInteractions
+
+- `entries: (louiselm.session.HistoryPlan|louiselm.session.HistoryQuestion)[]` -- Display-only entries, with their original history sequences.
+- `incomplete: boolean` -- Some current request information was unavailable or shortened.
+
 ### louiselm.session.HistoryPage
 
 - `complete: boolean` -- Whether the projected snapshot and this page have no known gaps.
+- `current_interactions: (louiselm.session.CurrentInteractions)?` -- Pending questions and plans at this revision, never response authority.
 - `current_permission: (louiselm.session.CurrentPermission)?` -- Active request at this revision, never response authority.
 - `entries: louiselm.session.HistoryMessage|louiselm.session.HistoryPlan|louiselm.session.HistoryQuestion|louiselm.session.HistoryTool[]` -- Closed variants, ascending by sequence.
 - `next_before: integer` -- Exclusive cursor, or zero when no older entries remain.

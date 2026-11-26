@@ -663,7 +663,7 @@ This checks the signed bindings only. The controller still checks its own live
 controller, subject, project, Agent and state, and the receiver must still
 check current grant, lease and replay state before delivery or admission.
 
-Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,current_permission?:CurrentPermission,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
+Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,current_permission?:CurrentPermission,current_interactions?:CurrentInteractions,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
 The receiver returns this same closed object over HTTPS after the final authority
 recheck. `revision` is nonzero and increases on any projected state/content
 change within the subject. Status is one of `starting`, `ready`, `admitting`,
@@ -691,6 +691,16 @@ on request, desktop response or cancellation, including replacement by a queued
 request. A saved page discards this current-only field and labels its state as
 historical; it cannot claim that an old request is still waiting. Labels are
 inert and this projection grants no ability to answer the request.
+`CurrentInteractions` is exactly `{entries:[Entry],incomplete:boolean}`. It is
+present only while the Session owns pending structured questions or plan
+reviews. Its entries are the same bounded question/plan projections and history
+sequences as `entries`, including when their history is outside this page. At
+most 50 entries and 65536 encoded entry bytes are projected; `incomplete=true`
+reports missing, unsupported, omitted or shortened details. An empty list must
+be incomplete. Overlapping sequences must have identical content. The owner
+matches each entry to the exact pending interaction, not a reusable request ID,
+and advances the revision on response or cancellation. Saved pages discard this
+current-only field. It contains no callback or authority to respond.
 An unknown cursor returns `stale_subject`. To keep a multi-page read on one
 snapshot, use the first page's nonzero revision in subsequent requests.
 `complete=false` means projected content for this page or its current state is

@@ -26,6 +26,7 @@ internal sealed class PhoneControlReply {
         val nextBefore: Long, val complete: Boolean, val source: PhoneHistorySource,
         val settings: PhoneSessionSettings = PhoneSessionSettings(),
         val currentPermission: PhoneCurrentPermission? = null,
+        val currentInteractions: PhoneCurrentInteractions? = null,
     ) : PhoneControlReply()
     data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
     data class SessionList(val controllerId: String, val operationId: String,
@@ -73,6 +74,8 @@ internal data class PhoneControlOption(val label: String, val description: Strin
 
 internal data class PhoneCurrentPermission(val title: String, val options: List<String>, val incomplete: Boolean)
 
+internal data class PhoneCurrentInteractions(val entries: List<PhoneControlEntry>, val incomplete: Boolean)
+
 internal data class PhoneHistorySource(
     val replay: String, val archive: String, val redaction: String, val missing: Boolean, val truncated: Boolean,
 )
@@ -90,7 +93,7 @@ internal class UnsupportedReply : Exception()
 internal data object PhoneWireNull
 
 private fun readWireValue(reader: JsonReader, depth: Int): Any {
-    require(depth <= 5) { "nested wire value" }
+    require(depth <= 6) { "nested wire value" }
     return when (reader.peek()) {
         JsonToken.BEGIN_OBJECT -> {
             val fields = mutableMapOf<String, Any>()
@@ -298,7 +301,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
             }
             "session_page" -> {
                 val required = setOf("v", "type", "controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete", "source")
-                require(fields.keys.containsAll(required) && (fields.keys - required).all { it in setOf("settings", "current_permission") })
+                require(fields.keys.containsAll(required) && (fields.keys - required).all { it in setOf("settings", "current_permission", "current_interactions") })
                 val settings = if ("settings" in fields) {
                     val values = requireNotNull(fields["settings"]).wireObject()
                     values.wireKeys("model", "effort", "mode")
@@ -328,6 +331,17 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 } else null
                 val entries = fields.wireArray("entries").map { parseEntry(requireNotNull(it)) }
                 require(entries.zipWithNext().all { (left, right) -> left.seq < right.seq })
+                val currentInteractions = if ("current_interactions" in fields) {
+                    val value = requireNotNull(fields["current_interactions"]).wireObject()
+                    value.wireKeys("entries", "incomplete")
+                    val current = value.wireArray("entries").map { parseEntry(requireNotNull(it)) }
+                    val incomplete = value.wireBoolean("incomplete")
+                    require(current.all { it is PhoneControlEntry.Question || it is PhoneControlEntry.Plan })
+                    require(current.zipWithNext().all { (left, right) -> left.seq < right.seq })
+                    require(incomplete || current.isNotEmpty() && current.none { it.truncated })
+                    require(current.all { item -> entries.firstOrNull { it.seq == item.seq }?.let { it == item } != false })
+                    PhoneCurrentInteractions(current, incomplete)
+                } else null
                 val nextBefore = number("next_before")
                 require(nextBefore == 0L || entries.isEmpty() || nextBefore <= entries.first().seq)
                 val source = requireNotNull(fields["source"]).wireObject()
@@ -342,8 +356,9 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 val complete = fields.wireBoolean("complete")
                 require(!complete || replay == "not_applicable" && redaction == "unknown" && !details.missing && !details.truncated)
                 require(!complete || permission?.incomplete != true)
+                require(!complete || currentInteractions?.incomplete != true)
                 PhoneControlReply.SessionPage(hex("controller_id", 16), hex("subject_id", 16), hex("operation_id", 16), revision,
-                    status, entries, nextBefore, complete, details, settings, permission)
+                    status, entries, nextBefore, complete, details, settings, permission, currentInteractions)
             }
             "controller_list" -> {
                 keys("operation_id", "controllers", "next_after")

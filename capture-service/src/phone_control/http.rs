@@ -31,6 +31,9 @@ mod voice_upload;
 #[path = "http_installed_saved_review.rs"]
 mod installed_saved_review;
 #[cfg(test)]
+#[path = "http_interaction_tests.rs"]
+mod interaction_tests;
+#[cfg(test)]
 #[path = "http_permission_tests.rs"]
 mod permission_tests;
 #[cfg(test)]

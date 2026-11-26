@@ -303,4 +303,153 @@ T["synchronous answers work without claiming and invalid asynchronous answers st
   MiniTest.expect.equality(#replies(92), 1)
 end
 
+T["history distinguishes the exact pending interaction from old requests"] = function()
+  local session, _, request, replies = harness()
+  local held = {}
+  session:on(function(event)
+    if event.type == "interaction_requested" then
+      assert(event.claim("chat"))
+      held[#held + 1] = event
+    end
+  end)
+  local function read(subject, revision)
+    local page, failure
+    session:read_history({ subject = subject, before = 0, limit = 50, revision = revision or 0 }, function(result, err)
+      page, failure = result, err
+    end)
+    assert(nvim.wait(6000, function()
+      return page ~= nil or failure ~= nil
+    end))
+    return page, failure
+  end
+
+  request(71, "question", false)
+  local first = assert(read())
+  MiniTest.expect.equality(#first.current_interactions.entries, 3)
+  MiniTest.expect.equality(first.current_interactions.entries[1].question, "Which database?")
+  MiniTest.expect.equality(first.current_interactions.entries[1].options[1].preview, "  <div>redis preview</div>\n")
+  MiniTest.expect.equality(first.current_interactions.entries[2].multi_select, true)
+  MiniTest.expect.equality(first.current_interactions.incomplete, false)
+  local newest
+  session:read_history({ subject = first.subject, before = 0, limit = 1, revision = first.revision }, function(result)
+    newest = result
+  end)
+  assert(nvim.wait(6000, function()
+    return newest ~= nil
+  end))
+  MiniTest.expect.equality(#newest.entries, 1)
+  MiniTest.expect.equality(newest.current_interactions, first.current_interactions)
+  assert(held[1].respond({ outcome = "cancelled" }))
+  MiniTest.expect.equality(select(2, read(first.subject, first.revision)), "stale_subject")
+  local retired = assert(read())
+  MiniTest.expect.equality(retired.current_interactions, nil)
+  MiniTest.expect.equality(retired.entries[1].question, "Which database?")
+  session.emitter:emit({
+    type = "chunk",
+    session_id = session:inspect().id,
+    data = { content = { type = "text", text = "An ordinary question?" } },
+  })
+  local ordinary = assert(read())
+  MiniTest.expect.equality(ordinary.current_interactions, nil)
+  MiniTest.expect.equality(ordinary.entries[#ordinary.entries].text, "An ordinary question?")
+
+  -- Reusing an ACP id cannot revive the prior request's history.
+  request(71, "plan_review", false)
+  local next_page = assert(read())
+  MiniTest.expect.equality(#next_page.current_interactions.entries, 1)
+  MiniTest.expect.equality(next_page.current_interactions.entries[1].kind, "plan")
+  MiniTest.expect.equality(next_page.current_interactions.entries[1].text, "# Plan\n\nAdd storage.")
+  MiniTest.expect.equality(next_page.entries[1].question, "Which database?")
+  assert(held[2].respond({ outcome = "abandoned" }))
+  MiniTest.expect.equality(assert(read()).current_interactions, nil)
+  MiniTest.expect.equality(#replies(71), 2)
+end
+
+T["pending projections mark missing and bounded request details"] = function()
+  local session, _, request = harness()
+  local held = {}
+  session:on(function(event)
+    if event.type == "interaction_requested" then
+      assert(event.claim())
+      held[#held + 1] = event
+    end
+  end)
+  local function read()
+    local page
+    session:read_history({ before = 0, limit = 50, revision = 0 }, function(result)
+      page = result
+    end)
+    assert(nvim.wait(6000, function()
+      return page ~= nil
+    end))
+    return page
+  end
+  request(74, "plan_review", false, { sessionId = "grok-acp", toolCallId = "missing" })
+  local missing = read()
+  MiniTest.expect.equality(missing.current_interactions.incomplete, true)
+  MiniTest.expect.equality(missing.current_interactions.entries[1].text, "")
+  assert(held[1].respond({ outcome = "abandoned" }))
+  local params = { sessionId = "grok-acp", toolCallId = "many", mode = "default", questions = {} }
+  for index = 1, 51 do
+    params.questions[index] = { question = "Question " .. index, options = {} }
+  end
+  request(73, "question", false, params)
+  local page = read()
+  MiniTest.expect.equality(page.current_interactions.incomplete, true)
+  MiniTest.expect.equality(#page.current_interactions.entries, 50)
+  MiniTest.expect.equality(page.complete, false)
+  MiniTest.expect.equality(#nvim.json.encode(page) < 262144, true)
+end
+
+T["cancelling the Session retires current interactions and invalidates the snapshot"] = function()
+  local session, _, request, replies, _, prompt = harness()
+  prompt()
+  session:on(function(event)
+    if event.type == "interaction_requested" then
+      assert(event.claim())
+    end
+  end)
+  request(75, "question", false)
+  local before
+  session:read_history({ before = 0, limit = 50, revision = 0 }, function(page)
+    before = page
+  end)
+  assert(nvim.wait(6000, function()
+    return before ~= nil
+  end))
+  assert(before.current_interactions ~= nil)
+  assert(session:cancel())
+  local failure, after
+  session:read_history(
+    { subject = before.subject, before = 0, limit = 50, revision = before.revision },
+    function(_, err)
+      failure = err
+    end
+  )
+  session:read_history({ before = 0, limit = 50, revision = 0 }, function(page)
+    after = page
+  end)
+  assert(nvim.wait(6000, function()
+    return failure ~= nil and after ~= nil
+  end))
+  MiniTest.expect.equality(failure, "stale_subject")
+  MiniTest.expect.equality(after.current_interactions, nil)
+  MiniTest.expect.equality(replies(75)[1].result, { outcome = "cancelled" })
+end
+
+T["history reads do not claim headless interactions"] = function()
+  local session, _, request, replies = harness()
+  request(72, "question", false)
+  MiniTest.expect.equality(replies(72)[1].result, { outcome = "cancelled" })
+  local page
+  session:read_history({ before = 0, limit = 50, revision = 0 }, function(result)
+    page = result
+  end)
+  assert(nvim.wait(6000, function()
+    return page ~= nil
+  end))
+  MiniTest.expect.equality(page.current_interactions, nil)
+  MiniTest.expect.equality(page.entries[1].question, "Which database?")
+end
+
 return T

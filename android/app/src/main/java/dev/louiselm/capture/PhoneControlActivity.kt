@@ -2989,13 +2989,13 @@ class PhoneControlActivity : Activity() {
             }
             val refresh = result.refresh
             val page = refresh.page
-            if (previous != null && page.revision == previous.revision && (page.settings != previous.settings || page.currentPermission != previous.currentPermission)) {
+            if (previous != null && page.revision == previous.revision && (page.settings != previous.settings || page.currentPermission != previous.currentPermission || page.currentInteractions != previous.currentInteractions)) {
                 showFailure(PhoneControlOutcome.MALFORMED)
                 return@task
             }
             val unchanged = !older && !interaction && !refresh.missingOlder && previous != null && page.revision == previous.revision
             if (older) {
-                if (previous == null || page.revision != previous.revision || page.status != previous.status || page.settings != previous.settings || page.currentPermission != previous.currentPermission ||
+                if (previous == null || page.revision != previous.revision || page.status != previous.status || page.settings != previous.settings || page.currentPermission != previous.currentPermission || page.currentInteractions != previous.currentInteractions ||
                     page.entries.any { it.seq >= before } || (page.nextBefore != 0L && page.nextBefore >= before) ||
                     (page.entries.isNotEmpty() && previous.entries.isNotEmpty() &&
                         page.entries.last().seq >= previous.entries.first().seq)) {
@@ -3036,6 +3036,17 @@ class PhoneControlActivity : Activity() {
         fun line(value: String) {
             conversation.addView(TextView(this).apply { text = value; textSize = 16f; setTextIsSelectable(true) })
         }
+        fun interaction(entry: PhoneControlEntry) {
+            when (entry) {
+                is PhoneControlEntry.Question -> {
+                    line(getString(R.string.phone_question, entry.seq, entry.question))
+                    if (entry.multiSelect) line(getString(R.string.phone_question_multiple))
+                    for (option in entry.options) line(getString(R.string.phone_option, option.label, option.description, option.preview))
+                }
+                is PhoneControlEntry.Plan -> line(getString(R.string.phone_plan, entry.seq, entry.text))
+                else -> Unit // The validated current-state field admits only questions and plans.
+            }
+        }
         line(getString(if (showingOffline) R.string.phone_saved_session_state else R.string.phone_session_state, sessionState(page.status)))
         if (!showingOffline) {
             fun value(text: String) = text.ifEmpty { getString(R.string.phone_setting_unavailable) }
@@ -3047,6 +3058,11 @@ class PhoneControlActivity : Activity() {
                 for (option in permission.options) line(getString(R.string.phone_permission_option, value(option)))
                 if (permission.incomplete) line(getString(R.string.phone_permission_incomplete))
             }
+            page.currentInteractions?.let { current ->
+                line(getString(R.string.phone_current_interactions))
+                for (entry in current.entries) interaction(entry)
+                if (current.incomplete) line(getString(R.string.phone_interaction_incomplete))
+            }
         }
         if (historyChanged) line(getString(R.string.phone_history_changed))
         if (newerOmitted) line(getString(R.string.phone_newer_omitted))
@@ -3056,15 +3072,12 @@ class PhoneControlActivity : Activity() {
         if (page.source.redaction == "present") line(getString(R.string.phone_redacted))
         if (page.source.missing) line(getString(R.string.phone_missing))
         if (page.source.truncated && page.entries.none { it.truncated }) line(getString(R.string.phone_truncated))
+        if (page.currentInteractions != null && !showingOffline) line(getString(R.string.phone_history_heading))
         for (entry in page.entries) {
             when (entry) {
                 is PhoneControlEntry.Message -> line(getString(if (entry.role == "user") R.string.phone_user_message else R.string.phone_agent_message, entry.text))
                 is PhoneControlEntry.Tool -> line(getString(R.string.phone_tool, entry.title, entry.status, entry.content))
-                is PhoneControlEntry.Question -> {
-                    line(getString(R.string.phone_question, entry.question))
-                    for (option in entry.options) line(getString(R.string.phone_option, option.label, option.description, option.preview))
-                }
-                is PhoneControlEntry.Plan -> line(getString(R.string.phone_plan, entry.text))
+                is PhoneControlEntry.Question, is PhoneControlEntry.Plan -> interaction(entry)
             }
             if (entry.truncated) line(getString(R.string.phone_truncated))
             val source = if (showingOffline) selectedOffline?.source else selectedSource ?: draftSource
