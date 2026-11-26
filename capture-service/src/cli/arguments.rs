@@ -33,6 +33,10 @@ pub(super) enum Command {
     List,
     /// Report capture and delivery status as JSON.
     Status,
+    /// List existing paired devices through the local managed service.
+    PairingStatus,
+    #[command(hide = true)]
+    ManagedPairingStatus,
     /// Inspect durable Attention.
     Attention {
         #[command(subcommand)]

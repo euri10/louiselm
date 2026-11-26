@@ -1,0 +1,15 @@
+[Unit]
+Description=On-demand LouiseLM pairing status
+Requires=louiselm-phone-host.service
+After=louiselm-phone-host.service
+
+[Socket]
+ListenStream=/run/louiselm-phone-host/pairing.sock
+SocketUser=@OPERATOR_UID@
+SocketGroup=@OPERATOR_GID@
+SocketMode=0600
+Accept=yes
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -19,6 +19,7 @@ use thiserror::Error;
 mod arguments;
 use arguments::{Attention, Cli, Command, PhoneControl, Run};
 
+mod managed_pairings;
 #[path = "notification_worker.rs"]
 mod notification_worker;
 mod service;
@@ -138,7 +139,17 @@ pub async fn run() -> Result<(), CliError> {
         );
         return Ok(());
     }
+    if matches!(command, Command::ManagedPairingStatus) {
+        return tokio::task::spawn_blocking(managed_pairings::serve)
+            .await
+            .map_err(std::io::Error::other)?
+            .map_err(CliError::from);
+    }
     let paths = Paths::discover()?;
+    execute(command, paths).await
+}
+
+async fn execute(command: Command, paths: Paths) -> Result<(), CliError> {
     match command {
         Command::IngestLocal {
             file,
@@ -160,6 +171,14 @@ pub async fn run() -> Result<(), CliError> {
             &attention_store(&paths)?,
             &paths,
         ),
+        Command::PairingStatus => {
+            let root = paths.state.join("louiselm/capture");
+            let status = tokio::task::spawn_blocking(move || managed_pairings::query(&root))
+                .await
+                .map_err(std::io::Error::other)??;
+            println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
         Command::Attention { command } => attention_command(&attention_store(&paths)?, command),
         Command::PhoneControl {
             command: PhoneControl::Verify,
@@ -195,7 +214,7 @@ pub async fn run() -> Result<(), CliError> {
             Ok(())
         }
         Command::Serve => service::serve(paths).await,
-        Command::Metadata => Ok(()),
+        Command::Metadata | Command::ManagedPairingStatus => Ok(()),
     }
 }
 

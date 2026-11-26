@@ -1,0 +1,27 @@
+[Unit]
+Description=Read LouiseLM pairings through the held capture root
+Requires=louiselm-phone-host.service
+After=louiselm-phone-host.service
+
+[Service]
+Type=exec
+User=@OPERATOR_UID@
+Group=@OPERATOR_GID@
+ExecStart=@CAPTURE_BINARY@ managed-pairing-status
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+OpenFile=@CAPTURE_ROOT@:root:read-only
+OpenFile=/proc:hostproc:read-only
+OpenFile=/proc/1/ns/net:hostnet:read-only
+NoNewPrivileges=yes
+PrivateNetwork=no
+PrivateUsers=no
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@CAPTURE_ROOT@/pairing
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RuntimeMaxSec=15s

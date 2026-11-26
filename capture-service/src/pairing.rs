@@ -73,7 +73,7 @@ pub struct DeviceStatus {
 }
 
 /// Public pairing registry state safe to display.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct PairingStatus {
     /// Active devices in stable identifier order.
     pub devices: Vec<DeviceStatus>,
@@ -141,18 +141,35 @@ impl PairingRegistry {
     ///
     /// Returns filesystem or malformed-state errors.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self, PairingError> {
-        fs::create_dir_all(directory.as_ref())?;
-        set_private_permissions(directory.as_ref(), true)?;
-        let path = directory.as_ref().join("pairing.json");
-        let lock_path = directory.as_ref().join("pairing.lock");
-        let lock_file = match PHONE_LOCKS.open_rw(&lock_path, true) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                PHONE_LOCKS.open_rw(&lock_path, false)?
+        Self::open_inner(directory.as_ref(), true)
+    }
+
+    // A managed query must never initialize missing pairing evidence.
+    pub(crate) fn open_existing(directory: &Path) -> Result<Self, PairingError> {
+        Self::open_inner(directory, false)
+    }
+
+    fn open_inner(directory: &Path, initialize: bool) -> Result<Self, PairingError> {
+        if initialize {
+            fs::create_dir_all(directory)?;
+            set_private_permissions(directory, true)?;
+        }
+        let path = directory.join("pairing.json");
+        let lock_path = directory.join("pairing.lock");
+        let lock_file = if initialize {
+            match PHONE_LOCKS.open_rw(&lock_path, true) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    PHONE_LOCKS.open_rw(&lock_path, false)?
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
+        } else {
+            PHONE_LOCKS.open_rw(&lock_path, false)?
         };
-        set_private_permissions(&lock_path, false)?;
+        if initialize {
+            set_private_permissions(&lock_path, false)?;
+        }
         let lock_identity = FileIdentity::from_metadata(&lock_file.file()?.metadata()?)?;
         drop(lock_file);
         let registry = Self {
@@ -166,11 +183,13 @@ impl PairingRegistry {
             let lock = registry.lock_file()?;
             let result = if registry.path.exists() {
                 registry.load().map(|_| ())
-            } else {
+            } else if initialize {
                 registry.persist(&RegistryState {
                     schema_version: 3,
                     ..RegistryState::default()
                 })
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "pairing registry is absent").into())
             };
             lock.release()?;
             result?;
