@@ -16,6 +16,7 @@ mod operator_socket;
 mod pairing;
 mod permissions;
 mod phone_control;
+mod phone_lock;
 mod phone_projects;
 mod prepared_runs;
 mod receiver;

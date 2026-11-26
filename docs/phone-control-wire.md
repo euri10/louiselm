@@ -677,7 +677,7 @@ fresh signatures are also exercised. The tests model freshness contexts only;
 they do not claim that a production authority, real Keystore, local socket or
 physical Android flow exists. Those are the downstream slices and .22.
 
-## Native action journal, version 1
+## Native action journal
 
 The existing local preparation and commit frames below are not a proven
 crash-safe admission protocol. HTTP action 3 remains unsupported until the
@@ -734,11 +734,24 @@ guard and staged snapshots prove the exact update and preserve prior identities
 and owner evidence; otherwise it remains unavailable. Capture-only work and
 otherwise authorized phone reads do not depend on this archive.
 
-The closed input is `{v:1,type:"begin",identity:ActionIdentity}`,
+The closed input is `{v:2,type:"begin",generation:hex16,identity:ActionIdentity}`,
 `{v:1,type:"inspect",identity:ActionIdentity}`,
 `{v:1,type:"inspect_phases",identity:ActionIdentity}`,
-`{v:1,type:"fence",identity:ActionIdentity,at_ms:integer}`, or
+`{v:2,type:"fence",generation:hex16,identity:ActionIdentity,at_ms:integer}`, or
 `{v:1,type:"report",identity:ActionIdentity,outcome:OwnerOutcome,at_ms:integer}`.
+Version-1 begin and fence do not reserve evidence. Before using version 2, the
+native owner must bind its exact controller, working period and subject
+incarnations to the generation; a generation supplied by capture or the phone
+is not that binding. The helper reads the receiver identity locally and checks
+the generation against both the receiver-bound barrier and the owner-store guard
+while holding the barrier through the durable reservation. The owner guard also
+retains the original anchor and lock identities and the lock nonce independently;
+an unbound guard, a replacement with a self-consistent anchor, missing or corrupt
+barrier files, and stale or mismatched generations return unavailable. As with
+the existing receiver guard, a consistent rollback of all matching local state
+is not distinguishable without an external witness.
+The shared gate-registration and cutoff protocol and production initialization
+are not yet available, so this helper alone does not authorize Send or recovery.
 `ActionIdentity` contains exactly `operation_id`, `receiver_identity`,
 `controller_id`, `subject_id`, `action`, `payload_hash`, `grant_id`,
 `grant_revision`, `period_id`, `expected_revision`, `project`, `agent` and
@@ -752,8 +765,8 @@ execute later; its durable begin prevents another begin but does not invalidate
 an already outstanding native gate. The owner reports only a fact it has
 established. No payload or prompt is stored.
 
-Begin returns `{v:1,type:"begun"}` only after durable reservation, or
-`{v:1,type:"existing",outcome:ExistingOutcome}` for an existing exact identity.
+Begin returns `{v:2,type:"begun"}` only after durable reservation, or
+`{v:2,type:"existing",outcome:ExistingOutcome}` for an existing exact identity.
 `ExistingOutcome` is `"unknown"` or an `OwnerOutcome`. A repeated begin never
 permits another effect.
 Inspect returns the same `existing` outcome for an exact identity without
@@ -767,13 +780,14 @@ Each nonempty digest is retained owner evidence. It has the same exact-binding
 and missing-store refusals as `inspect`. A later unknown never erases earlier
 phase evidence or permits a no-effect fence after acceptance.
 
-Fence returns `{v:1,type:"fenced",evidence:hex32}` only after it wins
+Fence returns `{v:2,type:"fenced",evidence:hex32}` only after it wins
 reservation and the fence is durable; an already begun operation returns
-`{v:1,type:"uncertain"}`. An existing fence returns its original evidence.
+`{v:2,type:"uncertain"}`. An existing fence returns its original evidence.
 An `at_ms` before `recorded_at_ms` or beyond the integer bound is malformed and
 does not reserve an operation. Report returns
 `{v:1,type:"recorded"}` only after the owner outcome is durable. Errors are
-`{v:1,type:"error",code:string}`, with `malformed`, `conflict` or `unavailable`.
+`{v,type:"error",code:string}`, with `malformed`, `conflict` or `unavailable`;
+the helper uses the recognized request version when available.
 The owner must route every effect through begin for a winning fence to prove
 that late delivery cannot execute; missing or damaged storage is never proof.
 

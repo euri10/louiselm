@@ -120,8 +120,9 @@ fn inspect_is_exact_and_never_reserves_missing_evidence() {
     assert!(!path.exists());
     assert!(!path.with_extension("lock").exists());
 
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
-    assert_eq!(handle(&path, begin.to_string().as_bytes())["type"], "begun");
+    let owner = OwnerJournal::open(&path).unwrap();
+    assert_eq!(owner.begin(&request), Ok(Begin::New));
+    drop(owner);
     assert_eq!(inspect(&request)["outcome"], "unknown");
 
     let mut changed = request.clone();
@@ -129,11 +130,9 @@ fn inspect_is_exact_and_never_reserves_missing_evidence() {
     assert_eq!(inspect(&changed)["code"], "conflict");
     let missing = identity(temp.path(), 10);
     assert_eq!(inspect(&missing)["code"], "unavailable");
-    let begin_missing = serde_json::json!({"v":1,"type":"begin","identity":missing});
-    assert_eq!(
-        handle(&path, begin_missing.to_string().as_bytes())["type"],
-        "begun"
-    );
+    let owner = OwnerJournal::open(&path).unwrap();
+    assert_eq!(owner.begin(&missing), Ok(Begin::New));
+    drop(owner);
 
     fs::remove_file(path.join("actions.json")).unwrap();
     assert_eq!(inspect(&request)["code"], "unavailable");

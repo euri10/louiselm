@@ -5,14 +5,17 @@
 //! admission. A report of `fenced_no_effect` requires the living owner to have
 //! independently proved no effect and excluded any outstanding native gate.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::hex::lower_hex;
-use crate::phone_control::evidence::{phase_evidence, same_identity, validate_identity};
+use crate::phone_control::barrier::Barrier;
+use crate::phone_control::evidence::{
+    phase_evidence, receiver_barrier_binding, same_identity, validate_identity,
+};
 use crate::phone_control::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceStore, ActionIdentity, ActionOutcome,
     ActionReservation, MAX_FRAME, MAX_INTEGER,
@@ -48,6 +51,7 @@ pub(super) struct OwnerJournal {
 enum Command {
     Begin {
         v: u8,
+        generation: String,
         identity: ActionIdentity,
     },
     Inspect {
@@ -60,6 +64,7 @@ enum Command {
     },
     Fence {
         v: u8,
+        generation: String,
         identity: ActionIdentity,
         at_ms: u64,
     },
@@ -72,6 +77,7 @@ enum Command {
 }
 
 pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
+    let mut response_version = 1;
     let result = (|| {
         let line = input.strip_suffix(b"\n").unwrap_or(input);
         if input.len() > MAX_FRAME || line.contains(&b'\n') || line.contains(&b'\r') {
@@ -79,33 +85,34 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
         }
         let command: Command =
             serde_json::from_slice(line).map_err(|_| ActionEvidenceError::Malformed)?;
-        let version = match &command {
-            Command::Begin { v, .. }
-            | Command::Inspect { v, .. }
+        let (version, required) = match &command {
+            Command::Begin { v, .. } | Command::Fence { v, .. } => (*v, 2),
+            Command::Inspect { v, .. }
             | Command::InspectPhases { v, .. }
-            | Command::Fence { v, .. }
-            | Command::Report { v, .. } => *v,
+            | Command::Report { v, .. } => (*v, 1),
         };
-        if version != 1 {
+        if version != required {
             return Err(ActionEvidenceError::Malformed);
         }
-        let journal = match &command {
-            Command::Inspect { identity, .. } | Command::InspectPhases { identity, .. } => {
-                validate_identity(identity)?;
-                OwnerJournal::open_existing(path)?
-            }
-            _ => OwnerJournal::open(path)?,
-        };
+        response_version = version;
         match command {
-            Command::Begin { identity, .. } => match journal.begin(&identity)? {
-                Begin::New => Ok(json!({"v":1,"type":"begun"})),
-                Begin::Existing(outcome) => Ok(json!({"v":1,"type":"existing","outcome":outcome})),
+            Command::Begin {
+                generation,
+                identity,
+                ..
+            } => match with_generation(path, &generation, |journal| journal.begin(&identity))? {
+                Begin::New => Ok(json!({"v":2,"type":"begun"})),
+                Begin::Existing(outcome) => Ok(json!({"v":2,"type":"existing","outcome":outcome})),
             },
             Command::Inspect { identity, .. } => {
+                validate_identity(&identity)?;
+                let journal = OwnerJournal::open_existing(path)?;
                 let record = journal.inspect(&identity)?;
                 Ok(json!({"v":1,"type":"existing","outcome":record.outcome}))
             }
             Command::InspectPhases { identity, .. } => {
+                validate_identity(&identity)?;
+                let journal = OwnerJournal::open_existing(path)?;
                 let record = journal.inspect(&identity)?;
                 let (accepted, dispatched, completed) = phase_evidence(&record);
                 Ok(
@@ -114,17 +121,26 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
                 )
             }
             Command::Fence {
-                identity, at_ms, ..
-            } => match journal.fence(&identity, at_ms)? {
-                Fence::Fenced(evidence) => Ok(json!({"v":1,"type":"fenced","evidence":evidence})),
-                Fence::Uncertain => Ok(json!({"v":1,"type":"uncertain"})),
-            },
+                generation,
+                identity,
+                at_ms,
+                ..
+            } => {
+                match with_generation(path, &generation, |journal| journal.fence(&identity, at_ms))?
+                {
+                    Fence::Fenced(evidence) => {
+                        Ok(json!({"v":2,"type":"fenced","evidence":evidence}))
+                    }
+                    Fence::Uncertain => Ok(json!({"v":2,"type":"uncertain"})),
+                }
+            }
             Command::Report {
                 identity,
                 outcome,
                 at_ms,
                 ..
             } => {
+                let journal = OwnerJournal::open(path)?;
                 journal.report(&identity, &outcome, at_ms)?;
                 Ok(json!({"v":1,"type":"recorded"}))
             }
@@ -132,12 +148,49 @@ pub(crate) fn handle(path: &Path, input: &[u8]) -> Value {
     })();
     match result {
         Ok(response) => response,
-        Err(error) => json!({"v":1,"type":"error","code":match error {
+        Err(error) => json!({"v":response_version,"type":"error","code":match error {
             ActionEvidenceError::Malformed => "malformed",
             ActionEvidenceError::Conflict => "conflict",
             ActionEvidenceError::Unavailable | ActionEvidenceError::Unresolved => "unavailable",
         }}),
     }
+}
+
+fn tls_directory(path: &Path) -> Result<PathBuf, ActionEvidenceError> {
+    let state = path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or(ActionEvidenceError::Unavailable)?;
+    Ok(state.join("louiselm/capture/tls"))
+}
+
+fn with_generation<T>(
+    path: &Path,
+    generation: &str,
+    operation: impl FnOnce(&OwnerJournal) -> Result<T, ActionEvidenceError>,
+) -> Result<T, ActionEvidenceError> {
+    let tls = tls_directory(path)?;
+    let receiver = crate::TlsIdentity::existing_public_key_sha256(&tls)
+        .map_err(|_| ActionEvidenceError::Unavailable)?;
+    let binding = receiver_barrier_binding(
+        &tls.join("phone-action-owner.json"),
+        &receiver,
+        super::ActionEvidenceKind::Owner,
+    )?;
+    let barrier = Barrier::existing(&tls, &receiver, binding.clone())
+        .map_err(|_| ActionEvidenceError::Unavailable)?;
+    barrier
+        .with_generation(generation, || {
+            let journal = OwnerJournal::open(path)?;
+            if journal.store.bound_generation() != Some(generation)
+                || journal.store.bound_barrier() != Some(&binding)
+            {
+                return Err(ActionEvidenceError::Unavailable);
+            }
+            operation(&journal)
+        })
+        .map_err(|_| ActionEvidenceError::Unavailable)?
 }
 
 impl OwnerJournal {
@@ -151,12 +204,7 @@ impl OwnerJournal {
     #[cfg(not(test))]
     pub(super) fn open(path: impl AsRef<Path>) -> Result<Self, ActionEvidenceError> {
         let path = path.as_ref();
-        let state = path
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .ok_or(ActionEvidenceError::Unavailable)?;
-        let tls = state.join("louiselm/capture/tls");
+        let tls = tls_directory(path)?;
         let receiver = crate::TlsIdentity::existing_public_key_sha256(&tls)
             .map_err(|_| ActionEvidenceError::Unavailable)?;
         Ok(Self {

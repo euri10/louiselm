@@ -994,6 +994,7 @@ dependencies = [
  "qrcode",
  "rcgen",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

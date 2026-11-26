@@ -7,7 +7,7 @@
     reason = "test fixtures and assertions"
 )]
 
-use std::{fs, sync::Arc, thread};
+use std::{fs, os::unix::fs::symlink, sync::Arc, thread};
 
 #[path = "support/phone_evidence.rs"]
 mod phone_evidence;
@@ -182,6 +182,21 @@ fn losing_the_live_lock_refuses_further_access() {
     fs::remove_file(path.with_extension("lock")).unwrap();
     assert_eq!(
         store.lookup(&original.operation_id),
+        Err(ActionEvidenceError::Unavailable)
+    );
+}
+
+#[test]
+fn replacing_a_lock_path_with_a_symlink_is_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    phone_evidence::initialize_store(&path);
+    let store = phone_evidence::open(&path).unwrap();
+    let lock = path.with_extension("lock");
+    fs::rename(&lock, temp.path().join("old-lock")).unwrap();
+    symlink("old-lock", &lock).unwrap();
+    assert_eq!(
+        store.reserve(&identity(temp.path(), 3)),
         Err(ActionEvidenceError::Unavailable)
     );
 }

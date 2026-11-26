@@ -4,8 +4,6 @@
 #[path = "evidence_lock_tests.rs"]
 mod lock_tests;
 
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -19,8 +17,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::{MAX_INTEGER, fixed, valid_string};
-use crate::{hex::lower_hex, permissions::set_private_permissions};
+use super::{MAX_INTEGER, barrier::BarrierBinding, fixed, valid_string};
+use crate::{
+    hex::lower_hex,
+    permissions::set_private_permissions,
+    phone_lock::{FileIdentity, PHONE_LOCKS, PhoneFile},
+};
 
 // ponytail: one bounded snapshot; partition records if 16 MiB becomes limiting.
 // Exhaustion refuses new writes; it never evicts unresolved or finished records.
@@ -168,6 +170,8 @@ struct ReceiverGuard {
     kind: ActionEvidenceKind,
     receiver_identity: String,
     generation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    barrier: Option<BarrierBinding>,
     bytes: u64,
     sha256: String,
     #[serde(
@@ -196,14 +200,15 @@ struct GuardBinding {
     path: PathBuf,
     receiver: String,
     generation: String,
+    barrier: Option<BarrierBinding>,
     kind: ActionEvidenceKind,
 }
 
-struct StoreLock(File);
+struct StoreLock(PhoneFile);
 
 impl Drop for StoreLock {
     fn drop(&mut self) {
-        if let Err(error) = FileExt::unlock(&self.0) {
+        if let Err(error) = self.0.file().and_then(FileExt::unlock) {
             eprintln!("action evidence lock release failed: {error}");
         }
     }
@@ -223,6 +228,14 @@ pub struct ActionEvidenceStore {
 }
 
 impl ActionEvidenceStore {
+    pub(super) fn bound_generation(&self) -> Option<&str> {
+        self.guard.as_ref().map(|guard| guard.generation.as_str())
+    }
+
+    pub(super) fn bound_barrier(&self) -> Option<&BarrierBinding> {
+        self.guard.as_ref().and_then(|guard| guard.barrier.as_ref())
+    }
+
     /// Open a receiver-bound, already initialized private evidence store.
     ///
     /// `receiver` must be read from the local receiver key, not from a request.
@@ -241,12 +254,14 @@ impl ActionEvidenceStore {
     ) -> Result<Self, ActionEvidenceError> {
         fixed::<32>(receiver).map_err(|_| ActionEvidenceError::Unavailable)?;
         let guard_lock_path = guard_lock_path(guard.as_ref());
-        let guard_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&guard_lock_path)
+        let guard_file = PHONE_LOCKS
+            .open_rw(&guard_lock_path, false)
             .map_err(unavailable)?;
-        guard_file.try_lock_exclusive().map_err(unavailable)?;
+        guard_file
+            .file()
+            .map_err(unavailable)?
+            .try_lock_exclusive()
+            .map_err(unavailable)?;
         let guard_lock = StoreLock(guard_file);
         let mut store = Self::open_inner(directory.as_ref(), false)?;
         store.guard_lock = Some((guard_lock_path, guard_lock));
@@ -269,6 +284,7 @@ impl ActionEvidenceStore {
             path: guard.as_ref().to_owned(),
             receiver: receiver.to_owned(),
             generation: record.generation,
+            barrier: record.barrier,
             kind,
         });
         Ok(store)
@@ -296,18 +312,11 @@ impl ActionEvidenceStore {
         }
         let lock_path = directory.with_extension("lock");
         let (file, created) = if initialize {
-            match OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(&lock_path)
-            {
+            match PHONE_LOCKS.open_rw(&lock_path, true) {
                 Ok(file) => (file, true),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (
-                    OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .open(&lock_path)
+                    PHONE_LOCKS
+                        .open_rw(&lock_path, false)
                         .map_err(unavailable)?,
                     false,
                 ),
@@ -315,10 +324,8 @@ impl ActionEvidenceStore {
             }
         } else {
             (
-                OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&lock_path)
+                PHONE_LOCKS
+                    .open_rw(&lock_path, false)
                     .map_err(unavailable)?,
                 false,
             )
@@ -326,7 +333,10 @@ impl ActionEvidenceStore {
         if initialize {
             set_private_permissions(&lock_path, false).map_err(unavailable)?;
         }
-        file.try_lock_exclusive().map_err(unavailable)?;
+        file.file()
+            .map_err(unavailable)?
+            .try_lock_exclusive()
+            .map_err(unavailable)?;
         let lock = StoreLock(file);
         let exists = directory.try_exists().map_err(unavailable)?;
         if created == exists {
@@ -586,7 +596,7 @@ impl ActionEvidenceStore {
                     let bytes =
                         read_bounded(&self.directory.join("actions.json"), MAX_STORE_BYTES)?;
                     let current = verify_guard(&guard.path, &guard.receiver, guard.kind, &bytes)?;
-                    if current.generation != guard.generation {
+                    if current.generation != guard.generation || current.barrier != guard.barrier {
                         return Err(ActionEvidenceError::Unavailable);
                     }
                     if snapshot
@@ -650,10 +660,14 @@ fn guard_lock_path(path: &Path) -> PathBuf {
 }
 
 fn verify_lock(path: &Path, lock: &StoreLock) -> Result<(), ActionEvidenceError> {
-    let held = lock.0.metadata().map_err(unavailable)?;
-    let current = fs::metadata(path).map_err(unavailable)?;
-    #[cfg(unix)]
-    if held.dev() != current.dev() || held.ino() != current.ino() {
+    let held = lock
+        .0
+        .file()
+        .and_then(File::metadata)
+        .map_err(unavailable)?;
+    if FileIdentity::from_metadata(&held).map_err(unavailable)?
+        != FileIdentity::at(path).map_err(unavailable)?
+    {
         return Err(ActionEvidenceError::Unavailable);
     }
     Ok(())
@@ -697,12 +711,23 @@ fn read_guard(
     Ok(record)
 }
 
+pub(super) fn receiver_barrier_binding(
+    path: &Path,
+    receiver: &str,
+    kind: ActionEvidenceKind,
+) -> Result<BarrierBinding, ActionEvidenceError> {
+    read_guard(path, receiver, kind)?
+        .barrier
+        .ok_or(ActionEvidenceError::Unavailable)
+}
+
 fn write_guard(guard: &GuardBinding, bytes: &[u8]) -> Result<(), ActionEvidenceError> {
     let record = ReceiverGuard {
         v: 1,
         kind: guard.kind,
         receiver_identity: guard.receiver.clone(),
         generation: guard.generation.clone(),
+        barrier: guard.barrier.clone(),
         bytes: bytes.len() as u64,
         sha256: lower_hex(&Sha256::digest(bytes)),
         pending: None,
@@ -727,7 +752,7 @@ fn stage_update(
     next: &[u8],
 ) -> Result<(), ActionEvidenceError> {
     let mut record = verify_guard(&guard.path, &guard.receiver, guard.kind, previous)?;
-    if record.generation != guard.generation {
+    if record.generation != guard.generation || record.barrier != guard.barrier {
         return Err(ActionEvidenceError::Unavailable);
     }
     // The guard's pending digest commits these bounded images before replacement.
@@ -789,6 +814,7 @@ fn recover_update(
             path: guard_path.to_owned(),
             receiver: receiver.to_owned(),
             generation: record.generation,
+            barrier: record.barrier,
             kind: record.kind,
         },
         &next,
@@ -838,6 +864,7 @@ pub(super) fn initialize_receiver_fixture(directory: &Path, guard: &Path, receiv
             path: guard.to_owned(),
             receiver: receiver.to_owned(),
             generation: "09".repeat(16),
+            barrier: None,
             kind: ActionEvidenceKind::Archive,
         },
         &bytes,
@@ -973,7 +1000,8 @@ fn parse_snapshot(bytes: &[u8]) -> Result<Snapshot, ActionEvidenceError> {
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, ActionEvidenceError> {
     let mut bytes = Vec::new();
-    File::open(path)
+    let mut file = PHONE_LOCKS.open_read(path).map_err(unavailable)?;
+    file.file_mut()
         .map_err(unavailable)?
         .take(limit + 1)
         .read_to_end(&mut bytes)
@@ -1044,7 +1072,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("actions");
         let store = ActionEvidenceStore::open(&path).unwrap();
-        let inherited = store.lock.0.try_clone().unwrap();
+        let inherited = store.lock.0.file().unwrap().try_clone().unwrap();
         drop(store);
         let reopened = ActionEvidenceStore::open(&path).unwrap();
         drop(reopened);

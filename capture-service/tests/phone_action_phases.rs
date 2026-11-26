@@ -139,12 +139,14 @@ fn native_owner_inspection_returns_every_durable_phase() {
         &request.receiver_identity,
         louiselm_capture::ActionEvidenceKind::Owner,
     );
+    phone_evidence::initialize_barrier(&tls, &request.receiver_identity);
+    phone_evidence::bind_barrier_to_owner(&tls);
     let inspect = serde_json::json!({"v":1,"type":"inspect_phases","identity":request});
     assert_eq!(owner(root.path(), &inspect)["code"], "unavailable");
     assert_eq!(
         owner(
             root.path(),
-            &serde_json::json!({"v":1,"type":"begin","identity":request})
+            &serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request})
         )["type"],
         "begun"
     );

@@ -8,12 +8,15 @@
 )]
 
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, IoSlice, Read, Write},
+    mem::MaybeUninit,
+    os::{fd::AsFd, unix::net::UnixStream},
     path::Path,
     process::{Child, Command, Stdio},
 };
 
 use super::{ActionEvidenceKind, ActionEvidenceStore, initialize_receiver_fixture};
+use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
 const RECEIVER: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 
@@ -35,13 +38,6 @@ assert len(fds) == 1
 print('RETAINED', flush=True)
 sys.stdin.buffer.read(1)
 os.close(fds[0])
-";
-
-const TRANSFER_DESCRIPTOR: &str = r"
-import array, socket, sys
-peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-peer.connect(sys.argv[1])
-assert peer.sendmsg([b'L'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [0]))]) == 1
 ";
 
 struct OwnedChild(Child);
@@ -85,13 +81,21 @@ fn evidence_lock_holder() {
     } else {
         &store.guard_lock.as_ref().unwrap().1
     };
-    let status = Command::new("python3")
-        .args(["-c", TRANSFER_DESCRIPTOR])
-        .arg(root.join("descriptor.sock"))
-        .stdin(Stdio::from(lock.0.try_clone().unwrap()))
-        .status()
-        .unwrap();
-    assert!(status.success());
+    let peer = UnixStream::connect(root.join("descriptor.sock")).unwrap();
+    let rights = [lock.0.file().unwrap().as_fd()];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut control = SendAncillaryBuffer::new(&mut space);
+    assert!(control.push(SendAncillaryMessage::ScmRights(&rights)));
+    assert_eq!(
+        sendmsg(
+            &peer,
+            &[IoSlice::new(b"L")],
+            &mut control,
+            SendFlags::empty()
+        )
+        .unwrap(),
+        1
+    );
     println!("HOLDER_READY");
     std::io::stdout().flush().unwrap();
     let mut input = Vec::new();

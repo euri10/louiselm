@@ -1,6 +1,7 @@
 //! Authentication of the frozen phone-control controller frame.
 
 mod authority;
+mod barrier;
 mod discovery;
 mod evidence;
 mod http;

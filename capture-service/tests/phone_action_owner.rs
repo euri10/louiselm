@@ -9,10 +9,15 @@
 
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
+    os::unix::{
+        fs::symlink,
+        net::{UnixListener, UnixStream},
+    },
     process::{Child, Command, Stdio},
     sync::{Arc, Barrier},
     thread,
+    time::{Duration, Instant},
 };
 
 use louiselm_capture::ActionIdentity;
@@ -34,6 +39,8 @@ fn initialize(root: &std::path::Path) -> String {
         &receiver,
         louiselm_capture::ActionEvidenceKind::Owner,
     );
+    phone_evidence::initialize_barrier(&tls, &receiver);
+    phone_evidence::bind_barrier_to_owner(&tls);
     receiver
 }
 
@@ -89,12 +96,79 @@ fn invoke(root: &std::path::Path, message: &serde_json::Value) -> serde_json::Va
     send(spawn(root), message)
 }
 
+struct OwnedChild(Child);
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+fn start_owner(root: &std::path::Path, message: &serde_json::Value) -> OwnedChild {
+    let mut child = OwnedChild(spawn(root));
+    child
+        .0
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(message.to_string().as_bytes())
+        .unwrap();
+    child
+}
+
+fn finish_owner(child: &mut OwnedChild) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline, "owner journal did not return");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let mut output = Vec::new();
+    child
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut output)
+        .unwrap();
+    serde_json::from_slice(&output).unwrap()
+}
+
+fn invoke_bounded(root: &std::path::Path, message: &serde_json::Value) -> serde_json::Value {
+    finish_owner(&mut start_owner(root, message))
+}
+
+fn accept_child(listener: &UnixListener, child: &mut OwnedChild) -> UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let peer = loop {
+        match listener.accept() {
+            Ok((peer, _)) => break peer,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "test owner did not connect");
+                assert!(child.0.try_wait().unwrap().is_none(), "test owner exited");
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("test socket accept failed: {error}"),
+        }
+    };
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    peer
+}
+
 #[test]
 fn losing_journal_and_lock_never_reopens_the_same_action() {
     let temp = tempfile::tempdir().unwrap();
     initialize(temp.path());
     let request = identity(temp.path(), 9);
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
     assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
 
     let owner = temp.path().join("louiselm/workflow/phone-action-owner");
@@ -107,16 +181,355 @@ fn losing_journal_and_lock_never_reopens_the_same_action() {
 }
 
 #[test]
-#[ignore = "registration barrier is not yet implemented"]
 fn established_receiver_without_a_registration_barrier_refuses_begin() {
     let temp = tempfile::tempdir().unwrap();
     initialize(temp.path());
+    let tls = temp.path().join("louiselm/capture/tls");
+    fs::remove_file(tls.join("phone-admission-barrier.json")).unwrap();
+    fs::remove_file(tls.join("phone-admission-barrier.lock")).unwrap();
     let request = identity(temp.path(), 16);
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
 
     let response = invoke(temp.path(), &begin);
     assert_eq!(response["type"], "error");
     assert_eq!(response["code"], "unavailable");
+}
+
+#[test]
+fn concurrent_ambiguous_first_starts_never_create_a_fresh_journal() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let request = identity(temp.path(), 26);
+    let message =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    let tls = temp.path().join("louiselm/capture/tls");
+    let journal = temp.path().join("louiselm/workflow/phone-action-owner");
+    fs::remove_file(tls.join("phone-admission-barrier.json")).unwrap();
+    fs::remove_file(tls.join("phone-admission-barrier.lock")).unwrap();
+    fs::remove_dir_all(&journal).unwrap();
+    fs::remove_file(journal.with_extension("lock")).unwrap();
+    let start = Arc::new(Barrier::new(3));
+    let children = [spawn(temp.path()), spawn(temp.path())];
+    let joins: Vec<_> = children
+        .into_iter()
+        .map(|child| {
+            let start = start.clone();
+            let message = message.clone();
+            thread::spawn(move || {
+                start.wait();
+                let mut child = OwnedChild(child);
+                child
+                    .0
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(message.to_string().as_bytes())
+                    .unwrap();
+                finish_owner(&mut child)
+            })
+        })
+        .collect();
+    start.wait();
+    for join in joins {
+        assert_eq!(join.join().unwrap()["code"], "unavailable");
+    }
+    assert!(!journal.exists());
+    assert!(!journal.with_extension("lock").exists());
+    assert!(!tls.join("phone-admission-barrier.json").exists());
+    assert!(!tls.join("phone-admission-barrier.lock").exists());
+}
+
+#[test]
+fn owner_cli_rejects_a_self_consistent_replacement_barrier() {
+    let temp = tempfile::tempdir().unwrap();
+    let receiver = initialize(temp.path());
+    let tls = temp.path().join("louiselm/capture/tls");
+    let snapshot = temp
+        .path()
+        .join("louiselm/workflow/phone-action-owner/actions.json");
+    let before = fs::read(&snapshot).unwrap();
+    fs::rename(
+        tls.join("phone-admission-barrier.json"),
+        tls.join("old-anchor"),
+    )
+    .unwrap();
+    fs::rename(
+        tls.join("phone-admission-barrier.lock"),
+        tls.join("old-lock"),
+    )
+    .unwrap();
+    // Rebuilding a syntactically correct record is not proof of cutoff.
+    phone_evidence::initialize_barrier(&tls, &receiver);
+    let request = identity(temp.path(), 20);
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    assert_eq!(invoke(temp.path(), &begin)["code"], "unavailable");
+    assert_eq!(fs::read(snapshot).unwrap(), before);
+}
+
+#[test]
+fn owner_cli_rejects_rebound_lock_or_nonce_in_the_original_anchor() {
+    for fault in ["lock", "nonce"] {
+        let temp = tempfile::tempdir().unwrap();
+        let receiver = initialize(temp.path());
+        let tls = temp.path().join("louiselm/capture/tls");
+        let snapshot = temp
+            .path()
+            .join("louiselm/workflow/phone-action-owner/actions.json");
+        let before = fs::read(&snapshot).unwrap();
+        if fault == "lock" {
+            fs::rename(
+                tls.join("phone-admission-barrier.lock"),
+                tls.join("old-lock"),
+            )
+            .unwrap();
+            phone_evidence::initialize_barrier(&tls, &receiver);
+        } else {
+            phone_evidence::initialize_barrier_with_nonce(&tls, &receiver, &"cd".repeat(16));
+        }
+        let request = identity(temp.path(), 21);
+        let begin = serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+        assert_eq!(
+            invoke(temp.path(), &begin)["code"],
+            "unavailable",
+            "{fault}"
+        );
+        assert_eq!(fs::read(snapshot).unwrap(), before, "{fault}");
+    }
+}
+
+#[test]
+fn owner_cli_refuses_a_guard_without_an_independent_barrier_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let guard = temp
+        .path()
+        .join("louiselm/capture/tls/phone-action-owner.json");
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&guard).unwrap()).unwrap();
+    record.as_object_mut().unwrap().remove("barrier");
+    fs::write(guard, serde_json::to_vec(&record).unwrap()).unwrap();
+    let request = identity(temp.path(), 22);
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    assert_eq!(invoke(temp.path(), &begin)["code"], "unavailable");
+}
+
+#[test]
+fn owner_cli_refuses_an_evidence_lock_alias_to_the_barrier_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let tls = temp.path().join("louiselm/capture/tls");
+    let guard_lock = tls.join("phone-action-owner.json.lock");
+    fs::remove_file(&guard_lock).unwrap();
+    symlink("phone-admission-barrier.lock", &guard_lock).unwrap();
+    let request = identity(temp.path(), 23);
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    assert_eq!(invoke(temp.path(), &begin)["code"], "unavailable");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn barrier_owner_death_releases_lock_with_a_surviving_duplicate() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let tls = temp.path().join("louiselm/capture/tls");
+    let duplicate = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(tls.join("phone-admission-barrier.lock"))
+        .unwrap();
+    let socket_path = temp.path().join("lock-owner.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let mut holder = OwnedChild(
+        Command::new("python3")
+            .args([
+                "-c",
+                "import fcntl, os, signal, socket, sys\nfcntl.lockf(0, fcntl.LOCK_EX | fcntl.LOCK_NB)\ns = socket.socket(socket.AF_UNIX)\ns.connect(sys.argv[1])\ns.sendall(b'R')\nos.kill(os.getpid(), signal.SIGSTOP)",
+            ])
+            .arg(&socket_path)
+            .stdin(Stdio::from(duplicate.try_clone().unwrap()))
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut peer = accept_child(&listener, &mut holder);
+    let mut ready = [0];
+    peer.read_exact(&mut ready).unwrap();
+    assert_eq!(ready, *b"R");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = fs::read_to_string(format!("/proc/{}/status", holder.0.id())).unwrap();
+        if status.lines().any(|line| line.starts_with("State:\tT")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "test owner did not stop");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let request = identity(temp.path(), 24);
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    let snapshot = temp
+        .path()
+        .join("louiselm/workflow/phone-action-owner/actions.json");
+    let before = fs::read(&snapshot).unwrap();
+    let started = Instant::now();
+    assert_eq!(invoke_bounded(temp.path(), &begin)["code"], "unavailable");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(fs::read(&snapshot).unwrap(), before);
+    holder.0.kill().unwrap();
+    holder.0.wait().unwrap();
+    assert!(duplicate.metadata().is_ok());
+    assert_eq!(invoke_bounded(temp.path(), &begin)["type"], "begun");
+    drop(duplicate);
+}
+
+#[test]
+fn real_generation_change_and_durable_begin_are_exclusive() {
+    const RESET: &str = r"
+import fcntl, hashlib, json, os, socket, sys
+peer = socket.socket(socket.AF_UNIX)
+peer.connect(sys.argv[1])
+peer.sendall(b'R')
+assert peer.recv(1) == b'S'
+with open(sys.argv[2], 'r+') as lock:
+    fcntl.lockf(lock, fcntl.LOCK_EX)
+    with open(sys.argv[3]) as source:
+        seen = sys.argv[5] in json.load(source)['actions']
+    with open(sys.argv[4]) as source:
+        anchor = json.load(source)
+    anchor['body']['generation'] = '0a' * 16
+    encoded = json.dumps(anchor['body'], separators=(',', ':')).encode()
+    anchor['sha256'] = hashlib.sha256(encoded).hexdigest()
+    with open(sys.argv[4], 'w') as target:
+        json.dump(anchor, target, separators=(',', ':'))
+        target.flush()
+        os.fsync(target.fileno())
+    peer.sendall(b'1' if seen else b'0')
+";
+    for order in ["begin_first", "reset_first", "race", "race", "race", "race"] {
+        let temp = tempfile::tempdir().unwrap();
+        initialize(temp.path());
+        let request = identity(temp.path(), 25);
+        let begin = serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+        let tls = temp.path().join("louiselm/capture/tls");
+        let socket = temp.path().join("reset.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let mut resetter = OwnedChild(
+            Command::new("python3")
+                .args(["-c", RESET])
+                .arg(&socket)
+                .arg(tls.join("phone-admission-barrier.lock"))
+                .arg(
+                    temp.path()
+                        .join("louiselm/workflow/phone-action-owner/actions.json"),
+                )
+                .arg(tls.join("phone-admission-barrier.json"))
+                .arg(&request.operation_id)
+                .stdin(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut peer = accept_child(&listener, &mut resetter);
+        let mut ready = [0];
+        peer.read_exact(&mut ready).unwrap();
+        assert_eq!(ready, *b"R");
+        let first = (order == "begin_first").then(|| invoke_bounded(temp.path(), &begin));
+        let mut racing = (order == "race").then(|| start_owner(temp.path(), &begin));
+        peer.write_all(b"S").unwrap();
+        let mut seen = [0];
+        peer.read_exact(&mut seen).unwrap();
+        assert!(resetter.0.wait().unwrap().success());
+        let result = if let Some(result) = first {
+            result
+        } else if let Some(ref mut child) = racing {
+            finish_owner(child)
+        } else {
+            invoke_bounded(temp.path(), &begin)
+        };
+        match result["type"].as_str() {
+            Some("begun") => assert_eq!(seen, *b"1", "{order}: {result}"),
+            Some("error") => {
+                assert_eq!(seen, *b"0", "{order}: {result}");
+                assert_eq!(result["code"], "unavailable");
+            }
+            _ => panic!("{order}: {result}"),
+        }
+        if order == "begin_first" {
+            assert_eq!(seen, *b"1");
+        } else if order == "reset_first" {
+            assert_eq!(seen, *b"0");
+        }
+    }
+}
+
+#[test]
+fn owner_cli_refuses_lost_replaced_or_corrupt_barrier_files() {
+    for fault in [
+        "missing_anchor",
+        "missing_lock",
+        "replaced_anchor",
+        "replaced_lock",
+        "corrupt_anchor",
+        "corrupt_lock",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        initialize(temp.path());
+        let tls = temp.path().join("louiselm/capture/tls");
+        let anchor = tls.join("phone-admission-barrier.json");
+        let lock = tls.join("phone-admission-barrier.lock");
+        let snapshot = temp
+            .path()
+            .join("louiselm/workflow/phone-action-owner/actions.json");
+        let before = fs::read(&snapshot).unwrap();
+        match fault {
+            "missing_anchor" => fs::remove_file(&anchor).unwrap(),
+            "missing_lock" => fs::remove_file(&lock).unwrap(),
+            "replaced_anchor" => {
+                let bytes = fs::read(&anchor).unwrap();
+                fs::rename(&anchor, tls.join("old-anchor")).unwrap();
+                fs::write(&anchor, bytes).unwrap();
+            }
+            "replaced_lock" => {
+                let bytes = fs::read(&lock).unwrap();
+                fs::rename(&lock, tls.join("old-lock")).unwrap();
+                fs::write(&lock, bytes).unwrap();
+            }
+            "corrupt_anchor" => fs::write(&anchor, b"{}").unwrap(),
+            "corrupt_lock" => fs::write(&lock, b"corrupt").unwrap(),
+            _ => unreachable!(),
+        }
+        let request = identity(temp.path(), 17);
+        let begin = serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+        let response = invoke(temp.path(), &begin);
+        assert_eq!(response["code"], "unavailable", "fault: {fault}");
+        assert_eq!(fs::read(snapshot).unwrap(), before, "fault: {fault}");
+    }
+}
+
+#[test]
+fn owner_cli_rejects_stale_and_mismatched_generations_before_begin() {
+    let temp = tempfile::tempdir().unwrap();
+    initialize(temp.path());
+    let request = identity(temp.path(), 18);
+    let stale =
+        serde_json::json!({"v":2,"type":"begin","generation":"08".repeat(16),"identity":request});
+    assert_eq!(invoke(temp.path(), &stale)["code"], "unavailable");
+    let valid =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    assert_eq!(invoke(temp.path(), &valid)["type"], "begun");
+
+    let guard = temp
+        .path()
+        .join("louiselm/capture/tls/phone-action-owner.json");
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&guard).unwrap()).unwrap();
+    record["generation"] = serde_json::json!("0a".repeat(16));
+    fs::write(&guard, serde_json::to_vec(&record).unwrap()).unwrap();
+    let other = identity(temp.path(), 19);
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":other});
+    assert_eq!(invoke(temp.path(), &begin)["code"], "unavailable");
 }
 
 #[test]
@@ -128,9 +541,9 @@ fn owner_commands_refuse_a_missing_or_corrupt_receiver_guard() {
         .path()
         .join("louiselm/capture/tls/phone-action-owner.json");
     let messages = [
-        serde_json::json!({"v":1,"type":"begin","identity":request}),
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request}),
         serde_json::json!({"v":1,"type":"inspect","identity":request}),
-        serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000}),
+        serde_json::json!({"v":2,"type":"fence","generation":"09".repeat(16),"identity":request,"at_ms":2000}),
         serde_json::json!({"v":1,"type":"report","identity":request,"outcome":"unknown","at_ms":2000}),
     ];
     fs::remove_file(&guard).unwrap();
@@ -149,8 +562,7 @@ fn owner_cli_recovers_a_proven_interrupted_update_and_rejects_rollback() {
     initialize(temp.path());
     let original = identity(temp.path(), 11);
     let second = identity(temp.path(), 12);
-    let command =
-        |request: &ActionIdentity| serde_json::json!({"v":1,"type":"begin","identity":request});
+    let command = |request: &ActionIdentity| serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
     assert_eq!(invoke(temp.path(), &command(&original))["type"], "begun");
     let path = temp.path().join("louiselm/workflow/phone-action-owner");
     let guard_path = temp
@@ -203,7 +615,8 @@ fn owner_can_report_proven_evidence_when_capture_archive_is_lost() {
         louiselm_capture::ActionEvidenceKind::Archive,
     );
     let request = identity(temp.path(), 13);
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
     assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
     fs::remove_dir_all(&archive).unwrap();
     fs::remove_file(archive.with_extension("lock")).unwrap();
@@ -227,9 +640,11 @@ fn caller_cannot_choose_a_different_receiver_identity() {
         "00"
     };
     wrong.receiver_identity.replace_range(..2, replacement);
-    let attempt = serde_json::json!({"v":1,"type":"begin","identity":wrong});
+    let attempt =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":wrong});
     assert_eq!(invoke(temp.path(), &attempt)["code"], "unavailable");
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
     assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
 }
 
@@ -250,7 +665,8 @@ fn capture_guard_cannot_initialize_the_native_owner_journal() {
     );
     fs::copy(&capture_guard, tls.join("phone-action-owner.json")).unwrap();
     let request = identity(temp.path(), 15);
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
     assert_eq!(invoke(temp.path(), &begin)["code"], "unavailable");
 }
 
@@ -261,12 +677,12 @@ fn local_owner_command_persists_a_fence_across_processes() {
     let request = identity(temp.path(), 5);
     let fenced = invoke(
         temp.path(),
-        &serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000}),
+        &serde_json::json!({"v":2,"type":"fence","generation":"09".repeat(16),"identity":request,"at_ms":2000}),
     );
     assert_eq!(fenced["type"], "fenced");
     let late = invoke(
         temp.path(),
-        &serde_json::json!({"v":1,"type":"begin","identity":request}),
+        &serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request}),
     );
     assert_eq!(late["type"], "existing");
     assert_eq!(
@@ -287,7 +703,8 @@ fn inspection_preserves_missing_and_owner_proved_outcomes_across_processes() {
         )
     };
     assert_eq!(inspect(&request)["code"], "unavailable");
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
     assert_eq!(invoke(temp.path(), &begin)["type"], "begun");
     assert_eq!(inspect(&request)["outcome"], "unknown");
 
@@ -310,13 +727,14 @@ fn separate_helpers_cannot_both_begin_and_fence() {
     assert_eq!(
         invoke(
             temp.path(),
-            &serde_json::json!({"v":1,"type":"begin","identity":seed})
+            &serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":seed})
         )["type"],
         "begun"
     );
     let request = identity(temp.path(), 8);
-    let begin = serde_json::json!({"v":1,"type":"begin","identity":request});
-    let fence = serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":2000});
+    let begin =
+        serde_json::json!({"v":2,"type":"begin","generation":"09".repeat(16),"identity":request});
+    let fence = serde_json::json!({"v":2,"type":"fence","generation":"09".repeat(16),"identity":request,"at_ms":2000});
     let barrier = Arc::new(Barrier::new(2));
     let children = [spawn(temp.path()), spawn(temp.path())];
     let handles: Vec<_> = children
@@ -352,7 +770,7 @@ fn separate_helpers_cannot_both_begin_and_fence() {
         assert_eq!(
             invoke(
                 temp.path(),
-                &serde_json::json!({"v":1,"type":"fence","identity":request,"at_ms":3000})
+                &serde_json::json!({"v":2,"type":"fence","generation":"09".repeat(16),"identity":request,"at_ms":3000})
             )["type"],
             "uncertain"
         );
