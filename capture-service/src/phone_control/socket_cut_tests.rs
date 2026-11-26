@@ -107,6 +107,53 @@ async fn ordinary_service_reads_and_reconnects_after_shutdown() {
 }
 
 #[tokio::test]
+async fn service_without_registrar_retains_reads_and_refuses_send() {
+    let root = tempfile::tempdir().unwrap();
+    let pairing = Arc::new(crate::PairingRegistry::open(root.path().join("pairing")).unwrap());
+    let service = super::super::Service::open_without_registrar(
+        &root.path().join("phone-control/grants"),
+        &"02".repeat(32),
+        pairing,
+    )
+    .unwrap();
+    assert!(service.controllers.barrier.is_none());
+    let admin = root.path().join("admin.sock");
+    let socket = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let sockets = service.bind(&admin, &socket, &capability).await.unwrap();
+    let token = std::fs::read_to_string(capability).unwrap();
+    let task = tokio::spawn(sockets.serve());
+    let (mut peer, reply) = attach(&socket, &token).await;
+    let id = reply["controller_id"].as_str().unwrap().to_owned();
+    let read = tokio::spawn({
+        let controllers = Arc::clone(&service.controllers);
+        let id = id.clone();
+        async move {
+            controllers
+                .dispatch(&id, br#"{"type":"read_session"}"#.to_vec())
+                .await
+        }
+    });
+    let mut frame = String::new();
+    BufReader::new(&mut peer)
+        .read_line(&mut frame)
+        .await
+        .unwrap();
+    assert_eq!(frame, "{\"type\":\"read_session\"}\n");
+    peer.write_all(b"read response\n").await.unwrap();
+    assert_eq!(read.await.unwrap().unwrap(), b"read response");
+    for kind in ["send_prompt", "action_commit"] {
+        let frame = serde_json::to_vec(&serde_json::json!({"type":kind})).unwrap();
+        assert_eq!(
+            service.controllers.dispatch(&id, frame).await,
+            Err(super::super::authority::Refusal::Unavailable)
+        );
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
 async fn receiver_barrier_outlives_a_controller_and_the_server_until_last_registry_owner() {
     let root = tempfile::tempdir().unwrap();
     // The fixture supplies a bound barrier; it makes no host or origin claim.

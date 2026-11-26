@@ -274,9 +274,10 @@ receiver and cutoff lifecycle, not trusted host scope or Send acceptance.
 The ignored `pair_and_serve_consume_registration_without_granting_authority`
 gate runs the real capture CLI against a disposable registration-service stub.
 CI creates private mount and network namespaces, with a private `/run`, before
-dropping privileges. It checks client framing, identity comparison and
-capture-only fallback; the stub cannot prove manager provenance or first
-enrollment. Never run this gate against a workstation's `/run`.
+dropping privileges. It checks client framing, identity comparison,
+capture-only fallback and preservation of a controller read attachment after a
+mismatched reply. The stub cannot prove manager provenance or first enrollment.
+Never run this gate against a workstation's `/run`.
 
 The manual ecosystem-radar workflow uses the Python standard-library gate
 `python3 scripts/test-ecosystem-radar.py`. It checks routing and receipt

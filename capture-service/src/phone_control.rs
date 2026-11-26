@@ -91,6 +91,23 @@ impl Service {
         receiver: &str,
         pairing: Arc<PairingRegistry>,
     ) -> Result<Self, io::Error> {
+        Self::open_with_registration(path, receiver, pairing, true)
+    }
+
+    pub(crate) fn open_without_registrar(
+        path: &Path,
+        receiver: &str,
+        pairing: Arc<PairingRegistry>,
+    ) -> Result<Self, io::Error> {
+        Self::open_with_registration(path, receiver, pairing, false)
+    }
+
+    fn open_with_registration(
+        path: &Path,
+        receiver: &str,
+        pairing: Arc<PairingRegistry>,
+        allow_registration: bool,
+    ) -> Result<Self, io::Error> {
         let (authority, authority_available) = match authority::Authority::open(path, receiver) {
             Ok(authority) => (authority, true),
             Err(authority::Refusal::Unavailable) => (
@@ -117,6 +134,7 @@ impl Service {
         let registration = evidence
             .as_ref()
             .ok()
+            .filter(|_| allow_registration)
             .and_then(|store| {
                 Some((
                     store.bound_generation()?.to_owned(),

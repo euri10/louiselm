@@ -120,11 +120,13 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
         .transpose()?;
     let mut phone_control = None;
     let receiver = if features.receiver {
-        let (identity, allow_phone_control) = if features.phone_control {
+        let (identity, allow_registration) = if features.phone_control {
             match super::receiver_identity(&paths) {
                 Ok(identity) => (identity, true),
                 Err(error) => {
-                    eprintln!("phone-control registration unavailable; capture-only mode: {error}");
+                    eprintln!(
+                        "phone-control registration unavailable; starting without registrar: {error}"
+                    );
                     (TlsIdentity::load_existing(&paths.tls())?, false)
                 }
             }
@@ -150,12 +152,20 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 identity.public_key_sha256(),
             )?,
         };
-        let receiver = if allow_phone_control {
-            let service = crate::phone_control::Service::open(
-                &paths.phone_control_store(),
-                identity.public_key_sha256(),
-                pairing.clone(),
-            )?
+        let receiver = if features.phone_control {
+            let service = if allow_registration {
+                crate::phone_control::Service::open(
+                    &paths.phone_control_store(),
+                    identity.public_key_sha256(),
+                    pairing.clone(),
+                )?
+            } else {
+                crate::phone_control::Service::open_without_registrar(
+                    &paths.phone_control_store(),
+                    identity.public_key_sha256(),
+                    pairing.clone(),
+                )?
+            }
             .with_runs(runs.clone())
             .with_voice_root(paths.voice_captures());
             if !service.authority_available() {

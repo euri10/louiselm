@@ -9,10 +9,13 @@
 
 use std::{
     fs::{self, File},
-    io::{IoSliceMut, Read, Write},
+    io::{BufRead, BufReader, IoSliceMut, Read, Write},
     mem::MaybeUninit,
     net::{SocketAddr, TcpStream},
-    os::unix::{fs::MetadataExt, net::UnixListener},
+    os::unix::{
+        fs::MetadataExt,
+        net::{UnixListener, UnixStream},
+    },
     path::Path,
     process::{Child, Command, Output, Stdio},
     thread,
@@ -184,8 +187,8 @@ fn pair_and_serve_consume_registration_without_granting_authority() {
     assert!(svg.is_file());
     assert!(fresh_capture.join("tls/receiver-key.pem").is_file());
 
-    // A bad committed identity disables phone control without replacing the
-    // existing key or taking the separate capture receiver offline.
+    // A bad committed identity must preserve unrelated read attachment without
+    // replacing the existing key or making the receiver a registrar.
     let service = temporary.path().join("service");
     let service_capture = service.join("state/louiselm/capture");
     let identity = TlsIdentity::load_or_create(service_capture.join("tls")).unwrap();
@@ -214,10 +217,26 @@ fn pair_and_serve_consume_registration_without_granting_authority() {
         assert!(Instant::now() < deadline, "capture receiver did not start");
         thread::sleep(Duration::from_millis(10));
     }
-    assert!(
-        !service
-            .join("state/louiselm/workflow/phone-control.sock")
-            .exists()
+    let socket = service.join("state/louiselm/workflow/phone-control.sock");
+    let capability =
+        fs::read_to_string(service.join("state/louiselm/workflow/operator-capability")).unwrap();
+    let mut controller = UnixStream::connect(socket).unwrap();
+    controller
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    writeln!(
+        controller,
+        "{}",
+        serde_json::json!({"v": 1, "type": "attach", "capability": capability.trim()})
+    )
+    .unwrap();
+    let mut reply = String::new();
+    BufReader::new(&mut controller)
+        .read_line(&mut reply)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&reply).unwrap()["type"],
+        "attached"
     );
     let process = child.0.as_mut().unwrap();
     assert!(
@@ -239,7 +258,7 @@ fn pair_and_serve_consume_registration_without_granting_authority() {
         .unwrap()
         .read_to_string(&mut stderr)
         .unwrap();
-    assert!(stderr.contains("capture-only mode"));
+    assert!(stderr.contains("starting without registrar"));
     assert_eq!(
         TlsIdentity::load_or_create(service_capture.join("tls"))
             .unwrap()
