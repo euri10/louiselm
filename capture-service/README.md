@@ -335,6 +335,12 @@ configuration, and rejected-input failures stop until `retry CAPTURE_UUID`.
 Errors are sanitized before persistence and responses never include credentials,
 audio, prompts, or provider response bodies.
 
+If the enabled worker has a missing or blank key, or a blank configured Model,
+`serve` reports transcription unavailable and keeps other configured capabilities,
+including ordinary capture upload, running. No voice job is admitted until the
+configuration is repaired and the service restarts. A transcription-only service
+with invalid configuration exits with an error.
+
 The default follows OpenAI's
 [file-transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text),
 checked 2026-10-14: `gpt-transcribe` transcribes completed recordings through
@@ -342,7 +348,7 @@ checked 2026-10-14: `gpt-transcribe` transcribes completed recordings through
 [deprecations page](https://developers.openai.com/api/docs/deprecations) schedules
 the former default, `gpt-4o-transcribe`, for removal on 2027-02-26.
 An explicit Model override is passed through unchanged, including a pinned
-version; empty values are rejected. Updating the binary does not replace a Model
+version; empty values make transcription unavailable. Updating the binary does not replace a Model
 set in an existing `capture.env`. Remove that setting to follow the default,
 or explicitly select a supported file-transcription Model. Top-level, `serve`,
 and `transcribe-once` help list the default and environment choices.

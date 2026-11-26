@@ -181,11 +181,13 @@ resetting the key. Original recordings and pending action identities are separat
 ### Session voice recordings
 
 Open an authorized Session and unlock phone drafts to record a voice instruction.
-The screen discloses the planned phone → paired computer → OpenAI transcription
-route. **Stop voice recording** saves the original locally and records the request
-for transcription. This local slice does not submit a voice job: transcription
-is shown as unavailable until the protected receiver route is implemented. No
-recording, playback, reconnect, or transcription request sends a Session prompt.
+The screen discloses the phone → paired computer → OpenAI transcription
+route. **Stop voice recording** saves the original locally and requests
+transcription through the paired computer when the configured capability and
+current workspace authority permit it. Operate Sessions authorizes submission,
+cancellation and explicit retries; Read content separately authorizes results.
+Unavailable and offline requests remain pending until a valid unlock. No recording,
+playback, reconnect, or transcription request sends a Session prompt.
 
 Locking the phone or leaving the Activity stops an active recording. After local
 unlock, **Session voice recordings** shows its original Session association and
@@ -193,7 +195,7 @@ asks whether to request transcription or keep it without requesting transcriptio
 Keeping an original does not prevent explicitly requesting transcription later.
 The list works offline after restart and can play a saved original; playback stops
 when the app backgrounds or locks. A recording exceeding 20 MiB remains on the
-phone but cannot use the planned transfer route. A failed or incomplete capture
+phone but cannot use the transfer route. A failed or incomplete capture
 is retained and reported; an unfinalized audio container may not be recoverable.
 
 Session voice originals use the existing capture storage format in a separate
@@ -211,10 +213,15 @@ Session and explicitly **Insert transcript** or **Replace draft with
 transcript**. Review and edit the device-local draft before any Send; the
 archived audio and original transcript remain unchanged. History requires an
 online receiver and is unavailable when the read grant or working period ends.
+Failed transcription jobs expose an explicit Retry in that protected history;
+each retry starts a bounded cycle. Finish recording before discarding its draft.
+Discarding a pending draft requests cancellation,
+which waits for current authority and connectivity. An in-flight result can still
+arrive in history without recreating the discarded draft.
 Review the original in bounded pages. If the entire transcript and its selected
 context cannot fit the available draft storage, Insert and Replace leave the
-draft unchanged and explain the limit. Job submission and explicit reviewed
-Send remain separate work in `louiselm-qbr.12.13.3` and `louiselm-qbr.12.13.2`.
+draft unchanged and explain the limit. Explicit reviewed Send remains separate
+work in `louiselm-qbr.12.13.2`.
 
 ### Runs and prepared selections
 
@@ -377,9 +384,10 @@ in `louiselm-qbr.9.9`.
   build, original Session identity and each recording UUID. Check explicit Stop
   and screen lock while recording in both orders, then reopen offline after an
   app restart. Confirm the original plays, its Session association is unchanged,
-  an interrupted recording requires a post-unlock choice, and the unavailable
-  transcription status is truthful. Confirm ordinary thought capture still
-  works and no Session prompt or remote voice job was created.
+  an interrupted recording requires a post-unlock choice, and pending or
+  unavailable transcription status is truthful. With the explicitly configured
+  test receiver, check protected transcription and draft review separately.
+  Confirm ordinary thought capture still works and no Session prompt was sent.
 - FID upgrade (`louiselm-qbr.9.23`): record the APK and receiver builds, upgrade
   both without clearing app data, then reopen/refresh an opted-in pairing.
   Confirm the pairing and one recorded capture UUID survive, push resumes for

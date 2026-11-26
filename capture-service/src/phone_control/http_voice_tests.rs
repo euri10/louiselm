@@ -56,6 +56,19 @@ impl Transcriber for LargeSyntheticVoice {
     }
 }
 
+struct MaxFailure;
+impl Transcriber for MaxFailure {
+    fn name(&self) -> &'static str {
+        "fixture"
+    }
+    fn model(&self) -> &'static str {
+        "fixture"
+    }
+    fn transcribe(&self, _: TranscriptRequest<'_>) -> Result<String, TranscriptionError> {
+        Err(TranscriptionError::permanent("\u{1}".repeat(1024)))
+    }
+}
+
 #[tokio::test]
 async fn voice_history_page_fits_the_phone_response_bound() {
     let root = tempfile::tempdir().unwrap();
@@ -94,6 +107,12 @@ async fn voice_history_page_fits_the_phone_response_bound() {
             &association,
         );
     }
+    assert_eq!(
+        VoiceTranscriptionWorker::new(&archive, &MaxFailure)
+            .process_ready(1_000)
+            .unwrap(),
+        50
+    );
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../android/app/src/test/resources/phone-control-v1.json"
     ))
@@ -130,6 +149,11 @@ async fn voice_history_page_fits_the_phone_response_bound() {
     )
     .await;
     assert_eq!(response["type"], "voice_history");
+    assert_eq!(response["records"][0]["state"], "failed");
+    assert_eq!(
+        response["records"][0]["failure"].as_str().unwrap().len(),
+        1024
+    );
     assert!(serde_json::to_vec(&response).unwrap().len() <= 262_144);
     assert_eq!(response["records"].as_array().unwrap().len(), 20);
     assert_ne!(response["next_after"], "");

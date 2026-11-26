@@ -53,6 +53,72 @@ internal sealed class UploadAttempt {
 }
 
 internal object PinnedHttps {
+    /** Submit one signed voice operation, streaming its immutable audio only for admission. */
+    fun phoneVoiceJob(
+        config: PairingConfig,
+        body: JSONObject,
+        audio: CaptureRecord?,
+        maySend: () -> Boolean,
+    ): PhoneVoiceJobResponse {
+        val unavailable = PhoneVoiceJobResponse.Failure(PhoneControlOutcome.UNAVAILABLE)
+        return try {
+            val bytes = body.toString().toByteArray(Charsets.UTF_8)
+            require(bytes.size <= 8192)
+            if (!maySend()) return unavailable
+            if (audio != null) {
+                require(audio.mimeType == "audio/mp4" && audio.bytes in 1..20L * 1024 * 1024)
+                require(!java.nio.file.Files.isSymbolicLink(audio.audio.toPath()) && audio.audio.isFile && audio.audio.length() == audio.bytes)
+            }
+            val endpoint = if (audio == null) "request" else "voice"
+            val connection = connection("${config.receiverUrl}/v1/phone-control/$endpoint", config.receiverIdentitySha256).apply {
+                requestMethod = if (audio == null) "POST" else "PUT"
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer ${config.credential}")
+                setRequestProperty("Content-Type", if (audio == null) "application/json" else "audio/mp4")
+                if (audio == null) setFixedLengthStreamingMode(bytes.size) else {
+                    setRequestProperty("X-Louiselm-Voice-Request", String(bytes, Charsets.UTF_8))
+                    setFixedLengthStreamingMode(audio.bytes)
+                }
+            }
+            try {
+                if (!maySend()) return unavailable
+                connection.outputStream.use { output ->
+                    if (audio == null) {
+                        if (!maySend()) return unavailable
+                        output.write(bytes)
+                    } else FileInputStream(audio.audio).use { input ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        var sent = 0L
+                        while (true) {
+                            if (!maySend()) return unavailable
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            sent += count
+                            require(sent <= audio.bytes)
+                            output.write(buffer, 0, count)
+                        }
+                        require(sent == audio.bytes)
+                    }
+                }
+                if (!maySend()) return unavailable
+                val status = connection.responseCode
+                val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                    ?: return unavailable
+                val reply = parsePhoneVoiceJobResponse(readBoundedBytes(stream, 4096))
+                if (status !in 200..299 && reply is PhoneVoiceJobResponse.Accepted)
+                    PhoneVoiceJobResponse.Failure(PhoneControlOutcome.MALFORMED) else reply
+            } finally {
+                connection.disconnect()
+            }
+        } catch (_: IOException) {
+            unavailable
+        } catch (_: SecurityException) {
+            unavailable
+        } catch (_: IllegalArgumentException) {
+            PhoneVoiceJobResponse.Failure(PhoneControlOutcome.MALFORMED)
+        }
+    }
+
     /** POST a closed phone-control message over the existing paired, pinned channel. */
     fun phoneControl(
         config: PairingConfig,

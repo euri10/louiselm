@@ -17,7 +17,7 @@ use super::{CliError, Paths, notification_worker, openai_provider, required_envi
 use crate::{
     AttentionSocket, AttentionStore, BeadsCleanup, BrokerAttentionConfig, BrokerAttentionSocket,
     NetworkProfile, PairingRegistry, Receiver, RunSocket, RunStore, Store, TlsIdentity,
-    TranscriptionWorker, time::now_ms,
+    Transcriber, TranscriptionWorker, VoiceArchive, VoiceTranscriptionWorker, time::now_ms,
 };
 
 #[derive(Clone, Copy)]
@@ -45,7 +45,7 @@ fn enabled(name: &str) -> Result<bool, CliError> {
 
 impl Features {
     fn read() -> Result<Self, CliError> {
-        let features = Self {
+        let mut features = Self {
             attention: enabled("LOUISELM_ATTENTION_ENABLED")?,
             runs: enabled("LOUISELM_RUNS_ENABLED")?,
             receiver: enabled("LOUISELM_RECEIVER_ENABLED")?,
@@ -72,12 +72,45 @@ impl Features {
             ));
         }
         if features.transcription {
-            required_environment("LOUISELM_CAPTURE_OPENAI_API_KEY")?;
+            let key = env::var("LOUISELM_CAPTURE_OPENAI_API_KEY").ok();
+            let model = env::var("LOUISELM_TRANSCRIPTION_MODEL").ok();
+            if let Some(reason) =
+                features.apply_transcription_configuration(key.as_deref(), model.as_deref())?
+            {
+                eprintln!(
+                    "louiselm-capture: transcription unavailable: {reason}; other configured capabilities remain enabled"
+                );
+            }
         }
         if features.push {
             required_environment("GOOGLE_APPLICATION_CREDENTIALS")?;
         }
         Ok(features)
+    }
+
+    fn apply_transcription_configuration(
+        &mut self,
+        key: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Option<&'static str>, CliError> {
+        if !self.transcription {
+            return Ok(None);
+        }
+        let reason = if key.is_none_or(|value| value.trim().is_empty()) {
+            Some("LOUISELM_CAPTURE_OPENAI_API_KEY must be set and nonempty")
+        } else if model.is_some_and(|value| value.trim().is_empty()) {
+            Some("LOUISELM_TRANSCRIPTION_MODEL must be nonempty when set")
+        } else {
+            None
+        };
+        let Some(reason) = reason else {
+            return Ok(None);
+        };
+        if !(self.attention || self.runs || self.receiver || self.push) {
+            return Err(CliError::Invalid(reason.into()));
+        }
+        self.transcription = false;
+        Ok(Some(reason))
     }
 }
 
@@ -86,12 +119,17 @@ struct Prepared {
     runs: Option<RunStore>,
     attention: Option<AttentionStore>,
     captures: Option<Store>,
+    voice: Option<VoiceArchive>,
     cleanup: Option<BeadsCleanup>,
     receiver: Option<(Receiver, NetworkProfile, TlsIdentity)>,
     pairing: Option<Arc<PairingRegistry>>,
     phone_control: Option<crate::phone_control::Service>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Explicit capability preparation keeps shared receiver and worker ownership visible."
+)]
 fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
     if !features.runs && RunStore::has_pending(&paths.runs())? {
         return Err(CliError::Invalid("retained Runs still require cleanup; keep LOUISELM_RUNS_ENABLED=true until they are disposed".into()));
@@ -114,6 +152,10 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
         .transpose()?;
     let captures = (features.receiver || features.transcription)
         .then(|| Store::new(paths.captures()))
+        .transpose()?;
+    let voice = features
+        .transcription
+        .then(|| VoiceArchive::new(paths.voice_captures()))
         .transpose()?;
     let pairing = (features.receiver || features.push)
         .then(|| PairingRegistry::open(paths.pairing()).map(Arc::new))
@@ -167,7 +209,8 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 )?
             }
             .with_runs(runs.clone())
-            .with_voice_root(paths.voice_captures());
+            .with_voice_root(paths.voice_captures())
+            .with_voice_transcription_enabled(features.transcription);
             if !service.authority_available() {
                 eprintln!(
                     "phone-control authority is unavailable; capture remains available; inspect the grant store and see the capture-service re-approval instructions"
@@ -188,6 +231,7 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
         runs,
         attention,
         captures,
+        voice,
         cleanup,
         receiver,
         pairing,
@@ -213,6 +257,27 @@ async fn transcribe(store: Store, stop: Arc<AtomicBool>) -> Result<(), CliError>
             worker_pause(&stop);
         }
         Ok(())
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+fn run_voice_worker<T: Transcriber>(
+    archive: &VoiceArchive,
+    provider: &T,
+    stop: &AtomicBool,
+) -> Result<(), CliError> {
+    while !stop.load(Ordering::Acquire) {
+        VoiceTranscriptionWorker::new(archive, provider).process_ready(now_ms())?;
+        worker_pause(stop);
+    }
+    Ok(())
+}
+
+async fn transcribe_voice(archive: VoiceArchive, stop: Arc<AtomicBool>) -> Result<(), CliError> {
+    tokio::task::spawn_blocking(move || {
+        let provider = openai_provider()?;
+        run_voice_worker(&archive, &provider, &stop)
     })
     .await
     .map_err(std::io::Error::other)?
@@ -322,6 +387,9 @@ async fn serve_prepared(
         && let Some(store) = prepared.captures
     {
         workers.spawn(transcribe(store, stop.clone()));
+    }
+    if let Some(voice) = prepared.voice {
+        workers.spawn(transcribe_voice(voice, stop.clone()));
     }
     if features.push
         && let (Some(attention), Some(pairing)) = (prepared.attention, prepared.pairing)

@@ -64,6 +64,7 @@ async fn attention_only_serves_snapshots_without_capture_run_or_delivery_resourc
         paths.runs(),
         paths.run_socket(),
         paths.captures(),
+        paths.voice_captures(),
         paths.pairing(),
         paths.tls(),
         paths.uploads(),
@@ -79,6 +80,112 @@ async fn attention_only_serves_snapshots_without_capture_run_or_delivery_resourc
     }
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[test]
+fn enabled_voice_worker_uses_the_configured_archive_and_stops_without_touching_thoughts() {
+    use crate::{
+        CaptureDraft, CaptureSource, Transcriber, TranscriptRequest, TranscriptionError,
+        VoiceAssociation,
+    };
+    use std::io::Cursor;
+
+    struct Fake<'a>(&'a AtomicBool);
+    impl Transcriber for Fake<'_> {
+        fn name(&self) -> &'static str {
+            "fixture"
+        }
+        fn model(&self) -> &'static str {
+            "fixture"
+        }
+        fn transcribe(&self, request: TranscriptRequest<'_>) -> Result<String, TranscriptionError> {
+            assert_eq!(std::fs::read(request.audio_path).unwrap(), b"dummy voice");
+            self.0.store(true, Ordering::Release);
+            Ok("fixture transcript".into())
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let mut features = attention_only();
+    features.transcription = true;
+    let prepared = prepare(paths.clone(), features).unwrap();
+    let archive = prepared.voice.as_ref().expect("enabled voice archive");
+    let id = uuid::Uuid::new_v4().to_string();
+    archive
+        .admit(
+            &CaptureDraft {
+                id: id.clone(),
+                source: CaptureSource::Android,
+                recorded_at_ms: 1,
+                duration_ms: 1,
+                mime_type: "audio/mp4".into(),
+            },
+            &VoiceAssociation {
+                receiver: "aa".repeat(32),
+                controller: "11".repeat(16),
+                subject: "22".repeat(16),
+                project: "/fixture".into(),
+                agent: "fixture".into(),
+                draft: "33".repeat(32),
+                revision: "44".repeat(32),
+            },
+            Cursor::new(b"dummy voice"),
+        )
+        .unwrap();
+    let stop = AtomicBool::new(false);
+    run_voice_worker(archive, &Fake(&stop), &stop).unwrap();
+    assert_eq!(archive.transcript(&id).unwrap().text, "fixture transcript");
+    assert_eq!(prepared.captures.unwrap().list().unwrap().len(), 0);
+}
+
+#[test]
+fn invalid_transcription_configuration_keeps_ordinary_receiver_available() {
+    for (key, model) in [
+        (None, None),
+        (Some("   "), None),
+        (Some("fixture-key"), Some("  ")),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut features = attention_only();
+        features.attention = false;
+        features.receiver = true;
+        features.transcription = true;
+        assert!(
+            features
+                .apply_transcription_configuration(key, model)
+                .unwrap()
+                .is_some()
+        );
+        assert!(!features.transcription);
+        let prepared = prepare(paths(root.path()), features).unwrap();
+        assert!(prepared.receiver.is_some());
+        assert!(prepared.captures.is_some());
+        assert!(prepared.voice.is_none());
+    }
+    let mut transcription_only = attention_only();
+    transcription_only.attention = false;
+    transcription_only.transcription = true;
+    assert!(
+        transcription_only
+            .apply_transcription_configuration(None, None)
+            .is_err()
+    );
+    assert!(
+        transcription_only
+            .apply_transcription_configuration(Some("fixture-key"), None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(transcription_only.transcription);
+    let mut disabled = attention_only();
+    assert!(
+        disabled
+            .apply_transcription_configuration(None, None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(!disabled.transcription);
 }
 
 #[tokio::test]

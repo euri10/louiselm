@@ -23,6 +23,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -51,6 +52,35 @@ private object VoiceScreenFixture {
     var archive: PhoneVoiceTranscript? = null
     var nextArchivePage: PhoneVoicePage? = null
     var archivePageFailure: PhoneControlOutcome? = null
+    var voiceAccepted = false
+    var voiceSubmissions = 0
+    var voiceCancellations = 0
+    var voiceRetries = 0
+    var backgroundReads = 0
+}
+
+@Implements(PhoneVoiceJobClient::class, isInAndroidSdk = false)
+class VoiceScreenJobClient {
+    @Implementation(methodName = "submit")
+    internal fun submit(period: PhoneControlPeriod, record: PhoneVoiceRecord, maySend: () -> Boolean): PhoneControlResult<String> {
+        VoiceScreenFixture.voiceSubmissions++
+        return if (VoiceScreenFixture.voiceAccepted && maySend()) PhoneControlResult.Value("pending")
+            else PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+    }
+
+    @Implementation(methodName = "cancel")
+    internal fun cancel(period: PhoneControlPeriod, record: PhoneVoiceRecord, maySend: () -> Boolean): PhoneControlResult<String> {
+        VoiceScreenFixture.voiceCancellations++
+        return if (VoiceScreenFixture.voiceAccepted && maySend()) PhoneControlResult.Value("cancelled")
+            else PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+    }
+
+    @Implementation(methodName = "retry")
+    internal fun retry(period: PhoneControlPeriod, record: PhoneVoiceRecord, maySend: () -> Boolean): PhoneControlResult<String> {
+        VoiceScreenFixture.voiceRetries++
+        return if (VoiceScreenFixture.voiceAccepted && maySend()) PhoneControlResult.Value("pending")
+            else PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+    }
 }
 
 @Implements(PhoneControlClient::class, isInAndroidSdk = false)
@@ -63,10 +93,11 @@ class VoiceScreenClient {
     }
 
     @Implementation(methodName = "voiceResult")
-    internal fun voiceResult(period: PhoneControlPeriod, row: PhoneVoiceRow, now: Long,
+    internal fun voiceResult(period: PhoneControlPeriod, row: PhoneVoiceRow, now: Long, interaction: Boolean,
         maySend: () -> Boolean): PhoneControlResult<PhoneVoiceTranscript> {
         if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
-        return VoiceScreenFixture.archive?.takeIf { it.row == row }?.let { PhoneControlResult.Value(it) }
+        if (!interaction) VoiceScreenFixture.backgroundReads++
+        return VoiceScreenFixture.archive?.takeIf { it.row.id == row.id && it.row.target == row.target }?.let { PhoneControlResult.Value(it) }
             ?: PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
     }
 
@@ -188,7 +219,7 @@ private class VoiceBackground : AbstractExecutorService() {
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30], shadows = [VoiceScreenClient::class, VoiceScreenPairing::class, VoiceScreenAuthenticator::class,
-    VoiceScreenUnlock::class, VoiceScreenOfflineAuthenticator::class], instrumentedPackages = ["dev.louiselm.capture"])
+    VoiceScreenUnlock::class, VoiceScreenOfflineAuthenticator::class, VoiceScreenJobClient::class], instrumentedPackages = ["dev.louiselm.capture"])
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneVoiceActivityTest {
     private lateinit var screen: ActivityController<PhoneControlActivity>
@@ -198,6 +229,11 @@ class PhoneVoiceActivityTest {
     @Before fun setup() {
         val app = RuntimeEnvironment.getApplication()
         VoiceScreenFixture.sends = 0
+        VoiceScreenFixture.voiceAccepted = false
+        VoiceScreenFixture.voiceSubmissions = 0
+        VoiceScreenFixture.voiceCancellations = 0
+        VoiceScreenFixture.voiceRetries = 0
+        VoiceScreenFixture.backgroundReads = 0
         VoiceScreenFixture.archive = null
         VoiceScreenFixture.nextArchivePage = null
         VoiceScreenFixture.archivePageFailure = null
@@ -249,6 +285,108 @@ class PhoneVoiceActivityTest {
         assertEquals(PhoneVoiceIntent.REQUESTED, record.intent)
         assertEquals(listOf<Byte>(1, 2, 3, 4), requireNotNull(record.audio).audio.readBytes().toList())
         assertTrue(views().filterIsInstance<TextView>().any { it.text.toString().contains("not available") })
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun stopAdmitsTheOriginalAndDiscardRequestsCancellationWithoutSending() {
+        VoiceScreenFixture.voiceAccepted = true
+        val id = beginWithDummyAudio()
+        button("Stop voice recording").performClick()
+        drain()
+        assertEquals(PhoneVoiceIntent.ACCEPTED, recordings().single { it.id == id }.intent)
+        assertEquals(1, VoiceScreenFixture.voiceSubmissions)
+        button("Discard draft").performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        drain()
+        assertEquals(PhoneVoiceIntent.CANCELLED, recordings().single { it.id == id }.intent)
+        assertEquals(1, VoiceScreenFixture.voiceCancellations)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun recordingMustFinishBeforeItsDraftCanBeDiscarded() {
+        beginWithDummyAudio()
+        assertFalse(button("Discard draft").isEnabled)
+        button("Stop voice recording").performClick()
+        drain()
+        assertTrue(button("Discard draft").isEnabled)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun failedJobNeedsAnExplicitRetryFromProtectedHistory() {
+        VoiceScreenFixture.voiceAccepted = true
+        val id = beginWithDummyAudio()
+        button("Stop voice recording").performClick()
+        drain()
+        val record = recordings().single { it.id == id }
+        val row = PhoneVoiceRow(id, record.source.target, record.source.project, record.source.agent, false, "failed", "fixture failure")
+        VoiceScreenFixture.archive = PhoneVoiceTranscript(row, record.source.receiver, record.draftId,
+            record.draftRevision, 0, null, PhoneVoicePage(0, 0, ""))
+        button("Desktop voice history").performClick()
+        drain()
+        assertEquals(0, VoiceScreenFixture.voiceRetries)
+        button("Retry transcription").performClick()
+        drain()
+        assertEquals(1, VoiceScreenFixture.voiceRetries)
+        assertEquals(PhoneVoiceIntent.ACCEPTED, recordings().single { it.id == id }.intent)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun completedVoiceAutomaticallyFillsOnlyTheUntouchedDraftWithoutRenewingOrSending() {
+        VoiceScreenFixture.voiceAccepted = true
+        val id = beginWithDummyAudio()
+        button("Stop voice recording").performClick()
+        drain()
+        val record = recordings().single { it.id == id }
+        val row = PhoneVoiceRow(id, record.source.target, record.source.project, record.source.agent, true, "completed", "")
+        VoiceScreenFixture.archive = PhoneVoiceTranscript(row, record.source.receiver, record.draftId,
+            record.draftRevision, 20, "synthetic transcript", PhoneVoicePage(0, 0, "synthetic transcript"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        val saved = PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1")).list(key).drafts.single()
+        assertEquals("synthetic transcript", saved.text)
+        assertEquals("synthetic transcript", views().filterIsInstance<android.widget.EditText>().single().text.toString())
+        assertTrue(VoiceScreenFixture.backgroundReads > 0)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun aLateResultNeverOverwritesNewerDraftText() {
+        VoiceScreenFixture.voiceAccepted = true
+        val id = beginWithDummyAudio()
+        button("Stop voice recording").performClick()
+        drain()
+        val record = recordings().single { it.id == id }
+        views().filterIsInstance<android.widget.EditText>().single().setText("newer edit")
+        drain()
+        val row = PhoneVoiceRow(id, record.source.target, record.source.project, record.source.agent, true, "completed", "")
+        VoiceScreenFixture.archive = PhoneVoiceTranscript(row, record.source.receiver, record.draftId,
+            record.draftRevision, 20, "synthetic transcript", PhoneVoicePage(0, 0, "synthetic transcript"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        drain()
+        val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
+        assertEquals("newer edit", PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1")).list(key).drafts.single().text)
+        assertEquals(PhoneVoiceIntent.READY, recordings().single { it.id == id }.intent)
+        assertEquals(0, VoiceScreenFixture.sends)
+    }
+
+    @Test fun pendingStopWaitsForFreshUnlockBeforeResubmission() {
+        val id = beginWithDummyAudio()
+        button("Stop voice recording").performClick()
+        drain()
+        assertEquals(PhoneVoiceIntent.REQUESTED, recordings().single { it.id == id }.intent)
+        val beforeLock = VoiceScreenFixture.voiceSubmissions
+        shadowOf(activity.getSystemService(PowerManager::class.java)).turnScreenOn(false)
+        screen.pause().stop()
+        VoiceScreenFixture.voiceAccepted = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+        drain()
+        assertEquals(beforeLock, VoiceScreenFixture.voiceSubmissions)
+        shadowOf(activity.getSystemService(PowerManager::class.java)).turnScreenOn(true)
+        screen.restart().start().resume()
+        drain()
+        button("Unlock workspace").performClick()
+        drain()
+        assertEquals(PhoneVoiceIntent.ACCEPTED, recordings().single { it.id == id }.intent)
         assertEquals(0, VoiceScreenFixture.sends)
     }
 
@@ -693,7 +831,7 @@ class PhoneVoiceActivityTest {
         val key = SecretKeySpec(VoiceScreenFixture.material, "AES")
         val draft = store.list(key).drafts.single()
         val row = PhoneVoiceRow("11111111-1111-4111-8111-111111111111", draft.source.target,
-            draft.source.project, draft.source.agent, true)
+            draft.source.project, draft.source.agent, true, "completed", "")
         val text = "synthetic transcript"
         VoiceScreenFixture.archive = PhoneVoiceTranscript(row, draft.source.receiver, store.id(draft.source),
             requireNotNull(store.revision(draft, key)), text.toByteArray().size, text, PhoneVoicePage(0, 0, text))

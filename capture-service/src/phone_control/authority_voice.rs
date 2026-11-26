@@ -63,7 +63,8 @@ impl Authority {
                     let page = archive.page_after(&after, limit.min(20), allowed).map_err(|_| Refusal::Unavailable)?;
                     let records: Vec<_> = page.records.into_iter().map(|row| json!({
                         "id": row.id, "controller": row.association.controller, "subject": row.association.subject,
-                        "project": row.association.project, "agent": row.association.agent, "has_result": row.has_result
+                        "project": row.association.project, "agent": row.association.agent, "has_result": row.has_result,
+                        "state": row.state, "failure": row.failure
                     })).collect();
                     json!({"v":1, "type":"voice_history", "operation_id":request.operation_id,
                         "records":records, "next_after":page.next_after.unwrap_or_default()})

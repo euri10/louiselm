@@ -7,7 +7,7 @@ use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, Uri, header},
-    routing::post,
+    routing::{post, put},
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -23,6 +23,9 @@ use super::{
     socket::{ControllerRegistry, validate_read_response},
 };
 use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
+
+#[path = "http_voice_upload.rs"]
+mod voice_upload;
 
 #[cfg(test)]
 #[path = "http_installed_saved_review.rs"]
@@ -43,6 +46,9 @@ mod run_tests;
 #[path = "http_settings_tests.rs"]
 mod settings_tests;
 #[cfg(test)]
+#[path = "http_voice_job_tests.rs"]
+mod voice_job_tests;
+#[cfg(test)]
 #[path = "http_voice_tests.rs"]
 mod voice_tests;
 
@@ -54,6 +60,7 @@ struct HttpState {
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
     prepared: Option<OwnerRunReader>,
     voice_root: Option<PathBuf>,
+    voice_transcription_enabled: bool,
 }
 
 pub(super) fn router(
@@ -63,6 +70,7 @@ pub(super) fn router(
     evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
     prepared: Option<OwnerRunReader>,
     voice_root: Option<PathBuf>,
+    voice_transcription_enabled: bool,
 ) -> Router {
     Router::new()
         .route("/v1/phone-control/enrollment/offer", post(handle))
@@ -71,6 +79,7 @@ pub(super) fn router(
         .route("/v1/phone-control/challenge", post(handle))
         .route("/v1/phone-control/unlock", post(handle))
         .route("/v1/phone-control/request", post(handle))
+        .route("/v1/phone-control/voice", put(voice_upload::upload))
         .layer(DefaultBodyLimit::max(MAX_FRAME))
         .with_state(HttpState {
             authority,
@@ -79,6 +88,7 @@ pub(super) fn router(
             evidence,
             prepared,
             voice_root,
+            voice_transcription_enabled,
         })
 }
 
@@ -205,36 +215,7 @@ async fn process_http(
     let initial_state = state.clone();
     let initial_credential = credential.clone();
     let started = tokio::task::spawn_blocking(move || {
-        let device = initial_state
-            .pairing
-            .authenticate_device(&initial_credential)
-            .map_err(|_| Refusal::Unavailable)?
-            .ok_or(Refusal::Unauthenticated)?;
-        if path == "/v1/phone-control/request" {
-            let signed: SignedRequest = decode(&body, "request")?;
-            if matches!(
-                signed.request.action,
-                1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57 | 80 | 81 | 82
-            ) {
-                let permit =
-                    initial_state
-                        .authority
-                        .begin_read(&device, &signed.request, Instant::now())?;
-                return Ok(Started::Read {
-                    permit: Box::new(permit),
-                    request: Box::new(signed.request),
-                });
-            }
-        }
-        process(
-            &initial_state.authority,
-            &initial_state.controllers,
-            &initial_state.evidence,
-            &device,
-            &path,
-            &body,
-        )
-        .map(Started::Response)
+        begin_http(&initial_state, &initial_credential, &path, &body)
     })
     .await
     .unwrap_or(Err(Refusal::Unavailable));
@@ -242,6 +223,7 @@ async fn process_http(
         Ok(Started::Response(value)) => Ok(value),
         Ok(Started::Read { permit, request }) => {
             match request.action {
+                84 | 85 => return finish_voice_mutation(state, credential, *permit).await,
                 81 | 82 => return finish_voice(state, credential, *permit).await,
                 80 => return finish_saved_review(state, credential, *permit, &request).await,
                 57 => return finish_run_session(state, credential, *permit, &request).await,
@@ -299,6 +281,62 @@ async fn process_http(
         }
         Err(error) => Err(error),
     }
+}
+
+fn begin_http(
+    state: &HttpState,
+    credential: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<Started, Refusal> {
+    let device = state
+        .pairing
+        .authenticate_device(credential)
+        .map_err(|_| Refusal::Unavailable)?
+        .ok_or(Refusal::Unauthenticated)?;
+    if path == "/v1/phone-control/request" {
+        let signed: SignedRequest = decode(body, "request")?;
+        if signed.request.action == 85 && !state.voice_transcription_enabled {
+            return Err(Refusal::Unsupported);
+        }
+        if matches!(
+            signed.request.action,
+            1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57 | 80 | 81 | 82 | 84 | 85
+        ) {
+            let permit = state
+                .authority
+                .begin_read(&device, &signed.request, Instant::now())?;
+            return Ok(Started::Read {
+                permit: Box::new(permit),
+                request: Box::new(signed.request),
+            });
+        }
+    }
+    process(
+        &state.authority,
+        &state.controllers,
+        &state.evidence,
+        &device,
+        path,
+        body,
+    )
+    .map(Started::Response)
+}
+
+async fn finish_voice_mutation(
+    state: HttpState,
+    credential: String,
+    permit: ReadPermit,
+) -> Result<Value, Refusal> {
+    tokio::task::spawn_blocking(move || {
+        let root = state.voice_root.ok_or(Refusal::Unsupported)?;
+        let archive = crate::VoiceArchive::new(root).map_err(|_| Refusal::Unavailable)?;
+        state
+            .authority
+            .finish_voice_mutation(&permit, &state.pairing, &credential, &archive)
+    })
+    .await
+    .unwrap_or(Err(Refusal::Unavailable))
 }
 
 async fn finish_voice(
@@ -1661,6 +1699,7 @@ mod tests {
             Arc::new(evidence),
             None,
             None,
+            false,
         );
         let (_, denied) = post(
             app.clone(),
@@ -1719,6 +1758,7 @@ mod tests {
             Arc::new(evidence),
             None,
             None,
+            false,
         );
         let now = Instant::now();
         let offer = authority

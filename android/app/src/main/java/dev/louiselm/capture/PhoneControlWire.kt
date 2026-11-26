@@ -210,6 +210,17 @@ internal class PhoneControlRequest(
             82 -> require(this.payload.size == 20 && expectedRevision == 0L &&
                 controllerId != "00".repeat(16) && subjectId != "00".repeat(16) &&
                 ByteBuffer.wrap(this.payload, 16, 4).int in 0..64 * 1024 * 1024) { "invalid voice result" }
+            83 -> {
+                require(this.payload.size == 169 && this.payload[0].toInt() == 1 && !interaction &&
+                    expectedRevision == 0L && controllerId != "00".repeat(16) && subjectId != "00".repeat(16) &&
+                    operationId != "00".repeat(16)) { "invalid voice admission" }
+                val metadata = ByteBuffer.wrap(this.payload, 49, 24)
+                require(metadata.long in 1..MAX_WIRE_INTEGER && metadata.long in 1..MAX_WIRE_INTEGER &&
+                    metadata.long in 1..20L * 1024 * 1024) { "invalid voice metadata" }
+            }
+            84, 85 -> require(this.payload.size == (if (action == 84) 16 else 32) && expectedRevision == 0L &&
+                controllerId != "00".repeat(16) && subjectId != "00".repeat(16) &&
+                operationId != "00".repeat(16) && (action != 85 || this.payload.drop(16).any { it != 0.toByte() })) { "invalid voice job mutation" }
             else -> throw IllegalArgumentException("unsupported action")
         }
     }

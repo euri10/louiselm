@@ -360,10 +360,13 @@ limit:u8`: a zero marker requires zero UUID bytes and starts the list; a one
 marker uses the exact exclusive UUID, including the all-zero UUID. Limit is
 1–50, with at most 20 rows returned per page to bound JSON escaping. The closed reply is `{v:1,type:"voice_history",operation_id:hex16,
 records:[{id:uuid,controller:hex16,subject:hex16,project:string,agent:string,
-has_result:boolean}],next_after:uuid-or-empty-string}`. Rows and cursor are
+has_result:boolean,state:string,failure:string}],next_after:uuid-or-empty-string}`. State is
+`pending`, `running`, `retrying`, `completed`, `failed`, or `cancelled`. Rows and cursor are
 filtered before delivery by the current receiver, Read grant, approved project
 roots and Agent scope. IDs retain the original Session incarnation; an ended
 controller need not reconnect. A cursor never conveys authority.
+`failure` is the bounded, sanitized provider error for a failed or retrying job,
+and is empty for all other states.
 
 Action `82`, `voice_result`, requires `read` and the exact nonzero original
 controller and subject. Its payload is `recording_uuid[16] | offset:u32`, and
@@ -377,6 +380,34 @@ means complete. Every page is independently signed and checked against the
 current grant and pairing. The association identifies an original recording and
 draft revision, not permission to write or send. Neither read starts a job or
 submits a Session prompt.
+
+Actions `83`–`85` are capture-owned voice jobs and require `operate_sessions`,
+the current pairing, signed working period, approved project/Agent scope, and
+the exact original controller and subject. They never admit a Session prompt.
+An action reply is `{v:1,type:"voice_job",operation_id:hex16,id:uuid,state:string}`;
+viewing archived content or job history still separately requires `read`.
+
+Action `83` uploads audio with `PUT /v1/phone-control/voice`, content type
+`audio/mp4`, the usual bearer credential and an `X-Louiselm-Voice-Request`
+header containing the closed signed `{v:1,type:"request",request:...}` JSON.
+Its signed payload is `1:u8 | uuid[16] | sha256[32] | recorded_at_ms:u64 |
+duration_ms:u64 | length:u64 | draft_id[32] | draft_revision[32] |
+source_digest[32]`; `expected_revision` and `interaction` are zero. The source
+digest is SHA-256 of `"louiselm-voice-source\0" | project_length:u16 | project |
+agent_length:u16 | agent`, using UTF-8 bytes and big-endian lengths. The owner
+provides and rechecks the canonical project and configured Agent; signed source
+bytes cannot grant scope. The receiver streams at most 20 MiB, verifies the
+signed length and digest, and publishes a job only while the current grant,
+working period, pairing and scope still permit admission. Repeating a UUID and
+identical association reuses the original job; changing either is refused.
+
+Action `84` cancels the exact retained UUID using payload `uuid[16]`. Action
+`85` explicitly starts another bounded retry cycle using `uuid[16] |
+retry_id[16]`. The retry ID is durable across uncertain delivery; each signed
+transport request uses a fresh operation ID. Both use `expected_revision=0`.
+Background retransmission has `interaction=0` and cannot renew authority.
+Cancellation fences queued work and retries but cannot roll back an already
+in-flight Provider call or remove the retained original and any late result.
 
 Action `52`, `list_prepared`, requires `read`. The controller and subject IDs
 are all zeroes; `expected_revision` is zero. Its payload is exactly the

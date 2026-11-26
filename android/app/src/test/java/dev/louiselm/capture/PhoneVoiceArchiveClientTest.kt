@@ -32,7 +32,7 @@ class PhoneVoiceArchiveClientTest {
         PhoneControlStore(context).saveGrant(grant)
         val period = PhoneControlPeriod(grant, "22".repeat(16), working.private, 0)
         val row = PhoneVoiceRow("11111111-1111-4111-8111-111111111111", PhoneControlTarget("33".repeat(16), "44".repeat(16)),
-            "/project", "codex", true)
+            "/project", "codex", true, "completed", "")
         var mismatch = ""
         var mayDeliver = true
         var large = false

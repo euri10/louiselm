@@ -18,6 +18,37 @@ import org.robolectric.shadows.ShadowMediaMetadataRetriever
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30])
 class PhoneVoiceStoreTest {
+    @Test fun cancellationAndRetryIntentsSurviveRestartAndCannotReopenADiscardedJob() {
+        val context = RuntimeEnvironment.getApplication()
+        val key = SecretKeySpec(ByteArray(32) { 9 }, "AES")
+        val source = PhoneOfflineSource("aa".repeat(32), PhoneControlTarget("11".repeat(16), "22".repeat(16)), "session", "agent", "project")
+        val other = source.copy(target = PhoneControlTarget("11".repeat(16), "33".repeat(16)))
+        val drafts = PhoneDraftStore(File(context.filesDir, "phone-drafts-v1"))
+        val store = PhoneVoiceStore(context) { key }
+        fun capture(destination: PhoneOfflineSource): String {
+            val pending = store.begin(destination, drafts.id(destination), "33".repeat(32))
+            pending.recording.file.writeBytes(byteArrayOf(1, 2, 3))
+            store.finish(pending, 1, true)
+            return pending.recording.id
+        }
+        val first = capture(source)
+        val second = capture(other)
+        assertTrue(store.markSubmitted(first) { true })
+        val operation = "55".repeat(16)
+        assertTrue(store.requestRetry(first, operation) { true })
+        assertEquals(operation, PhoneVoiceStore(context) { key }.list().records.single { it.id == first }.retryOperation)
+        assertFalse(store.requestCancellationForDraft(source) { false })
+        assertTrue(store.requestCancellationForDraft(source) { true })
+        val reopened = PhoneVoiceStore(context) { key }
+        assertEquals(PhoneVoiceIntent.CANCEL_PENDING, reopened.list().records.single { it.id == first }.intent)
+        assertEquals(PhoneVoiceIntent.REQUESTED, reopened.list().records.single { it.id == second }.intent)
+        assertFalse(reopened.markSubmitted(first) { true })
+        assertFalse(reopened.markRetried(first, operation) { true })
+        assertTrue(reopened.markCancelled(first) { true })
+        assertEquals(PhoneVoiceIntent.CANCELLED, PhoneVoiceStore(context) { key }.list().records.single { it.id == first }.intent)
+        assertArrayEquals(byteArrayOf(1, 2, 3), requireNotNull(reopened.list().records.single { it.id == first }.audio).audio.readBytes())
+    }
+
     @Test @Config(sdk = [30, 34, 35, 37])
     fun metadataKeyAvoidsOlderAndroidLockScreenDeletion() {
         val spec = phoneVoiceMetadataKeySpec()

@@ -25,7 +25,7 @@ import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONException
 import org.json.JSONObject
 
-internal enum class PhoneVoiceIntent { UNDECIDED, REQUESTED, KEPT }
+internal enum class PhoneVoiceIntent { UNDECIDED, REQUESTED, KEPT, ACCEPTED, READY, RETRY_PENDING, CANCEL_PENDING, CANCELLED }
 
 internal data class PhoneVoiceRecord(
     val id: String,
@@ -34,6 +34,7 @@ internal data class PhoneVoiceRecord(
     val draftRevision: String,
     val intent: PhoneVoiceIntent,
     val audio: CaptureRecord?,
+    val retryOperation: String? = null,
 )
 
 internal data class PhoneVoiceListing(val records: List<PhoneVoiceRecord>, val damaged: Int, val next: String?)
@@ -168,6 +169,64 @@ internal class PhoneVoiceStore(context: Context, private val metadataKey: (Boole
 
     fun original(id: String): CaptureRecord? = captures.find(id)
 
+    /** Successful admission must never undo a concurrent discard. */
+    fun markSubmitted(id: String, mayCommit: () -> Boolean): Boolean = change(id, mayCommit) { record ->
+        if (record.intent == PhoneVoiceIntent.REQUESTED) record.copy(intent = PhoneVoiceIntent.ACCEPTED) else null
+    }
+
+    fun markReady(id: String, mayCommit: () -> Boolean): Boolean = change(id, mayCommit) { record ->
+        if (record.intent == PhoneVoiceIntent.ACCEPTED) record.copy(intent = PhoneVoiceIntent.READY) else null
+    }
+
+    /** Persist the explicit retry's identity before transport so a lost reply cannot create a second cycle. */
+    fun requestRetry(id: String, operation: String, mayCommit: () -> Boolean): Boolean {
+        phoneControlHex(operation, 16)
+        require(operation != "00".repeat(16))
+        return change(id, mayCommit) { record ->
+            if (record.intent == PhoneVoiceIntent.ACCEPTED) record.copy(intent = PhoneVoiceIntent.RETRY_PENDING, retryOperation = operation) else null
+        }
+    }
+
+    fun markRetried(id: String, operation: String, mayCommit: () -> Boolean): Boolean = change(id, mayCommit) { record ->
+        if (record.intent == PhoneVoiceIntent.RETRY_PENDING && record.retryOperation == operation)
+            record.copy(intent = PhoneVoiceIntent.ACCEPTED, retryOperation = null) else null
+    }
+
+    fun markCancelled(id: String, mayCommit: () -> Boolean): Boolean = change(id, mayCommit) { record ->
+        if (record.intent == PhoneVoiceIntent.CANCEL_PENDING) record.copy(intent = PhoneVoiceIntent.CANCELLED) else null
+    }
+
+    /** Record cancellation before discarding the draft, including uploads with an uncertain outcome. */
+    fun requestCancellationForDraft(source: PhoneOfflineSource, mayCommit: () -> Boolean): Boolean = locked {
+        if (!mayCommit()) return@locked false
+        val files = root.listFiles() ?: throw IOException("voice directory unavailable")
+        val entries = files.filter { it.name.endsWith(".voice") && validId(it.name.removeSuffix(".voice")) }
+        if (entries.isEmpty()) return@locked true
+        val key = metadataKey(false)
+        val draftId = drafts.id(source)
+        for (entry in entries) {
+            val id = entry.name.removeSuffix(".voice")
+            val record = decode(id, readBytes(id), key)
+            if (record.draftId != draftId || record.intent !in setOf(PhoneVoiceIntent.REQUESTED,
+                    PhoneVoiceIntent.ACCEPTED, PhoneVoiceIntent.RETRY_PENDING)) continue
+            val encrypted = encrypt(record.copy(intent = PhoneVoiceIntent.CANCEL_PENDING, retryOperation = null), key)
+            if (!mayCommit()) return@locked false
+            write(id, encrypted)
+        }
+        true
+    }
+
+    private fun change(id: String, mayCommit: () -> Boolean, transform: (PhoneVoiceRecord) -> PhoneVoiceRecord?): Boolean = locked {
+        if (!mayCommit()) return@locked false
+        val key = metadataKey(false)
+        val record = decode(id, readBytes(id), key)
+        val changed = transform(record) ?: return@locked false
+        val encrypted = encrypt(changed, key)
+        if (!mayCommit()) return@locked false
+        write(id, encrypted)
+        true
+    }
+
     private fun recoverOriginal(id: String): CaptureRecord? {
         val lease = recordingLease(id) ?: return null
         return lease.use {
@@ -217,6 +276,7 @@ internal class PhoneVoiceStore(context: Context, private val metadataKey: (Boole
             .put("controller", source.target.controllerId).put("subject", source.target.subjectId)
             .put("name", source.name).put("agent", source.agent).put("project", source.project)
             .put("draft", record.draftId).put("revision", record.draftRevision).put("intent", record.intent.name)
+            .put("retry", record.retryOperation ?: JSONObject.NULL)
         val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
@@ -238,7 +298,14 @@ internal class PhoneVoiceStore(context: Context, private val metadataKey: (Boole
         val draftId = json.getString("draft")
         val revision = json.getString("revision")
         require(drafts.id(source) == draftId && revision.matches(HEX_256))
-        return PhoneVoiceRecord(id, source, draftId, revision, PhoneVoiceIntent.valueOf(json.getString("intent")), null)
+        val intent = PhoneVoiceIntent.valueOf(json.getString("intent"))
+        val retry = if (!json.has("retry") || json.isNull("retry")) null else json.getString("retry")
+        require((intent == PhoneVoiceIntent.RETRY_PENDING) == (retry != null))
+        if (retry != null) {
+            phoneControlHex(retry, 16)
+            require(retry != "00".repeat(16))
+        }
+        return PhoneVoiceRecord(id, source, draftId, revision, intent, null, retry)
     }
 
     private fun <T> locked(block: () -> T): T {

@@ -11,8 +11,12 @@ class PhoneVoiceArchiveReplyTest {
     @Test fun acceptsBoundedArchivedVoiceHistory() {
         val body = """{"v":1,"type":"voice_history","operation_id":"${"11".repeat(16)}",
             "records":[{"id":"11111111-1111-4111-8111-111111111111","controller":"${"22".repeat(16)}",
-            "subject":"${"33".repeat(16)}","project":"/project","agent":"codex","has_result":true}],"next_after":""}"""
-        assertEquals("VoiceHistory", parsePhoneControlReply(body.toByteArray()).javaClass.simpleName)
+            "subject":"${"33".repeat(16)}","project":"/project","agent":"codex","has_result":true,"state":"failed","failure":"credentials rejected"}],"next_after":""}"""
+        val result = parsePhoneControlReply(body.toByteArray()) as PhoneControlReply.VoiceHistory
+        assertEquals("failed", result.records.single().state)
+        assertEquals("credentials rejected", result.records.single().failure)
+        assertEquals(PhoneControlReply.Failure(PhoneControlOutcome.MALFORMED),
+            parsePhoneControlReply(body.replace("\"state\":\"failed\"", "\"state\":\"unknown\"").toByteArray()))
     }
 
     @Test fun zeroUuidCursorIsDistinctFromTheFirstPage() {

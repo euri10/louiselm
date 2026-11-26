@@ -95,6 +95,8 @@ pub(crate) struct VoiceHistoryRecord {
     pub(crate) id: String,
     pub(crate) association: VoiceAssociation,
     pub(crate) has_result: bool,
+    pub(crate) state: VoiceStatus,
+    pub(crate) failure: String,
 }
 
 pub(crate) struct VoiceHistoryPage {
@@ -132,8 +134,20 @@ impl VoiceArchive {
         association: &VoiceAssociation,
         audio: impl Read,
     ) -> Result<IngestOutcome, StoreError> {
-        validate_id(&draft.id)?;
         validate_association(association)?;
+        let outcome = self.stage(draft, audio)?;
+        let record = self.capture(&draft.id)?.record;
+        self.publish_staged(draft, association, &record.sha256, record.bytes)?;
+        Ok(outcome)
+    }
+
+    // Staged originals are private and never scheduled until their job is published.
+    pub(crate) fn stage(
+        &self,
+        draft: &CaptureDraft,
+        audio: impl Read,
+    ) -> Result<IngestOutcome, StoreError> {
+        validate_id(&draft.id)?;
         if fs::symlink_metadata(self.root.join(&draft.id))
             .is_ok_and(|metadata| metadata.file_type().is_symlink())
         {
@@ -141,9 +155,38 @@ impl VoiceArchive {
                 "voice directory is a symlink".into(),
             ));
         }
-        let outcome = self.captures.ingest(draft, audio)?;
+        self.captures.ingest(draft, audio)
+    }
+
+    // The caller holds the current authority lock and checks expiry immediately before publication.
+    pub(crate) fn publish_staged(
+        &self,
+        draft: &CaptureDraft,
+        association: &VoiceAssociation,
+        digest: &str,
+        bytes: u64,
+    ) -> Result<(), StoreError> {
+        validate_id(&draft.id)?;
+        validate_association(association)?;
         self.locked(|| {
             let path = self.job_path(&draft.id)?;
+            let capture = self.captures.capture(&draft.id)?;
+            let record = &capture.record;
+            if record.id != draft.id
+                || record.source != draft.source
+                || record.recorded_at_ms != draft.recorded_at_ms
+                || record.duration_ms != draft.duration_ms
+                || record.mime_type != draft.mime_type
+                || record.sha256 != digest
+                || record.bytes != bytes
+                || bytes == 0
+                || fs::symlink_metadata(&capture.audio_path)?
+                    .file_type()
+                    .is_symlink()
+                || fs::metadata(&capture.audio_path)?.len() != bytes
+            {
+                return Err(StoreError::Conflict(draft.id.clone()));
+            }
             if path.exists() {
                 let job = read_job(&path)?;
                 if job.association != *association {
@@ -163,7 +206,7 @@ impl VoiceArchive {
                     },
                 )?;
             }
-            Ok(outcome)
+            Ok(())
         })
     }
 
@@ -244,10 +287,22 @@ impl VoiceArchive {
             Ok(VoiceHistoryPage {
                 records: rows
                     .into_iter()
-                    .map(|(id, (job, has_result))| VoiceHistoryRecord {
-                        id,
-                        association: job.association,
-                        has_result,
+                    .map(|(id, (job, has_result))| {
+                        let failure =
+                            if matches!(job.status, VoiceStatus::Failed | VoiceStatus::Retrying) {
+                                job.last_error
+                                    .filter(|message| !message.contains('\0'))
+                                    .unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+                        VoiceHistoryRecord {
+                            id,
+                            association: job.association,
+                            has_result,
+                            state: job.status,
+                            failure,
+                        }
                     })
                     .collect(),
                 next_after: next,
@@ -683,4 +738,79 @@ fn write_atomic(path: &Path, value: &impl Serialize) -> Result<(), StoreError> {
         let _ = fs::remove_file(temporary);
     }
     result
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Fixture setup and failures are asserted directly."
+)]
+mod staging_tests {
+    use super::*;
+    use crate::{CaptureSource, TranscriptionError};
+    use std::io::Cursor;
+
+    struct NeverCalled;
+    impl Transcriber for NeverCalled {
+        fn name(&self) -> &'static str {
+            "fixture"
+        }
+        fn model(&self) -> &'static str {
+            "fixture"
+        }
+        fn transcribe(&self, _: TranscriptRequest<'_>) -> Result<String, TranscriptionError> {
+            panic!("unpublished audio was dispatched")
+        }
+    }
+
+    #[test]
+    fn staged_audio_cannot_start_work_until_exact_metadata_is_published() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = VoiceArchive::new(root.path()).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let draft = CaptureDraft {
+            id: id.clone(),
+            source: CaptureSource::Android,
+            recorded_at_ms: 1,
+            duration_ms: 2,
+            mime_type: "audio/mp4".into(),
+        };
+        let association = VoiceAssociation {
+            receiver: "aa".repeat(32),
+            controller: "11".repeat(16),
+            subject: "22".repeat(16),
+            project: "/fixture".into(),
+            agent: "fixture".into(),
+            draft: "33".repeat(32),
+            revision: "44".repeat(32),
+        };
+        archive.stage(&draft, Cursor::new(b"dummy")).unwrap();
+        assert_eq!(
+            VoiceTranscriptionWorker::new(&archive, &NeverCalled)
+                .process_ready(1_000)
+                .unwrap(),
+            0
+        );
+        assert!(
+            matches!(archive.publish_staged(&draft, &association, &"00".repeat(32), 5), Err(StoreError::Conflict(ref value)) if value == &id)
+        );
+        assert_eq!(
+            VoiceTranscriptionWorker::new(&archive, &NeverCalled)
+                .process_ready(1_000)
+                .unwrap(),
+            0
+        );
+        let capture = archive.capture(&id).unwrap();
+        archive
+            .publish_staged(
+                &draft,
+                &association,
+                &capture.record.sha256,
+                capture.record.bytes,
+            )
+            .unwrap();
+        assert_eq!(archive.job(&id).unwrap().status, VoiceStatus::Pending);
+    }
 }

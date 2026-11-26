@@ -8,6 +8,8 @@ mod run;
 mod sleep_clock;
 #[path = "authority_voice.rs"]
 mod voice;
+#[path = "authority_voice_job.rs"]
+mod voice_job;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -221,7 +223,7 @@ struct WorkingLease {
     sleep: sleep_clock::Lease,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ReadPermit {
     device: String,
     grant_id: String,
@@ -933,6 +935,9 @@ impl Authority {
             81 | 82 => {
                 super::voice_query(request).map_err(refusal)?;
             }
+            83..=85 => {
+                super::voice_job::voice_job_command(request).map_err(refusal)?;
+            }
             _ => super::validate_discovery_request_shape(request).map_err(refusal)?,
         }
         let mut state = self.lock()?;
@@ -971,6 +976,9 @@ impl Authority {
                 80 => "read_saved_review",
                 81 => "voice_history",
                 82 => "voice_result",
+                83 => "voice_admit",
+                84 => "voice_cancel",
+                85 => "voice_retry",
                 _ => return Err(Refusal::Unsupported),
             }
             .into(),
@@ -1002,7 +1010,12 @@ impl Authority {
             return Err(Refusal::Expired);
         }
         lease.sleep.check(&self.sleep_now()?)?;
-        if !grant.scope.groups.iter().any(|group| group == "read") {
+        let group = if matches!(request.action, 83..=85) {
+            "operate_sessions"
+        } else {
+            "read"
+        };
+        if !grant.scope.groups.iter().any(|value| value == group) {
             return Err(Refusal::OutOfScope);
         }
         if !state.operations.insert(request.operation_id.clone()) {
@@ -1354,7 +1367,7 @@ fn elapsed_now(observed: Instant, started: Instant) -> Result<Instant, Refusal> 
         .ok_or(Refusal::Unavailable)
 }
 
-fn refusal(error: PhoneControlError) -> Refusal {
+pub(super) fn refusal(error: PhoneControlError) -> Refusal {
     match error {
         PhoneControlError::Unauthenticated => Refusal::Unauthenticated,
         PhoneControlError::Malformed => Refusal::Malformed,

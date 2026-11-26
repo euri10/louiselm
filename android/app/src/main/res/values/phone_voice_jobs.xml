@@ -1,0 +1,13 @@
+<resources>
+    <string name="phone_voice_job_accepted">The paired computer accepted this transcription job.</string>
+    <string name="phone_voice_job_ready">The original transcript is available in desktop voice history.</string>
+    <string name="phone_voice_job_retry_pending">Retry requested; waiting for an authorized connection.</string>
+    <string name="phone_voice_job_cancel_pending">Cancellation requested; waiting for an authorized connection.</string>
+    <string name="phone_voice_job_cancelled">Cancellation accepted. The original recording is retained.</string>
+    <string name="phone_voice_job_retry">Retry transcription</string>
+    <string name="phone_voice_state_pending">Transcription is pending or running.</string>
+    <string name="phone_voice_state_retrying">Transcription will retry within its current limit.</string>
+    <string name="phone_voice_state_completed">Transcription is complete.</string>
+    <string name="phone_voice_state_failed">Transcription stopped. An explicit retry can start another bounded attempt.</string>
+    <string name="phone_voice_state_failure_detail">Transcription error: %1$s</string>
+</resources>

@@ -47,7 +47,7 @@ internal sealed class PhoneControlReply {
 }
 
 internal data class PhoneVoiceRow(val id: String, val target: PhoneControlTarget, val project: String,
-    val agent: String, val hasResult: Boolean)
+    val agent: String, val hasResult: Boolean, val state: String, val failure: String)
 
 internal data class PhoneVoiceTranscript(val row: PhoneVoiceRow, val receiver: String,
     val draft: String, val revision: String, val totalBytes: Int, val text: String?, val firstPage: PhoneVoicePage)
@@ -227,11 +227,15 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 keys("operation_id", "records", "next_after")
                 val rows = fields.wireArray("records").map { item ->
                     val row = requireNotNull(item).wireObject()
-                    row.wireKeys("id", "controller", "subject", "project", "agent", "has_result")
+                    row.wireKeys("id", "controller", "subject", "project", "agent", "has_result", "state", "failure")
                     val id = row.wireString("id").also { phoneControlRunIdBytes(it) }
                     val target = PhoneControlTarget(row.wireHex("controller", 16), row.wireHex("subject", 16))
                     require(target.controllerId != "00".repeat(16) && target.subjectId != "00".repeat(16))
-                    PhoneVoiceRow(id, target, row.wireString("project", 512), row.wireString("agent", 512), row.wireBoolean("has_result"))
+                    val state = row.wireString("state")
+                    require(state in setOf("pending", "running", "retrying", "completed", "failed", "cancelled"))
+                    val failure = row.wireString("failure", 1024)
+                    require(failure.isEmpty() || state in setOf("failed", "retrying"))
+                    PhoneVoiceRow(id, target, row.wireString("project", 512), row.wireString("agent", 512), row.wireBoolean("has_result"), state, failure)
                 }
                 require(rows.zipWithNext().all { (left, right) -> left.id < right.id })
                 val next = string("next_after")

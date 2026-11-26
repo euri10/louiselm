@@ -59,6 +59,7 @@ private data class PhoneReconciliation(
     val nextAfter: String?,
     val failure: PhoneControlOutcome?,
 )
+private data class PhoneVoiceScan(val pending: Boolean, val filled: List<PhoneDraft>)
 
 /** Owns the temporary working key and all callbacks that can expose the workspace. */
 class PhoneControlActivity : Activity() {
@@ -72,12 +73,16 @@ class PhoneControlActivity : Activity() {
     private val pendingVoicePlayer = AtomicReference<MediaPlayer?>()
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var client: PhoneControlClient
+    private lateinit var voiceJobs: PhoneVoiceJobClient
     private lateinit var pendingActionsStore: PendingPhoneActionStore
     private lateinit var offlineStore: PhoneOfflineStore
     private lateinit var offlineUnlockStore: PhoneOfflineUnlockStore
     private lateinit var draftStore: PhoneDraftStore
     private lateinit var draftUnlockStore: PhoneOfflineUnlockStore
     private lateinit var voiceStore: PhoneVoiceStore
+    private var voiceJobsRunning = false
+    private var voiceJobsAgain = false
+    private val voiceRetry = Runnable { resumeVoiceJobs() }
     private lateinit var statusView: TextView
     private lateinit var enableButton: Button
     private lateinit var checkButton: Button
@@ -246,6 +251,7 @@ class PhoneControlActivity : Activity() {
         selectedRunId = attentionRunId
         selectedSavedResult = attentionResultId
         client = PhoneControlClient(applicationContext)
+        voiceJobs = PhoneVoiceJobClient(applicationContext, client)
         pendingActionsStore = PendingPhoneActionStore(applicationContext)
         val downloadRoot = File(filesDir, "phone-offline-v1")
         offlineStore = PhoneOfflineStore(downloadRoot)
@@ -629,6 +635,7 @@ class PhoneControlActivity : Activity() {
             else if (target == null || period == null) showDrafts()
             else sessionPage?.let { displayPage(it) }
             after()
+            resumeVoiceJobs()
         }
     }
 
@@ -803,6 +810,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun confirmDiscardDraft() {
+        if (voiceRecorder != null || voicePreparing || voiceSaving) return
         val source = draftSource ?: return
         val current = draftPeriod ?: return
         val key = source.receiver to source.target
@@ -814,6 +822,8 @@ class PhoneControlActivity : Activity() {
                 discardingDraft = key
                 task({ mayContinue -> offlineResult {
                     val secret = current.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                    if (!voiceStore.requestCancellationForDraft(source) { mayContinue() && current.isActive(SystemClock.elapsedRealtime()) })
+                        return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
                     draftStore.discard(source, secret) { mayContinue() && current.isActive(SystemClock.elapsedRealtime()) }
                     PhoneControlResult.Value(Unit)
                 } }, {
@@ -831,6 +841,7 @@ class PhoneControlActivity : Activity() {
                     draftReceiver = null
                     draftSaveNotice = null
                     if (showingDrafts) showDrafts() else render()
+                    resumeVoiceJobs()
                 }
             }.show()
     }
@@ -979,6 +990,130 @@ class PhoneControlActivity : Activity() {
                 })
                 render()
                 if (showingVoice && draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true) showVoiceRecordings()
+                if (requested) resumeVoiceJobs()
+            }
+        }
+    }
+
+    /** Resume only durable job intents, under the current workspace and local-draft periods. */
+    private fun resumeVoiceJobs() {
+        handler.removeCallbacks(voiceRetry)
+        if (voiceJobsRunning) { voiceJobsAgain = true; return }
+        if (!foreground) return
+        val online = period ?: return
+        val local = draftPeriod ?: return
+        if (!online.isActive(SystemClock.elapsedRealtime()) || !local.isActive(SystemClock.elapsedRealtime())) return
+        if (!hasReceiverNetworkAccess(this)) {
+            handler.postDelayed(voiceRetry, 10_000)
+            return
+        }
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: return
+        val token = generation.get()
+        val mutation = draftMutation.get()
+        val draftEpoch = draftGeneration.get()
+        val canReview = draftsReady && !savingDraft && dirtyDrafts.isEmpty() && discardingDraft == null
+        val draftSnapshot = savedDrafts.toMap()
+        val permitted = { foreground && active(token) && period === online && draftPeriod === local &&
+            draftMutation.get() == mutation && pairing.binding() == binding && hasReceiverNetworkAccess(this) &&
+            online.isActive(SystemClock.elapsedRealtime()) && local.isActive(SystemClock.elapsedRealtime()) }
+        voiceJobsRunning = true
+        networkExecutor.execute {
+            val result = offlineResult {
+                var cursor: String? = null
+                var pending = false
+                val filled = mutableListOf<PhoneDraft>()
+                do {
+                    if (!permitted()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                    val page = voiceStore.list(cursor)
+                    for (record in page.records) {
+                        if (!permitted()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                        if (record.intent == PhoneVoiceIntent.ACCEPTED) {
+                            if (!canReview) { pending = true; continue }
+                            val row = PhoneVoiceRow(record.id, record.source.target, record.source.project, record.source.agent, true, "completed", "")
+                            when (val result = client.voiceResult(online, row, SystemClock.elapsedRealtime(), interaction = false, maySend = permitted)) {
+                                is PhoneControlResult.Failure -> {
+                                    if (result.outcome in setOf(PhoneControlOutcome.REVOKED, PhoneControlOutcome.EXPIRED,
+                                            PhoneControlOutcome.UNAUTHENTICATED)) return@offlineResult result
+                                    pending = true
+                                }
+                                is PhoneControlResult.Value -> {
+                                    val transcript = result.value
+                                    if (transcript.receiver != record.source.receiver || transcript.draft != record.draftId ||
+                                        transcript.revision != record.draftRevision) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.MALFORMED)
+                                    val previous = draftSnapshot[record.source.receiver to record.source.target]
+                                    val text = transcript.text
+                                    if (text != null && previous?.source == record.source && previous.text.isEmpty()) {
+                                        val secret = local.key(SystemClock.elapsedRealtime())
+                                            ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                                        val saved = draftStore.fillVoiceTranscript(record.source, record.draftRevision, text, secret) {
+                                            permitted() && draftGeneration.get() == draftEpoch
+                                        }
+                                        if (saved == PhoneDraftSave.CANCELLED) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                                        if (saved == PhoneDraftSave.SAVED) filled.add(previous.copy(text = text))
+                                    }
+                                    if (!voiceStore.markReady(record.id, permitted)) pending = true
+                                }
+                            }
+                            continue
+                        }
+                        val operation = when (record.intent) {
+                            PhoneVoiceIntent.REQUESTED -> {
+                                if (record.audio == null || record.audio.bytes > 20L * 1024 * 1024) continue
+                                voiceJobs.submit(online, record, permitted)
+                            }
+                            PhoneVoiceIntent.CANCEL_PENDING -> voiceJobs.cancel(online, record, permitted)
+                            PhoneVoiceIntent.RETRY_PENDING -> voiceJobs.retry(online, record, permitted)
+                            else -> continue
+                        }
+                        when (operation) {
+                            is PhoneControlResult.Value -> {
+                                val stored = when (record.intent) {
+                                    PhoneVoiceIntent.REQUESTED -> voiceStore.markSubmitted(record.id, permitted)
+                                    PhoneVoiceIntent.CANCEL_PENDING -> voiceStore.markCancelled(record.id, permitted)
+                                    PhoneVoiceIntent.RETRY_PENDING -> voiceStore.markRetried(record.id, requireNotNull(record.retryOperation), permitted)
+                                    else -> false
+                                }
+                                if (!stored) pending = true
+                                if (record.intent == PhoneVoiceIntent.REQUESTED || record.intent == PhoneVoiceIntent.RETRY_PENDING) pending = true
+                            }
+                            is PhoneControlResult.Failure -> {
+                                if (operation.outcome in setOf(PhoneControlOutcome.REVOKED, PhoneControlOutcome.EXPIRED,
+                                        PhoneControlOutcome.UNAUTHENTICATED)) return@offlineResult operation
+                                pending = true
+                            }
+                        }
+                    }
+                    cursor = page.next
+                } while (cursor != null)
+                PhoneControlResult.Value(PhoneVoiceScan(pending, filled))
+            }
+            runOnUiThread {
+                voiceJobsRunning = false
+                if (!foreground || period !== online || draftPeriod !== local) return@runOnUiThread
+                if (result is PhoneControlResult.Failure && active(token) && result.outcome in setOf(
+                        PhoneControlOutcome.REVOKED, PhoneControlOutcome.EXPIRED, PhoneControlOutcome.UNAUTHENTICATED)) {
+                    showFailure(result.outcome)
+                    return@runOnUiThread
+                }
+                if (result is PhoneControlResult.Value && active(token) && draftMutation.get() == mutation && draftGeneration.get() == draftEpoch) {
+                    for (draft in result.value.filled) {
+                        val key = draft.source.receiver to draft.source.target
+                        drafts[key] = draft.text
+                        savedDrafts[key] = draft
+                        if (draftReceiver == key.first && draftTarget == key.second) {
+                            changingDraft = true
+                            sendInput.setText(draft.text)
+                            changingDraft = false
+                        }
+                    }
+                    if (result.value.filled.isNotEmpty()) render()
+                }
+                if (voiceJobsAgain) {
+                    voiceJobsAgain = false
+                    handler.post(voiceRetry)
+                } else if (result !is PhoneControlResult.Value || result.value.pending) handler.postDelayed(voiceRetry, 10_000)
+                if (active(token) && showingVoice && !showingVoiceArchive) showVoiceRecordings()
             }
         }
     }
@@ -1014,6 +1149,11 @@ class PhoneControlActivity : Activity() {
                     recording.audio.bytes > 20L * 1024 * 1024 -> R.string.phone_voice_too_large
                     recording.intent == PhoneVoiceIntent.UNDECIDED -> R.string.phone_voice_choose
                     recording.intent == PhoneVoiceIntent.KEPT -> R.string.phone_voice_kept
+                    recording.intent == PhoneVoiceIntent.ACCEPTED -> R.string.phone_voice_job_accepted
+                    recording.intent == PhoneVoiceIntent.READY -> R.string.phone_voice_job_ready
+                    recording.intent == PhoneVoiceIntent.RETRY_PENDING -> R.string.phone_voice_job_retry_pending
+                    recording.intent == PhoneVoiceIntent.CANCEL_PENDING -> R.string.phone_voice_job_cancel_pending
+                    recording.intent == PhoneVoiceIntent.CANCELLED -> R.string.phone_voice_job_cancelled
                     else -> R.string.phone_voice_unavailable
                 }
                 conversation.addView(TextView(this).apply {
@@ -1024,7 +1164,7 @@ class PhoneControlActivity : Activity() {
                     setText(R.string.phone_voice_play)
                     setOnClickListener { playVoice(recording.id, local) }
                 })
-                if (recording.audio != null && recording.intent != PhoneVoiceIntent.REQUESTED) {
+                if (recording.audio != null && recording.intent in setOf(PhoneVoiceIntent.UNDECIDED, PhoneVoiceIntent.KEPT)) {
                     conversation.addView(Button(this).apply {
                         setText(R.string.phone_voice_request)
                         setOnClickListener { chooseVoice(recording.id, local, true) }
@@ -1078,15 +1218,62 @@ class PhoneControlActivity : Activity() {
                     text = getString(R.string.phone_voice_archive_row, row.agent, row.project,
                         row.target.controllerId, row.target.subjectId, row.id)
                 })
+                conversation.addView(TextView(this).apply { setText(when (row.state) {
+                    "pending", "running" -> R.string.phone_voice_state_pending
+                    "retrying" -> R.string.phone_voice_state_retrying
+                    "completed" -> R.string.phone_voice_state_completed
+                    "failed" -> R.string.phone_voice_state_failed
+                    else -> R.string.phone_voice_job_cancelled
+                }) })
+                if (row.failure.isNotEmpty()) conversation.addView(TextView(this).apply {
+                    text = getString(R.string.phone_voice_state_failure_detail, row.failure)
+                })
                 if (row.hasResult) conversation.addView(Button(this).apply {
                     setText(R.string.phone_voice_archive_review)
                     setOnClickListener { reviewArchivedVoice(row) }
                 }) else conversation.addView(TextView(this).apply { setText(R.string.phone_voice_archive_pending) })
+                if (row.state == "failed") conversation.addView(Button(this).apply {
+                    setText(R.string.phone_voice_job_retry)
+                    setOnClickListener { retryArchivedVoice(row) }
+                })
             }
             if (page.nextAfter.isNotEmpty()) conversation.addView(Button(this).apply {
                 setText(R.string.phone_voice_archive_next)
                 setOnClickListener { showVoiceArchive(page.nextAfter) }
             })
+        }
+    }
+
+    private fun retryArchivedVoice(row: PhoneVoiceRow) {
+        val online = period ?: return
+        val local = draftPeriod ?: return
+        task({ mayContinue -> offlineResult {
+            val permitted = { foreground && mayContinue() && online.isActive(SystemClock.elapsedRealtime()) &&
+                local.isActive(SystemClock.elapsedRealtime()) }
+            if (!permitted()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+            var cursor: String? = null
+            var match: PhoneVoiceRecord? = null
+            do {
+                val page = voiceStore.list(cursor)
+                match = page.records.firstOrNull { it.id == row.id }
+                cursor = page.next
+            } while (match == null && cursor != null && permitted())
+            val record = match ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+            if (record.source.receiver != online.grant.receiverIdentity || record.source.target != row.target ||
+                record.source.project != row.project || record.source.agent != row.agent) {
+                return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.OUT_OF_SCOPE)
+            }
+            var retry: String
+            do { retry = phoneControlHex(ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }) }
+            while (retry == "00".repeat(16))
+            if (!voiceStore.requestRetry(record.id, retry, permitted)) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+            PhoneControlResult.Value(Unit)
+        } }, { outcome -> if (foreground) showFailure(outcome) }) { _, _ ->
+            busy = false
+            if (foreground && period === online && draftPeriod === local) {
+                showVoiceArchive()
+                resumeVoiceJobs()
+            }
         }
     }
 
@@ -1336,6 +1523,7 @@ class PhoneControlActivity : Activity() {
         }) { _, _ ->
             busy = false
             if (foreground && draftPeriod === local && local.isActive(SystemClock.elapsedRealtime())) showVoiceRecordings()
+            if (transcribe) resumeVoiceJobs()
         }
     }
 
@@ -1520,7 +1708,7 @@ class PhoneControlActivity : Activity() {
         sendStatus.visibility = if (showComposer) View.VISIBLE else View.GONE
         draftContextView.visibility = if (showComposer) View.VISIBLE else View.GONE
         draftDiscardButton.visibility = if (showComposer && draftReceiver != null && draftTarget != null && (draftReceiver to draftTarget) in drafts) View.VISIBLE else View.GONE
-        draftDiscardButton.isEnabled = !busy
+        draftDiscardButton.isEnabled = !busy && voiceRecorder == null && !voicePreparing && !voiceSaving
         renderDraftContext()
         val related = relatedPendingActions()
         val acceptedStates = setOf(PhoneActionState.ACCEPTED, PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)
@@ -1714,6 +1902,7 @@ class PhoneControlActivity : Activity() {
                 }
                 render()
                 if (foreground) after(true)
+                if (forDraft) resumeVoiceJobs()
             }
         }
     }
@@ -2042,6 +2231,7 @@ class PhoneControlActivity : Activity() {
                         schedulePinRefresh()
                         scheduleReconciliation(0)
                         render()
+                        resumeVoiceJobs()
                         val continueOnline = {
                             if (showingRuns && selectedRunId != null) withNetwork { readSelectedRun() }
                             else if (target != null) withNetwork { readTarget() }

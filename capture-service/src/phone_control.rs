@@ -22,6 +22,9 @@ mod source_checkout;
 mod source_checkout_tests;
 #[cfg(test)]
 mod source_tests;
+mod voice_job;
+#[cfg(test)]
+mod voice_job_tests;
 
 pub use evidence::{
     ActionEvidence, ActionEvidenceError, ActionEvidenceKind, ActionEvidenceStore, ActionIdentity,
@@ -82,6 +85,7 @@ pub(crate) struct Service {
     state_root: PathBuf,
     prepared: Option<prepared_owner::PreparedOwner>,
     voice_root: Option<PathBuf>,
+    voice_transcription_enabled: bool,
     authority_available: bool,
 }
 
@@ -164,6 +168,7 @@ impl Service {
             state_root: state_root.to_owned(),
             prepared: None,
             voice_root: None,
+            voice_transcription_enabled: false,
             authority_available,
         })
     }
@@ -183,6 +188,11 @@ impl Service {
         self
     }
 
+    pub(crate) fn with_voice_transcription_enabled(mut self, enabled: bool) -> Self {
+        self.voice_transcription_enabled = enabled;
+        self
+    }
+
     pub(crate) fn router(&self) -> axum::Router {
         http::router(
             self.authority.clone(),
@@ -193,6 +203,7 @@ impl Service {
                 .as_ref()
                 .map(prepared_owner::PreparedOwner::reader),
             self.voice_root.clone(),
+            self.voice_transcription_enabled,
         )
     }
 
@@ -356,7 +367,8 @@ pub fn verify_phone_control_frame(
         Some(
             "read_session" | "send_prompt" | "list_controllers" | "list_sessions" | "list_prepared"
             | "read_prepared" | "list_runs" | "read_run" | "read_run_live" | "read_run_session"
-            | "read_saved_review" | "voice_history" | "voice_result",
+            | "read_saved_review" | "voice_history" | "voice_result" | "voice_admit"
+            | "voice_cancel" | "voice_retry",
         ) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
@@ -381,6 +393,9 @@ pub fn verify_phone_control_frame(
                 | ("read_saved_review", 80)
                 | ("voice_history", 81)
                 | ("voice_result", 82)
+                | ("voice_admit", 83)
+                | ("voice_cancel", 84)
+                | ("voice_retry", 85)
         )
     {
         return Err(Unsupported);
@@ -414,6 +429,9 @@ impl Frame {
             }
             81 | 82 => {
                 voice_query(request)?;
+            }
+            83..=85 => {
+                voice_job::voice_job_command(request)?;
             }
             _ => return Err(Unsupported),
         }

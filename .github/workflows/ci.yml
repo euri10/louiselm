@@ -551,6 +551,10 @@ jobs:
           LOUISELM_TEST_NVIM="$(command -v nvim)" \
             LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
+              phone_control::http::voice_job_tests::pinned_android_recording_reaches_authorized_receiver_and_editable_draft -- --exact --ignored
+          LOUISELM_TEST_NVIM="$(command -v nvim)" \
+            LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
               phone_control::http::settings_tests::pinned_android_displays_acknowledged_session_settings -- --exact --ignored
           LOUISELM_TEST_NVIM="$(command -v nvim)" \
             LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
@@ -736,6 +740,16 @@ jobs:
               env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" LANG=C.UTF-8 cargo test --offline --locked \
               --test phone_namespace_scope -- --ignored --exact \
               real_receiver_and_offline_cutoff_share_exclusion
+          ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}"
+
+      - name: Test capture without transcription credentials
+        run: |
+          sudo unshare --net -- /bin/sh -c '
+            set -eu
+            ip link set lo up
+            exec setpriv --reuid "$1" --regid "$2" --init-groups \
+              env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" LANG=C.UTF-8 cargo test --offline --locked \
+              --test voice_cli -- --ignored --exact missing_transcription_configuration_preserves_real_capture_upload
           ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}"
 
       - name: Test registration consumers in private namespaces

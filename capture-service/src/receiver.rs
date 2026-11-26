@@ -354,7 +354,7 @@ fn parse_positive_header(headers: &HeaderMap, name: &str) -> Result<u64, ApiErro
     Ok(value)
 }
 
-async fn stream_body(mut body: Body, path: &Path) -> Result<(u64, String), ApiError> {
+pub(crate) async fn stream_body(mut body: Body, path: &Path) -> Result<(u64, String), ApiError> {
     let mut output = tokio::fs::OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -395,8 +395,8 @@ struct ErrorBody {
     error: String,
 }
 
-struct ApiError {
-    status: StatusCode,
+pub(crate) struct ApiError {
+    pub(crate) status: StatusCode,
     message: String,
 }
 

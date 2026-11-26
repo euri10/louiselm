@@ -390,10 +390,10 @@ internal class PhoneControlClient(
     }
 
     /** Read the first page and, when it can fit, the whole immutable result for draft use. */
-    fun voiceResult(period: PhoneControlPeriod, row: PhoneVoiceRow, nowMs: Long,
+    fun voiceResult(period: PhoneControlPeriod, row: PhoneVoiceRow, nowMs: Long, interaction: Boolean = true,
         maySend: () -> Boolean): PhoneControlResult<PhoneVoiceTranscript> = guarded {
         if (!row.hasResult) return@guarded unavailable()
-        val initial = readVoicePage(period, row, 0, nowMs, true, null, maySend)
+        val initial = readVoicePage(period, row, 0, nowMs, interaction, null, maySend)
         if (initial !is PhoneControlResult.Value) return@guarded initial as PhoneControlResult.Failure
         val first = initial.value
         val transcript = PhoneVoiceTranscript(row, first.receiver, first.draft, first.revision, first.totalBytes,
