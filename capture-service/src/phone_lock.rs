@@ -92,7 +92,9 @@ impl PhoneLocks {
             .map_err(|_| io::Error::other("phone lock registry is poisoned"))?;
         let fd = open(
             path,
-            flags | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            // Reject nonregular files after opening without allowing a FIFO
+            // to stall while the process-wide registry mutex is held.
+            flags | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::RUSR | Mode::WUSR,
         )
         .map_err(io::Error::from)?;
@@ -339,9 +341,74 @@ impl Drop for PhoneLock {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
 mod tests {
-    use std::{fs, io, os::unix::fs::symlink, process::Command, time::Duration};
+    use std::{
+        fs, io,
+        os::unix::fs::symlink,
+        process::{Command, Stdio},
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
 
     use super::{FileIdentity, PHONE_LOCKS};
+
+    #[test]
+    #[allow(clippy::panic, reason = "fixture process must be stopped on timeout")]
+    fn unsupported_file_does_not_stall_phone_registry() {
+        const CHILD_ROOT: &str = "LOUISELM_TEST_PHONE_FIFO_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = std::path::PathBuf::from(root);
+            let (sender, received) = mpsc::channel();
+            let fifo = root.join("fifo");
+            let regular = root.join("regular");
+            let fifo_sender = sender.clone();
+            thread::spawn(move || {
+                let _ = fifo_sender.send(("fifo", PHONE_LOCKS.open_read(&fifo).is_err()));
+            });
+            thread::spawn(move || {
+                let _ = sender.send(("regular", PHONE_LOCKS.open_read(&regular).is_ok()));
+            });
+            let mut results = [
+                received.recv_timeout(Duration::from_secs(2)).unwrap(),
+                received.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ];
+            results.sort_unstable();
+            assert_eq!(results, [("fifo", true), ("regular", true)]);
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            root.path().join("fifo"),
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .unwrap();
+        fs::write(root.path().join("regular"), b"fixture").unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "phone_lock::tests::unsupported_file_does_not_stall_phone_registry",
+            ])
+            .env(CHILD_ROOT, root.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("unsupported-file check did not finish");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "unsupported-file check failed: {status}");
+    }
 
     #[test]
     fn local_reopen_does_not_release_the_original_record_lock() {
