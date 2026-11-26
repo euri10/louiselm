@@ -565,10 +565,13 @@ the broker's `promotion_pending` stays unresolved. It is not physical Android
 acceptance. The fixture attaches the observed producer to capture before
 Disposal; because its Agent does not advertise `session/load`, it does not
 invent a cold Park. Expiry is checked against the original broker Run deadline.
+Before retrying with the correct HEAD, the fixture checks that the stale request
+published no manifest-bound workspace inputs.
 Build the capture library test in a private `CARGO_TARGET_DIR`, and
 select its executable from Cargo's JSON artifact output to avoid shared-target
-cross-checkout contamination. The case requires both
-`SAVED_REVIEW_INSTALLED_HTTP_PASSED` and `SAVED_REVIEW_PROMOTION_PENDING_UNCHANGED`.
+cross-checkout contamination. The case requires
+`SAVED_REVIEW_STALE_INPUTS_UNPUBLISHED`, `SAVED_REVIEW_INSTALLED_HTTP_PASSED`
+and `SAVED_REVIEW_PROMOTION_PENDING_UNCHANGED`.
 The separate failure-cleanup case interrupts case 1 during its tracker import,
 then checks that the original failure survives, the broker is reaped, the
 tracker exits and the fixture account is removed. It also forces a secondary

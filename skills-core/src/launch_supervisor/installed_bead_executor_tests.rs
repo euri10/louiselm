@@ -8,6 +8,71 @@ mod saved_attention;
 #[path = "installed_stock_operator_tests.rs"]
 mod stock;
 
+fn stale_staging_is_absent(path: &Path) -> std::io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+fn report_stale_staging(ready: &Path, result: &Path, staged: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while !ready.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "stale staging check was not requested"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let verdict = match stale_staging_is_absent(staged) {
+        Ok(true) => "absent".to_owned(),
+        Ok(false) => "published".to_owned(),
+        Err(error) => format!("inspection_error:{error}"),
+    };
+    let temporary = result.with_extension("tmp");
+    fs::write(&temporary, verdict).unwrap();
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::rename(temporary, result).unwrap();
+}
+
+#[test]
+fn stale_staging_check_distinguishes_absence_publication_and_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let staged = root.path().join("staged");
+    assert!(stale_staging_is_absent(&staged).unwrap());
+    fs::create_dir(&staged).unwrap();
+    assert!(!stale_staging_is_absent(&staged).unwrap());
+    fs::remove_dir(&staged).unwrap();
+    std::os::unix::fs::symlink("missing-target", &staged).unwrap();
+    assert!(!stale_staging_is_absent(&staged).unwrap());
+    let file = root.path().join("file");
+    fs::write(&file, b"not a directory").unwrap();
+    assert!(stale_staging_is_absent(&file.join("child")).is_err());
+}
+
+#[test]
+fn stale_staging_observer_waits_for_the_request_and_reports_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let ready = root.path().join("ready");
+    let result = root.path().join("result");
+    let staged = root.path().join("staged");
+    thread::scope(|scope| {
+        let (finished, receiver) = mpsc::channel();
+        let (observer_ready, observer_result, observer_staged) = (&ready, &result, &staged);
+        let observer = scope.spawn(move || {
+            report_stale_staging(observer_ready, observer_result, observer_staged);
+            finished.send(()).unwrap();
+        });
+        let premature = receiver.recv_timeout(Duration::from_millis(100));
+        fs::create_dir(&staged).unwrap();
+        fs::write(&ready, b"").unwrap();
+        observer.join().unwrap();
+        assert!(matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)));
+        assert_eq!(fs::read_to_string(&result).unwrap(), "published");
+    });
+}
+
 #[derive(Default)]
 struct FailureObservation {
     daemon_pid: Cell<Option<i32>>,
@@ -515,7 +580,9 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             "journal_parent":if index == 4 { Some(&journal) } else { None },
             "plan":plan,"plan_digest":plan_digest,
             "saved_ready":operator.join("saved-ready"),"saved_cleaned":operator.join("saved-cleaned"),
-            "hold_ready":operator.join("hold-ready"),"hold_published":operator.join("hold-published")}),
+            "hold_ready":operator.join("hold-ready"),"hold_published":operator.join("hold-published"),
+            "stale_check_ready":operator.join("stale-check-ready"),
+            "stale_check_result":operator.join("stale-check-result")}),
         );
     }
     let input = root.path().join("controller.json");
@@ -606,12 +673,25 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     }
     assert!(broker_group.0.processes().unwrap().contains(&daemon.0.id()));
     let hold_injector = (index >= 6).then(|| inject_provider_hold(&state, index, now));
+    let staged_inputs = config
+        .broker_socket_path
+        .parent()
+        .unwrap()
+        .join("workspace-inputs")
+        .join(promotion_manifest.digest().hex());
+    if saved_review {
+        assert!(
+            stale_staging_is_absent(&staged_inputs).unwrap(),
+            "saved-review fixture inputs must not already be published"
+        );
+    }
     let saved_cleanup = (index == 4).then(|| {
         expire_saved_result_sessions(
             &state,
             (config.broker_uid, config.broker_gid),
             now,
             saved_review,
+            &staged_inputs,
         )
     });
     let project = std::env::var_os("LOUISELM_TEST_LUA_ROOT").expect("explicit Lua checkout");
@@ -1007,10 +1087,17 @@ fn expire_saved_result_sessions(
     owner: (u32, u32),
     now: u64,
     saved_review: bool,
+    staged_inputs: &Path,
 ) -> thread::JoinHandle<Option<crate::broker::attention::Projection>> {
     let ready = operator.join("saved-ready");
     let cleaned = operator.join("saved-cleaned");
+    let stale_ready = operator.join("stale-check-ready");
+    let stale_result = operator.join("stale-check-result");
+    let staged_inputs = staged_inputs.to_owned();
     thread::spawn(move || {
+        if saved_review {
+            report_stale_staging(&stale_ready, &stale_result, &staged_inputs);
+        }
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let sealed = ["lua-worker-4", "lua-verifier-4"].iter().all(|id| {

@@ -222,33 +222,57 @@ local controller = assert(Workflow.new_bead_executor({
         "stale HEAD must refuse before publication: code=" .. tostring(stale.code) .. " stderr=" .. (stale.stderr or "")
       )
       assert(nvim.json.decode(stale.stderr).error == "invalid_request")
-      stage(case.stage_inputs, function(result)
-        if result.code ~= 0 then
-          done(nil, "installed broker source staging failed")
-          return
-        end
-        local binding = nvim.json.decode(result.stdout)
-        assert(binding.schema == "louiselm.launch-inputs.staged/1")
-        assert(binding.manifest_digest == case.grant.request.session_input_manifest_id)
-        assert(binding.source_snapshot_digest == case.snapshot_digest)
-        assert(binding.source_base_digest == case.stage_inputs.manifest.source_base_digest)
-        assert(binding.cache_base_digest == case.stage_inputs.manifest.cache_base_digest)
-        assert(binding.base_commit == case.base_commit)
-        stage(case.stage_inputs, function(duplicate)
-          assert(duplicate.code == 0, "identical immutable inputs must be reusable after remeasurement")
-          assert(nvim.deep_equal(nvim.json.decode(duplicate.stdout), binding))
-          local changed = nvim.deepcopy(case.stage_inputs)
-          changed.cache = changed.snapshot
-          stage(changed, function(refused)
-            assert(refused.code == 6, "changed incoming cache must refuse reuse")
-            assert(nvim.json.decode(refused.stderr).error == "status_unavailable")
-            stage(case.stage_inputs, function(retained)
-              assert(retained.code == 0 and nvim.deep_equal(nvim.json.decode(retained.stdout), binding))
-              prepared()
+      local function stage_valid()
+        stage(case.stage_inputs, function(result)
+          if result.code ~= 0 then
+            done(nil, "installed broker source staging failed")
+            return
+          end
+          local binding = nvim.json.decode(result.stdout)
+          assert(binding.schema == "louiselm.launch-inputs.staged/1")
+          assert(binding.manifest_digest == case.grant.request.session_input_manifest_id)
+          assert(binding.source_snapshot_digest == case.snapshot_digest)
+          assert(binding.source_base_digest == case.stage_inputs.manifest.source_base_digest)
+          assert(binding.cache_base_digest == case.stage_inputs.manifest.cache_base_digest)
+          assert(binding.base_commit == case.base_commit)
+          stage(case.stage_inputs, function(duplicate)
+            assert(duplicate.code == 0, "identical immutable inputs must be reusable after remeasurement")
+            assert(nvim.deep_equal(nvim.json.decode(duplicate.stdout), binding))
+            local changed = nvim.deepcopy(case.stage_inputs)
+            changed.cache = changed.snapshot
+            stage(changed, function(refused)
+              assert(refused.code == 6, "changed incoming cache must refuse reuse")
+              assert(nvim.json.decode(refused.stderr).error == "status_unavailable")
+              stage(case.stage_inputs, function(retained)
+                assert(retained.code == 0 and nvim.deep_equal(nvim.json.decode(retained.stdout), binding))
+                prepared()
+              end)
             end)
           end)
         end)
-      end)
+      end
+      if not saved_review then
+        stage_valid()
+        return
+      end
+      nvim.fn.writefile({}, case.stale_check_ready)
+      local deadline = nvim.uv.hrtime() + 30000000000
+      local function await_stale_check()
+        if nvim.uv.fs_stat(case.stale_check_result) then
+          local result = nvim.fn.readfile(case.stale_check_result)
+          assert(
+            #result == 1 and result[1] == "absent",
+            "stale HEAD publication check failed: " .. table.concat(result)
+          )
+          print("SAVED_REVIEW_STALE_INPUTS_UNPUBLISHED")
+          stage_valid()
+        elseif nvim.uv.hrtime() >= deadline then
+          error("stale HEAD publication check timed out")
+        else
+          nvim.defer_fn(await_stale_check, 10)
+        end
+      end
+      await_stale_check()
     end)
     return true
   end,
