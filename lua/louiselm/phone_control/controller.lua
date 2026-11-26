@@ -421,7 +421,7 @@ function Controller:track(session)
       session = session,
       projection = Projection.new(function()
         return session:inspect().status
-      end, initial.config_options),
+      end, initial.status ~= "configuring" and initial.config_options or nil),
     }
     subject.projection.revision = session.history.revision
     self.sessions[session] = subject

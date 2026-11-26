@@ -7,12 +7,23 @@ local T = MiniTest.new_set()
 local controller_id = string.rep("1", 32)
 local operation_id = string.rep("2", 32)
 
-local function fixture()
-  local state = { id = "session-1", agent = "mock", working_dir = nvim.uv.cwd(), status = "ready" }
+local function fixture(initial)
+  local state = nvim.tbl_extend("force", {
+    id = "session-1",
+    agent = "mock",
+    working_dir = nvim.uv.cwd(),
+    status = "ready",
+  }, initial or {})
   local owner = { sessions = {} }
   local session = { state = state, owner = owner }
   function session:inspect()
     return nvim.deepcopy(self.state)
+  end
+  function session:on(callback)
+    self.observe = callback
+    return function()
+      self.observe = nil
+    end
   end
   owner.sessions[state.id] = session
   local controller =
@@ -51,6 +62,30 @@ local function read(controller, request)
     return result ~= nil
   end))
   return result
+end
+
+T["observation started during configuration does not reveal an unacknowledged value"] = function()
+  local controller, session, request = fixture({
+    status = "configuring",
+    config_options = {
+      {
+        id = "model",
+        name = "Model",
+        type = "select",
+        category = "model",
+        current_value = "b",
+        options = {
+          { value = "b", name = "Model B" },
+        },
+      },
+    },
+  })
+  local result = read(controller, request)
+  MiniTest.expect.equality(result.settings, { model = "", effort = "", mode = "" })
+  session.state.status = "ready"
+  session.history.revision = session.history.revision + 1
+  session.observe({ type = "config_options_changed", data = session.state.config_options })
+  MiniTest.expect.equality(read(controller, request).settings.model, "Model B")
 end
 
 T["accepts a verified exact controller and current scoped Session"] = function()
