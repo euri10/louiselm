@@ -132,7 +132,7 @@ end
 ---@param self table
 ---@param status louiselm.session.Status
 local function set_status(self, status)
-  if self.state.status == status then
+  if self.state.status == "disposed" or self.state.status == status then
     return
   end
   local previous_status = self.state.status
@@ -195,15 +195,21 @@ local function finish_turn(self, revision, outcome)
     return
   end
   local status = outcome == "allowed" and "completed" or "cancelled"
-  emit(self, "tool_call_finished", {
-    toolCallId = "demo-edit-" .. self.state.current_turn,
-    title = "Fix calculator.add",
-    status = status,
-  })
+  local tool_id = self.active_tool
+  self.active_tool = nil
+  if tool_id ~= nil then
+    emit(self, "tool_call_finished", { toolCallId = tool_id, title = "Fix calculator.add", status = status })
+    if self.revision ~= revision or self.state.status == "disposed" then
+      return
+    end
+  end
   local message = outcome == "allowed" and self.api.copy.allowed
     or outcome == "rejected" and self.api.copy.rejected
     or self.api.copy.cancelled
   emit(self, "chunk", { content = { type = "text", text = message } })
+  if self.revision ~= revision or self.state.status == "disposed" then
+    return
+  end
   self.pending_permission = nil
   complete_turn(self, { stopReason = outcome == "cancelled" and "cancelled" or "end_turn" })
 end
@@ -224,6 +230,9 @@ local function propose_edit(self, revision)
     emit(self, "chunk", {
       content = { type = "text", text = self.api.copy.label .. "\n\n" .. self.api.copy.already_fixed },
     })
+    if self.revision ~= revision or self.state.status ~= "prompting" then
+      return
+    end
     complete_turn(self, { stopReason = "end_turn" })
     return
   end
@@ -243,15 +252,25 @@ local function propose_edit(self, revision)
       text = self.api.copy.label .. "\n\n" .. self.api.copy.proposal,
     },
   })
+  if self.revision ~= revision or self.state.status ~= "prompting" then
+    return
+  end
+  self.active_tool = tool_id
   emit(self, "tool_call_started", {
     toolCallId = tool_id,
     title = "Fix calculator.add",
     kind = "edit",
     status = "pending",
   })
+  if self.revision ~= revision or self.state.status ~= "prompting" then
+    return
+  end
   local permission = { answered = false }
   self.pending_permission = permission
   set_status(self, "waiting_permission")
+  if self.revision ~= revision or self.state.status ~= "waiting_permission" then
+    return
+  end
   self.emitter:emit({
     type = "permission_requested",
     session_id = self.state.id,
@@ -324,6 +343,9 @@ local function acknowledge_handoff(self, revision)
       text = self.api.copy.label .. "\n\n" .. self.api.copy.handoff,
     },
   })
+  if self.revision ~= revision or self.state.status ~= "prompting" then
+    return
+  end
   complete_turn(self, { stopReason = "end_turn" })
 end
 
@@ -576,6 +598,7 @@ function Session:dispose()
   end
   self.revision = self.revision + 1
   self.pending_permission = nil
+  self.active_tool = nil
   self.prompt_callback = nil
   set_status(self, "disposed")
   if self.queue ~= nil then
@@ -738,18 +761,30 @@ function Api:load_session(agent_name, acp_session_id, options, ready_callback)
       return
     end
     emit(session, "user_chunk", { content = { type = "text", text = self.copy.seeded_user_first } })
+    if session.state.status == "disposed" then
+      return
+    end
     emit(session, "chunk", {
       content = {
         type = "text",
         text = self.copy.label .. "\n\n" .. self.copy.seeded_reply_first,
       },
     })
+    if session.state.status == "disposed" then
+      return
+    end
     emit(session, "user_chunk", { content = { type = "text", text = self.copy.seeded_user_second } })
+    if session.state.status == "disposed" then
+      return
+    end
     emit(session, "chunk", {
       content = { type = "text", text = self.copy.label .. "\n\n" .. self.copy.seeded_reply_second },
     })
+    if session.state.status == "disposed" then
+      return
+    end
     set_status(session, "ready")
-    if ready_callback ~= nil then
+    if ready_callback ~= nil and session.state.status ~= "disposed" then
       ready_callback(session)
     end
   end)

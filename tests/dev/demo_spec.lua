@@ -189,6 +189,82 @@ T["demo API"]["does not dispatch after an admission listener disposes the Sessio
   MiniTest.expect.equality(completed, false)
 end
 
+T["demo API"]["disposal during a scripted response does not revive the Session"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local events = {}
+  session:on(function(event)
+    events[#events + 1] = event.type
+    if event.type == "chunk" then
+      session:dispose()
+    end
+  end)
+  assert(session:prompt("fix"))
+  drain(queued)
+  MiniTest.expect.equality(
+    events,
+    { "state_changed", "admission_settled", "prompt_dispatched", "chunk", "state_changed" }
+  )
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+end
+
+T["demo API"]["disposal during seeded replay does not revive the Session"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local ready = false
+  local session = assert(api:load_session("your-codex-here", "scripted-resume-1", nil, function()
+    ready = true
+  end))
+  session:on(function(event)
+    if event.type == "user_chunk" then
+      session:dispose()
+    end
+  end)
+  drain(queued)
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  MiniTest.expect.equality(ready, false)
+end
+
+T["demo API"]["cancellation during a scripted response completes the turn once"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  MiniTest.finally(function()
+    api:dispose()
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = assert(api:create_session("your-codex-here"))
+  local outcomes, completions, requested, tools = {}, {}, false, 0
+  session:on(function(event)
+    if event.type == "chunk" and not requested then
+      requested = true
+      assert(session:cancel())
+    elseif event.type == "turn_done" then
+      outcomes[#outcomes + 1] = event.data.stopReason
+    elseif event.type == "tool_call_finished" then
+      tools = tools + 1
+    end
+  end)
+  assert(session:prompt("## Handoff", function(result)
+    completions[#completions + 1] = result.stopReason
+  end))
+  drain(queued)
+  MiniTest.expect.equality(outcomes, { "cancelled" })
+  MiniTest.expect.equality(completions, { "cancelled" })
+  MiniTest.expect.equality(tools, 0)
+end
+
 T["demo API"]["cancellation pauses waiting work until reviewed and continued"] = function()
   local root = fixture()
   local queued, schedule = scheduler()
