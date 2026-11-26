@@ -55,6 +55,9 @@ private object PhoneScreenFixture {
     var lastTarget: PhoneControlTarget? = null
     var sessionRows = emptyList<PhoneControlSessionSummary>()
     var controllerId = "aa".repeat(16)
+    var selectionProjects = emptyList<PhoneSelectionProject>()
+    var selectionAgents = emptyList<String>()
+    val selectionInteractions = mutableListOf<Boolean>()
     var staleRead = false
     var actionHistoryReads = 0
     var moreActionHistory = false
@@ -106,6 +109,8 @@ private object PhoneScreenFixture {
         status = PhoneControlStatus.Disabled; prompt = null; error = null; sends = 0; prompts = 0
         loseEnrollmentReply = false; lastPeriod = null; reads = 0; lastTarget = null; sessionRows = emptyList(); staleRead = false; pairingBinding = "fixture"
         controllerId = "aa".repeat(16)
+        selectionProjects = emptyList(); selectionAgents = emptyList()
+        selectionInteractions.clear()
         preUnlockOffline = true
         sendCalls = 0; sendOutcome = PhoneControlOutcome.UNSUPPORTED; sendFailure = null; evidenceState = null; evidenceReads = 0; evidenceReadOnMain = false
         evidenceOperationIds.clear()
@@ -290,6 +295,19 @@ class PhoneScreenClientFixture {
         return PhoneControlResult.Value(PhoneControlReply.SessionList(controllerId, "88".repeat(16), rows, next))
     }
 
+    @Implementation(methodName = "listSelection")
+    internal fun listSelection(period: PhoneControlPeriod, now: Long, controllerId: String, after: String?, limit: Int,
+        interaction: Boolean, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SelectionList> {
+        if (!maySend() || !period.isActive(now)) return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+        PhoneScreenFixture.selectionInteractions += interaction
+        if (controllerId != PhoneScreenFixture.controllerId) return PhoneControlResult.Failure(PhoneControlOutcome.STALE_SUBJECT)
+        val remaining = PhoneScreenFixture.selectionProjects.filter { after == null || it.id > after }
+        val rows = remaining.take(limit)
+        val next = if (remaining.size > limit) rows.last().id else ""
+        return PhoneControlResult.Value(PhoneControlReply.SelectionList(controllerId, "88".repeat(16),
+            PhoneScreenFixture.selectionAgents, rows, next, true))
+    }
+
     @Implementation(methodName = "readActionHistoryPage")
     internal fun readActionHistoryPage(period: PhoneControlPeriod, now: Long, after: String?, limit: Int,
         maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.ActionHistoryPage> {
@@ -439,6 +457,72 @@ class PhoneControlActivityTest {
         .single { it.text.toString() == text }
     private fun hasText(id: Int) = views(activity.window.decorView).filterIsInstance<TextView>()
         .any { it.text.toString() == activity.getString(id) }
+
+    @Test
+    fun selectionUsesCurrentOwnerWithoutLiveSessionsAndClearsOnRefreshOrLock() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.selectionProjects = listOf(PhoneSelectionProject("01".repeat(16), "/fixture/project"))
+        PhoneScreenFixture.selectionAgents = listOf("mock")
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drainBackground()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drainBackground() }
+        buttonText("Session choices").performClick()
+        repeat(2) { drainBackground() }
+        buttonText("Neovim 1").performClick()
+        repeat(2) { drainBackground() }
+        buttonText("/fixture/project").performClick()
+        buttonText("mock").performClick()
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("/fixture/project") && it.text.toString().contains("mock") })
+        assertEquals(0, PhoneScreenFixture.sendCalls)
+        PhoneScreenFixture.selectionProjects = emptyList()
+        button(R.string.phone_refresh).performClick()
+        repeat(2) { drainBackground() }
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("/fixture/project") })
+        PhoneScreenFixture.selectionProjects = listOf(PhoneSelectionProject("01".repeat(16), "/fixture/project"))
+        button(R.string.phone_refresh).performClick()
+        repeat(2) { drainBackground() }
+        buttonText("/fixture/project").performClick()
+        buttonText("mock").performClick()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        repeat(2) { drainBackground() }
+        assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("/fixture/project") && it.text.toString().contains("mock") })
+        assertEquals(false, PhoneScreenFixture.selectionInteractions.last())
+        PhoneScreenFixture.controllerId = "bb".repeat(16)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        repeat(2) { drainBackground() }
+        assertEquals(false, PhoneScreenFixture.selectionInteractions.last())
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("/fixture/project") })
+        screenOff()
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("/fixture/project") })
+    }
+
+    @Test
+    fun selectionResponseQueuedBeforeLockCannotRestoreChoices() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.selectionProjects = listOf(PhoneSelectionProject("01".repeat(16), "/fixture/project"))
+        PhoneScreenFixture.selectionAgents = listOf("mock")
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drainBackground()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drainBackground() }
+        buttonText("Session choices").performClick()
+        repeat(2) { drainBackground() }
+        buttonText("Neovim 1").performClick()
+        button(R.string.phone_lock).performClick()
+        repeat(2) { drainBackground() }
+        assertFalse(views(activity.window.decorView).filterIsInstance<TextView>()
+            .any { it.text.toString().contains("/fixture/project") })
+    }
 
     @Test
     fun preparedDraftIsExplicitlyOpenedAndClearedOnLock() {

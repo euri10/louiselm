@@ -46,6 +46,9 @@ mod run_e2e;
 #[path = "http_run_tests.rs"]
 mod run_tests;
 #[cfg(test)]
+#[path = "http_selection_tests.rs"]
+mod selection_tests;
+#[cfg(test)]
 #[path = "http_settings_tests.rs"]
 mod settings_tests;
 #[cfg(test)]
@@ -230,6 +233,7 @@ async fn process_http(
                 81 | 82 => return finish_voice(state, credential, *permit).await,
                 80 => return finish_saved_review(state, credential, *permit, &request).await,
                 57 => return finish_run_session(state, credential, *permit, &request).await,
+                50 => return finish_selection(state, credential, *permit, &request).await,
                 56 => return finish_live_run(state, credential, *permit, &request).await,
                 52..=55 => return finish_owner(state, credential, *permit).await,
                 _ => {}
@@ -286,6 +290,29 @@ async fn process_http(
     }
 }
 
+async fn finish_selection(
+    state: HttpState,
+    credential: String,
+    permit: ReadPermit,
+    request: &Request,
+) -> Result<Value, Refusal> {
+    let response = state
+        .controllers
+        .dispatch(&request.controller_id, permit.frame.clone())
+        .await;
+    tokio::task::spawn_blocking(move || {
+        state.authority.finish_selection(
+            &permit,
+            &state.pairing,
+            &credential,
+            &state.controllers,
+            response,
+        )
+    })
+    .await
+    .unwrap_or(Err(Refusal::Unavailable))
+}
+
 fn begin_http(
     state: &HttpState,
     credential: &str,
@@ -304,7 +331,7 @@ fn begin_http(
         }
         if matches!(
             signed.request.action,
-            1 | 48 | 49 | 52 | 53 | 54 | 55 | 56 | 57 | 80 | 81 | 82 | 84 | 85
+            1 | 48 | 49 | 50 | 52 | 53 | 54 | 55 | 56 | 57 | 80 | 81 | 82 | 84 | 85
         ) {
             let permit = state
                 .authority
@@ -1358,7 +1385,7 @@ mod tests {
         (grant, period)
     }
 
-    fn approve_scoped_grant(
+    pub(super) fn approve_scoped_grant(
         service: &Service,
         phone: &crate::DeviceCredential,
         fixture: &Value,
@@ -1431,7 +1458,7 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap())
     }
 
-    fn signed_discovery(
+    pub(super) fn signed_discovery(
         fixture: &Value,
         grant: &StoredGrant,
         period: &str,
@@ -1441,6 +1468,20 @@ mod tests {
     ) -> Value {
         let mut payload = [0_u8; 17];
         payload[16] = 50;
+        signed_discovery_payload(
+            fixture, grant, period, controller, action, operation, payload,
+        )
+    }
+
+    pub(super) fn signed_discovery_payload(
+        fixture: &Value,
+        grant: &StoredGrant,
+        period: &str,
+        controller: &str,
+        action: u8,
+        operation: u128,
+        payload: [u8; 17],
+    ) -> Value {
         let digest = lower_hex(&Sha256::digest(payload));
         let operation = format!("{operation:032x}");
         let subject = "00".repeat(16);

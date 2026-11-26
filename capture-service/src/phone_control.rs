@@ -368,10 +368,10 @@ pub fn verify_phone_control_frame(
     match header.get("type").and_then(serde_json::Value::as_str) {
         Some(kind) if !valid_string(kind) => return Err(Malformed),
         Some(
-            "read_session" | "send_prompt" | "list_controllers" | "list_sessions" | "list_prepared"
-            | "read_prepared" | "list_runs" | "read_run" | "read_run_live" | "read_run_session"
-            | "read_saved_review" | "voice_history" | "voice_result" | "voice_admit"
-            | "voice_cancel" | "voice_retry",
+            "read_session" | "send_prompt" | "list_controllers" | "list_sessions"
+            | "list_selection" | "list_prepared" | "read_prepared" | "list_runs" | "read_run"
+            | "read_run_live" | "read_run_session" | "read_saved_review" | "voice_history"
+            | "voice_result" | "voice_admit" | "voice_cancel" | "voice_retry",
         ) => {}
         Some(_) => return Err(Unsupported),
         None => return Err(Malformed),
@@ -387,6 +387,7 @@ pub fn verify_phone_control_frame(
                 | ("send_prompt", 3)
                 | ("list_controllers", 48)
                 | ("list_sessions", 49)
+                | ("list_selection", 50)
                 | ("list_prepared", 52)
                 | ("read_prepared", 53)
                 | ("list_runs", 54)
@@ -419,7 +420,7 @@ impl Frame {
                 validate_history_request_shape(request)?;
             }
             3 => validate_send_request_shape(request)?,
-            48 | 49 => validate_discovery_request_shape(request)?,
+            48..=50 => validate_discovery_request_shape(request)?,
             52 => validate_prepared_list_request_shape(request)?,
             53 => validate_prepared_request_shape(request)?,
             54 => validate_run_list_request_shape(request)?,
@@ -569,7 +570,7 @@ fn validate_send_request_shape(request: &Request) -> Result<(), PhoneControlErro
 
 fn validate_discovery_request_shape(request: &Request) -> Result<(), PhoneControlError> {
     validate_common_request_shape(request)?;
-    if !matches!(request.action, 48 | 49) || request.interaction > 1 {
+    if !matches!(request.action, 48..=50) || request.interaction > 1 {
         return Err(PhoneControlError::Unsupported);
     }
     let payload = fixed::<17>(&request.payload)?;
@@ -578,7 +579,7 @@ fn validate_discovery_request_shape(request: &Request) -> Result<(), PhoneContro
         || fixed::<16>(&request.subject_id)? != [0; 16]
         || request.expected_revision != 0
         || (request.action == 48 && controller != [0; 16])
-        || (request.action == 49 && controller == [0; 16])
+        || (matches!(request.action, 49 | 50) && controller == [0; 16])
     {
         return Err(PhoneControlError::Malformed);
     }

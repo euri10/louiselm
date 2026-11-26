@@ -149,6 +149,12 @@ class PhoneControlActivity : Activity() {
     private var newerOmitted = false
     private var historyChanged = false
     private var browsePage: PhoneBrowsePage? = null
+    private var showingSelection = false
+    private var selectionController: String? = null
+    private var selectionControllerAfter: String? = null
+    private var selectionAfter: String? = null
+    private var selectionProject: PhoneSelectionProject? = null
+    private var selectionAgent: String? = null
     private var actionHistoryPage: PhoneControlReply.ActionHistoryPage? = null
     private var showingActionHistory = false
     private var showingPrepared = false
@@ -207,7 +213,11 @@ class PhoneControlActivity : Activity() {
     private val pinRefresh = Runnable { refreshPinnedCopy() }
     private val reconcilePoll = Runnable { reconcilePendingActions() }
     private val refreshPoll = Runnable {
-        if (foreground && !busy && !showingActionHistory && period != null && target != null && hasReceiverNetworkAccess(this)) {
+        if (foreground && showingSelection && period != null) {
+            if (busy) scheduleRefresh()
+            else if (hasReceiverNetworkAccess(this)) refreshSelection(interaction = false)
+            else showFailure(PhoneControlOutcome.UNAVAILABLE)
+        } else if (foreground && !busy && !showingActionHistory && period != null && target != null && hasReceiverNetworkAccess(this)) {
             readTarget(interaction = false)
         }
     }
@@ -324,7 +334,14 @@ class PhoneControlActivity : Activity() {
             } else {
                 render()
                 scheduleReconciliation(0)
-                if (showingRuns && hasReceiverNetworkAccess(this)) {
+                if (showingSelection && hasReceiverNetworkAccess(this)) {
+                    refreshSelection(interaction = false)
+                }
+                else if (showingSelection) {
+                    conversation.removeAllViews()
+                    render(R.string.phone_unavailable)
+                }
+                else if (showingRuns && hasReceiverNetworkAccess(this)) {
                     readSelectedRun(interaction = false)
                 }
                 else if (showingRuns) render(R.string.phone_unavailable)
@@ -350,6 +367,11 @@ class PhoneControlActivity : Activity() {
         handler.removeCallbacks(pinRefresh)
         handler.removeCallbacks(reconcilePoll)
         conversation.visibility = View.GONE
+        if (showingSelection) {
+            selectionProject = null
+            selectionAgent = null
+            conversation.removeAllViews()
+        }
         sendInput.visibility = View.GONE
         sendButton.visibility = View.GONE
         sendStatus.visibility = View.GONE
@@ -454,11 +476,11 @@ class PhoneControlActivity : Activity() {
             setOnClickListener { unlockOffline(forDraft = true) { unlocked -> if (unlocked) loadDrafts() } }
         }
         add(draftUnlockButton)
-        draftListButton = Button(this).apply { text = getString(R.string.phone_draft_list); setOnClickListener { showDrafts() } }
+        draftListButton = Button(this).apply { text = getString(R.string.phone_draft_list); setOnClickListener { clearSelection(); showDrafts() } }
         add(draftListButton)
-        voiceListButton = Button(this).apply { text = getString(R.string.phone_voice_list); setOnClickListener { showVoiceRecordings() } }
+        voiceListButton = Button(this).apply { text = getString(R.string.phone_voice_list); setOnClickListener { clearSelection(); showVoiceRecordings() } }
         add(voiceListButton)
-        voiceArchiveButton = Button(this).apply { setText(R.string.phone_voice_archive); setOnClickListener { withNetwork { showVoiceArchive() } } }
+        voiceArchiveButton = Button(this).apply { setText(R.string.phone_voice_archive); setOnClickListener { withNetwork { clearSelection(); showVoiceArchive() } } }
         add(voiceArchiveButton)
         voicePlaybackStop = Button(this).apply { text = getString(R.string.phone_voice_stop_playback); setOnClickListener { stopVoicePlayback(); render() } }
         add(voicePlaybackStop)
@@ -501,25 +523,33 @@ class PhoneControlActivity : Activity() {
         add(offlineBudgetButton)
         sessionsButton = Button(this).apply { text = getString(R.string.phone_sessions); setOnClickListener { withNetwork { showSessions() } } }
         add(sessionsButton)
-        runsButton = Button(this).apply { text = getString(R.string.phone_runs); setOnClickListener { withNetwork { showRuns() } } }
+        runsButton = Button(this).apply { text = getString(R.string.phone_runs); setOnClickListener { withNetwork { clearSelection(); showRuns() } } }
         add(runsButton)
-        preparedButton = Button(this).apply { text = getString(R.string.phone_prepared); setOnClickListener { withNetwork { showPrepared() } } }
+        preparedButton = Button(this).apply { text = getString(R.string.phone_prepared); setOnClickListener { withNetwork { clearSelection(); showPrepared() } } }
         add(preparedButton)
         actionHistoryButton = Button(this).apply {
             text = getString(R.string.phone_action_history)
-            setOnClickListener { withNetwork { readActionHistory() } }
+            setOnClickListener { withNetwork { clearSelection(); readActionHistory() } }
         }
         add(actionHistoryButton)
         refreshButton = Button(this).apply {
             text = getString(R.string.phone_refresh)
-            setOnClickListener { withNetwork {
-                val selected = selectedPrepared
-                if (showingRuns) readSelectedRun()
-                else if (showingPrepared && selected != null) readPreparedDetail(selected)
-                else if (showingPrepared) readPreparedPage()
-                else if (showingActionHistory) readActionHistory()
-                else if (target == null) readSessions() else readTarget()
-            } }
+            setOnClickListener {
+                if (showingSelection) {
+                    selectionProject = null
+                    selectionAgent = null
+                    conversation.removeAllViews()
+                }
+                withNetwork {
+                    val selected = selectedPrepared
+                    if (showingSelection) refreshSelection()
+                    else if (showingRuns) readSelectedRun()
+                    else if (showingPrepared && selected != null) readPreparedDetail(selected)
+                    else if (showingPrepared) readPreparedPage()
+                    else if (showingActionHistory) readActionHistory()
+                    else if (target == null) readSessions() else readTarget()
+                }
+            }
         }
         add(refreshButton)
         moreSessionsButton = Button(this).apply {
@@ -1699,7 +1729,7 @@ class PhoneControlActivity : Activity() {
         val unlocked = period?.isActive(SystemClock.elapsedRealtime()) == true
         val offlineUnlocked = offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true
         val draftUnlocked = draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true && draftsReady
-        val showComposer = foreground && draftUnlocked && draftSource != null
+        val showComposer = foreground && !showingSelection && draftUnlocked && draftSource != null
         sendInput.visibility = if (showComposer) View.VISIBLE else View.GONE
         val currentDraftKey = if (draftReceiver != null && draftTarget != null) requireNotNull(draftReceiver) to requireNotNull(draftTarget) else null
         sendInput.isEnabled = !voicePreparing && !voiceApplying && (currentDraftKey == null || currentDraftKey != discardingDraft)
@@ -1775,7 +1805,7 @@ class PhoneControlActivity : Activity() {
         offlineBudgetButton.visibility = if (offlineUnlocked && showingOffline) View.VISIBLE else View.GONE
         offlineBudgetButton.isEnabled = !busy
         lockButton.visibility = if (unlocked || offlineUnlocked || draftUnlocked) View.VISIBLE else View.GONE
-        sessionsButton.visibility = if (unlocked && (target != null || showingActionHistory || showingOffline || showingDrafts || showingPrepared || showingRuns)) View.VISIBLE else View.GONE
+        sessionsButton.visibility = if (unlocked && (target != null || showingSelection || showingActionHistory || showingOffline || showingDrafts || showingPrepared || showingRuns)) View.VISIBLE else View.GONE
         sessionsButton.isEnabled = !busy
         runsButton.visibility = if (unlocked && !showingOffline) View.VISIBLE else View.GONE
         runsButton.isEnabled = !busy
@@ -1785,7 +1815,7 @@ class PhoneControlActivity : Activity() {
         actionHistoryButton.isEnabled = !busy
         refreshButton.visibility = if (unlocked && !showingOffline) View.VISIBLE else View.GONE
         refreshButton.isEnabled = !busy
-        moreSessionsButton.visibility = if (unlocked && !showingOffline && !showingActionHistory && !showingPrepared && !showingRuns && target == null && browsePage?.next != null) View.VISIBLE else View.GONE
+        moreSessionsButton.visibility = if (unlocked && !showingSelection && !showingOffline && !showingActionHistory && !showingPrepared && !showingRuns && target == null && browsePage?.next != null) View.VISIBLE else View.GONE
         moreSessionsButton.isEnabled = !busy
         moreRunsButton.visibility = if (unlocked && showingRuns && selectedRunId == null && !runPage?.nextAfter.isNullOrEmpty()) View.VISIBLE else View.GONE
         moreRunsButton.isEnabled = !busy
@@ -1924,6 +1954,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun showOfflineCopies() {
+        clearSelection()
         val current = offlinePeriod ?: return
         stopVoicePlayback()
         showingVoice = false
@@ -2634,6 +2665,7 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun showSessions() {
+        clearSelection()
         stopVoicePlayback()
         showingVoice = false
         clearRunSession()
@@ -2657,6 +2689,134 @@ class PhoneControlActivity : Activity() {
         historyChanged = false
         conversation.removeAllViews()
         readSessions()
+    }
+
+    private fun clearSelection() {
+        showingSelection = false
+        selectionController = null
+        selectionControllerAfter = null
+        selectionAfter = null
+        selectionProject = null
+        selectionAgent = null
+    }
+
+    private fun showSelection() {
+        showingSelection = true
+        selectionController = null
+        selectionControllerAfter = null
+        selectionAfter = null
+        selectionProject = null
+        selectionAgent = null
+        browsePage = null
+        refreshSelection()
+    }
+
+    private fun refreshSelection(interaction: Boolean = true) {
+        val controller = selectionController
+        if (controller == null) readSelectionControllers(if (interaction) null else selectionControllerAfter, interaction)
+        else readSelectionProjects(controller, if (interaction) null else selectionAfter, interaction)
+    }
+
+    private fun readSelectionControllers(after: String? = null, interaction: Boolean = true) {
+        val current = period ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: run { lockWorkspace(); return }
+        selectionProject = null
+        selectionAgent = null
+        selectionControllerAfter = after
+        conversation.removeAllViews()
+        task({ maySend -> client.listControllers(current, SystemClock.elapsedRealtime(), after = after,
+            interaction = interaction) {
+            foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+        } }, { outcome -> if (foreground) showFailure(outcome) }) { page, _ ->
+            busy = false
+            if (!foreground || !showingSelection || selectionController != null) return@task
+            val now = SystemClock.elapsedRealtime()
+            if (pairing.binding() != binding || period !== current ||
+                !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
+                lockWorkspace()
+                return@task
+            }
+            scheduleExpiry()
+            scheduleRefresh()
+            render()
+            conversation.removeAllViews()
+            conversation.visibility = View.VISIBLE
+            for ((index, controller) in page.controllers.withIndex()) conversation.addView(Button(this).apply {
+                text = getString(R.string.phone_selection_neovim, index + 1)
+                setOnClickListener { withNetwork { readSelectionProjects(controller) } }
+            })
+            if (page.nextAfter.isNotEmpty()) conversation.addView(Button(this).apply {
+                setText(R.string.phone_selection_more)
+                setOnClickListener { withNetwork { readSelectionControllers(page.nextAfter) } }
+            })
+        }
+    }
+
+    private fun readSelectionProjects(controller: String, after: String? = null, interaction: Boolean = true) {
+        val current = period ?: return
+        val pairing = PairingStore(applicationContext)
+        val binding = pairing.binding() ?: run { lockWorkspace(); return }
+        val previousProject = if (interaction) null else selectionProject
+        val previousAgent = if (interaction) null else selectionAgent
+        selectionController = controller
+        selectionAfter = after
+        selectionProject = null
+        selectionAgent = null
+        conversation.removeAllViews()
+        task({ maySend -> client.listSelection(current, SystemClock.elapsedRealtime(), controller, after = after,
+            interaction = interaction) {
+            foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+        } }, { outcome -> if (foreground) showFailure(outcome) }) { page, _ ->
+            busy = false
+            if (!foreground || !showingSelection || selectionController != controller) return@task
+            val now = SystemClock.elapsedRealtime()
+            if (pairing.binding() != binding || period !== current ||
+                !(if (interaction) current.confirmInteraction(now) else current.isActive(now))) {
+                lockWorkspace()
+                return@task
+            }
+            selectionProject = page.projects.firstOrNull { it == previousProject }
+            selectionAgent = previousAgent?.takeIf { selectionProject != null && it in page.agents }
+            scheduleExpiry()
+            scheduleRefresh()
+            render()
+            displaySelection(page)
+        }
+    }
+
+    private fun displaySelection(page: PhoneControlReply.SelectionList) {
+        conversation.removeAllViews()
+        conversation.visibility = View.VISIBLE
+        if (!page.canCreate) conversation.addView(TextView(this).apply { setText(R.string.phone_selection_read_only) })
+        if (page.projects.isEmpty() || page.agents.isEmpty()) {
+            conversation.addView(TextView(this).apply { setText(R.string.phone_selection_empty) })
+        }
+        val selectedProject = selectionProject
+        val selectedAgent = selectionAgent
+        if (selectedProject != null && selectedAgent != null) conversation.addView(TextView(this).apply {
+            text = getString(R.string.phone_selection_selected, selectedProject.path, selectedAgent)
+        })
+        if (page.projects.isNotEmpty()) conversation.addView(TextView(this).apply { setText(R.string.phone_selection_projects) })
+        for (project in page.projects) conversation.addView(Button(this).apply {
+            text = project.path
+            setOnClickListener {
+                selectionProject = project
+                selectionAgent = null
+                displaySelection(page)
+            }
+        })
+        if (selectedProject != null && page.agents.isNotEmpty()) {
+            conversation.addView(TextView(this).apply { setText(R.string.phone_selection_agents) })
+            for (agent in page.agents) conversation.addView(Button(this).apply {
+                text = agent
+                setOnClickListener { selectionAgent = agent; displaySelection(page) }
+            })
+        }
+        if (page.nextAfter.isNotEmpty()) conversation.addView(Button(this).apply {
+            setText(R.string.phone_selection_more)
+            setOnClickListener { withNetwork { readSelectionProjects(page.controllerId, page.nextAfter) } }
+        })
     }
 
     private fun clearPrepared() {
@@ -2861,6 +3021,10 @@ class PhoneControlActivity : Activity() {
             render()
             conversation.removeAllViews()
             conversation.visibility = View.VISIBLE
+            conversation.addView(Button(this).apply {
+                setText(R.string.phone_selection)
+                setOnClickListener { withNetwork { showSelection() } }
+            })
             if (page.rows.isEmpty()) {
                 conversation.addView(TextView(this).apply { text = getString(R.string.phone_no_sessions) })
             }
@@ -3110,6 +3274,8 @@ class PhoneControlActivity : Activity() {
         !getSystemService(KeyguardManager::class.java).isDeviceLocked
 
     private fun showFailure(outcome: PhoneControlOutcome) {
+        selectionProject = null
+        selectionAgent = null
         if (outcome in setOf(PhoneControlOutcome.EXPIRED, PhoneControlOutcome.REVOKED,
                 PhoneControlOutcome.UNAUTHENTICATED)) clearVoiceReview()
         if (outcome == PhoneControlOutcome.EXPIRED || outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED) {
@@ -3185,6 +3351,7 @@ class PhoneControlActivity : Activity() {
         newerOmitted = false
         historyChanged = false
         browsePage = null
+        clearSelection()
         conversation.removeAllViews()
         conversation.visibility = if (foreground) View.VISIBLE else View.GONE
         handler.removeCallbacksAndMessages(null)
@@ -3254,7 +3421,7 @@ class PhoneControlActivity : Activity() {
 
     private fun scheduleRefresh() {
         handler.removeCallbacks(refreshPoll)
-        if (foreground && period?.isActive(SystemClock.elapsedRealtime()) == true && target != null) {
+        if (foreground && period?.isActive(SystemClock.elapsedRealtime()) == true && (target != null || showingSelection)) {
             handler.postDelayed(refreshPoll, REFRESH_INTERVAL_MS)
         }
     }

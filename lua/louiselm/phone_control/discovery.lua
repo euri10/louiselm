@@ -50,6 +50,37 @@ local function label(value)
   return value:sub(1, index - 1), index <= #value
 end
 
+---Read configured Agent names in the verified grant, independent of Sessions.
+---@param controller table Exact controller and configured Agent names.
+---@param grant table Verified local grant.
+---@param request table Verified selection request.
+---@param callback fun(result: table) Closed response or refusal.
+function M.agents(controller, grant, request, callback)
+  local agents = {}
+  if type(grant.agents) ~= "table" or #grant.agents > 50 then
+    callback({ v = 1, type = "error", code = "unavailable" })
+    return
+  end
+  for _, name in ipairs(grant.agents) do
+    if controller.agents[name] then
+      local valid, shortened = label(name)
+      if valid == nil or shortened or valid == "" then
+        callback({ v = 1, type = "error", code = "unavailable" })
+        return
+      end
+      agents[#agents + 1] = name
+    end
+  end
+  table.sort(agents)
+  callback({
+    v = 1,
+    type = "selection_agents",
+    controller_id = controller.controller_id,
+    operation_id = request.operation_id,
+    agents = agents,
+  })
+end
+
 ---List scoped live Sessions; filesystem resolution and completion are asynchronous.
 ---@param controller table Owning controller and its tracked Session incarnations.
 ---@param grant table Verified local grant.

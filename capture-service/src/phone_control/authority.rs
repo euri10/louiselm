@@ -4,6 +4,8 @@
 mod prepared;
 #[path = "authority_run.rs"]
 mod run;
+#[path = "authority_selection.rs"]
+mod selection;
 #[path = "sleep_clock.rs"]
 mod sleep_clock;
 #[path = "authority_voice.rs"]
@@ -967,6 +969,7 @@ impl Authority {
                 1 => "read_session",
                 48 => "list_controllers",
                 49 => "list_sessions",
+                50 => "list_selection",
                 52 => "list_prepared",
                 53 => "read_prepared",
                 54 => "list_runs",

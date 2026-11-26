@@ -527,6 +527,7 @@ function Controller:read(line, callback)
   end
   local request, grant = message.request, message.grant
   local listing = message.type == "list_sessions" and request.action == 49
+  local selecting = message.type == "list_selection" and request.action == 50
   local sending = message.type == "send_prompt" and request.action == 3
   local linked_read = message.type == "read_run_session" and request.action == 57
   if sending then
@@ -538,7 +539,7 @@ function Controller:read(line, callback)
   end
   if
     message.v ~= 1
-    or not (listing or sending or linked_read or (message.type == "read_session" and request.action == 1))
+    or not (listing or selecting or sending or linked_read or (message.type == "read_session" and request.action == 1))
   then
     nvim.schedule(function()
       callback(error_result("unsupported"))
@@ -554,7 +555,7 @@ function Controller:read(line, callback)
   if sending and send_text ~= nil then
     before, limit = 0, 1
   end
-  if listing then
+  if listing or selecting then
     before, limit = nil, nil
     local payload = request.payload
     if type(payload) == "string" and #payload == 34 and payload:match("^[0-9a-f]+$") then
@@ -639,13 +640,17 @@ function Controller:read(line, callback)
         finish(error_result(codes[code] and code or "unavailable"))
         return
       end
-      if listing then
+      if listing or selecting then
         if self.controller_id ~= attached or message.controller_id ~= attached or request.controller_id ~= attached then
           finish(error_result("stale_subject"))
         elseif not contains(grant.groups, "read") then
           finish(error_result("out_of_scope"))
         else
-          Discovery.list(self, grant, request, finish)
+          if listing then
+            Discovery.list(self, grant, request, finish)
+          else
+            Discovery.agents(self, grant, request, finish)
+          end
         end
         return
       end
@@ -875,11 +880,16 @@ function Controller:dispose()
 end
 
 ---Create a disconnected controller with the configured capture-service argv prefix.
----@param options {service: string[]}
+---@param options {service: string[], agents?: table}
 ---@return table controller
 function M.new(options)
+  local agents = {}
+  for name in pairs(options.agents or {}) do
+    agents[name] = true
+  end
   return setmetatable({
     service = nvim.deepcopy(options.service),
+    agents = agents,
     sessions = {},
     runs = RunOwner.new(),
     subjects = {},

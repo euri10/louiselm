@@ -71,7 +71,7 @@ function M.start(config)
   end
   local service = config.capture and config.capture.service or Config.schema.fields.capture.fields.service.default
   ---@cast service string[] -- The validated capture schema defines this default as an argv array.
-  local controller = Controller.new({ service = service })
+  local controller = Controller.new({ service = service, agents = config.agents })
   local unsubscribe = Registry.observe_sessions(function(session, present)
     if present then
       controller:track(session)

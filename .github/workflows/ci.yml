@@ -547,6 +547,10 @@ jobs:
           LOUISELM_TEST_NVIM="$(command -v nvim)" \
             LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
+              phone_control::http::selection_tests::android_selection_reaches_a_real_owner_with_no_sessions -- --exact --ignored
+          LOUISELM_TEST_NVIM="$(command -v nvim)" \
+            LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
               phone_control::http::voice_tests::pinned_receiver_and_android_review_archived_voice -- --exact --ignored
           LOUISELM_TEST_NVIM="$(command -v nvim)" \
             LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \

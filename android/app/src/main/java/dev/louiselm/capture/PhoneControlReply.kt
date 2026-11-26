@@ -31,6 +31,9 @@ internal sealed class PhoneControlReply {
     data class ControllerList(val operationId: String, val controllers: List<String>, val nextAfter: String) : PhoneControlReply()
     data class SessionList(val controllerId: String, val operationId: String,
         val sessions: List<PhoneControlSessionSummary>, val nextAfter: String) : PhoneControlReply()
+    data class SelectionList(val controllerId: String, val operationId: String,
+        val agents: List<String>, val projects: List<PhoneSelectionProject>, val nextAfter: String,
+        val canCreate: Boolean) : PhoneControlReply()
     data class PreparedPage(val requestId: String, val items: List<PhonePreparedSummary>, val nextAfter: String) : PhoneControlReply()
     data class PreparedDetail(val requestId: String, val registrationId: String, val runId: String,
         val revision: Long, val detail: PhonePreparedDraft) : PhoneControlReply()
@@ -59,6 +62,8 @@ internal data class PhoneControlSessionSummary(
     val subjectId: String, val name: String, val agent: String, val project: String,
     val status: String, val truncated: Boolean,
 )
+
+internal data class PhoneSelectionProject(val id: String, val path: String)
 
 internal enum class PhoneActionState { UNKNOWN, ACCEPTED, DISPATCHED, COMPLETED, REJECTED, FENCED_NO_EFFECT }
 
@@ -401,6 +406,33 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                     require(sessions.lastOrNull()?.subjectId == next)
                 }
                 PhoneControlReply.SessionList(controller, hex("operation_id", 16), sessions, next)
+            }
+            "selection_list" -> {
+                keys("controller_id", "operation_id", "agents", "projects", "next_after", "can_create")
+                val controller = hex("controller_id", 16)
+                require(controller != "00".repeat(16))
+                val agents = fields.wireArray("agents").map { item ->
+                    (item as? String ?: throw IllegalArgumentException("invalid agent")).also {
+                        require(it.isNotEmpty() && validWireString(it, 512))
+                    }
+                }
+                require(agents.size <= 50 && agents.toSet().size == agents.size)
+                val projects = fields.wireArray("projects").map { item ->
+                    val row = requireNotNull(item).wireObject()
+                    row.wireKeys("id", "path")
+                    val id = row.wireHex("id", 16)
+                    val path = row.wireString("path", 512)
+                    require(id != "00".repeat(16) && path.startsWith("/"))
+                    PhoneSelectionProject(id, path)
+                }
+                require(projects.size <= 50 && projects.zipWithNext().all { (left, right) -> left.id < right.id })
+                val next = string("next_after")
+                if (next.isNotEmpty()) {
+                    phoneControlHex(next, 16)
+                    require(projects.lastOrNull()?.id == next)
+                }
+                PhoneControlReply.SelectionList(controller, hex("operation_id", 16), agents, projects, next,
+                    fields.wireBoolean("can_create"))
             }
             "prepared_page" -> parsePreparedPage(fields)
             "prepared_detail" -> parsePreparedDetail(fields)

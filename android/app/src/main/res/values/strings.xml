@@ -33,6 +33,14 @@
     <string name="phone_refresh">Refresh</string>
     <string name="phone_sessions">Sessions</string>
     <string name="phone_more_sessions">More Sessions</string>
+    <string name="phone_selection">Session choices</string>
+    <string name="phone_selection_neovim">Neovim %1$d</string>
+    <string name="phone_selection_more">More</string>
+    <string name="phone_selection_projects">Choose a project</string>
+    <string name="phone_selection_agents">Choose an Agent</string>
+    <string name="phone_selection_selected">Project: %1$s\nAgent: %2$s</string>
+    <string name="phone_selection_empty">No available projects or Agents.</string>
+    <string name="phone_selection_read_only">Creating a Session requires Operate Sessions permission.</string>
     <string name="phone_runs">Runs</string>
     <string name="phone_more_runs">More Runs</string>
     <string name="phone_no_runs">No authorized durable Runs on this page.</string>

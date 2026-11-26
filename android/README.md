@@ -146,6 +146,12 @@ Matching entry numbers identify them in the history. After a desktop response
 they remain readable there; saved offline copies
 never claim that a request is still current. This view does not answer them.
 Background refresh does not extend the working period.
+**Session choices** shows the current enrolled projects and configured Agents
+for a selected Neovim, including when no Sessions are running. Choose a project
+and Agent to review the pair; this screen does not create a Session. Read content
+is required to view choices, and creation also requires Operate Sessions. Removed
+projects, unavailable controllers and locked workspaces clear the displayed
+choices. Project identities and scope are approved on the computer.
 Opening a card does not clear or answer Attention. Old cards may no longer
 point to a live Session; refresh the inbox instead of assuming the condition
 still applies. Physical Keystore and authentication acceptance is tracked in

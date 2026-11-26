@@ -285,6 +285,19 @@ internal class PhoneControlClient(
         PhoneControlResult.Value(reply)
     }
 
+    /** Read current approved project and configured Agent choices for one exact controller. */
+    fun listSelection(period: PhoneControlPeriod, nowMs: Long, controllerId: String, after: String? = null,
+        limit: Int = 50, interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.SelectionList> = guarded {
+        val result = discover(period, nowMs, controllerId, after, limit, 50, interaction, maySend)
+        if (result !is PhoneControlResult.Value) return@guarded result as PhoneControlResult.Failure
+        val (reply, operationId) = result.value
+        if (reply !is PhoneControlReply.SelectionList) return@guarded refusal(reply)
+        if (reply.controllerId != controllerId || reply.operationId != operationId || reply.projects.size > limit ||
+            reply.projects.any { after != null && it.id <= after } ||
+            (reply.nextAfter.isNotEmpty() && reply.projects.size != limit)) return@guarded malformed()
+        PhoneControlResult.Value(reply)
+    }
+
     /** Read one bounded page of explicitly published drafts under current phone authority. */
     fun listPrepared(period: PhoneControlPeriod, nowMs: Long, after: String? = null,
         interaction: Boolean = true, maySend: () -> Boolean): PhoneControlResult<PhoneControlReply.PreparedPage> = guarded {

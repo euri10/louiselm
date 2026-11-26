@@ -166,10 +166,10 @@ internal class PhoneControlRequest(
                 }
                 require(phoneControlSendPayload(text).contentEquals(this.payload)) { "invalid Send text" }
             }
-            48, 49 -> require(this.payload.size == 17 && this.payload.last().toInt() in 1..50 &&
+            48, 49, 50 -> require(this.payload.size == 17 && this.payload.last().toInt() in 1..50 &&
                 expectedRevision == 0L && subjectId == "00".repeat(16) &&
                 ((action == 48 && controllerId == "00".repeat(16)) ||
-                    (action == 49 && controllerId != "00".repeat(16)))) { "invalid discovery request" }
+                    (action in 49..50 && controllerId != "00".repeat(16)))) { "invalid discovery request" }
             52 -> require(this.payload.size == 16 && expectedRevision == 0L &&
                 controllerId == "00".repeat(16) && subjectId == "00".repeat(16)) { "invalid prepared discovery" }
             53 -> require(this.payload.isEmpty() && expectedRevision > 0 &&
