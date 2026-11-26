@@ -330,9 +330,12 @@ Use `:LouiselmQueue` to inspect, cancel, replace or reorder waiting instructions
 and to continue a paused queue. There can be 20 waiting instructions per Session.
 Stop and failures pause the queue for review. Saved instructions return paused
 only when the same Agent Session can be recovered and its earlier outcome and
-owner can be reconciled; uncertain work never runs automatically. Queue payloads
-are stored privately on the computer. Headless `session:prompt` remains immediate
-and returns a busy error while the Session is occupied.
+owner can be reconciled; uncertain work never runs automatically. The computer
+stores the full queued instruction and its selected context privately. During an
+active working period, a paired phone with Read content access to the Session can
+see the queue order, status and submitted text. Long entries appear shortened.
+An unsent desktop draft stays in the composer. Headless `session:prompt` remains
+immediate and returns a busy error while the Session is occupied.
 
 `:LouiselmStopAndSend` freezes the current draft and context in a separate
 replacement place, requests cancellation of the active turn, and sends only

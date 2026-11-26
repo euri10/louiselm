@@ -347,7 +347,7 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "Each Chat Session has an ordered queue of up to 20 waiting instructions. Send freezes the visible text and selected context; subsequent edits are a separate draft. Use :LouiselmQueue to inspect, cancel, replace or reorder waiting entries and to Continue after Stop or failure. Picker replacements contain text without context. Queue payloads are private local state. After restart, recovered entries stay paused; missing owner or outcome evidence keeps them unavailable. Headless session:prompt stays immediate and refuses a busy Session; session:enqueue explicitly requests queued admission.",
+        "Each Chat Session has an ordered queue of up to 20 waiting instructions. Send freezes the visible text and selected context. An unsent draft stays in the composer. Use :LouiselmQueue to inspect, cancel, replace or reorder waiting entries and to Continue after Stop or failure. Picker replacements contain text without context. The computer stores the full queued instruction and its selected context privately. During an active working period, a paired phone with Read content access to the Session can see the queue order, status and submitted text. Long entries appear shortened. After restart, recovered entries stay paused. Missing owner or outcome evidence keeps them unavailable. Headless session:prompt stays immediate and refuses a busy Session. Use session:enqueue to request queued admission explicitly.",
         context
       )
       append_prose(
