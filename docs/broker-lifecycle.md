@@ -98,6 +98,12 @@ are met. A conformance report's transfer deadline starts when its receipt
 arrives. Waiting for the next unsolicited packet on an idle Session likewise
 has no deadline; peer closure wakes both waits.
 
+Command approval is optional and retains its original expiry during startup.
+If it expires before command authority can be bound, the broker records
+`command_approval_expired` and starts the Session without that capability;
+other policy, receipt, and audit failures still fail the launch. Failed-launch
+receipts remain deliverable, and consumed Run authority is never refunded.
+
 SIGTERM uses Linux's native process termination action. Process teardown closes
 all Session descriptors promptly, including workers blocked in handshake or
 storage I/O. There is no drain, worker join or synthetic acknowledgement on stop.

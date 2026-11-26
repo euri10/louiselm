@@ -846,6 +846,30 @@ fn installed_guard_case_for(
         return;
     }
     let session = launched.unwrap();
+    if std::env::var_os("LOUISELM_REQUIRE_EXPIRED_COMMAND_STARTUP").is_some() {
+        let audit = crate::broker::AuditLog::open(&root.path().join("state/audit"))
+            .unwrap()
+            .entries()
+            .unwrap();
+        assert_eq!(
+            audit
+                .iter()
+                .filter(|entry| entry.session_id == "session"
+                    && entry.decision == crate::broker::AuditDecision::CommandApprovalExpired)
+                .count(),
+            1,
+            "the installed launch must observe the original command approval expire"
+        );
+        assert!(!audit.iter().any(|entry| {
+            entry.session_id == "session"
+                && matches!(
+                    entry.decision,
+                    crate::broker::AuditDecision::EffectCommitIntent { .. }
+                        | crate::broker::AuditDecision::ToolGranted { .. }
+                )
+        }));
+        println!("EXPIRED_COMMAND_STARTUP_UNAVAILABLE");
+    }
     let guard_maps: Vec<_> = guard_cleanup::policy_maps()
         .into_iter()
         .filter(|id| !previous_guard_maps.contains(id))

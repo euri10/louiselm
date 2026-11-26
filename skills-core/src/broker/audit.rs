@@ -60,6 +60,8 @@ pub enum AuditDecision {
         /// Stable code naming why the chain refused it.
         error: ErrorCode,
     },
+    /// The optional command approval expired before startup could bind it.
+    CommandApprovalExpired,
     /// An exact tool process received a reserved portion of the Agent budget.
     ToolGranted {
         /// Broker-assigned grant sequence.

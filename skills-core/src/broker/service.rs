@@ -750,7 +750,21 @@ impl BrokerService {
                     .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
                 commands.policy(&authorization.authorization_id, policy_at_ms)
             })
-            .transpose()?;
+            .transpose();
+        let approved = match approved {
+            Ok(approved) => approved,
+            Err(BrokerError::Expired) => {
+                self.record_for(
+                    &authorization,
+                    now_ms.saturating_add(
+                        u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    ),
+                    AuditDecision::CommandApprovalExpired,
+                )?;
+                None
+            }
+            Err(error) => return Err(error),
+        };
         let (ack, _, failed) =
             self.store_next_receipt(channel, &authorization, 0, now_ms, clock, verify_signature)?;
         self.retain_workspace_reference(&authorization.session_id, |references| {
@@ -800,12 +814,23 @@ impl BrokerService {
                     policy,
                     Arc::clone(&self.audit),
                 )
-                .map_err(|error| match error {
-                    super::delegation::DelegationError::Audit(error) => error,
-                    _ => BrokerError::InvalidGrant,
-                })
             })
-            .transpose()?;
+            .transpose();
+        let commands = match commands {
+            Ok(commands) => commands,
+            Err(super::delegation::DelegationError::Expired) => {
+                self.record_for(
+                    &authorization,
+                    now_ms.saturating_add(
+                        u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    ),
+                    AuditDecision::CommandApprovalExpired,
+                )?;
+                None
+            }
+            Err(super::delegation::DelegationError::Audit(error)) => return Err(error),
+            Err(_) => return Err(BrokerError::InvalidGrant),
+        };
         let broker_head = ReceiptHead {
             sequence: ack.sequence,
             digest: ack.receipt_digest.clone(),

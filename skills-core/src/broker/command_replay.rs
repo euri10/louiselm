@@ -38,6 +38,10 @@ pub(crate) enum ReplayRefusal {
 }
 
 /// Replays `audit` for `source`'s Session. Uncertain outcomes stay spent.
+#[expect(
+    clippy::too_many_lines,
+    reason = "One ordered audit replay validates the history and its non-refundable balance."
+)]
 pub(crate) fn replay(
     source: &PendingAuthorization,
     audit: &[AuditEntry],
@@ -50,6 +54,7 @@ pub(crate) fn replay(
     let limit = commands.uses;
     let mut consumed = false;
     let mut revoked = false;
+    let mut expired_at_start = false;
     let mut principal_sequence = 0_u64;
     let mut dispatch_sequence = 0_u64;
     let mut grants: BTreeMap<u64, (u32, u64)> = BTreeMap::new();
@@ -68,11 +73,20 @@ pub(crate) fn replay(
         match entry.decision {
             AuditDecision::AuthorizationConsumed if !consumed => consumed = true,
             AuditDecision::AuthorizationConsumed => return Err(contradictory()),
+            AuditDecision::CommandApprovalExpired => {
+                if !consumed || expired_at_start || spent != 0 || !grants.is_empty() || revoked {
+                    return Err(contradictory());
+                }
+                expired_at_start = true;
+            }
             AuditDecision::EffectCommitIntent {
                 grant: None,
                 sequence,
             } => {
-                if !consumed || principal_sequence.checked_add(1) != Some(sequence) {
+                if !consumed
+                    || expired_at_start
+                    || principal_sequence.checked_add(1) != Some(sequence)
+                {
                     return Err(contradictory());
                 }
                 principal_sequence = sequence;
@@ -95,6 +109,7 @@ pub(crate) fn replay(
                     _ => return Err(contradictory()),
                 };
                 if !consumed
+                    || expired_at_start
                     || revision != source.envelope_revision
                     || Some(grant) != next
                     || grants.insert(grant, (reserved, 0)).is_some()
@@ -117,6 +132,9 @@ pub(crate) fn replay(
                 dispatch_sequence = dispatch_sequence.checked_add(1).ok_or_else(contradictory)?;
             }
             AuditDecision::CapabilitiesRevocationRequested | AuditDecision::CapabilitiesRevoked => {
+                if expired_at_start {
+                    return Err(contradictory());
+                }
                 revoked = true;
             }
             _ => {}
@@ -124,6 +142,9 @@ pub(crate) fn replay(
     }
     if !consumed {
         return Err(ReplayRefusal::NotConsumed);
+    }
+    if expired_at_start {
+        return Err(ReplayRefusal::Expired);
     }
     commands.uses = match limit {
         Some(limit) => Some(limit.checked_sub(spent).ok_or_else(contradictory)?),
@@ -260,6 +281,42 @@ mod tests {
             let audit = [entry(AuditDecision::AuthorizationConsumed), entry(decision)];
             assert!(replay(&source(Some(2)), &audit, 2000).unwrap().revoked);
         }
+    }
+
+    #[test]
+    fn recorded_startup_expiry_survives_a_clock_rollback() {
+        let consumed = entry(AuditDecision::AuthorizationConsumed);
+        let mut expired = entry(AuditDecision::CommandApprovalExpired);
+        expired.at_ms = 9_000;
+        assert_eq!(
+            replay(
+                &source(Some(2)),
+                &[consumed.clone(), expired.clone()],
+                2_000
+            ),
+            Err(ReplayRefusal::Expired)
+        );
+        for audit in [
+            vec![expired.clone(), consumed.clone()],
+            vec![consumed.clone(), expired.clone(), expired.clone()],
+            vec![consumed.clone(), direct(1), expired.clone()],
+            vec![consumed.clone(), expired.clone(), direct(1)],
+        ] {
+            assert_eq!(
+                replay(&source(Some(2)), &audit, 2_000),
+                Err(ReplayRefusal::Contradictory)
+            );
+        }
+        let uncapped_grant = entry(AuditDecision::ToolGranted {
+            grant: 1,
+            pid: 42,
+            revision: 1,
+            uses: None,
+        });
+        assert_eq!(
+            replay(&source(None), &[consumed, uncapped_grant, expired], 2_000),
+            Err(ReplayRefusal::Contradictory)
+        );
     }
 
     #[test]
