@@ -201,6 +201,48 @@ fn replacing_the_store_lock_cannot_create_a_concurrent_writer() {
     ));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn same_process_reopen_cannot_release_a_live_store_or_guard_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("actions");
+    phone_evidence::initialize_store(&path);
+    let store = phone_evidence::open(&path).unwrap();
+    assert!(matches!(
+        phone_evidence::open(&path),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+    let other_guard = temp.path().join("other-guard");
+    fs::copy(path.with_extension("guard"), &other_guard).unwrap();
+    fs::write(temp.path().join("other-guard.lock"), b"").unwrap();
+    assert!(matches!(
+        louiselm_capture::ActionEvidenceStore::open_bound(
+            &path,
+            &other_guard,
+            &"02".repeat(32),
+            louiselm_capture::ActionEvidenceKind::Archive,
+        ),
+        Err(ActionEvidenceError::Unavailable)
+    ));
+
+    let mut guard_lock = path.with_extension("guard").into_os_string();
+    guard_lock.push(".lock");
+    for lock in [path.with_extension("lock"), guard_lock.into()] {
+        // Accept either existing flock or process-owned record locks while
+        // preventing a rejected same-process open from releasing the lock.
+        let status = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import fcntl, sys\nf = open(sys.argv[1], 'r+')\ntry:\n fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n sys.exit(0)\nsys.exit(1)",
+            ])
+            .arg(lock)
+            .status()
+            .unwrap();
+        assert!(status.success(), "another process acquired a live lock");
+    }
+    drop(store);
+}
+
 #[test]
 fn losing_the_receiver_guard_lock_refuses_live_and_restarted_access() {
     let temp = tempfile::tempdir().unwrap();
