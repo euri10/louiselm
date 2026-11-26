@@ -262,6 +262,14 @@ deployment files and exercises the shipped hardening with distinct kernel UIDs;
 the setpriv/private-mount gate alone cannot verify this identity view
 (louiselm-y2j3o). Neither gate certifies the maintainer's installed deployment.
 
+Phone namespace-exclusion changes also run the ignored
+`real_receiver_and_offline_cutoff_share_exclusion` integration test in a
+disposable network namespace. CI runs it as the unprivileged runner after
+creating that namespace and enabling its loopback interface. Never run the
+ignored test in the workstation's network namespace: its fixed abstract socket
+names are shared with real receivers there. The gate proves only the cooperating
+receiver and cutoff lifecycle, not trusted host scope or Send acceptance.
+
 The manual ecosystem-radar workflow uses the Python standard-library gate
 `python3 scripts/test-ecosystem-radar.py`. It checks routing and receipt
 validation against offline fixtures; it does not certify external project

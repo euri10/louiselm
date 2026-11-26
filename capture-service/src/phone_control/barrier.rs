@@ -1,5 +1,7 @@
 //! Receiver-bound exclusion for phone admission and authority changes.
 
+pub(super) mod namespace_exclusion;
+
 use std::{
     fs::File,
     io::{self, Read, Seek},
@@ -86,6 +88,8 @@ struct HeldBarrier {
 pub(super) struct ReceiverBarrier {
     barrier: Barrier,
     registrar: PhoneLock,
+    // Drop last, after the receiver's bound registrar lock is gone.
+    _namespace_registrar: namespace_exclusion::Registrar,
 }
 
 #[derive(Debug)]
@@ -184,9 +188,12 @@ impl Barrier {
         Ok(result)
     }
 
-    /// Bind gate-capable registration to the exact established receiver.
+    /// Bind registration to this receiver and retain namespace-local exclusion.
+    /// The namespace lease does not establish complete host or registrar scope.
     pub(super) fn receiver(self, generation: &str) -> io::Result<ReceiverBarrier> {
         fixed::<16>(generation).map_err(|_| io::Error::other("generation is invalid"))?;
+        let startup = Self::namespace_startup(&self.registrar_path)?;
+        let namespace_registrar = startup.registrar()?;
         let registrar =
             PHONE_LOCKS.acquire(&self.registrar_path, self.binding.registrar, LOCK_TIMEOUT)?;
         registrar.validate_contents(self.binding.registrar_nonce.as_bytes())?;
@@ -194,10 +201,27 @@ impl Barrier {
         Ok(ReceiverBarrier {
             barrier: self,
             registrar,
+            _namespace_registrar: namespace_registrar,
         })
     }
 
-    /// Prove the old receiver process ended, then durably perform its cutoff.
+    fn namespace_startup(registrar_path: &Path) -> io::Result<namespace_exclusion::Startup> {
+        #[cfg(test)]
+        {
+            let root = registrar_path
+                .parent()
+                .ok_or_else(|| io::Error::other("receiver registrar has no parent directory"))?;
+            namespace_exclusion::Startup::for_fixture(root)
+        }
+        #[cfg(not(test))]
+        {
+            let _ = registrar_path;
+            namespace_exclusion::Startup::try_acquire()
+        }
+    }
+
+    /// Exclude cooperating registrars and durably perform the offline cutoff.
+    /// This does not independently prove the complete old registrar scope.
     pub(super) fn offline_cutoff<T, E>(
         &self,
         generation: &str,
@@ -205,6 +229,9 @@ impl Barrier {
         device_id: &str,
         operation: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, CutoffError<E>> {
+        let startup =
+            Self::namespace_startup(&self.registrar_path).map_err(CutoffError::Barrier)?;
+        let _namespace_registrar = startup.registrar().map_err(CutoffError::Barrier)?;
         let registrar = PHONE_LOCKS
             .acquire(&self.registrar_path, self.binding.registrar, LOCK_TIMEOUT)
             .map_err(CutoffError::Barrier)?;
@@ -598,6 +625,18 @@ mod tests {
     }
 
     #[test]
+    fn receiver_retains_namespace_registrar_until_disposed() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, _, receiver) = super::receiver_fixture(root.path());
+        // Other parallel tests may briefly inherit a CLOEXEC descriptor between
+        // fork and exec. Contention stays unavailable until that reference ends.
+        let startup = super::namespace_exclusion::Startup::wait_for_fixture(root.path()).unwrap();
+        assert!(startup.registrar().is_err());
+        drop(receiver);
+        assert!(startup.wait_for_fixture_registrar().is_ok());
+    }
+
+    #[test]
     fn replaced_lock_is_never_a_new_exclusion_authority() {
         let root = tempfile::tempdir().unwrap();
         let (receiver, generation, binding) = fixture(root.path());
@@ -747,16 +786,33 @@ mod tests {
 
     #[test]
     fn failed_storage_leaves_a_durable_cutoff_and_only_exact_retry_completes_it() {
+        fn retry_namespace<T, E>(
+            mut operation: impl FnMut() -> Result<T, CutoffError<E>>,
+        ) -> Result<T, CutoffError<E>> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                match operation() {
+                    Err(CutoffError::Barrier(error))
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && error.to_string() == "phone namespace exclusion is held"
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    result => return result,
+                }
+            }
+        }
         let root = tempfile::tempdir().unwrap();
         let (receiver, generation, binding) = fixture(root.path());
         let barrier = Barrier::existing(root.path(), &receiver, binding).unwrap();
         let device = "11111111-1111-4111-8111-111111111111";
-        assert!(matches!(
+        let failed = retry_namespace(|| {
             barrier.offline_cutoff(&generation, CutoffKind::Disable, device, || {
                 Err::<(), _>("storage")
-            }),
-            Err(CutoffError::Operation("storage"))
-        ));
+            })
+        });
+        assert!(matches!(failed, Err(CutoffError::Operation("storage"))));
         assert_eq!(
             barrier
                 .with_generation(&generation, || ())
@@ -765,13 +821,17 @@ mod tests {
             "barrier cutoff is pending"
         );
         let other = "22222222-2222-4222-8222-222222222222";
+        let other_result = retry_namespace(|| {
+            barrier.offline_cutoff(&generation, CutoffKind::Disable, other, || Ok::<_, ()>(()))
+        });
         assert!(matches!(
-            barrier.offline_cutoff(&generation, CutoffKind::Disable, other, || Ok::<_, ()>(())),
+            other_result,
             Err(CutoffError::Barrier(error)) if error.to_string() == "another barrier cutoff is pending"
         ));
-        barrier
-            .offline_cutoff(&generation, CutoffKind::Disable, device, || Ok::<_, ()>(()))
-            .unwrap();
+        retry_namespace(|| {
+            barrier.offline_cutoff(&generation, CutoffKind::Disable, device, || Ok::<_, ()>(()))
+        })
+        .unwrap();
         barrier.with_generation(&generation, || ()).unwrap();
     }
 

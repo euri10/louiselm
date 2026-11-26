@@ -73,6 +73,33 @@ root, and an unavailable root have distinct refusal reasons. It does not hold a
 directory open and is not the managed consumer interface. Ordinary capture and
 healthy unrelated reads retain their own existing behavior when setup is absent.
 
+## Conditional receiver exclusion
+
+`phone_control::barrier::namespace_exclusion` provides two fixed Linux abstract
+socket names in the calling network namespace. `Startup::try_acquire()` takes
+the short startup exclusion; `Startup::registrar()` takes the separate receiver
+lease while startup is held. Both are nonblocking. Keep the registrar lease
+until the receiver and every delegated registrar have lost the ability to
+register gates. A stopped process or a surviving socket descriptor keeps the
+name occupied. Contention means unavailable, not permission to replace it.
+
+The existing receiver barrier acquires both names before opening its bound
+registrar and keeps the registrar lease until that barrier is dropped. Offline
+cutoff holds both through its durable operation. When receiver acquisition
+fails, the service retains its existing read-only fallback. This is consumed by
+the real receiver and offline cutoff, but pair, first publication, protected
+store updates, helpers and recovery do not yet all use the startup exclusion.
+Future users must acquire startup before the generation barrier and store locks,
+must not reenter it or hold it across an async await, and must retain or retry
+valid owner phase reports independently of archive health.
+
+These names serialize only cooperating processes in the **same** network
+namespace. They do not authenticate that namespace, the manager, root, receiver,
+boot or callers. They do not prevent a legacy or foreign-namespace registrar,
+prove that the old receiver died or an action had no effect, establish a fresh
+installation, or authorize initialization, recovery or Send. The held-root
+pairing read above is not a bearer token for these claims either.
+
 ## Authority still unavailable
 
 A filesystem UUID and file handle are not an external witness: a complete

@@ -722,6 +722,17 @@ jobs:
       - name: Test phone host reference candidate
         run: python3 ../scripts/test-phone-host.py
 
+      - name: Test phone receiver exclusion in a private network namespace
+        run: |
+          sudo unshare --net -- /bin/sh -c '
+            set -eu
+            ip link set lo up
+            exec setpriv --reuid "$1" --regid "$2" --init-groups \
+              env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" LANG=C.UTF-8 cargo test --offline --locked \
+              --test phone_namespace_scope -- --ignored --exact \
+              real_receiver_and_offline_cutoff_share_exclusion
+          ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}"
+
       - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
