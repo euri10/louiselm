@@ -180,6 +180,22 @@ class PhoneOfflineScreenTest {
     }
 
     @Test
+    fun savedWaitingPermissionIsHistoricalRatherThanCurrent() {
+        val app = RuntimeEnvironment.getApplication()
+        val source = PhoneOfflineSource(OfflineScreenFixture.receiver, OfflineScreenFixture.target, "saved session", "agent", "project")
+        val page = PhoneControlReply.SessionPage(source.target.controllerId, source.target.subjectId, "33".repeat(16), 2, "waiting_permission",
+            emptyList(), 0, true, PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false),
+            currentPermission = PhoneCurrentPermission("Private request", listOf("Allow once"), false))
+        PhoneOfflineStore(File(app.filesDir, "phone-offline-v1")).save(source, sequenceOf(page), true,
+            System.currentTimeMillis(), System.currentTimeMillis(), 1_000_000, SecretKeySpec(OfflineScreenFixture.material, "AES")) { true }
+        unlockAndOpen()
+        assertTrue(contains("Session state when saved: Waiting for permission"))
+        assertFalse(contains("Current permission request"))
+        assertFalse(contains("Private request"))
+        assertFalse(contains("Allow once"))
+    }
+
+    @Test
     fun opensAndLocksAStaleCopyWithoutNetworkAndProtectsThePreview() {
         assertTrue(activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
         button(R.string.phone_offline_unlock).performClick()
