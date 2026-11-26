@@ -332,7 +332,7 @@ impl Drop for PhoneLock {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test fixtures and assertions")]
 mod tests {
-    use std::{fs, io, process::Command, time::Duration};
+    use std::{fs, io, os::unix::fs::symlink, process::Command, time::Duration};
 
     use super::{FileIdentity, PHONE_LOCKS};
 
@@ -390,6 +390,34 @@ mod tests {
         fs::remove_file(alias).unwrap();
         first.validate().unwrap();
         first.release().unwrap();
+    }
+
+    #[test]
+    fn pairing_paths_cannot_release_a_live_barrier_lock() {
+        for alias in ["pairing.lock", "pairing.json"] {
+            let root = tempfile::tempdir().unwrap();
+            let pairing = root.path().join("pairing");
+            drop(crate::PairingRegistry::open(&pairing).unwrap());
+            let path = root.path().join("barrier");
+            fs::write(&path, b"not pairing state").unwrap();
+            let identity = FileIdentity::at(&path).unwrap();
+            let held = PHONE_LOCKS
+                .acquire(&path, identity, Duration::ZERO)
+                .unwrap();
+            fs::remove_file(pairing.join(alias)).unwrap();
+            symlink("../barrier", pairing.join(alias)).unwrap();
+            let _ = crate::PairingRegistry::open(&pairing);
+            let status = Command::new("python3")
+                .args([
+                    "-c",
+                    "import fcntl, sys\nf = open(sys.argv[1], 'r+')\ntry:\n fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n sys.exit(0)\nsys.exit(1)",
+                ])
+                .arg(&path)
+                .status()
+                .unwrap();
+            assert!(status.success(), "{alias} released the barrier lock");
+            held.release().unwrap();
+        }
     }
 
     #[test]

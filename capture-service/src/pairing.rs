@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::hex::lower_hex;
 use crate::permissions::set_private_permissions;
+use crate::phone_lock::{PHONE_LOCKS, PhoneFile};
 
 #[path = "notifications.rs"]
 mod notifications;
@@ -159,7 +160,7 @@ impl PairingRegistry {
                     ..RegistryState::default()
                 })
             };
-            FileExt::unlock(&lock)?;
+            FileExt::unlock(lock.file()?)?;
             result?;
         }
         Ok(registry)
@@ -381,21 +382,22 @@ impl PairingRegistry {
             }
             Ok(result)
         })();
-        FileExt::unlock(&lock)?;
+        FileExt::unlock(lock.file()?)?;
         result
     }
 
-    fn lock_file(&self) -> Result<File, PairingError> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&self.lock_path)?;
+    fn lock_file(&self) -> Result<PhoneFile, PairingError> {
+        let file = match PHONE_LOCKS.open_rw(&self.lock_path, true) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                PHONE_LOCKS.open_rw(&self.lock_path, false)?
+            }
+            Err(error) => return Err(error.into()),
+        };
         set_private_permissions(&self.lock_path, false)?;
         let deadline = Instant::now() + LOCK_TIMEOUT;
         loop {
-            match file.try_lock_exclusive() {
+            match file.file()?.try_lock_exclusive() {
                 Ok(()) => break,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
@@ -426,8 +428,9 @@ impl PairingRegistry {
     }
 
     fn load(&self) -> Result<RegistryState, PairingError> {
+        let mut file = PHONE_LOCKS.open_read(&self.path)?;
         let mut value: serde_json::Value =
-            serde_json::from_reader(BufReader::new(File::open(&self.path)?))?;
+            serde_json::from_reader(BufReader::new(file.file_mut()?))?;
         let upgrading = value["schema_version"] == 2;
         if upgrading {
             // Retire token routing without losing pairings or confirmed generations.
