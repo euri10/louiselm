@@ -27,7 +27,7 @@ async fn attach(
 }
 
 #[tokio::test]
-async fn ordinary_service_keeps_read_attachments_across_concurrent_start_and_restart() {
+async fn ordinary_service_reads_and_reconnects_after_shutdown() {
     let root = tempfile::tempdir().unwrap();
     let pairing = Arc::new(crate::PairingRegistry::open(root.path().join("pairing")).unwrap());
     // This capture-only fixture has no separately provisioned managed authority.
