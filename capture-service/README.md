@@ -276,10 +276,9 @@ paired phone can verify a new endpoint before saving it.
 `louiselm-capture pairing-status` reads the existing paired-device summaries
 through the on-demand systemd host service. It accepts aliases of the registered
 capture state directory and refuses another directory or an unavailable service.
-It does not create a missing pairing registry. The host-service installation and
-the across-boot root binding are still under development; this query does not
-authorize phone Send or recovery. The existing `status` and capture commands do
-not depend on this service.
+It does not create a missing pairing registry. The service requires the supported
+host setup described below. The query does not authorize phone Send or recovery;
+the existing `status` and capture commands do not depend on this service.
 
 Android uploads stream to a private temporary file, are limited to 20 MiB,
 must carry their original SHA-256 digest, and become visible only after an
