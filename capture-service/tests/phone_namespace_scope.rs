@@ -9,9 +9,10 @@
 
 use std::{
     io,
+    net::{SocketAddr, TcpStream},
     os::{
         linux::net::SocketAddrExt,
-        unix::net::{SocketAddr, UnixListener, UnixStream},
+        unix::net::{SocketAddr as UnixSocketAddr, UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -19,7 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use louiselm_capture::{ActionEvidenceKind, PairingRegistry, TlsIdentity};
+use louiselm_capture::{
+    ActionEvidenceKind, NetworkProfile, NetworkProfileKind, PairingRegistry, TlsIdentity,
+};
 
 #[path = "support/phone_evidence.rs"]
 #[allow(dead_code, reason = "this integration uses the archive fixture")]
@@ -38,7 +41,7 @@ impl Drop for Receiver {
 }
 
 fn namespace_socket(name: &[u8]) -> io::Result<UnixListener> {
-    UnixListener::bind_addr(&SocketAddr::from_abstract_name(name)?)
+    UnixListener::bind_addr(&UnixSocketAddr::from_abstract_name(name)?)
 }
 
 fn fixture(root: &Path) -> (PathBuf, String) {
@@ -97,6 +100,18 @@ fn start(root: &Path, state: &Path) -> Receiver {
     child
 }
 
+fn wait_for_receiver(receiver: &mut Receiver, address: SocketAddr) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while TcpStream::connect_timeout(&address, Duration::from_millis(50)).is_err() {
+        assert!(
+            receiver.0.try_wait().unwrap().is_none(),
+            "receiver exited before listening"
+        );
+        assert!(Instant::now() < deadline, "receiver did not listen");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn stop(mut receiver: Receiver) {
     assert!(
         Command::new("kill")
@@ -122,6 +137,15 @@ fn real_receiver_and_offline_cutoff_share_exclusion() {
     let second = root.path().join("second");
     let (first_state, _) = fixture(&first);
     let (second_state, device) = fixture(&second);
+    let second_address: SocketAddr = "10.254.0.1:7392".parse().unwrap();
+    NetworkProfile::new(
+        NetworkProfileKind::Private,
+        second_address,
+        "https://10.254.0.1:7392",
+    )
+    .unwrap()
+    .save(&second.join("config/louiselm/capture-network.json"))
+    .unwrap();
 
     // Contended startup still permits the unrelated read-only service.
     let startup = namespace_socket(STARTUP).unwrap();
@@ -141,7 +165,32 @@ fn real_receiver_and_offline_cutoff_share_exclusion() {
         .unwrap();
     assert!(!blocked.status.success());
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("admission cutoff is unavailable"));
+
+    // A second live receiver remains available for reads but cannot mutate
+    // bound authority, including after the first receiver has stopped.
+    let mut competing = start(&second, &second_state);
+    wait_for_receiver(&mut competing, second_address);
+    let read = command(&second, &second_state)
+        .args(["phone-control", "project-roots"])
+        .output()
+        .unwrap();
+    assert!(
+        read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let revoke = || {
+        command(&second, &second_state)
+            .args(["revoke-device", &device])
+            .output()
+            .unwrap()
+    };
+    let refused = revoke();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("authority did not confirm"));
     stop(receiver);
+    assert!(!revoke().status.success());
+    stop(competing);
 
     let completed = command(&second, &second_state)
         .args(["revoke-device", &device])
@@ -152,6 +201,19 @@ fn real_receiver_and_offline_cutoff_share_exclusion() {
         "{}",
         String::from_utf8_lossy(&completed.stderr)
     );
+    let mut restarted = start(&second, &second_state);
+    wait_for_receiver(&mut restarted, second_address);
+    let registered = command(&second, &second_state)
+        .args(["phone-control", "register-root", "--path"])
+        .arg(&second)
+        .output()
+        .unwrap();
+    assert!(
+        registered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+    stop(restarted);
     let receiver = start(&first, &first_state);
     assert_eq!(
         namespace_socket(REGISTRAR).unwrap_err().kind(),

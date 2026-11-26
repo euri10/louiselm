@@ -727,6 +727,7 @@ jobs:
           sudo unshare --net -- /bin/sh -c '
             set -eu
             ip link set lo up
+            ip addr add 10.254.0.1/32 dev lo
             exec setpriv --reuid "$1" --regid "$2" --init-groups \
               env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" LANG=C.UTF-8 cargo test --offline --locked \
               --test phone_namespace_scope -- --ignored --exact \

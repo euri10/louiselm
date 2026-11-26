@@ -265,7 +265,8 @@ the setpriv/private-mount gate alone cannot verify this identity view
 Phone namespace-exclusion changes also run the ignored
 `real_receiver_and_offline_cutoff_share_exclusion` integration test in a
 disposable network namespace. CI runs it as the unprivileged runner after
-creating that namespace and enabling its loopback interface. Never run the
+creating that namespace, enabling loopback, and assigning `10.254.0.1/32` to
+loopback for the second receiver. Never run the
 ignored test in the workstation's network namespace: its fixed abstract socket
 names are shared with real receivers there. The gate proves only the cooperating
 receiver and cutoff lifecycle, not trusted host scope or Send acceptance.
