@@ -110,7 +110,7 @@ def verify(after_reboot):
     wrong = as_operator("pairing-status", state=BASE / "other", check=False)
     assert wrong.returncode != 0 and "root mismatch" in wrong.stderr, wrong.stderr
     account = pwd.getpwnam("vm")
-    output = Path("/home/vm/pairing-gate/user-result.json")
+    output = BASE / "state/user-result.json"
     units = Path(account.pw_dir) / ".config/systemd/user"
     units.mkdir(parents=True, exist_ok=True)
     for directory in (units, units.parent, units.parent.parent):
