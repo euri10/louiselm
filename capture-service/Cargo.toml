@@ -6,7 +6,7 @@ license = "MIT"
 description = "Local-first durable speech capture service for LouiseLM"
 
 [dependencies]
-aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["non-fips"] }
+aws-lc-rs = { version = "=1.19.0", default-features = false, features = ["non-fips"] }
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 base64 = "=0.23.1"
@@ -18,7 +18,7 @@ pem = "4"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rcgen = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "multipart", "rustls"] }
-rustix = { version = "=1.1.5", features = ["fs", "net"] }
+rustix = { version = "=1.1.6", features = ["fs", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -29,7 +29,7 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-rustix = { version = "=1.1.5", features = ["net"] }
+rustix = { version = "=1.1.6", features = ["net"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
