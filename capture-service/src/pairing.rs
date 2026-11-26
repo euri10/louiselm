@@ -2,7 +2,9 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard, TryLockError},
+    thread,
+    time::{Duration, Instant},
 };
 
 use fs2::FileExt;
@@ -22,6 +24,9 @@ pub use notifications::{
     NotificationFailure, NotificationHealth, NotificationStatus, NotificationTargetStatus,
 };
 use notifications::{NotificationRegistration, NotificationState};
+
+const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const LOCK_RETRY: Duration = Duration::from_millis(10);
 
 /// One-time pairing material intended for a QR payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -116,7 +121,7 @@ pub enum PairingError {
     /// Persisted registry data is malformed.
     #[error("pairing data is malformed: {0}")]
     Json(#[from] serde_json::Error),
-    /// Concurrent registry access failed after a poisoned lock.
+    /// Registry locking was poisoned or could not be acquired within the bound.
     #[error("pairing registry lock is unavailable")]
     Lock,
 }
@@ -144,21 +149,18 @@ impl PairingRegistry {
             process_lock: Mutex::new(()),
         };
         {
-            let _process_guard = registry
-                .process_lock
-                .lock()
-                .map_err(|_| PairingError::Lock)?;
+            let _process_guard = registry.process_guard()?;
             let lock = registry.lock_file()?;
-            lock.lock_exclusive()?;
-            if registry.path.exists() {
-                registry.load()?;
+            let result = if registry.path.exists() {
+                registry.load().map(|_| ())
             } else {
                 registry.persist(&RegistryState {
                     schema_version: 3,
                     ..RegistryState::default()
-                })?;
-            }
+                })
+            };
             FileExt::unlock(&lock)?;
+            result?;
         }
         Ok(registry)
     }
@@ -369,16 +371,18 @@ impl PairingRegistry {
         persist: bool,
         operation: impl FnOnce(&mut RegistryState) -> Result<R, PairingError>,
     ) -> Result<R, PairingError> {
-        let _process_guard = self.process_lock.lock().map_err(|_| PairingError::Lock)?;
+        let _process_guard = self.process_guard()?;
         let lock = self.lock_file()?;
-        lock.lock_exclusive()?;
-        let mut state = self.load()?;
-        let result = operation(&mut state)?;
-        if persist {
-            self.persist(&state)?;
-        }
+        let result = (|| {
+            let mut state = self.load()?;
+            let result = operation(&mut state)?;
+            if persist {
+                self.persist(&state)?;
+            }
+            Ok(result)
+        })();
         FileExt::unlock(&lock)?;
-        Ok(result)
+        result
     }
 
     fn lock_file(&self) -> Result<File, PairingError> {
@@ -389,7 +393,36 @@ impl PairingRegistry {
             .write(true)
             .open(&self.lock_path)?;
         set_private_permissions(&self.lock_path, false)?;
+        let deadline = Instant::now() + LOCK_TIMEOUT;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(PairingError::Lock);
+                    }
+                    thread::sleep(LOCK_RETRY);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         Ok(file)
+    }
+
+    fn process_guard(&self) -> Result<MutexGuard<'_, ()>, PairingError> {
+        let deadline = Instant::now() + LOCK_TIMEOUT;
+        loop {
+            match self.process_lock.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(TryLockError::Poisoned(_)) => return Err(PairingError::Lock),
+                Err(TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(PairingError::Lock);
+                    }
+                    thread::sleep(LOCK_RETRY);
+                }
+            }
+        }
     }
 
     fn load(&self) -> Result<RegistryState, PairingError> {

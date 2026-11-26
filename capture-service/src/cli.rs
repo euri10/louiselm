@@ -77,6 +77,9 @@ pub enum CliError {
     /// Pairing operation failed.
     #[error(transparent)]
     Pairing(#[from] PairingError),
+    /// Offline phone revocation could not be confirmed.
+    #[error("phone revocation unconfirmed: {0}")]
+    RevocationUnconfirmed(#[source] PairingError),
     /// TLS identity operation failed.
     #[error(transparent)]
     Identity(#[from] IdentityError),
@@ -999,7 +1002,8 @@ async fn revoke_device(paths: &Paths, id: &str) -> Result<(), CliError> {
             let device = id.to_owned();
             tokio::task::spawn_blocking(move || PairingRegistry::open(path)?.revoke(&device))
                 .await
-                .map_err(std::io::Error::other)??;
+                .map_err(std::io::Error::other)?
+                .map_err(CliError::RevocationUnconfirmed)?;
         }
         Err(error) => return Err(error.into()),
     }
