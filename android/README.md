@@ -151,13 +151,29 @@ payload-free operation identity before sending and checks retained owner evidenc
 while the workspace is open and unlocked. A lost response is not confirmation,
 and reopening never resends. Another attempt requires owner evidence that the
 original had no effect and was fenced, followed by a Session refresh and review.
-The composer keeps separate in-memory text for each receiver and exact
-controller/Session while this screen exists, including across navigation and
-refresh. At 128 nonempty drafts, clear one before starting another. Text is
-hidden while the workspace is locked or backgrounded, but remains in process
-memory and is lost when the Activity is destroyed, including during recreation.
-Retain a copy before leaving; protected durable drafts are tracked separately
-in `louiselm-qbr.12.12`.
+The composer keeps a separate phone draft for each receiver and exact
+controller/Session. **Unlock phone drafts** opens its independent local key; it
+does not grant online authority. Edits save in the background: wait for saving
+to finish before leaving or locking. A failed save keeps the last saved version
+and reports that the current edit was not saved. Saved drafts remain until
+explicit **Discard draft** confirmation. At most 128 drafts, 8 MiB per draft
+and 64 MiB total are retained; freeing space requires a discard.
+
+Use **Add to draft** beside an authorized live or saved offline entry to freeze
+that entry and its source in the current draft. Later refreshes and removal of a
+downloaded copy do not change the selection. **Phone drafts** reopens saved work
+offline, including work detached from a missing or revoked source. Detached
+context can contain sensitive excerpts; explicitly choose an authorized
+destination and review before sending. Reviewed Send with selected context and
+consumption of the confirmed snapshot remain `louiselm-qbr.12.12.2`; until then,
+Send is unavailable for drafts containing selected context.
+
+Drafts use a device-only key separate from downloads, pairing and online keys.
+The local unlock has the same inactivity, maximum duration and screen-lock rules
+as offline copies below. A temporary key error leaves drafts in place for retry.
+If the device proves the draft key permanently lost, the app explains that the
+work cannot be recovered and asks before deleting the affected drafts and
+resetting the key. Original recordings and pending action identities are separate.
 
 ### Runs and prepared selections
 

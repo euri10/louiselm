@@ -3,6 +3,7 @@ package dev.louiselm.capture
 import android.Manifest
 import android.app.KeyguardManager
 import android.content.Intent
+import android.content.DialogInterface
 import android.os.CancellationSignal
 import android.os.Looper
 import android.os.PowerManager
@@ -30,6 +31,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.android.util.concurrent.PausedExecutorService
 import org.robolectric.annotation.Config
@@ -399,6 +401,10 @@ class PhoneControlActivityTest {
         if (PhoneScreenFixture.preUnlockOffline) {
             // The offline-unlock screen has its own lifecycle tests; keep these cases focused on online callbacks.
             ReflectionHelpers.setField(activity, "offlinePeriod", PhoneOfflinePeriod(PhoneScreenFixture.offlineMaterial, SystemClock.elapsedRealtime()))
+            if (File(activity.filesDir, "phone-drafts-v1").listFiles()?.none { it.name.endsWith(".draft") } != false) {
+                ReflectionHelpers.setField(activity, "draftPeriod", PhoneOfflinePeriod(PhoneScreenFixture.offlineMaterial, SystemClock.elapsedRealtime()))
+                ReflectionHelpers.setField(activity, "draftsReady", true)
+            }
         }
     }
 
@@ -723,10 +729,12 @@ class PhoneControlActivityTest {
         repeat(5) { drain() }
         val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
         input.setText("é".repeat(3000))
+        repeat(2) { drain() }
         button(R.string.phone_send).performClick()
         assertTrue(hasText(R.string.phone_send_invalid))
         assertEquals(0, PhoneScreenFixture.sendCalls)
         input.setText("retain this instruction")
+        repeat(2) { drain() }
         button(R.string.phone_send).performClick()
         drain()
         assertEquals(1, PhoneScreenFixture.sendCalls)
@@ -747,7 +755,7 @@ class PhoneControlActivityTest {
         assertTrue(button(R.string.phone_send).isEnabled)
         screenOff()
         assertEquals(View.GONE, input.visibility)
-        assertEquals("retain this instruction", input.text.toString())
+        assertEquals("", input.text.toString())
     }
 
     @Test
@@ -773,6 +781,7 @@ class PhoneControlActivityTest {
         repeat(5) { drain() }
         val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
         input.setText("still under review")
+        repeat(2) { drain() }
         assertTrue(button(R.string.phone_send).isEnabled)
         controller.pause()
         val current = requireNotNull(PhoneScreenFixture.lastPeriod)
@@ -815,11 +824,14 @@ class PhoneControlActivityTest {
         repeat(5) { drain() }
         val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
         input.setText("do not lose this")
+        repeat(2) { drain() }
         PhoneScreenFixture.sendFailure = PhoneControlOutcome.EXPIRED
         button(R.string.phone_send).performClick()
         drain()
         assertEquals(View.GONE, input.visibility)
-        assertEquals("do not lose this", input.text.toString())
+        assertEquals("", input.text.toString())
+        assertEquals("do not lose this", PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1"))
+            .list(SecretKeySpec(PhoneScreenFixture.offlineMaterial, "AES")).drafts.single().text)
         assertTrue(hasText(R.string.phone_expired))
         assertFalse(requireNotNull(PhoneScreenFixture.lastPeriod).isActive(SystemClock.elapsedRealtime()))
         assertEquals(0, PhoneScreenFixture.sendCalls)
@@ -849,6 +861,7 @@ class PhoneControlActivityTest {
         repeat(5) { drainBackground() }
         val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
         input.setText("deliver once")
+        repeat(2) { drainBackground() }
         button(R.string.phone_send).performClick()
         repeat(3) { drainBackground() }
         assertEquals(1, PhoneScreenFixture.sendCalls)
@@ -876,9 +889,9 @@ class PhoneControlActivityTest {
         button(R.string.phone_unlock).performClick()
         drainBackground()
         requireNotNull(PhoneScreenFixture.prompt).invoke(null)
-        repeat(7) { drainBackground() }
+        repeat(12) { drainBackground() }
         val reopened = views(activity.window.decorView).filterIsInstance<EditText>().single()
-        reopened.setText("deliver once")
+        assertEquals("deliver once", reopened.text.toString())
         assertTrue(hasText(R.string.phone_action_completed))
         assertFalse(button(R.string.phone_send).isEnabled)
         assertEquals(1, PhoneScreenFixture.sendCalls)
@@ -1012,7 +1025,7 @@ class PhoneControlActivityTest {
             button(R.string.phone_unlock).performClick()
             drainBackground()
             requireNotNull(PhoneScreenFixture.prompt).invoke(null)
-            repeat(5) { drainBackground() }
+            repeat(10) { drainBackground() }
         }
         fun open(subject: String) {
             views(activity.window.decorView).filterIsInstance<Button>()
@@ -1057,6 +1070,8 @@ class PhoneControlActivityTest {
         open("01".repeat(16))
         assertEquals("first phone draft", input.text.toString())
 
+        assertTrue(PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1"))
+            .list(SecretKeySpec(PhoneScreenFixture.offlineMaterial, "AES")).drafts.any { it.text == "first phone draft" })
         button(R.string.phone_lock).performClick()
         assertEquals(View.GONE, input.visibility)
         PhoneScreenFixture.grant = firstGrant.copy(receiverIdentity = "bb".repeat(32))
@@ -1064,6 +1079,7 @@ class PhoneControlActivityTest {
         unlock()
         assertEquals("", input.text.toString())
         input.setText("other receiver draft")
+        repeat(2) { drainBackground() }
         button(R.string.phone_lock).performClick()
         PhoneScreenFixture.grant = firstGrant
         PhoneScreenFixture.status = PhoneControlStatus.Granted(firstGrant)
@@ -1127,6 +1143,11 @@ class PhoneControlActivityTest {
         assertFalse(button(R.string.phone_send).isEnabled)
         assertEquals(request.operationId, store.pending().single().operationId)
         assertTrue(PhoneScreenFixture.evidenceOperationIds.contains(request.operationId))
+        button(R.string.phone_draft_discard).performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        repeat(3) { drainBackground() }
+        assertEquals(request.operationId, store.pending().single().operationId)
+        assertFalse(button(R.string.phone_send).isEnabled)
         assertEquals(0, PhoneScreenFixture.sendCalls)
     }
 
@@ -1142,7 +1163,7 @@ class PhoneControlActivityTest {
             button(R.string.phone_unlock).performClick()
             drainBackground()
             requireNotNull(PhoneScreenFixture.prompt).invoke(null)
-            repeat(5) { drainBackground() }
+            repeat(10) { drainBackground() }
         }
         unlock()
         val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
@@ -1153,6 +1174,8 @@ class PhoneControlActivityTest {
         thread.start()
         thread.join()
         failure?.let { throw AssertionError(it) }
+        assertTrue(PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1"))
+            .list(SecretKeySpec(PhoneScreenFixture.offlineMaterial, "AES")).drafts.any { it.text == "keep until this Activity ends" })
         button(R.string.phone_lock).performClick()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(View.GONE, input.visibility)
@@ -1197,7 +1220,9 @@ class PhoneControlActivityTest {
         assertTrue(hasText(R.string.phone_draft_limit))
         select(1)
         assertEquals("draft 1", input.text.toString())
-        input.setText("")
+        button(R.string.phone_draft_discard).performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        repeat(2) { drain() }
         select(129)
         input.setText("now there is room")
         assertEquals("now there is room", input.text.toString())
@@ -1690,4 +1715,27 @@ class PhoneControlActivityTest {
         assertEquals(before, status.text.toString())
         assertEquals(PhoneControlStatus.Disabled, PhoneScreenFixture.status)
     }
+    @Test
+    fun onlineBrowseOpensEditorAfterSeparateLocalUnlocks() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.sessionRows = listOf(
+            PhoneControlSessionSummary("01".repeat(16), "saved", "mock", "/work", "ready", false),
+        )
+        PhoneScreenFixture.preUnlockOffline = false
+        controller.close()
+        create()
+        button(R.string.phone_unlock).performClick()
+        drainBackground()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(12) { drainBackground() }
+        views(activity.window.decorView).filterIsInstance<Button>()
+            .single { it.text.toString().contains("01".repeat(16)) }.performClick()
+        repeat(3) { drainBackground() }
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        assertEquals(View.VISIBLE, input.visibility)
+        input.setText("author after local unlock")
+        repeat(2) { drainBackground() }
+        assertEquals("author after local unlock", input.text.toString())
+    }
+
 }

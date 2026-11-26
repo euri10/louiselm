@@ -69,6 +69,8 @@ class PhoneControlActivity : Activity() {
     private lateinit var pendingActionsStore: PendingPhoneActionStore
     private lateinit var offlineStore: PhoneOfflineStore
     private lateinit var offlineUnlockStore: PhoneOfflineUnlockStore
+    private lateinit var draftStore: PhoneDraftStore
+    private lateinit var draftUnlockStore: PhoneOfflineUnlockStore
     private lateinit var statusView: TextView
     private lateinit var enableButton: Button
     private lateinit var checkButton: Button
@@ -85,6 +87,10 @@ class PhoneControlActivity : Activity() {
     private lateinit var actionHistoryButton: Button
     private lateinit var moreActionHistoryButton: Button
     private lateinit var offlineUnlockButton: Button
+    private lateinit var draftUnlockButton: Button
+    private lateinit var draftListButton: Button
+    private lateinit var draftDiscardButton: Button
+    private lateinit var draftContextView: LinearLayout
     private lateinit var offlineCopiesButton: Button
     private lateinit var offlineKeepButton: Button
     private lateinit var offlineOlderButton: Button
@@ -103,6 +109,12 @@ class PhoneControlActivity : Activity() {
     private var currentStatus: PhoneControlStatus = PhoneControlStatus.Disabled
     private var period: PhoneControlPeriod? = null
     private var offlinePeriod: PhoneOfflinePeriod? = null
+    private var draftPeriod: PhoneOfflinePeriod? = null
+    private var draftsReady = false
+    private var draftsDamaged = false
+    private var showingDrafts = false
+    private var selectedDraft: PhoneOfflineSource? = null
+    private var visibleOfflinePage: PhoneControlReply.SessionPage? = null
     private var preparedOfflineUnlock: PreparedPhoneOfflineUnlock? = null
     private var showingOffline = false
     private var selectedOffline: PhoneOfflineCopy? = null
@@ -135,6 +147,17 @@ class PhoneControlActivity : Activity() {
     private var draftTarget: PhoneControlTarget? = null
     private var draftReceiver: String? = null
     private var changingDraft = false
+    private var draftSource: PhoneOfflineSource? = null
+    private var draftContextOffset = 0
+    private val draftSources = mutableMapOf<Pair<String, PhoneControlTarget>, PhoneOfflineSource>()
+    private val draftContexts = mutableMapOf<Pair<String, PhoneControlTarget>, List<PhoneDraftSelection>>()
+    private val savedDrafts = mutableMapOf<Pair<String, PhoneControlTarget>, PhoneDraft>()
+    private val dirtyDrafts = linkedMapOf<Pair<String, PhoneControlTarget>, PhoneDraft>()
+    private val draftGeneration = AtomicLong()
+    private var savingDraft = false
+    private var pendingDraftSave: AtomicReference<PhoneDraft?>? = null
+    private var discardingDraft: Pair<String, PhoneControlTarget>? = null
+    private var draftSaveNotice: Int? = null
     private var pendingActions = emptyList<PendingPhoneAction>()
     private val actionEvidence = mutableMapOf<String, PhoneActionRecord>()
     private val reviewedFences = mutableSetOf<String>()
@@ -144,6 +167,7 @@ class PhoneControlActivity : Activity() {
     private var pinRefreshIndex = 0
     private val expiryCheck = Runnable { scheduleExpiry() }
     private val offlineExpiryCheck = Runnable { scheduleOfflineExpiry() }
+    private val draftExpiryCheck = Runnable { scheduleDraftExpiry() }
     private val pinRefresh = Runnable { refreshPinnedCopy() }
     private val reconcilePoll = Runnable { reconcilePendingActions() }
     private val refreshPoll = Runnable {
@@ -195,6 +219,9 @@ class PhoneControlActivity : Activity() {
         val downloadRoot = File(filesDir, "phone-offline-v1")
         offlineStore = PhoneOfflineStore(downloadRoot)
         offlineUnlockStore = PhoneOfflineUnlockStore(applicationContext, downloadRoot)
+        val draftRoot = File(filesDir, "phone-drafts-v1")
+        draftStore = PhoneDraftStore(draftRoot)
+        draftUnlockStore = PhoneOfflineUnlockStore(applicationContext, draftRoot, "phone-draft-key-v1", draft = true)
         val page = contentView()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         ViewCompat.setOnApplyWindowInsetsListener(page) { view, insets ->
@@ -220,6 +247,11 @@ class PhoneControlActivity : Activity() {
             return
         }
         schedulePinRefresh()
+        if (showingDrafts && draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true) {
+            conversation.visibility = View.VISIBLE
+            render()
+            return
+        }
         if (showingOffline) {
             if (offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true) {
                 conversation.visibility = View.VISIBLE
@@ -232,6 +264,7 @@ class PhoneControlActivity : Activity() {
         }
         val current = period ?: run {
             conversation.visibility = View.VISIBLE
+            render()
             return
         }
         conversation.visibility = View.GONE
@@ -276,13 +309,16 @@ class PhoneControlActivity : Activity() {
         sendInput.visibility = View.GONE
         sendButton.visibility = View.GONE
         sendStatus.visibility = View.GONE
+        draftContextView.visibility = View.GONE
+        draftDiscardButton.visibility = View.GONE
         super.onPause()
     }
 
     override fun onUserInteraction() {
         super.onUserInteraction()
-        val current = offlinePeriod ?: return
-        if (current.confirmInteraction(SystemClock.elapsedRealtime())) scheduleOfflineExpiry() else lockOffline()
+        val now = SystemClock.elapsedRealtime()
+        offlinePeriod?.let { if (it.confirmInteraction(now)) scheduleOfflineExpiry() else lockOffline() }
+        draftPeriod?.let { if (it.confirmInteraction(now)) scheduleDraftExpiry() else lockDrafts() }
     }
 
     override fun onDestroy() {
@@ -303,13 +339,14 @@ class PhoneControlActivity : Activity() {
         offlinePeriod?.lock()
         offlinePeriod = null
         selectedOffline = null
+        visibleOfflinePage = null
         selectedPrepared = null
         preparedPage = null
         selectedRunId = null
         selectedSavedResult = null
         linkedRunSession = null
         runPage = null
-        drafts.clear()
+        clearDrafts()
         changingDraft = true
         sendInput.text.clear()
         changingDraft = false
@@ -354,6 +391,13 @@ class PhoneControlActivity : Activity() {
             setOnClickListener { unlockOffline { unlocked -> if (unlocked) showOfflineCopies() } }
         }
         add(offlineUnlockButton)
+        draftUnlockButton = Button(this).apply {
+            text = getString(R.string.phone_draft_unlock)
+            setOnClickListener { unlockOffline(forDraft = true) { unlocked -> if (unlocked) loadDrafts() } }
+        }
+        add(draftUnlockButton)
+        draftListButton = Button(this).apply { text = getString(R.string.phone_draft_list); setOnClickListener { showDrafts() } }
+        add(draftListButton)
         lockButton = Button(this).apply { text = getString(R.string.phone_lock); setOnClickListener { lockWorkspace() } }
         add(lockButton)
         offlineCopiesButton = Button(this).apply {
@@ -442,8 +486,9 @@ class PhoneControlActivity : Activity() {
         add(sendStatus)
         sendInput = EditText(this).apply {
             hint = getString(R.string.phone_send_hint)
+            isSaveEnabled = false
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            filters = arrayOf(InputFilter.LengthFilter(4095), InputFilter { _, start, end, _, _, _ ->
+            filters = arrayOf(InputFilter.LengthFilter(8 * 1024 * 1024), InputFilter { _, start, end, _, _, _ ->
                 val receiver = draftReceiver
                 val selected = draftTarget
                 if (!changingDraft && start < end && receiver != null && selected != null &&
@@ -456,6 +501,10 @@ class PhoneControlActivity : Activity() {
             minLines = 3
         }
         add(sendInput)
+        draftContextView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        add(draftContextView)
+        draftDiscardButton = Button(this).apply { text = getString(R.string.phone_draft_discard); setOnClickListener { confirmDiscardDraft() } }
+        add(draftDiscardButton)
         sendButton = Button(this).apply {
             text = getString(R.string.phone_send)
             setOnClickListener { withNetwork { sendPrompt() } }
@@ -470,7 +519,9 @@ class PhoneControlActivity : Activity() {
                 val selected = draftTarget
                 if (receiver != null && selected != null) {
                     val key = receiver to selected
-                    if (s.isNullOrEmpty()) drafts.remove(key) else drafts[key] = s.toString()
+                    drafts[key] = s?.toString().orEmpty()
+                    draftSource?.let { draftSources[key] = it }
+                    queueDraftSave(key)
                 }
                 if (sendNotice == R.string.phone_send_invalid && sendDigest() != null) sendNotice = null
                 if (sendNotice == R.string.phone_draft_limit && !s.isNullOrEmpty()) sendNotice = null
@@ -481,13 +532,297 @@ class PhoneControlActivity : Activity() {
         return ScrollView(this).apply { addView(column) }
     }
 
+    private fun loadDrafts(after: () -> Unit = {}) {
+        val current = draftPeriod ?: return
+        task({ mayContinue -> offlineResult {
+            val key = current.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+            if (!mayContinue()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+            PhoneControlResult.Value(draftStore.list(key))
+        } }, { if (foreground) render(R.string.phone_draft_save_failed) }) { listing, _ ->
+            busy = false
+            if (!foreground || draftPeriod !== current || !current.isActive(SystemClock.elapsedRealtime())) return@task
+            drafts.clear()
+            draftSources.clear()
+            draftContexts.clear()
+            savedDrafts.clear()
+            for (draft in listing.drafts) {
+                val key = draft.source.receiver to draft.source.target
+                drafts[key] = draft.text
+                draftSources[key] = draft.source
+                draftContexts[key] = draft.context
+                savedDrafts[key] = draft
+            }
+            draftsReady = true
+            draftsDamaged = listing.damaged.isNotEmpty()
+            draftTarget = null
+            draftReceiver = null
+            render(if (listing.damaged.isNotEmpty()) R.string.phone_draft_damaged else null)
+            if (showingOffline && visibleOfflinePage != null) displayPage(requireNotNull(visibleOfflinePage))
+            else if (target == null || period == null) showDrafts()
+            else sessionPage?.let { displayPage(it) }
+            after()
+        }
+    }
+
+    private fun queueDraftSave(key: Pair<String, PhoneControlTarget>) {
+        val source = draftSources[key] ?: return
+        dirtyDrafts[key] = PhoneDraft(source, drafts[key].orEmpty(), draftContexts[key].orEmpty().toList())
+        draftSaveNotice = R.string.phone_draft_saving
+        saveNextDraft()
+    }
+
+    private fun saveNextDraft() {
+        if (savingDraft || dirtyDrafts.isEmpty()) return
+        val current = draftPeriod ?: return
+        val item = dirtyDrafts.entries.first()
+        val key = item.key
+        val request = AtomicReference<PhoneDraft?>(item.value)
+        dirtyDrafts.remove(key)
+        pendingDraftSave = request
+        savingDraft = true
+        val token = draftGeneration.get()
+        networkExecutor.execute {
+            val snapshot = request.get() ?: return@execute
+            val result = offlineResult {
+                val secret = current.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                PhoneControlResult.Value(draftStore.save(snapshot, secret) {
+                    draftGeneration.get() == token && current.isActive(SystemClock.elapsedRealtime())
+                })
+            }
+            runOnUiThread {
+                if (draftGeneration.get() != token || draftPeriod !== current || isDestroyed || isFinishing) {
+                    request.set(null)
+                    return@runOnUiThread
+                }
+                if (!deviceUsable()) {
+                    lockWorkspace()
+                    return@runOnUiThread
+                }
+                if (!current.isActive(SystemClock.elapsedRealtime())) {
+                    lockDrafts()
+                    return@runOnUiThread
+                }
+                val completed = request.getAndSet(null) ?: return@runOnUiThread
+                pendingDraftSave = null
+                savingDraft = false
+                draftSaveNotice = if (result is PhoneControlResult.Value && result.value == PhoneDraftSave.SAVED) {
+                    savedDrafts[key] = completed
+                    if (dirtyDrafts.isEmpty()) null else R.string.phone_draft_saving
+                } else if (result is PhoneControlResult.Value && result.value in setOf(PhoneDraftSave.BYTE_LIMIT, PhoneDraftSave.COUNT_LIMIT)) {
+                    if (dirtyDrafts[key] == null && drafts[key] == completed.text && draftContexts[key].orEmpty() == completed.context) {
+                        val previous = savedDrafts[key]
+                        if (previous == null) {
+                            drafts.remove(key)
+                            draftSources.remove(key)
+                            draftContexts.remove(key)
+                        } else {
+                            drafts[key] = previous.text
+                            draftContexts[key] = previous.context
+                        }
+                        if (draftReceiver == key.first && draftTarget == key.second) {
+                            changingDraft = true
+                            sendInput.setText(previous?.text.orEmpty())
+                            changingDraft = false
+                        }
+                    }
+                    R.string.phone_draft_limit
+                } else R.string.phone_draft_save_failed
+                saveNextDraft()
+                if (foreground) render()
+            }
+        }
+    }
+
+    private fun showDrafts() {
+        if (!draftsReady) return
+        showingDrafts = true
+        showingOffline = false
+        selectedOffline = null
+        selectedDraft = null
+        visibleOfflinePage = null
+        conversation.removeAllViews()
+        conversation.visibility = View.VISIBLE
+        if (drafts.isEmpty()) conversation.addView(TextView(this).apply { text = getString(R.string.phone_draft_empty) })
+        if (draftsDamaged) conversation.addView(TextView(this).apply { text = getString(R.string.phone_draft_damaged) })
+        for ((key, _) in drafts) {
+            val source = draftSources[key] ?: continue
+            conversation.addView(Button(this).apply {
+                text = getString(R.string.phone_draft_row, source.name, source.agent, source.project,
+                    source.receiver, source.target.controllerId, source.target.subjectId)
+                setOnClickListener {
+                    selectedDraft = source
+                    conversation.removeAllViews()
+                    render()
+                }
+            })
+        }
+        render()
+    }
+
+    private fun addDraftContext(source: PhoneOfflineSource, page: PhoneControlReply.SessionPage, entry: PhoneControlEntry) {
+        val receiver = draftReceiver ?: return
+        val target = draftTarget ?: return
+        val draft = draftSource ?: return
+        val key = receiver to target
+        if (discardingDraft == key) return
+        if (key !in drafts && drafts.size >= MAX_DRAFTS) {
+            sendNotice = R.string.phone_draft_limit
+            render()
+            return
+        }
+        draftSources[key] = draft
+        drafts.putIfAbsent(key, "")
+        val selectedPage = page.copy(entries = listOf(entry), nextBefore = 0)
+        draftContexts[key] = draftContexts[key].orEmpty() + PhoneDraftSelection(source, selectedPage)
+        draftContextOffset = ((draftContexts[key].orEmpty().size - 1) / DRAFT_CONTEXT_PAGE_SIZE) * DRAFT_CONTEXT_PAGE_SIZE
+        queueDraftSave(key)
+        render()
+    }
+
+    private fun renderDraftContext() {
+        draftContextView.removeAllViews()
+        val receiver = draftReceiver ?: return
+        val target = draftTarget ?: return
+        val key = receiver to target
+        if (showingOffline || showingDrafts || period == null || sessionPage == null) {
+            draftContextView.addView(TextView(this).apply { text = getString(R.string.phone_draft_detached) })
+        }
+        draftContextView.addView(TextView(this).apply { text = getString(R.string.phone_offline_copy_notice) })
+        val selections = draftContexts[key].orEmpty()
+        val lastOffset = ((selections.size - 1).coerceAtLeast(0) / DRAFT_CONTEXT_PAGE_SIZE) * DRAFT_CONTEXT_PAGE_SIZE
+        draftContextOffset = minOf(draftContextOffset, lastOffset)
+        val end = minOf(draftContextOffset + DRAFT_CONTEXT_PAGE_SIZE, selections.size)
+        if (selections.isNotEmpty()) draftContextView.addView(TextView(this).apply {
+            text = getString(R.string.phone_draft_context_range, draftContextOffset + 1, end, selections.size)
+        })
+        for (index in draftContextOffset until end) {
+            val selected = selections[index]
+            val entry = selected.page.entries.single()
+            val content = when (entry) {
+                is PhoneControlEntry.Message -> entry.text
+                is PhoneControlEntry.Tool -> "${entry.title}\n${entry.status}\n${entry.content}"
+                is PhoneControlEntry.Plan -> entry.text
+                is PhoneControlEntry.Question -> entry.question + "\n" + entry.options.joinToString("\n") { "${it.label} ${it.description} ${it.preview}" }
+            }
+            draftContextView.addView(TextView(this).apply {
+                text = getString(R.string.phone_draft_context, selected.source.name, selected.source.receiver,
+                    selected.source.target.controllerId, selected.source.target.subjectId, selected.page.revision,
+                    if (entry.truncated) "$content\n${getString(R.string.phone_truncated)}" else content)
+                setTextIsSelectable(true)
+            })
+            draftContextView.addView(Button(this).apply {
+                text = getString(R.string.phone_draft_remove_context)
+                isEnabled = discardingDraft != key
+                setOnClickListener {
+                    draftContexts[key] = draftContexts[key].orEmpty().filterIndexed { number, _ -> number != index }
+                    if (draftContextOffset >= draftContexts[key].orEmpty().size && draftContextOffset > 0) draftContextOffset -= DRAFT_CONTEXT_PAGE_SIZE
+                    queueDraftSave(key)
+                    render()
+                }
+            })
+        }
+        if (draftContextOffset > 0) draftContextView.addView(Button(this).apply {
+            text = getString(R.string.phone_draft_context_previous)
+            setOnClickListener { draftContextOffset -= DRAFT_CONTEXT_PAGE_SIZE; render() }
+        })
+        if (end < selections.size) draftContextView.addView(Button(this).apply {
+            text = getString(R.string.phone_draft_context_next)
+            setOnClickListener { draftContextOffset += DRAFT_CONTEXT_PAGE_SIZE; render() }
+        })
+    }
+
+    private fun confirmDiscardDraft() {
+        val source = draftSource ?: return
+        val current = draftPeriod ?: return
+        val key = source.receiver to source.target
+        AlertDialog.Builder(this).setTitle(R.string.phone_draft_discard_title).setMessage(R.string.phone_draft_discard_warning)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.phone_draft_discard) { _, _ ->
+                dirtyDrafts.remove(key)
+                discardingDraft = key
+                task({ mayContinue -> offlineResult {
+                    val secret = current.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                    draftStore.discard(source, secret) { mayContinue() && current.isActive(SystemClock.elapsedRealtime()) }
+                    PhoneControlResult.Value(Unit)
+                } }, {
+                    discardingDraft = null
+                    if (foreground) render(R.string.phone_draft_save_failed)
+                }) { _, _ ->
+                    busy = false
+                    discardingDraft = null
+                    if (draftPeriod !== current || !current.isActive(SystemClock.elapsedRealtime())) return@task
+                    drafts.remove(key)
+                    draftSources.remove(key)
+                    draftContexts.remove(key)
+                    savedDrafts.remove(key)
+                    draftTarget = null
+                    draftReceiver = null
+                    draftSaveNotice = null
+                    if (showingDrafts) showDrafts() else render()
+                }
+            }.show()
+    }
+
+    private fun clearDrafts() {
+        draftGeneration.incrementAndGet()
+        draftPeriod?.lock()
+        draftPeriod = null
+        draftsReady = false
+        draftsDamaged = false
+        savingDraft = false
+        pendingDraftSave?.set(null)
+        pendingDraftSave = null
+        discardingDraft = null
+        dirtyDrafts.clear()
+        drafts.clear()
+        savedDrafts.clear()
+        draftSources.clear()
+        draftContexts.clear()
+        draftSource = null
+        draftContextOffset = 0
+        draftTarget = null
+        draftReceiver = null
+        selectedDraft = null
+        showingDrafts = false
+        draftSaveNotice = null
+        handler.removeCallbacks(draftExpiryCheck)
+        changingDraft = true
+        sendInput.text.clear()
+        changingDraft = false
+        draftContextView.removeAllViews()
+    }
+
+    private fun lockDrafts() {
+        clearDrafts()
+        if (showingOffline && visibleOfflinePage != null) displayPage(requireNotNull(visibleOfflinePage))
+        else conversation.removeAllViews()
+        render(R.string.phone_locked)
+    }
+
+    private fun scheduleDraftExpiry() {
+        handler.removeCallbacks(draftExpiryCheck)
+        val remaining = draftPeriod?.remainingMs(SystemClock.elapsedRealtime()) ?: return
+        if (remaining == 0L) lockDrafts() else handler.postDelayed(draftExpiryCheck, remaining)
+    }
+
     private fun selectDraft() {
-        val current = period ?: return
-        val selected = target.takeIf { linkedRunSession == null && !showingOffline && !showingActionHistory && !showingPrepared && !showingRuns }
-        val receiver = if (selected == null) null else current.grant.receiverIdentity
-        if (draftTarget == selected && draftReceiver == receiver) return
+        val current = period
+        val source = when {
+            !draftsReady || draftPeriod?.isActive(SystemClock.elapsedRealtime()) != true -> null
+            showingDrafts -> selectedDraft
+            showingOffline -> selectedOffline?.source
+            current != null && target != null && linkedRunSession == null && !showingActionHistory && !showingPrepared && !showingRuns ->
+                selectedSource?.takeIf { it.target == target && it.receiver == current.grant.receiverIdentity }
+                    ?: PhoneOfflineSource(current.grant.receiverIdentity, requireNotNull(target), getString(R.string.phone_open_session), "", "")
+            else -> null
+        }
+        val selected = source?.target
+        val receiver = source?.receiver
+        draftSource = if (source == null) null else draftSources[source.receiver to source.target] ?: source
+        if (draftTarget == selected && draftReceiver == receiver && (selected != null || sendInput.text.isEmpty())) return
         draftTarget = selected
         draftReceiver = receiver
+        draftContextOffset = 0
         sendNotice = null
         changingDraft = true
         sendInput.setText(if (selected != null && receiver != null) drafts[receiver to selected].orEmpty() else "")
@@ -507,11 +842,19 @@ class PhoneControlActivity : Activity() {
         }
         val unlocked = period?.isActive(SystemClock.elapsedRealtime()) == true
         val offlineUnlocked = offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true
-        val showComposer = foreground && unlocked && linkedRunSession == null && !showingPrepared && !showingRuns && ((!showingOffline && !showingActionHistory && target != null) ||
-            sendInput.text.isNotEmpty())
+        val draftUnlocked = draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true && draftsReady
+        val showComposer = foreground && draftUnlocked && draftSource != null
         sendInput.visibility = if (showComposer) View.VISIBLE else View.GONE
+        val currentDraftKey = if (draftReceiver != null && draftTarget != null) requireNotNull(draftReceiver) to requireNotNull(draftTarget) else null
+        sendInput.isEnabled = currentDraftKey == null || currentDraftKey != discardingDraft
+        val saved = currentDraftKey != null && draftSource != null && savedDrafts[currentDraftKey] ==
+            PhoneDraft(requireNotNull(draftSource), drafts[currentDraftKey].orEmpty(), draftContexts[currentDraftKey].orEmpty())
         sendButton.visibility = if (showComposer) View.VISIBLE else View.GONE
         sendStatus.visibility = if (showComposer) View.VISIBLE else View.GONE
+        draftContextView.visibility = if (showComposer) View.VISIBLE else View.GONE
+        draftDiscardButton.visibility = if (showComposer && draftReceiver != null && draftTarget != null && (draftReceiver to draftTarget) in drafts) View.VISIBLE else View.GONE
+        draftDiscardButton.isEnabled = !busy
+        renderDraftContext()
         val related = relatedPendingActions()
         val acceptedStates = setOf(PhoneActionState.ACCEPTED, PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)
         val resolvedStates = acceptedStates + PhoneActionState.FENCED_NO_EFFECT
@@ -521,8 +864,11 @@ class PhoneControlActivity : Activity() {
         val wrongTarget = draftTarget != null &&
             (draftTarget != target || draftReceiver != period?.grant?.receiverIdentity)
         sendStatus.text = getString(when {
-            wrongTarget -> R.string.phone_send_other_session
             sendNotice == R.string.phone_draft_limit -> R.string.phone_draft_limit
+            draftSaveNotice != null -> requireNotNull(draftSaveNotice)
+            currentDraftKey != null && currentDraftKey in drafts && !saved -> R.string.phone_draft_save_failed
+            draftReceiver != null && draftTarget != null && !draftContexts[draftReceiver to draftTarget].isNullOrEmpty() -> R.string.phone_draft_context_send_unavailable
+            wrongTarget -> R.string.phone_send_other_session
             reviewNeeded -> R.string.phone_send_review
             unresolved && related.any { actionEvidence[it.operationId]?.state == PhoneActionState.REJECTED } -> R.string.phone_send_rejected
             unresolved -> sendNotice ?: R.string.phone_send_unknown
@@ -531,15 +877,20 @@ class PhoneControlActivity : Activity() {
             related.any { actionEvidence[it.operationId]?.state == PhoneActionState.ACCEPTED } -> R.string.phone_action_accepted
             related.any { actionEvidence[it.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT } -> R.string.phone_send_fenced
             sendNotice in setOf(R.string.phone_send_pending, R.string.phone_send_unknown, R.string.phone_send_unsupported) -> R.string.phone_send_ready
-            else -> sendNotice ?: R.string.phone_send_ready
+            else -> sendNotice ?: if (saved) R.string.phone_draft_saved else R.string.phone_send_ready
         })
-        sendButton.isEnabled = !busy && reconciliationLoaded && !wrongTarget && !unresolved && !reviewNeeded && !acceptedDraft &&
+        sendButton.isEnabled = saved && unlocked && draftUnlocked && !showingDrafts && !busy && !savingDraft && dirtyDrafts.isEmpty() && draftSaveNotice == null &&
+            draftContexts[draftReceiver to draftTarget].isNullOrEmpty() && reconciliationLoaded && !wrongTarget && !unresolved && !reviewNeeded && !acceptedDraft &&
             linkedRunSession == null && sendInput.text.isNotEmpty() && sessionPage?.status == "ready" && target != null && !showingOffline && !showingActionHistory
         enableButton.visibility = if (currentStatus is PhoneControlStatus.Granted) View.GONE else View.VISIBLE
         checkButton.visibility = if (currentStatus is PhoneControlStatus.Pending) View.VISIBLE else View.GONE
         unlockButton.visibility = if (currentStatus is PhoneControlStatus.Granted && !unlocked) View.VISIBLE else View.GONE
         offlineUnlockButton.visibility = if (!offlineUnlocked) View.VISIBLE else View.GONE
         offlineUnlockButton.isEnabled = !busy
+        draftUnlockButton.visibility = if (!draftUnlocked) View.VISIBLE else View.GONE
+        draftUnlockButton.isEnabled = !busy
+        draftListButton.visibility = if (draftUnlocked) View.VISIBLE else View.GONE
+        draftListButton.isEnabled = !busy
         offlineCopiesButton.visibility = if (offlineUnlocked) View.VISIBLE else View.GONE
         offlineCopiesButton.isEnabled = !busy
         offlineKeepButton.visibility = if (unlocked && offlineUnlocked && linkedRunSession == null && target != null && !showingOffline && !showingActionHistory) View.VISIBLE else View.GONE
@@ -555,8 +906,8 @@ class PhoneControlActivity : Activity() {
         offlineRemoveButton.isEnabled = !busy
         offlineBudgetButton.visibility = if (offlineUnlocked && showingOffline) View.VISIBLE else View.GONE
         offlineBudgetButton.isEnabled = !busy
-        lockButton.visibility = if (unlocked || offlineUnlocked) View.VISIBLE else View.GONE
-        sessionsButton.visibility = if (unlocked && (target != null || showingActionHistory || showingOffline || showingPrepared || showingRuns)) View.VISIBLE else View.GONE
+        lockButton.visibility = if (unlocked || offlineUnlocked || draftUnlocked) View.VISIBLE else View.GONE
+        sessionsButton.visibility = if (unlocked && (target != null || showingActionHistory || showingOffline || showingDrafts || showingPrepared || showingRuns)) View.VISIBLE else View.GONE
         sessionsButton.isEnabled = !busy
         runsButton.visibility = if (unlocked && !showingOffline) View.VISIBLE else View.GONE
         runsButton.isEnabled = !busy
@@ -581,12 +932,13 @@ class PhoneControlActivity : Activity() {
         unlockButton.isEnabled = !busy
     }
 
-    private fun unlockOffline(after: (Boolean) -> Unit) {
+    private fun unlockOffline(forDraft: Boolean = false, after: (Boolean) -> Unit) {
+        val store = if (forDraft) draftUnlockStore else offlineUnlockStore
         val token = generation.incrementAndGet()
         busy = true
         render()
         networkExecutor.execute {
-            val result = offlineResult { PhoneControlResult.Value(offlineUnlockStore.prepare()) }
+            val result = offlineResult { PhoneControlResult.Value(store.prepare()) }
             if (result is PhoneControlResult.Value) {
                 val pending = PendingOfflinePreparation(token, result.value)
                 if (!active(token) || !pendingOfflinePreparation.compareAndSet(null, pending)) result.value.discard()
@@ -602,6 +954,7 @@ class PhoneControlActivity : Activity() {
                 if (result is PhoneControlResult.Failure || prepared == null) {
                     busy = false
                     render(R.string.phone_offline_failed)
+                    if (foreground && forDraft && store.hasProvenDraftKeyLoss()) confirmLostDraftKey()
                     if (foreground) after(false)
                     return@runOnUiThread
                 }
@@ -616,7 +969,7 @@ class PhoneControlActivity : Activity() {
                             busy = false
                             render(R.string.phone_offline_failed)
                             if (foreground) after(false)
-                        } else finishOfflineUnlock(prepared, cipher, token, after)
+                        } else finishOfflineUnlock(prepared, cipher, token, after, forDraft)
                     }, {
                         if (!active(token)) return@start
                         cancellation = null
@@ -643,11 +996,12 @@ class PhoneControlActivity : Activity() {
         }
     }
 
-    private fun finishOfflineUnlock(prepared: PreparedPhoneOfflineUnlock, cipher: javax.crypto.Cipher, token: Long, after: (Boolean) -> Unit) {
+    private fun finishOfflineUnlock(prepared: PreparedPhoneOfflineUnlock, cipher: javax.crypto.Cipher, token: Long, after: (Boolean) -> Unit, forDraft: Boolean) {
+        val store = if (forDraft) draftUnlockStore else offlineUnlockStore
         networkExecutor.execute {
             val result = offlineResult {
                 if (!active(token)) PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
-                else PhoneControlResult.Value(offlineUnlockStore.finish(prepared, cipher, SystemClock.elapsedRealtime()))
+                else PhoneControlResult.Value(store.finish(prepared, cipher, SystemClock.elapsedRealtime()))
             }
             if (result is PhoneControlResult.Value) {
                 val pending = PendingOfflinePeriod(token, result.value)
@@ -665,17 +1019,39 @@ class PhoneControlActivity : Activity() {
                 busy = false
                 if (result is PhoneControlResult.Failure || unlocked == null) {
                     render(R.string.phone_offline_failed)
+                    if (foreground && forDraft && store.hasProvenDraftKeyLoss()) confirmLostDraftKey()
                     if (foreground) after(false)
                     return@runOnUiThread
                 }
-                offlinePeriod?.lock()
-                offlinePeriod = unlocked
-                scheduleOfflineExpiry()
-                schedulePinRefresh()
+                if (forDraft) {
+                    draftPeriod?.lock()
+                    draftPeriod = unlocked
+                    scheduleDraftExpiry()
+                } else {
+                    offlinePeriod?.lock()
+                    offlinePeriod = unlocked
+                    scheduleOfflineExpiry()
+                    schedulePinRefresh()
+                }
                 render()
                 if (foreground) after(true)
             }
         }
+    }
+
+    private fun confirmLostDraftKey() {
+        AlertDialog.Builder(this).setTitle(R.string.phone_draft_key_lost_title).setMessage(R.string.phone_draft_key_lost_message)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.phone_draft_key_delete) { _, _ ->
+                task({ mayContinue -> offlineResult {
+                    if (!mayContinue()) return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                    draftUnlockStore.resetLostDraftKey()
+                    PhoneControlResult.Value(Unit)
+                } }, { if (foreground) render(R.string.phone_draft_save_failed) }) { _, _ ->
+                    busy = false
+                    if (foreground) render(R.string.phone_draft_key_reset)
+                }
+            }.show()
     }
 
     private fun showOfflineCopies() {
@@ -686,6 +1062,8 @@ class PhoneControlActivity : Activity() {
         clearRuns()
         clearPrepared()
         showingOffline = true
+        showingDrafts = false
+        selectedDraft = null
         selectedOffline = null
         handler.removeCallbacks(refreshPoll)
         task({ mayContinue -> offlineResult {
@@ -761,6 +1139,7 @@ class PhoneControlActivity : Activity() {
             busy = false
             if (!foreground || offlinePeriod !== current || !current.isActive(SystemClock.elapsedRealtime())) return@task
             offlinePageIndex = index
+            visibleOfflinePage = page
             render()
             displayPage(page)
             conversation.addView(TextView(this).apply { text = getString(R.string.phone_offline_stale) }, 0)
@@ -987,8 +1366,14 @@ class PhoneControlActivity : Activity() {
                             else if (target != null) withNetwork { readTarget() }
                             else if (!attentionNavigation) withNetwork { readSessions() }
                         }
-                        if (offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true) continueOnline()
-                        else unlockOffline { continueOnline() }
+                        val openDrafts = {
+                            if (draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true && draftsReady) continueOnline()
+                            else unlockOffline(forDraft = true) { unlocked ->
+                                if (unlocked) loadDrafts { continueOnline() } else continueOnline()
+                            }
+                        }
+                        if (offlinePeriod?.isActive(SystemClock.elapsedRealtime()) == true) openDrafts()
+                        else unlockOffline { openDrafts() }
                     }
                     is PhoneControlResult.Failure -> showFailure(result.outcome)
                 }
@@ -1213,6 +1598,8 @@ class PhoneControlActivity : Activity() {
         openedPages = emptyList()
         sessionPage = null
         browsePage = null
+        showingDrafts = false
+        selectedDraft = null
         showingRuns = true
         runPage = null
         runAfter = null
@@ -1373,6 +1760,8 @@ class PhoneControlActivity : Activity() {
         clearRuns()
         clearPrepared()
         showingOffline = false
+        showingDrafts = false
+        selectedDraft = null
         selectedOffline = null
         showingActionHistory = false
         actionHistoryPage = null
@@ -1409,6 +1798,8 @@ class PhoneControlActivity : Activity() {
         openedPages = emptyList()
         sessionPage = null
         browsePage = null
+        showingDrafts = false
+        selectedDraft = null
         showingPrepared = true
         preparedPage = null
         preparedAfter = null
@@ -1505,6 +1896,8 @@ class PhoneControlActivity : Activity() {
         clearRunSession()
         clearRuns()
         clearPrepared()
+        showingDrafts = false
+        selectedDraft = null
         showingActionHistory = true
         handler.removeCallbacks(refreshPoll)
         task({ maySend ->
@@ -1549,6 +1942,8 @@ class PhoneControlActivity : Activity() {
 
     private fun readSessions(cursor: PhoneBrowseCursor? = null, interaction: Boolean = true) {
         val current = period ?: return
+        showingDrafts = false
+        selectedDraft = null
         val pairing = PairingStore(applicationContext)
         val binding = pairing.binding()
         if (binding == null) {
@@ -1770,6 +2165,13 @@ class PhoneControlActivity : Activity() {
                 is PhoneControlEntry.Plan -> line(getString(R.string.phone_plan, entry.text))
             }
             if (entry.truncated) line(getString(R.string.phone_truncated))
+            val source = if (showingOffline) selectedOffline?.source else selectedSource ?: draftSource
+            if (source != null && draftSource != null && draftsReady && draftPeriod?.isActive(SystemClock.elapsedRealtime()) == true) {
+                conversation.addView(Button(this).apply {
+                    text = getString(R.string.phone_draft_add_context)
+                    setOnClickListener { addDraftContext(source, page, entry) }
+                })
+            }
         }
     }
 
@@ -1809,6 +2211,7 @@ class PhoneControlActivity : Activity() {
             resetReconciliation()
         }
         if (outcome == PhoneControlOutcome.REVOKED || outcome == PhoneControlOutcome.UNAUTHENTICATED) {
+            clearDrafts()
             clearRunsForLock()
             clearPrepared()
             period?.lock()
@@ -1845,9 +2248,11 @@ class PhoneControlActivity : Activity() {
         period = null
         offlinePeriod?.lock()
         offlinePeriod = null
+        clearDrafts()
         clearRunSession()
         showingOffline = false
         selectedOffline = null
+        visibleOfflinePage = null
         selectedSource = null
         openedPages = emptyList()
         showingActionHistory = false
@@ -1913,6 +2318,7 @@ class PhoneControlActivity : Activity() {
         offlinePeriod?.lock()
         offlinePeriod = null
         selectedOffline = null
+        visibleOfflinePage = null
         if (showingOffline) {
             showingOffline = false
             conversation.removeAllViews()
@@ -2017,6 +2423,7 @@ class PhoneControlActivity : Activity() {
         private const val RECONCILE_INTERVAL_MS = 10_000L
         private const val RECONCILE_BATCH = 4
         private const val MAX_DRAFTS = 128
+        private const val DRAFT_CONTEXT_PAGE_SIZE = 8
         private const val MEBIBYTE = 1024L * 1024
     }
 }

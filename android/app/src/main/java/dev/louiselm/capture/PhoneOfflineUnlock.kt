@@ -3,6 +3,7 @@ package dev.louiselm.capture
 import android.annotation.SuppressLint
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.io.File
@@ -20,7 +21,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/** Process-only local download access; this period never grants online authority. */
+/** Process-only local protected-data access; this period never grants online authority. */
 internal class PhoneOfflinePeriod(material: ByteArray, private val startedAtMs: Long) {
     private var material: ByteArray? = material.copyOf()
     private val absoluteDeadline = startedAtMs + 3_600_000L
@@ -75,34 +76,45 @@ internal class PreparedPhoneOfflineUnlock internal constructor(
     }
 }
 
-/** Wraps only the download key with its own authentication-bound Android Keystore key. */
+/** Wraps one local-data key with its own authentication-bound Android Keystore key. */
 internal class PhoneOfflineUnlockStore(
     context: Context,
     private val downloads: File,
     preferencesName: String = "phone-offline-key-v1",
-    private val wrappingKey: (Boolean) -> SecretKey = ::phoneOfflineWrappingKey,
+    private val draft: Boolean = false,
+    private val removeWrappingKey: () -> Unit = ::removePhoneDraftWrappingKey,
+    private val wrappingKey: (Boolean) -> SecretKey = if (draft) ::phoneDraftWrappingKey else ::phoneOfflineWrappingKey,
 ) {
     private val preferences = context.applicationContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+    @Volatile private var lostWrapped: String? = null
 
     fun hasWrappedKey(): Boolean = preferences.contains(WRAPPED)
 
     /** Prepare a cipher for BiometricPrompt; no key material is returned before authentication. */
-    fun prepare(): PreparedPhoneOfflineUnlock = withKeyLock {
-        val encoded = preferences.getString(WRAPPED, null)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        if (encoded == null) {
-            if (hasDownloads()) throw KeyStoreException("download key is missing")
-            cipher.init(Cipher.ENCRYPT_MODE, wrappingKey(true))
-            cipher.updateAAD(AAD)
-            return@withKeyLock PreparedPhoneOfflineUnlock(cipher, true, ByteArray(32).also { SecureRandom().nextBytes(it) })
+    fun prepare(): PreparedPhoneOfflineUnlock = try {
+        withKeyLock {
+            val encoded = preferences.getString(WRAPPED, null)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            if (encoded == null) {
+                if (hasDownloads()) throw KeyStoreException("download key is missing")
+                cipher.init(Cipher.ENCRYPT_MODE, wrappingKey(true))
+                cipher.updateAAD(if (draft) DRAFT_AAD else DOWNLOAD_AAD)
+                return@withKeyLock PreparedPhoneOfflineUnlock(cipher, true, ByteArray(32).also { SecureRandom().nextBytes(it) })
+            }
+            val wrapped = try { Base64.decode(encoded, Base64.NO_WRAP) } catch (error: IllegalArgumentException) {
+                throw GeneralSecurityException("download key is unreadable", error)
+            }
+            if (wrapped.size != WRAPPED_BYTES) throw GeneralSecurityException("download key is unreadable")
+            cipher.init(Cipher.DECRYPT_MODE, wrappingKey(false), GCMParameterSpec(128, wrapped, 0, NONCE_BYTES))
+            cipher.updateAAD(if (draft) DRAFT_AAD else DOWNLOAD_AAD)
+            PreparedPhoneOfflineUnlock(cipher, false, wrapped.copyOfRange(NONCE_BYTES, wrapped.size))
         }
-        val wrapped = try { Base64.decode(encoded, Base64.NO_WRAP) } catch (error: IllegalArgumentException) {
-            throw GeneralSecurityException("download key is unreadable", error)
-        }
-        if (wrapped.size != WRAPPED_BYTES) throw GeneralSecurityException("download key is unreadable")
-        cipher.init(Cipher.DECRYPT_MODE, wrappingKey(false), GCMParameterSpec(128, wrapped, 0, NONCE_BYTES))
-        cipher.updateAAD(AAD)
-        PreparedPhoneOfflineUnlock(cipher, false, wrapped.copyOfRange(NONCE_BYTES, wrapped.size))
+    } catch (error: KeyPermanentlyInvalidatedException) {
+        rememberLoss()
+        throw error
+    } catch (error: PhoneDraftKeyLost) {
+        rememberLoss()
+        throw error
     }
 
     /** Finish only the exact cipher returned by the system authentication callback. */
@@ -113,13 +125,16 @@ internal class PhoneOfflineUnlockStore(
             if (prepared.creating) {
                 val wrapped = cipher.iv + cipher.doFinal(payload)
                 if (wrapped.size != WRAPPED_BYTES) throw GeneralSecurityException("invalid wrapped download key")
-                publishWrappedKey(wrapped)
+                publishWrappedKey(wrapped, payload)
                 material = payload
             } else {
                 material = cipher.doFinal(payload)
             }
             if (material.size != 32) throw GeneralSecurityException("invalid download key")
             return PhoneOfflinePeriod(material, startedAtMs)
+        } catch (error: KeyPermanentlyInvalidatedException) {
+            rememberLoss()
+            throw error
         } finally {
             material?.fill(0)
             payload.fill(0)
@@ -127,13 +142,31 @@ internal class PhoneOfflineUnlockStore(
     }
 
     @SuppressLint("UseKtx") // The Boolean is the durability result, not a best-effort preference edit.
-    private fun publishWrappedKey(wrapped: ByteArray) {
+    private fun publishWrappedKey(wrapped: ByteArray, material: ByteArray) {
         withKeyLock {
-            if (hasWrappedKey() || hasDownloads()) throw IOException("download key changed; retry unlock")
+            if (hasWrappedKey() || hasDownloads()) throw IOException("local key changed; retry unlock")
+            if (draft) PhoneDraftStore(downloads).installKey(SecretKeySpec(material, "AES"))
             if (!preferences.edit().putString(WRAPPED, Base64.encodeToString(wrapped, Base64.NO_WRAP)).commit()) {
                 throw IOException("download key could not be stored")
             }
         }
+    }
+
+    fun hasProvenDraftKeyLoss(): Boolean = draft && lostWrapped != null
+
+    private fun rememberLoss() {
+        if (draft) lostWrapped = preferences.getString(WRAPPED, null)
+    }
+
+    /** Called only after a permanent loss was shown and the operator confirmed deletion. */
+    @SuppressLint("UseKtx") // Reset must not claim success unless the preference removal is durable.
+    fun resetLostDraftKey() = withKeyLock {
+        val expected = lostWrapped ?: throw IllegalStateException("draft key loss has not been proved")
+        if (!draft || preferences.getString(WRAPPED, null) != expected) throw IOException("draft key changed")
+        PhoneDraftStore(downloads).resetLost()
+        removeWrappingKey()
+        if (!preferences.edit().remove(WRAPPED).commit()) throw IOException("draft key reset failed")
+        lostWrapped = null
     }
 
     private fun <T> withKeyLock(block: () -> T): T {
@@ -149,6 +182,7 @@ internal class PhoneOfflineUnlockStore(
     private fun hasDownloads(): Boolean {
         if (!downloads.exists()) return false
         val directories = downloads.listFiles() ?: throw IOException("downloads unavailable")
+        if (draft) return directories.any { it.name.endsWith(".draft") }
         return directories.filter { it.isDirectory }.any { directory ->
             val files = directory.listFiles() ?: throw IOException("downloads unavailable")
             files.any { it.name.endsWith(".meta") || it.name.endsWith(".data") }
@@ -159,16 +193,23 @@ internal class PhoneOfflineUnlockStore(
         const val WRAPPED = "wrapped"
         const val NONCE_BYTES = 12
         const val WRAPPED_BYTES = NONCE_BYTES + 32 + 16
-        val AAD = "louiselm-offline-download-key-v1".toByteArray(Charsets.UTF_8)
+        val DOWNLOAD_AAD = "louiselm-offline-download-key-v1".toByteArray(Charsets.UTF_8)
+        val DRAFT_AAD = "louiselm-offline-draft-key-v1".toByteArray(Charsets.UTF_8)
     }
 }
 
-private fun phoneOfflineWrappingKey(create: Boolean): SecretKey {
+private fun phoneOfflineWrappingKey(create: Boolean): SecretKey = phoneLocalWrappingKey(OFFLINE_KEY_ALIAS, create)
+private fun phoneDraftWrappingKey(create: Boolean): SecretKey = phoneLocalWrappingKey(DRAFT_KEY_ALIAS, create)
+
+private fun phoneLocalWrappingKey(alias: String, create: Boolean): SecretKey {
     val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    (store.getKey(OFFLINE_KEY_ALIAS, null) as? SecretKey)?.let { return it }
-    if (!create) throw KeyStoreException("download wrapping key is missing")
+    (store.getKey(alias, null) as? SecretKey)?.let { return it }
+    if (!create) {
+        if (alias == DRAFT_KEY_ALIAS) throw PhoneDraftKeyLost()
+        throw KeyStoreException("download wrapping key is missing")
+    }
     return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
-        init(KeyGenParameterSpec.Builder(OFFLINE_KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+        init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256).setUserAuthenticationRequired(true)
             .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL)
@@ -178,3 +219,11 @@ private fun phoneOfflineWrappingKey(create: Boolean): SecretKey {
 }
 
 private const val OFFLINE_KEY_ALIAS = "louiselm-offline-download-wrap-v1"
+
+private const val DRAFT_KEY_ALIAS = "louiselm-offline-draft-wrap-v1"
+
+private class PhoneDraftKeyLost : KeyStoreException("draft wrapping key is permanently missing")
+
+private fun removePhoneDraftWrappingKey() {
+    KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(DRAFT_KEY_ALIAS) }
+}

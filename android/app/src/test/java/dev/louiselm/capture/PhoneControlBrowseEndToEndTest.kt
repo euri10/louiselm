@@ -26,7 +26,8 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [30], shadows = [EndToEndPairingFixture::class, EndToEndKeysFixture::class, EndToEndAuthenticatorFixture::class],
+@Config(sdk = [30], shadows = [EndToEndPairingFixture::class, EndToEndKeysFixture::class, EndToEndAuthenticatorFixture::class,
+    PhoneScreenOfflineUnlockFixture::class, PhoneScreenOfflineAuthenticatorFixture::class],
     instrumentedPackages = ["dev.louiselm.capture"])
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneControlBrowseEndToEndTest {
@@ -53,12 +54,13 @@ class PhoneControlBrowseEndToEndTest {
         val executor = PausedExecutorService()
         ReflectionHelpers.setField(activity, "networkExecutor", executor)
         fun drain() { executor.runAll(); shadowOf(Looper.getMainLooper()).idle() }
+        var screenClosed = false
         try {
             screen.setup()
             drain()
             views(activity.window.decorView).filterIsInstance<Button>()
                 .single { it.text.toString() == activity.getString(R.string.phone_unlock) }.performClick()
-            repeat(5) { drain() }
+            repeat(12) { drain() }
             val subject = requireNotNull(System.getenv("LOUISELM_E2E_OTHER_SUBJECT"))
             val rows = views(activity.window.decorView).filterIsInstance<Button>()
                 .filter { it.text.toString().contains("same") }.toList()
@@ -109,8 +111,38 @@ class PhoneControlBrowseEndToEndTest {
                 .single { it.text.toString() == secondRow }.performClick()
             repeat(2) { drain() }
             assertEquals("first phone draft", input.text.toString())
-        } finally {
+            views(activity.window.decorView).filterIsInstance<Button>()
+                .first { it.text.toString() == activity.getString(R.string.phone_draft_add_context) }.performClick()
+            repeat(3) { drain() }
             screen.close()
+            screenClosed = true
+            drain()
+            val reopened = Robolectric.buildActivity(PhoneControlActivity::class.java)
+            val restored = reopened.get()
+            ReflectionHelpers.getField<ExecutorService>(restored, "networkExecutor").shutdown()
+            val restoredExecutor = PausedExecutorService()
+            ReflectionHelpers.setField(restored, "networkExecutor", restoredExecutor)
+            fun drainRestored() { restoredExecutor.runAll(); shadowOf(Looper.getMainLooper()).idle() }
+            try {
+                reopened.setup()
+                drainRestored()
+                views(restored.window.decorView).filterIsInstance<Button>()
+                    .single { it.text.toString() == restored.getString(R.string.phone_unlock) }.performClick()
+                repeat(12) { drainRestored() }
+                views(restored.window.decorView).filterIsInstance<Button>()
+                    .single { it.text.toString() == secondRow }.performClick()
+                repeat(3) { drainRestored() }
+                assertEquals("first phone draft", views(restored.window.decorView).filterIsInstance<EditText>().single().text.toString())
+                assertTrue(views(restored.window.decorView).filterIsInstance<TextView>()
+                    .any { it.text.toString().contains("Selected from") && it.text.toString().contains("fixture request") })
+            } finally {
+                reopened.close()
+                restoredExecutor.runAll()
+                shadowOf(Looper.getMainLooper()).idle()
+                restoredExecutor.shutdownNow()
+            }
+        } finally {
+            if (!screenClosed) screen.close()
             executor.runAll()
             shadowOf(Looper.getMainLooper()).idle()
             executor.shutdownNow()

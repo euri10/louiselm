@@ -245,4 +245,27 @@
     <string name="attention_retry_state">Inbox unavailable: %1$s Cached inbox: items may have changed. Reconnect to the receiver and refresh.</string>
     <string name="attention_unavailable_state">Inbox unavailable: %1$s Reconnect to the receiver and refresh.</string>
     <string name="attention_operator_state">Inbox requires operator action: %1$s</string>
+    <string name="phone_draft_unlock">Unlock phone drafts</string>
+    <string name="phone_draft_list">Phone drafts</string>
+    <string name="phone_draft_row">%1$s · %2$s · %3$s\nSource %4$s / %5$s / %6$s</string>
+    <string name="phone_draft_empty">No saved phone drafts.</string>
+    <string name="phone_draft_damaged">Some drafts are unreadable. They have been kept; retry local unlock or storage access.</string>
+    <string name="phone_draft_detached">Offline or detached work: original source and selected context are retained and may contain sensitive excerpts. Choose an authorized destination and review before sending.</string>
+    <string name="phone_draft_add_context">Add to draft</string>
+    <string name="phone_draft_context">Selected from %1$s (%2$s / %3$s / %4$s), revision %5$d:\n%6$s</string>
+    <string name="phone_draft_remove_context">Remove selected context</string>
+    <string name="phone_draft_discard">Discard draft</string>
+    <string name="phone_draft_discard_title">Discard this phone draft?</string>
+    <string name="phone_draft_discard_warning">The saved instruction and selected context will be deleted. Original recordings and pending action evidence remain.</string>
+    <string name="phone_draft_saving">Saving phone draft…</string>
+    <string name="phone_draft_save_failed">Draft not saved. The last saved version is preserved; retry your edit or free space.</string>
+    <string name="phone_draft_saved">Phone draft saved locally.</string>
+    <string name="phone_draft_context_send_unavailable">Selected context is saved for review; Send will be available when reviewed context delivery is supported.</string>
+    <string name="phone_draft_key_lost_title">Phone draft key permanently lost</string>
+    <string name="phone_draft_key_lost_message">These encrypted drafts and selected excerpts cannot be recovered without this device key. There is no backup or recovery secret. Delete the affected draft records and reset their key? Original recordings, downloaded copies and pending action evidence are unaffected.</string>
+    <string name="phone_draft_key_delete">Delete unrecoverable drafts</string>
+    <string name="phone_draft_key_reset">Unrecoverable drafts deleted. Unlock phone drafts to begin again.</string>
+    <string name="phone_draft_context_range">Selected context %1$d–%2$d of %3$d</string>
+    <string name="phone_draft_context_previous">Previous selected context</string>
+    <string name="phone_draft_context_next">Next selected context</string>
 </resources>

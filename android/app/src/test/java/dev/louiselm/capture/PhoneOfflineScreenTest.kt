@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import java.io.File
 import java.time.Duration
@@ -22,6 +23,7 @@ import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -44,6 +46,8 @@ private object OfflineScreenFixture {
     val material = ByteArray(32) { 7 }
     var authenticate: (() -> Unit)? = null
     var pairingUnavailable = false
+    var permanentLoss = false
+    var resets = 0
 }
 
 @Implements(PhoneControlClient::class, isInAndroidSdk = false)
@@ -65,10 +69,17 @@ class OfflineScreenPairingFixture {
 class OfflineScreenUnlockFixture {
     @Implementation(methodName = "prepare")
     internal fun prepare(): PreparedPhoneOfflineUnlock {
+        if (OfflineScreenFixture.permanentLoss) throw android.security.keystore.KeyPermanentlyInvalidatedException()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(OfflineScreenFixture.material, "AES"))
         return PreparedPhoneOfflineUnlock(cipher, true, ByteArray(32))
     }
+
+    @Implementation(methodName = "hasProvenDraftKeyLoss")
+    internal fun hasProvenDraftKeyLoss(): Boolean = OfflineScreenFixture.permanentLoss
+
+    @Implementation(methodName = "resetLostDraftKey")
+    internal fun resetLostDraftKey() { OfflineScreenFixture.resets++; OfflineScreenFixture.permanentLoss = false }
 
     @Implementation(methodName = "finish")
     internal fun finish(prepared: PreparedPhoneOfflineUnlock, cipher: Cipher, startedAtMs: Long): PhoneOfflinePeriod {
@@ -117,6 +128,8 @@ class PhoneOfflineScreenTest {
     @Before
     fun setup() {
         OfflineScreenFixture.pairingUnavailable = false
+        OfflineScreenFixture.permanentLoss = false
+        OfflineScreenFixture.resets = 0
         val app = RuntimeEnvironment.getApplication()
         shadowOf(app).grantPermissions("${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
         shadowOf(app.getSystemService(KeyguardManager::class.java)).setIsDeviceLocked(false)
@@ -290,4 +303,176 @@ class PhoneOfflineScreenTest {
         drain()
         assertFalse(metadata.exists())
     }
+    @Test
+    fun authorsAndRestoresASelectedOfflineExcerptWithoutSending() {
+        val captures = CaptureStore(activity)
+        val pending = captures.begin()
+        val audio = byteArrayOf(1, 2, 3, 4)
+        pending.file.writeBytes(audio)
+        val recording = captures.complete(pending, 1_000, null)
+        unlockAndOpen()
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        button(R.string.phone_draft_add_context).performClick()
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("offline private instruction")
+        drain()
+        assertTrue(contains("protected offline text"))
+        val revoke = Thread { revokePhoneOffline(activity, OfflineScreenFixture.receiver) }
+        revoke.start()
+        revoke.join()
+        drain()
+        assertFalse(contains("offline private instruction"))
+        assertFalse(contains("protected offline text"))
+        assertTrue(recording.audio.readBytes().contentEquals(audio))
+        controller.close()
+        drain()
+        create()
+        assertFalse(contains("offline private instruction"))
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        views(activity.window.decorView).filterIsInstance<Button>()
+            .single { it.text.toString().contains("saved session") }.performClick()
+        drain()
+        assertEquals("offline private instruction", views(activity.window.decorView).filterIsInstance<EditText>().single().text.toString())
+        assertFalse(views(activity.window.decorView).filterIsInstance<EditText>().single().isSaveEnabled)
+        assertTrue(contains("protected offline text"))
+        assertTrue(contains(activity.getString(R.string.phone_draft_detached)))
+        button(R.string.phone_draft_discard).performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_NEGATIVE).performClick()
+        assertTrue(contains("offline private instruction"))
+        button(R.string.phone_draft_discard).performClick()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        drain()
+        assertFalse(contains("offline private instruction"))
+        assertTrue(recording.audio.readBytes().contentEquals(audio))
+    }
+
+    @Test
+    fun permanentlyLostDraftKeyRequiresExplicitConfirmation() {
+        OfflineScreenFixture.permanentLoss = true
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        val warning = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(warning.isShowing)
+        warning.getButton(DialogInterface.BUTTON_NEGATIVE).performClick()
+        assertEquals(0, OfflineScreenFixture.resets)
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        ShadowAlertDialog.getLatestAlertDialog().getButton(DialogInterface.BUTTON_POSITIVE).performClick()
+        drain()
+        assertEquals(1, OfflineScreenFixture.resets)
+        assertTrue(contains(activity.getString(R.string.phone_draft_key_reset)))
+    }
+
+    @Test
+    fun lockFencesLateSaveAndRetainsTheLastSavedDraft() {
+        unlockAndOpen()
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("saved before lock")
+        drain()
+        input.setText("late unsaved edit")
+        val queued = ReflectionHelpers.getField<java.util.concurrent.atomic.AtomicReference<PhoneDraft?>>(activity, "pendingDraftSave")
+        assertNotNull(queued.get())
+        activity.sendBroadcast(Intent(Intent.ACTION_SCREEN_OFF).setPackage(activity.packageName))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(queued.get())
+        drain()
+        assertFalse(contains("late unsaved edit"))
+        val saved = PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1"))
+            .list(SecretKeySpec(OfflineScreenFixture.material, "AES")).drafts.single()
+        assertEquals("saved before lock", saved.text)
+    }
+
+    @Test
+    fun draftUnlockExpiresWithoutInteractionAcrossABriefAppSwitch() {
+        unlockAndOpen()
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("deadline protected draft")
+        drain()
+        controller.pause()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(4))
+        controller.resume()
+        drain()
+        assertEquals("deadline protected draft", input.text.toString())
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(1))
+        drain()
+        assertEquals("", input.text.toString())
+        assertTrue(button(R.string.phone_draft_unlock).isShown)
+    }
+
+    @Test
+    fun unreadableDraftIsReportedAndKept() {
+        val root = File(activity.filesDir, "phone-drafts-v1")
+        val source = PhoneOfflineSource(OfflineScreenFixture.receiver, OfflineScreenFixture.target, "damaged", "agent", "project")
+        val store = PhoneDraftStore(root)
+        assertEquals(PhoneDraftSave.SAVED, store.save(PhoneDraft(source, "keep", emptyList()),
+            SecretKeySpec(OfflineScreenFixture.material, "AES")) { true })
+        val record = File(root, "${store.id(source)}.draft")
+        record.writeBytes(byteArrayOf(1, 2, 3))
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        assertTrue(contains(activity.getString(R.string.phone_draft_damaged)))
+        assertTrue(record.exists())
+    }
+
+    @Test
+    fun longSelectedContextCanBeReviewedAndRemovedInPages() {
+        val source = PhoneOfflineSource(OfflineScreenFixture.receiver, OfflineScreenFixture.target, "context source", "agent", "project")
+        val selections = (1..9).map { number ->
+            val page = PhoneControlReply.SessionPage(source.target.controllerId, source.target.subjectId, "33".repeat(16), 1, "ready",
+                listOf(PhoneControlEntry.Message(number.toLong(), "assistant", "excerpt $number", false)), 0, true,
+                PhoneHistorySource("not_applicable", "unavailable", "unknown", false, false))
+            PhoneDraftSelection(source, page)
+        }
+        val store = PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1"))
+        val key = SecretKeySpec(OfflineScreenFixture.material, "AES")
+        assertEquals(PhoneDraftSave.SAVED, store.save(PhoneDraft(source, "review", selections), key) { true })
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        views(activity.window.decorView).filterIsInstance<Button>().single { it.text.toString().contains("context source") }.performClick()
+        assertTrue(contains("excerpt 1"))
+        assertFalse(contains("excerpt 9"))
+        button(R.string.phone_draft_context_next).performClick()
+        assertTrue(contains("excerpt 9"))
+        button(R.string.phone_draft_remove_context).performClick()
+        drain()
+        assertEquals(8, store.list(key).drafts.single().context.size)
+        assertTrue(contains("excerpt 1"))
+    }
+
+    @Test
+    fun phoneLockClearsACompletedSaveBeforeItsUiCallbackRuns() {
+        unlockAndOpen()
+        button(R.string.phone_draft_unlock).performClick()
+        drain()
+        requireNotNull(OfflineScreenFixture.authenticate).invoke()
+        drain()
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("completed before phone lock")
+        val pending = ReflectionHelpers.getField<java.util.concurrent.atomic.AtomicReference<PhoneDraft?>>(activity, "pendingDraftSave")
+        executor.runQueued()
+        assertNotNull(pending.get())
+        shadowOf(activity.getSystemService(PowerManager::class.java)).turnScreenOn(false)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(pending.get())
+        assertEquals("", input.text.toString())
+    }
+
 }
