@@ -351,8 +351,27 @@ page to discover new Sessions. A row's controller and subject IDs are an exact
 navigation target, not a reusable registry-local ID. A missing or replaced
 controller and a disposed Session cannot select a replacement. The receiver
 rechecks pairing, grant, period and controller before protected delivery.
-For either action `interaction` may be one only for an explicit phone action;
-automatic page continuation and background reads use zero.
+
+Action `50`, `list_selection`, requires `read`. The signed controller ID is
+one exact attached incarnation and the subject ID is all zeroes. Its payload is
+`after_project_id[16] | limit:u8`, with an all-zero first cursor and a limit of
+1–50; `expected_revision` is zero. The controller verifies the phone proof and
+returns only currently configured Agent names also present in the grant, without
+consulting or constructing Sessions. The receiver combines this with current
+owner-registered project identities inside the approved roots (or an exact
+confirmed legacy project). Replaced or missing directories are excluded.
+Success is the closed object
+`{v:1,type:"selection_list",controller_id:hex16,operation_id:hex16,agents:[string],projects:[{id:hex16,path:string}],next_after:hex16-or-empty-string,operate_sessions:boolean}`.
+Agent names and project paths are each at most 512 UTF-8 bytes. Projects are
+sorted by identity and `next_after` is the last returned identity only if a
+further authorized project exists. The Agent list is bounded by the 50-entry
+grant. `operate_sessions` reports whether the current grant includes
+`operate_sessions`; it conveys no construction authority. Pairing, grant,
+working period and exact controller are rechecked before delivery. This read
+does not start an Agent, create a Session or send an instruction.
+
+For these discovery actions, `interaction` may be one only for an explicit
+phone action; automatic page continuation and background reads use zero.
 
 Action `81`, `voice_history`, requires `read`. Both signed subject fields and
 `expected_revision` are zero. The payload is `has_cursor:u8 | uuid[16] |

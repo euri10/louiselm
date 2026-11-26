@@ -33,7 +33,7 @@ internal sealed class PhoneControlReply {
         val sessions: List<PhoneControlSessionSummary>, val nextAfter: String) : PhoneControlReply()
     data class SelectionList(val controllerId: String, val operationId: String,
         val agents: List<String>, val projects: List<PhoneSelectionProject>, val nextAfter: String,
-        val canCreate: Boolean) : PhoneControlReply()
+        val operateSessions: Boolean) : PhoneControlReply()
     data class PreparedPage(val requestId: String, val items: List<PhonePreparedSummary>, val nextAfter: String) : PhoneControlReply()
     data class PreparedDetail(val requestId: String, val registrationId: String, val runId: String,
         val revision: Long, val detail: PhonePreparedDraft) : PhoneControlReply()
@@ -408,7 +408,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                 PhoneControlReply.SessionList(controller, hex("operation_id", 16), sessions, next)
             }
             "selection_list" -> {
-                keys("controller_id", "operation_id", "agents", "projects", "next_after", "can_create")
+                keys("controller_id", "operation_id", "agents", "projects", "next_after", "operate_sessions")
                 val controller = hex("controller_id", 16)
                 require(controller != "00".repeat(16))
                 val agents = fields.wireArray("agents").map { item ->
@@ -432,7 +432,7 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                     require(projects.lastOrNull()?.id == next)
                 }
                 PhoneControlReply.SelectionList(controller, hex("operation_id", 16), agents, projects, next,
-                    fields.wireBoolean("can_create"))
+                    fields.wireBoolean("operate_sessions"))
             }
             "prepared_page" -> parsePreparedPage(fields)
             "prepared_detail" -> parsePreparedDetail(fields)

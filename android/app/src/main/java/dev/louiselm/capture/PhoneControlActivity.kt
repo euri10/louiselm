@@ -2788,7 +2788,7 @@ class PhoneControlActivity : Activity() {
     private fun displaySelection(page: PhoneControlReply.SelectionList) {
         conversation.removeAllViews()
         conversation.visibility = View.VISIBLE
-        if (!page.canCreate) conversation.addView(TextView(this).apply { setText(R.string.phone_selection_read_only) })
+        if (!page.operateSessions) conversation.addView(TextView(this).apply { setText(R.string.phone_selection_read_only) })
         if (page.projects.isEmpty() || page.agents.isEmpty()) {
             conversation.addView(TextView(this).apply { setText(R.string.phone_selection_empty) })
         }

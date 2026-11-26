@@ -144,7 +144,7 @@ async fn selection_uses_current_project_identities_and_the_exact_owner() {
         result["projects"],
         json!([{"id":approved_id,"path":approved.to_str().unwrap()}])
     );
-    assert_eq!(result["can_create"], true);
+    assert_eq!(result["operate_sessions"], true);
 
     let second = root.path().join("second-approved");
     std::fs::create_dir(&second).unwrap();
@@ -232,7 +232,7 @@ async fn selection_uses_current_project_identities_and_the_exact_owner() {
         json!(["codex"]),
     )
     .await;
-    assert_eq!(read["can_create"], false);
+    assert_eq!(read["operate_sessions"], false);
     let request = signed_discovery(&fixture, &read_only, &period, &controller, 50, 5);
     let pending = tokio::spawn({
         let app = app.clone();

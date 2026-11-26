@@ -79,7 +79,7 @@ impl Authority {
             self.finish_read_locked(&mut state, permit, true, now, wall_ms, started)?;
             Ok(json!({"v":1,"type":"selection_list","controller_id":request.controller_id,
                 "operation_id":request.operation_id,"agents":agents,"projects":projects,
-                "next_after":next_after,"can_create":grant.scope.groups.iter().any(|group| group == "operate_sessions")}))
+                "next_after":next_after,"operate_sessions":grant.scope.groups.iter().any(|group| group == "operate_sessions")}))
         });
         if !matches!(&result, Ok(Ok(_))) {
             state.pending_reads.remove(&permit.operation_id);
