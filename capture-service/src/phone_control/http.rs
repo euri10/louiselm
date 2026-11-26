@@ -28,11 +28,11 @@ use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
 #[path = "http_installed_saved_review.rs"]
 mod installed_saved_review;
 #[cfg(test)]
-#[path = "http_prepared_tests.rs"]
-mod prepared_tests;
-#[cfg(test)]
 #[path = "http_permission_tests.rs"]
 mod permission_tests;
+#[cfg(test)]
+#[path = "http_prepared_tests.rs"]
+mod prepared_tests;
 #[cfg(test)]
 #[path = "http_run_e2e.rs"]
 mod run_e2e;
