@@ -18,7 +18,8 @@ internal sealed class PhoneControlReply {
     data class Pending(val enrollmentId: String) : PhoneControlReply()
     data class Granted(val enrollmentId: String, val grantId: String, val revision: Long, val keyHash: String, val receiverIdentity: String) : PhoneControlReply()
     data class Challenge(val grantId: String, val revision: Long, val receiverIdentity: String, val challengeId: String, val challenge: String, val expiresAtMs: Long) : PhoneControlReply()
-    data class Unlocked(val grantId: String, val revision: Long, val periodId: String, val idleExpiresAtMs: Long, val absoluteExpiresAtMs: Long) : PhoneControlReply()
+    data class Unlocked(val grantId: String, val revision: Long, val periodId: String, val idleExpiresAtMs: Long,
+        val absoluteExpiresAtMs: Long, val sendSupported: Boolean? = null) : PhoneControlReply()
     data class SessionPage(
         val controllerId: String, val subjectId: String, val operationId: String,
         val revision: Long, val status: String, val entries: List<PhoneControlEntry>,
@@ -235,13 +236,15 @@ internal fun parsePhoneControlReply(bytes: ByteArray): PhoneControlReply {
                     hex("challenge_id", 16), hex("challenge", 32), number("expires_at_ms"))
             }
             "unlocked" -> {
-                keys("grant_id", "grant_revision", "period_id", "idle_expires_at_ms", "absolute_expires_at_ms")
+                val required = setOf("v", "type", "grant_id", "grant_revision", "period_id", "idle_expires_at_ms", "absolute_expires_at_ms")
+                require(fields.keys == required || fields.keys == required + "send_supported")
+                val sendSupported = if ("send_supported" in fields) fields.wireBoolean("send_supported") else null
                 val revision = number("grant_revision")
                 require(revision > 0)
                 val idle = number("idle_expires_at_ms")
                 val absolute = number("absolute_expires_at_ms")
                 require(idle <= absolute)
-                PhoneControlReply.Unlocked(hex("grant_id", 16), revision, hex("period_id", 16), idle, absolute)
+                PhoneControlReply.Unlocked(hex("grant_id", 16), revision, hex("period_id", 16), idle, absolute, sendSupported)
             }
             "session_page" -> {
                 keys("controller_id", "subject_id", "operation_id", "revision", "status", "entries", "next_before", "complete", "source")

@@ -182,7 +182,7 @@ internal class PhoneControlClient(
         if (reply.grantId != prepared.grant.grantId || reply.revision != prepared.grant.revision) return@guarded malformed()
         if (!maySend()) return@guarded unavailable()
         val workingKey = prepared.takeWorkingKey() ?: return@guarded unavailable()
-        PhoneControlResult.Value(PhoneControlPeriod(prepared.grant, reply.periodId, workingKey, startedAtMs))
+        PhoneControlResult.Value(PhoneControlPeriod(prepared.grant, reply.periodId, workingKey, startedAtMs, reply.sendSupported))
     }
 
     /** Read only the exact current incarnation; callbacks cannot extend a locked or replaced period. */
@@ -425,6 +425,11 @@ internal class PhoneControlClient(
         if (!maySend()) return@guarded unavailable()
         val config = pairingStore.load() ?: return@guarded unavailable()
         if (currentGrant(config) != period.grant) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.REVOKED)
+        when (period.sendSupported) {
+            false -> return@guarded PhoneControlResult.Failure(PhoneControlOutcome.UNSUPPORTED)
+            null -> return@guarded unavailable()
+            true -> Unit
+        }
         val operationId = phoneControlHex(ByteArray(16).also { SecureRandom().nextBytes(it) })
         val request = PhoneControlRequest(period.grant.grantId, period.grant.revision, period.periodId,
             period.grant.receiverIdentity, target.controllerId, target.subjectId, phoneControlSendPayload(text),

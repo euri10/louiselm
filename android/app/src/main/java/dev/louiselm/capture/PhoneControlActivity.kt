@@ -507,7 +507,9 @@ class PhoneControlActivity : Activity() {
         add(draftDiscardButton)
         sendButton = Button(this).apply {
             text = getString(R.string.phone_send)
-            setOnClickListener { withNetwork { sendPrompt() } }
+            setOnClickListener {
+                if (period?.sendSupported == true) withNetwork { sendPrompt() } else sendPrompt()
+            }
         }
         add(sendButton)
         sendInput.addTextChangedListener(object : TextWatcher {
@@ -1462,7 +1464,12 @@ class PhoneControlActivity : Activity() {
                 showFailure(outcome)
                 return@task
             }
-            sendNotice = R.string.phone_send_unavailable
+            sendNotice = if (outcome == PhoneControlOutcome.UNSUPPORTED) R.string.phone_unsupported else R.string.phone_send_unavailable
+            if (current.sendSupported != true) {
+                reconciliationLoaded = true
+                render()
+                return@task
+            }
             render()
             scheduleReconciliation(0)
         }) { attempt, _ ->

@@ -35,7 +35,7 @@ class PhoneControlSendClientTest {
         val grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), phoneControlPairingBinding(config),
             phoneControlHex(MessageDigest.getInstance("SHA-256").digest(keys.publicKey())))
         PhoneControlStore(context).saveGrant(grant)
-        val period = PhoneControlPeriod(grant, "22".repeat(16), working.private, 0)
+        val period = PhoneControlPeriod(grant, "22".repeat(16), working.private, 0, sendSupported = true)
         val secret = SecretKeySpec(ByteArray(32) { 7 }, "AES")
         var initialized = false
         val store = PendingPhoneActionStore(context, { create ->
@@ -92,7 +92,7 @@ class PhoneControlSendClientTest {
         val grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), phoneControlPairingBinding(config),
             phoneControlHex(MessageDigest.getInstance("SHA-256").digest(keys.publicKey())))
         PhoneControlStore(context).saveGrant(grant)
-        val period = PhoneControlPeriod(grant, "22".repeat(16), key.private, 0)
+        val period = PhoneControlPeriod(grant, "22".repeat(16), key.private, 0, sendSupported = true)
         val store = PendingPhoneActionStore(context, { SecretKeySpec(ByteArray(32), "AES") },
             syncFile = { throw IOException("failed") })
         var calls = 0
@@ -119,7 +119,7 @@ class PhoneControlSendClientTest {
         val grant = PhoneControlGrant("11".repeat(16), 1, "aa".repeat(32), phoneControlPairingBinding(config),
             phoneControlHex(MessageDigest.getInstance("SHA-256").digest(keys.publicKey())))
         PhoneControlStore(context).saveGrant(grant)
-        val period = PhoneControlPeriod(grant, "22".repeat(16), key.private, 0)
+        val period = PhoneControlPeriod(grant, "22".repeat(16), key.private, 0, sendSupported = true)
         val secret = SecretKeySpec(ByteArray(32), "AES")
         var initialized = false
         val store = PendingPhoneActionStore(context, { create ->

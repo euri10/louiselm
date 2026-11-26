@@ -9,6 +9,7 @@ internal class PhoneControlPeriod(
     val periodId: String,
     privateKey: PrivateKey,
     private val startedAtMs: Long,
+    val sendSupported: Boolean? = null,
 ) {
     private var key: PrivateKey? = privateKey
     private val absoluteDeadline = startedAtMs + 3_600_000L

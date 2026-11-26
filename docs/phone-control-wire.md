@@ -82,7 +82,14 @@ millisecond timestamp; the computer enforces expiry using its monotonic clock.
 | `/v1/phone-control/enrollment/submit` | `{v,type:"enrollment_submit",enrollment_id:hex16,matching_code:string,enrolled_key:hex65}` | `{v,type:"enrollment_pending",enrollment_id:hex16}` |
 | `/v1/phone-control/enrollment/status` | `{v,type:"enrollment_status",enrollment_id:hex16}` | `{v,type:"enrollment_granted",enrollment_id:hex16,grant_id:hex16,grant_revision:integer,enrolled_key_hash:hex32,receiver_identity:hex32}` or `{v,type:"enrollment_pending",enrollment_id:hex16}` |
 | `/v1/phone-control/challenge` | `{v,type:"challenge",grant_id:hex16,grant_revision:integer}` | `{v,type:"challenge",grant_id:hex16,grant_revision:integer,receiver_identity:hex32,challenge_id:hex16,challenge:hex32,expires_at_ms:integer}` |
-| `/v1/phone-control/unlock` | `{v,type:"unlock",proof:Proof}` | `{v,type:"unlocked",grant_id:hex16,grant_revision:integer,period_id:hex16,idle_expires_at_ms:integer,absolute_expires_at_ms:integer}` |
+| `/v1/phone-control/unlock` | `{v,type:"unlock",proof:Proof}` | `{v,type:"unlocked",grant_id:hex16,grant_revision:integer,period_id:hex16,idle_expires_at_ms:integer,absolute_expires_at_ms:integer,send_supported:boolean}` |
+
+The paired receiver advertises Send availability on the authenticated unlock
+response for that working period. The current receiver reports `false`. A
+missing value means availability is unknown; the phone refuses a new Send
+before reserving an identity. This signal grants no action authority, does not
+resolve existing pending identities and does not replace durable reservation or
+the receiver's admission checks for any future supported Send.
 
 The approved grant is persisted with a nonzero revision and the exact enrolled
 key and scope. Scope has four independent groups: `read`, `operate_sessions`,

@@ -524,7 +524,8 @@ fn process(
             Ok(
                 json!({"v":1,"type":"unlocked", "grant_id":request.proof.grant_id,
                 "grant_revision":request.proof.grant_revision, "period_id":lease.period_id,
-                "idle_expires_at_ms":lease.idle_expires_at_ms, "absolute_expires_at_ms":lease.absolute_expires_at_ms}),
+                "idle_expires_at_ms":lease.idle_expires_at_ms, "absolute_expires_at_ms":lease.absolute_expires_at_ms,
+                "send_supported":false}),
             )
         }
         "/v1/phone-control/request" => {
@@ -987,16 +988,23 @@ mod tests {
             let credential = phone.credential.clone();
             let device = phone.device_id.clone();
             let grant_id = grant.grant_id.clone();
+            let controller_id = controller.to_owned();
+            let subject_id = subject.to_owned();
             let status = tokio::task::spawn_blocking(move || {
                 let status = Command::new(android.join("gradlew"))
                 .current_dir(&android).args(["--no-daemon", "--max-workers=1", "--rerun-tasks", "-PlouiselmFirebase=false",
-                    "testDebugUnitTest", "--tests", "dev.louiselm.capture.PhoneControlEndToEndTest"])
+                    "testDebugUnitTest", "--tests", "dev.louiselm.capture.PhoneControlEndToEndTest",
+                    "--tests", "dev.louiselm.capture.PhoneSendAvailabilityEndToEndTest"])
                 .env("LOUISELM_E2E_URL", url).env("LOUISELM_E2E_RECEIVER", receiver)
                 .env("LOUISELM_E2E_CREDENTIAL", credential).env("LOUISELM_E2E_DEVICE", device)
-                .env("LOUISELM_E2E_GRANT", grant_id).status().unwrap();
+                .env("LOUISELM_E2E_GRANT", grant_id).env("LOUISELM_E2E_CONTROLLER", controller_id)
+                .env("LOUISELM_E2E_SUBJECT", subject_id).status().unwrap();
                 let report = std::fs::read_to_string(android.join("app/build/test-results/testDebugUnitTest/TEST-dev.louiselm.capture.PhoneControlEndToEndTest.xml")).unwrap();
                 assert!(report.contains("tests=\"1\"") && report.contains("skipped=\"0\"")
                     && report.contains("failures=\"0\"") && report.contains("errors=\"0\""));
+                let availability = std::fs::read_to_string(android.join("app/build/test-results/testDebugUnitTest/TEST-dev.louiselm.capture.PhoneSendAvailabilityEndToEndTest.xml")).unwrap();
+                assert!(availability.contains("tests=\"1\"") && availability.contains("skipped=\"0\"")
+                    && availability.contains("failures=\"0\"") && availability.contains("errors=\"0\""));
                 status
             }).await.unwrap();
             assert!(status.success(), "Android phone-control integration failed");
@@ -1746,6 +1754,7 @@ mod tests {
         .await;
         assert_eq!(unlocked["type"], "unlocked");
         assert_eq!(unlocked["grant_id"], grant.grant_id);
+        assert_eq!(unlocked["send_supported"], false);
         let (_, replay) = post(
             app,
             "/v1/phone-control/unlock",
