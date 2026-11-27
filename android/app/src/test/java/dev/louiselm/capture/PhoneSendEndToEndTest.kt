@@ -9,7 +9,11 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.nio.file.StandardWatchEventKinds
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.TimeUnit
 import javax.crypto.spec.SecretKeySpec
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -40,11 +44,23 @@ class PhoneSendEndToEndTest {
 
     @Test
     fun phoneSendsReviewedTextAndReadsTheAgentsReply() {
-        val phase = System.getenv("LOUISELM_E2E_SEND_PHASE")
-        assumeTrue(phase != null)
-        val text = requireNotNull(System.getenv("LOUISELM_E2E_SEND_TEXT"))
-        val subject = requireNotNull(System.getenv("LOUISELM_E2E_SUBJECT"))
-        val other = requireNotNull(System.getenv("LOUISELM_E2E_OTHER_SUBJECT"))
+        val sync = System.getenv("LOUISELM_E2E_SEND_SYNC")
+        assumeTrue(sync != null)
+        val directory = Paths.get(requireNotNull(sync))
+        fun desktopStep(step: String) {
+            directory.fileSystem.newWatchService().use { changes ->
+                directory.register(changes, StandardWatchEventKinds.ENTRY_CREATE)
+                Files.createFile(directory.resolve(step))
+                while (!Files.exists(directory.resolve("$step.done"))) {
+                    val event = requireNotNull(changes.poll(60, TimeUnit.SECONDS)) { "Desktop did not finish $step" }
+                    event.pollEvents()
+                    check(event.reset()) { "Desktop fixture directory disappeared" }
+                }
+            }
+        }
+        var text = requireNotNull(System.getenv("LOUISELM_E2E_SEND_TEXT"))
+        val selectedName = "Phone Send target"
+        val otherName = "Second phone Session"
         val app = RuntimeEnvironment.getApplication()
         shadowOf(app).grantPermissions("${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
         shadowOf(app.getSystemService(PowerManager::class.java)).turnScreenOn(true)
@@ -64,34 +80,44 @@ class PhoneSendEndToEndTest {
         }
         var posted = 0
         var lostAcknowledgements = 0
+        var loseAcknowledgement = false
+        var disabled = false
+        var deniedByReceiver = false
         var original: String? = null
+        var chosenRow = ""
         var reconnected = false
         var reconciled = false
         val transport: PhoneControlTransport = { pairing, endpoint, body, maySend ->
             val reply = PinnedHttps.phoneControl(pairing, endpoint, body, maySend)
             val request = body.optJSONObject("request")
-            if (endpoint == "request" && request?.optInt("action") == 3) {
+            if (disabled && reply is PhoneControlReply.Failure && reply.outcome == PhoneControlOutcome.REVOKED) {
+                deniedByReceiver = true
+                reply
+            } else if (endpoint == "request" && request?.optInt("action") == 3) {
                 posted++
                 original = request.getString("operation_id")
-                assertEquals(original, PendingPhoneActionStore(app, keyAccess).pending().single().operationId)
+                assertEquals(1, PendingPhoneActionStore(app, keyAccess).pending().count { it.operationId == original })
+                for (field in listOf("controller_id", "subject_id")) {
+                    assertTrue("signed request must target the displayed row", chosenRow.contains(request.getString(field)))
+                }
                 assertTrue("Send must return its archived receipt", reply is PhoneControlReply.ActionHistory)
                 val receipt = (reply as PhoneControlReply.ActionHistory).record
                 assertEquals(original, receipt.operationId)
-                assertEquals(subject, receipt.subjectId)
+                assertEquals(request.getString("subject_id"), receipt.subjectId)
                 assertEquals(grant.grantId, receipt.grantId)
                 assertTrue(receipt.acceptedEvidence.isNotEmpty())
-                if (phase == "lost_ack" && posted == 1) {
+                if (loseAcknowledgement && lostAcknowledgements == 0) {
                     lostAcknowledgements++
                     PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
                 } else reply
-            } else if (phase == "lost_ack" && reply is PhoneControlReply.ActionHistory && reply.record.operationId == original) {
+            } else if (loseAcknowledgement && reply is PhoneControlReply.ActionHistory && reply.record.operationId == original) {
                 if (reconnected) {
                     reconciled = reply.record.acceptedEvidence.isNotEmpty()
                     reply
                 } else PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
             } else reply
         }
-        fun open(sendOnce: Boolean, oldTarget: Boolean = false) {
+        fun open(oldTarget: Boolean = false) {
             val intent = Intent(app, PhoneControlActivity::class.java)
             if (oldTarget) {
                 intent.putExtra(PhoneControlActivity.ATTENTION, true)
@@ -106,7 +132,8 @@ class PhoneSendEndToEndTest {
             fun drain() = repeat(12) { executor.runAll(); shadowOf(Looper.getMainLooper()).idle() }
             fun controls() = views(activity.window.decorView).filter { it.isShown }
             fun button(resource: Int) = controls().filterIsInstance<Button>().single { it.text == activity.getString(resource) }
-            fun rows(subjectId: String) = controls().filterIsInstance<Button>().filter { it.text.toString().contains(subjectId) }
+            fun rows(name: String) = controls().filterIsInstance<Button>()
+                .filter { it.text.toString().lineSequence().firstOrNull() == name }
             fun lines(resource: Int) = controls().filterIsInstance<TextView>()
                 .count { it.text.toString() == activity.getString(resource, text) }
             fun transcript(expected: Int) {
@@ -118,6 +145,11 @@ class PhoneSendEndToEndTest {
                 ReflectionHelpers.setField(activity, "client", PhoneControlClient(app, transport = transport))
                 ReflectionHelpers.setField(activity, "pendingActionsStore", PendingPhoneActionStore(app, keyAccess))
                 drain()
+                if (disabled && PhoneControlStore(app).grant() == null) {
+                    assertTrue(button(R.string.phone_enable).isShown)
+                    assertFalse(rows(selectedName).any() || rows(otherName).any())
+                    return
+                }
                 button(R.string.phone_unlock).performClick()
                 drain()
                 if (oldTarget) {
@@ -127,25 +159,43 @@ class PhoneSendEndToEndTest {
                     assertFalse(controls().filterIsInstance<Button>().any { it.text == activity.getString(R.string.phone_send) && it.isEnabled })
                     return
                 }
-                if (phase == "disabled") {
+                if (disabled) {
                     assertTrue("Disable must refuse a fresh unlock", controls().filterIsInstance<TextView>().any {
                         it.text.toString() == activity.getString(R.string.phone_revoked)
                     })
-                    assertFalse(rows(subject).any() || rows(other).any())
+                    assertFalse(rows(selectedName).any() || rows(otherName).any())
                     return
                 }
-                assertEquals("second ready Session available", 1, rows(other).count())
-                rows(subject).single().performClick()
-                drain()
-                if (sendOnce) {
+                if (reconnected) {
+                    // The new unlock can rotate connection IDs. History uses the original action.
+                    assertTrue("reconnected phone must read original evidence", reconciled)
+                    val other = rows(otherName).single()
+                    chosenRow = other.text.toString()
+                    other.performClick()
+                    drain()
                     val input = controls().filterIsInstance<EditText>().single()
-                    input.setText(text)
+                    input.setText("This instruction must be refused after Disable")
                     drain()
                     val send = button(R.string.phone_send)
-                    assertTrue("reviewed instruction is ready", send.isEnabled)
+                    assertTrue("second Session was ready before Disable", send.isEnabled)
+                    desktopStep("disable")
+                    disabled = true
                     assertTrue(send.performClick())
                     drain()
+                    return
                 }
+                assertEquals("second ready Session available", 1, rows(otherName).count())
+                val selected = rows(selectedName).single()
+                chosenRow = selected.text.toString()
+                selected.performClick()
+                drain()
+                val input = controls().filterIsInstance<EditText>().single()
+                input.setText(text)
+                drain()
+                val send = button(R.string.phone_send)
+                assertTrue("reviewed instruction is ready", send.isEnabled)
+                assertTrue(send.performClick())
+                drain()
                 // A refresh observes the receiver and Agent even when the Send reply was lost.
                 for (attempt in 1..12) {
                     button(R.string.phone_refresh).performClick()
@@ -155,7 +205,7 @@ class PhoneSendEndToEndTest {
                 transcript(1)
                 button(R.string.phone_sessions).performClick()
                 drain()
-                rows(other).single().performClick()
+                rows(otherName).single().performClick()
                 drain()
                 transcript(0)
             } finally {
@@ -165,15 +215,22 @@ class PhoneSendEndToEndTest {
                 executor.shutdownNow()
             }
         }
-        if (phase == "lost_ack") open(sendOnce = false, oldTarget = true)
-        open(sendOnce = phase != "disabled")
-        if (phase == "lost_ack") {
-            assertEquals(original, PendingPhoneActionStore(app, keyAccess).pending().single().operationId)
-            reconnected = true
-            open(sendOnce = false)
-            assertTrue("reconnected phone must read the original operation's evidence", reconciled)
-        }
-        assertEquals("Android must issue exactly one POST per Send", if (phase == "disabled") 0 else 1, posted)
-        assertEquals("successful acknowledgement withheld after delivery", if (phase == "lost_ack") 1 else 0, lostAcknowledgements)
+        open()
+        assertEquals(1, posted)
+        val firstOperation = requireNotNull(original)
+        desktopStep("restart")
+        assertEquals("same mobile enrollment after desktop restart", grant, PhoneControlStore(app).grant())
+        open(oldTarget = true)
+        loseAcknowledgement = true
+        text = requireNotNull(System.getenv("LOUISELM_E2E_NEXT_TEXT"))
+        open()
+        assertFalse("second Send must have a fresh identity", firstOperation == original)
+        assertEquals(1, PendingPhoneActionStore(app, keyAccess).pending().count { it.operationId == original })
+        reconnected = true
+        open()
+        open()
+        assertEquals("one delivered POST per reviewed Send", 2, posted)
+        assertEquals("successful acknowledgement withheld after delivery", 1, lostAcknowledgements)
+        assertTrue("desktop Disable revokes the active phone", deniedByReceiver)
     }
 }

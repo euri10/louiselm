@@ -15,6 +15,8 @@ use std::{
 };
 
 const TEST_CLASS: &str = "dev.louiselm.capture.PhoneSendEndToEndTest";
+const FIRST_TEXT: &str = "First Send from the phone — café";
+const NEXT_TEXT: &str = "Second Send after restarting — café";
 
 struct Desktop {
     project: PathBuf,
@@ -51,46 +53,33 @@ impl Desktop {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
-    // Each runtime owns all receiver tasks, including accepted connections. Dropping it
-    // between phases forces the next startup to rebuild solely from the same private stores.
-    fn receiver(&self, listener: &TcpListener) -> tokio::runtime::Runtime {
-        let features = Features {
-            receiver: true,
-            phone_control: true,
-            attention: false,
-            runs: false,
-            transcription: false,
-            push: false,
+    fn start_receiver(&self, listener: &TcpListener, directory: &Path) -> ReceiverProcess {
+        fs::create_dir(directory).unwrap();
+        let fd = std::os::fd::OwnedFd::from(listener.try_clone().unwrap());
+        let child = self
+            .isolated(&env::current_exe().unwrap())
+            .args([
+                "--exact",
+                concat!(module_path!(), "::serve_disposable_receiver")
+                    .split_once("::")
+                    .unwrap()
+                    .1,
+                "--ignored",
+            ])
+            .env("LOUISELM_TEST_RECEIVER_DIR", directory)
+            .stdin(Stdio::from(fd))
+            .spawn()
+            .unwrap();
+        let mut process = ReceiverProcess {
+            child,
+            directory: directory.to_owned(),
         };
-        let prepared = prepare(self.paths.clone(), features).unwrap();
-        let service = prepared.phone_control.unwrap();
-        let (receiver, _, identity) = prepared.receiver.unwrap();
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let sockets = service
-                .bind(
-                    &self.paths.phone_control_admin_socket(),
-                    &self.paths.phone_control_socket(),
-                    &self.paths.operator_capability(),
-                )
-                .await
-                .unwrap();
-            tokio::spawn(sockets.serve());
-            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-                identity.certificate_path(),
-                identity.private_key_path(),
-            )
-            .await
-            .unwrap();
-            let server =
-                axum_server::from_tcp_rustls(listener.try_clone().unwrap(), config).unwrap();
-            tokio::spawn(server.serve(receiver.router().into_make_service()));
-        });
-        runtime
+        wait_for_file(
+            &directory.join("ready"),
+            &mut process.child,
+            Duration::from_secs(30),
+        );
+        process
     }
 
     fn enroll(&self, url: &str) -> Phone {
@@ -175,6 +164,100 @@ impl Desktop {
             grant: granted["grant_id"].as_str().unwrap().to_owned(),
             revision: granted["grant_revision"].as_u64().unwrap(),
         }
+    }
+}
+
+// Keep the same ephemeral loopback endpoint across real process restarts. The
+// child inherits the reserved listener instead of binding a workstation port.
+#[test]
+#[ignore = "receiver subprocess of the Android Send acceptance"]
+fn serve_disposable_receiver() {
+    use std::os::fd::AsFd;
+    let Some(directory) = env::var_os("LOUISELM_TEST_RECEIVER_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let paths = paths(directory.parent().unwrap());
+    let listener = TcpListener::from(std::io::stdin().as_fd().try_clone_to_owned().unwrap());
+    let features = Features {
+        receiver: true,
+        phone_control: true,
+        attention: false,
+        runs: false,
+        transcription: false,
+        push: false,
+    };
+    let prepared = prepare(paths.clone(), features).unwrap();
+    let service = prepared.phone_control.unwrap();
+    let (receiver, _, identity) = prepared.receiver.unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let sockets = service
+            .bind(
+                &paths.phone_control_admin_socket(),
+                &paths.phone_control_socket(),
+                &paths.operator_capability(),
+            )
+            .await
+            .unwrap();
+        tokio::spawn(sockets.serve());
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            identity.certificate_path(),
+            identity.private_key_path(),
+        )
+        .await
+        .unwrap();
+        let server = axum_server::from_tcp_rustls(listener, config).unwrap();
+        tokio::spawn(server.serve(receiver.router().into_make_service()));
+    });
+
+    fs::write(directory.join("ready"), []).unwrap();
+    let started = std::time::Instant::now();
+    while !directory.join("stop").is_file() {
+        assert!(
+            started.elapsed() < Duration::from_mins(15),
+            "fixture owner disappeared"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+struct ReceiverProcess {
+    child: Child,
+    directory: PathBuf,
+}
+
+impl ReceiverProcess {
+    fn stop(mut self) {
+        fs::write(self.directory.join("stop"), []).unwrap();
+        assert!(self.child.wait().unwrap().success());
+    }
+}
+
+impl Drop for ReceiverProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn wait_for_file(path: &Path, child: &mut Child, timeout: Duration) {
+    let start = std::time::Instant::now();
+    while !path.is_file() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "fixture stopped before {}",
+            path.display()
+        );
+        assert!(
+            start.elapsed() < timeout,
+            "fixture did not reach {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -277,31 +360,12 @@ struct Phone {
 }
 
 impl Phone {
-    fn screen(
-        &self,
-        desktop: &Desktop,
-        editor: &Editor,
-        phase: &str,
-        text: &str,
-        old: Option<&Value>,
-    ) {
+    fn start_android(&self, desktop: &Desktop, directory: &Path, first: &Value) -> MobileRun {
         let android = desktop.project.join("android");
         let report = android
             .join("app/build/test-results/testDebugUnitTest")
             .join(format!("TEST-{TEST_CLASS}.xml"));
-        let mut gradle = Command::new(android.join("gradlew"));
-        if let Some(targets) = old {
-            gradle
-                .env(
-                    "LOUISELM_E2E_OLD_CONTROLLER",
-                    targets["controller_id"].as_str().unwrap(),
-                )
-                .env(
-                    "LOUISELM_E2E_OLD_SUBJECT",
-                    targets["subject_id"].as_str().unwrap(),
-                );
-        }
-        let status = gradle
+        let child = Command::new(android.join("gradlew"))
             .current_dir(&android)
             .args([
                 "--no-daemon",
@@ -319,23 +383,51 @@ impl Phone {
             .env("LOUISELM_E2E_GRANT", &self.grant)
             .env("LOUISELM_E2E_GRANT_REVISION", self.revision.to_string())
             .env(
-                "LOUISELM_E2E_CONTROLLER",
-                editor.targets["controller_id"].as_str().unwrap(),
+                "LOUISELM_E2E_OLD_CONTROLLER",
+                first["controller_id"].as_str().unwrap(),
             )
             .env(
-                "LOUISELM_E2E_SUBJECT",
-                editor.targets["subject_id"].as_str().unwrap(),
+                "LOUISELM_E2E_OLD_SUBJECT",
+                first["subject_id"].as_str().unwrap(),
             )
-            .env(
-                "LOUISELM_E2E_OTHER_SUBJECT",
-                editor.targets["other_subject_id"].as_str().unwrap(),
-            )
-            .env("LOUISELM_E2E_SEND_PHASE", phase)
-            .env("LOUISELM_E2E_SEND_TEXT", text)
-            .status()
+            .env("LOUISELM_E2E_SEND_SYNC", directory)
+            .env("LOUISELM_E2E_SEND_TEXT", FIRST_TEXT)
+            .env("LOUISELM_E2E_NEXT_TEXT", NEXT_TEXT)
+            .spawn()
             .unwrap();
-        assert!(status.success(), "Android Send failed during {phase}");
-        let xml = fs::read_to_string(report).unwrap();
+        MobileRun {
+            child,
+            report,
+            directory: directory.to_owned(),
+        }
+    }
+}
+
+struct MobileRun {
+    child: Child,
+    report: PathBuf,
+    directory: PathBuf,
+}
+
+impl MobileRun {
+    fn wait_for(&mut self, step: &str) {
+        wait_for_file(
+            &self.directory.join(step),
+            &mut self.child,
+            Duration::from_mins(10),
+        );
+    }
+
+    fn complete(&self, step: &str) {
+        fs::write(self.directory.join(format!("{step}.done")), []).unwrap();
+    }
+
+    fn finish(mut self) {
+        assert!(
+            self.child.wait().unwrap().success(),
+            "Android Send test failed"
+        );
+        let xml = fs::read_to_string(&self.report).unwrap();
         for count in [
             "tests=\"1\"",
             "failures=\"0\"",
@@ -344,9 +436,16 @@ impl Phone {
         ] {
             assert!(
                 xml.contains(count),
-                "missing Android execution receipt for {phase}: {count}"
+                "missing Android execution receipt: {count}"
             );
         }
+    }
+}
+
+impl Drop for MobileRun {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -365,26 +464,28 @@ fn one_enrollment_sends_to_selected_agents_across_restarts() {
         "https://localhost:{}",
         listener.local_addr().unwrap().port()
     );
-    let first = desktop.receiver(&listener);
+    let first = desktop.start_receiver(&listener, &root.path().join("receiver-one"));
     let phone = desktop.enroll(&url);
-    let first_text = "First Send from the phone — café";
-    let editor = Editor::start(&desktop, &root.path().join("first"), first_text);
+    let editor = Editor::start(&desktop, &root.path().join("first"), FIRST_TEXT);
     let old_targets = editor.targets.clone();
-    phone.screen(&desktop, &editor, "first", first_text, None);
+    let mut android = phone.start_android(&desktop, root.path(), &old_targets);
+    android.wait_for("restart");
     editor.finish();
-    drop(first);
+    first.stop();
 
-    let _second = desktop.receiver(&listener);
-    let next_text = "Second Send after restarting — café";
-    let editor = Editor::start(&desktop, &root.path().join("second"), next_text);
+    let second = desktop.start_receiver(&listener, &root.path().join("receiver-two"));
+    let editor = Editor::start(&desktop, &root.path().join("second"), NEXT_TEXT);
     assert_ne!(
         old_targets["controller_id"],
         editor.targets["controller_id"]
     );
     assert_ne!(old_targets["subject_id"], editor.targets["subject_id"]);
-    phone.screen(&desktop, &editor, "lost_ack", next_text, Some(&old_targets));
+    android.complete("restart");
+    android.wait_for("disable");
     let disabled = desktop.admin(&["disable", "--device-id", &phone.device]);
     assert_eq!(disabled["type"], "disabled");
-    phone.screen(&desktop, &editor, "disabled", next_text, None);
+    android.complete("disable");
+    android.finish();
     editor.finish();
+    second.stop();
 }

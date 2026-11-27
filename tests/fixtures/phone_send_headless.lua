@@ -32,7 +32,7 @@ local api = assert(Session.new({ codex = agent }, nil, { usage_directory = direc
 local function create(label)
   return assert(api:create_session("codex", {
     cwd = root,
-    name = "Same name",
+    name = label == "selected" and "Phone Send target" or "Second phone Session",
     env = { LOUISELM_FIXTURE_WIRE = directory .. "/" .. label },
   }))
 end
