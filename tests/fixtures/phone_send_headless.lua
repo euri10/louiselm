@@ -24,7 +24,6 @@ local agent = {
   },
 }
 assert(Louise.setup({
-  phone_control = { enabled = true },
   capture = { service = { assert(nvim.env.LOUISELM_TEST_CAPTURE) } },
   agents = { codex = agent },
 }))

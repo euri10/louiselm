@@ -100,7 +100,13 @@ class PhoneSendEndToEndTest {
                 for (field in listOf("controller_id", "subject_id")) {
                     assertTrue("signed request must target the displayed row", chosenRow.contains(request.getString(field)))
                 }
-                assertTrue("Send must return its archived receipt", reply is PhoneControlReply.ActionHistory)
+                val response = if (reply is PhoneControlReply.Failure) reply.outcome.toString() else reply.javaClass.simpleName
+                val phase = when {
+                    disabled -> "after Disable"
+                    loseAcknowledgement -> "after restart"
+                    else -> "first"
+                }
+                assertTrue("$phase Send must return its archived receipt, got $response", reply is PhoneControlReply.ActionHistory)
                 val receipt = (reply as PhoneControlReply.ActionHistory).record
                 assertEquals(original, receipt.operationId)
                 assertEquals(request.getString("subject_id"), receipt.subjectId)
@@ -169,6 +175,18 @@ class PhoneSendEndToEndTest {
                 if (reconnected) {
                     // The new unlock can rotate connection IDs. History uses the original action.
                     assertTrue("reconnected phone must read original evidence", reconciled)
+                    rows(selectedName).single().performClick()
+                    drain()
+                    controls().filterIsInstance<EditText>().single().setText(text)
+                    drain()
+                    val accepted = setOf(R.string.phone_action_accepted, R.string.phone_action_dispatched, R.string.phone_action_completed)
+                        .map { activity.getString(it) }
+                    assertTrue("recovered evidence must reach the Send UI", controls().filterIsInstance<TextView>().any {
+                        it.text.toString() in accepted
+                    })
+                    assertFalse("the recovered instruction must not be resent", button(R.string.phone_send).isEnabled)
+                    button(R.string.phone_sessions).performClick()
+                    drain()
                     val other = rows(otherName).single()
                     chosenRow = other.text.toString()
                     other.performClick()
