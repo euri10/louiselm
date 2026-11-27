@@ -575,12 +575,15 @@ jobs:
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
               phone_control::http::interaction_tests::pinned_android_reads_current_interaction_until_desktop_resolution -- --exact --ignored
           # Cargo otherwise succeeds when an exact test filter matches nothing.
-          send_test=cli::service::tests::phone_send::one_enrollment_sends_to_selected_agents_across_restarts
-          cargo test --manifest-path capture-service/Cargo.toml --locked --lib "$send_test" -- --exact --ignored --list | grep -Fx "$send_test: test"
-          LOUISELM_TEST_NVIM="$(command -v nvim)" \
-            LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
-            cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
-              "$send_test" -- --exact --ignored
+          for send_test in \
+            cli::service::tests::phone_send::one_enrollment_sends_to_selected_agents_across_restarts \
+            cli::service::tests::phone_send::unavailable_send_then_reviewed_send_after_enablement; do
+            cargo test --manifest-path capture-service/Cargo.toml --locked --lib "$send_test" -- --exact --ignored --list | grep -Fx "$send_test: test"
+            LOUISELM_TEST_NVIM="$(command -v nvim)" \
+              LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+              cargo test --manifest-path capture-service/Cargo.toml --locked --lib \
+                "$send_test" -- --exact --ignored
+          done
 
   format:
     name: stylua

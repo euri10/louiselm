@@ -15,6 +15,7 @@ use std::{
 };
 
 const TEST_CLASS: &str = "dev.louiselm.capture.PhoneSendEndToEndTest";
+const UPGRADE_TEST_CLASS: &str = "dev.louiselm.capture.PhoneSendUpgradeEndToEndTest";
 const FIRST_TEXT: &str = "First Send from the phone — café";
 const NEXT_TEXT: &str = "Second Send after restarting — café";
 
@@ -53,7 +54,12 @@ impl Desktop {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
-    fn start_receiver(&self, listener: &TcpListener, directory: &Path) -> ReceiverProcess {
+    fn start_receiver(
+        &self,
+        listener: &TcpListener,
+        directory: &Path,
+        read_only: bool,
+    ) -> ReceiverProcess {
         fs::create_dir(directory).unwrap();
         let fd = std::os::fd::OwnedFd::from(listener.try_clone().unwrap());
         let child = self
@@ -67,6 +73,10 @@ impl Desktop {
                 "--ignored",
             ])
             .env("LOUISELM_TEST_RECEIVER_DIR", directory)
+            .env(
+                "LOUISELM_TEST_RECEIVER_READ_ONLY",
+                if read_only { "1" } else { "0" },
+            )
             .stdin(Stdio::from(fd))
             .spawn()
             .unwrap();
@@ -187,8 +197,24 @@ fn serve_disposable_receiver() {
         push: false,
     };
     let prepared = prepare(paths.clone(), features).unwrap();
-    let service = prepared.phone_control.unwrap();
     let (receiver, _, identity) = prepared.receiver.unwrap();
+    let service = prepared.phone_control.unwrap();
+    // Exercise the production read-only startup branch without damaging the
+    // disposable evidence store needed by the later normal receiver.
+    let (service, receiver) = if env::var("LOUISELM_TEST_RECEIVER_READ_ONLY").as_deref() == Ok("1")
+    {
+        drop(service);
+        let service = crate::phone_control::Service::open_without_registrar(
+            &paths.phone_control_store(),
+            identity.public_key_sha256(),
+            prepared.pairing.unwrap(),
+        )
+        .unwrap();
+        let receiver = receiver.with_phone_control(service.router());
+        (service, receiver)
+    } else {
+        (service, receiver)
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -317,7 +343,7 @@ impl Editor {
         serde_json::from_str(&line).unwrap()
     }
 
-    fn finish(mut self) {
+    fn finish(mut self, expected_prompts: u64) {
         self.child
             .stdin
             .take()
@@ -326,16 +352,18 @@ impl Editor {
             .unwrap();
         let result = self.report();
         assert_eq!(
-            result["selected_prompts"], 1,
-            "exactly one ACP prompt to the selected Agent"
+            result["selected_prompts"], expected_prompts,
+            "ACP prompt count for the selected Agent"
         );
         assert_eq!(result["other_prompts"], 0);
-        assert_eq!(result["selected_turns"], 1);
+        assert_eq!(result["selected_turns"], expected_prompts);
         assert_eq!(result["other_turns"], 0);
-        assert!(
-            result["transcript_mentions"].as_u64().unwrap() >= 2,
-            "desktop transcript lacks the prompt or reply"
-        );
+        if expected_prompts > 0 {
+            assert!(
+                result["transcript_mentions"].as_u64().unwrap() >= 2,
+                "desktop transcript lacks the prompt or reply"
+            );
+        }
         assert_eq!(result["draft_preserved"], true);
         assert!(self.child.wait().unwrap().success());
     }
@@ -343,8 +371,19 @@ impl Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
-        // A failing Android assertion must also release the disposable editor and mock Agents.
+        // Give the fixture a chance to dispose and reap its mock Agents even
+        // after an Android assertion fails; kill only if that fails or stalls.
         drop(self.child.stdin.take());
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                _ => break,
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -360,11 +399,17 @@ struct Phone {
 }
 
 impl Phone {
-    fn start_android(&self, desktop: &Desktop, directory: &Path, first: &Value) -> MobileRun {
+    fn start_android(
+        &self,
+        desktop: &Desktop,
+        directory: &Path,
+        first: &Value,
+        test_class: &str,
+    ) -> MobileRun {
         let android = desktop.project.join("android");
         let report = android
             .join("app/build/test-results/testDebugUnitTest")
-            .join(format!("TEST-{TEST_CLASS}.xml"));
+            .join(format!("TEST-{test_class}.xml"));
         let child = Command::new(android.join("gradlew"))
             .current_dir(&android)
             .args([
@@ -374,7 +419,7 @@ impl Phone {
                 "testDebugUnitTest",
                 "--rerun",
                 "--tests",
-                TEST_CLASS,
+                test_class,
             ])
             .env("LOUISELM_E2E_URL", &self.url)
             .env("LOUISELM_E2E_RECEIVER", &self.identity)
@@ -389,6 +434,10 @@ impl Phone {
             .env(
                 "LOUISELM_E2E_OLD_SUBJECT",
                 first["subject_id"].as_str().unwrap(),
+            )
+            .env(
+                "LOUISELM_E2E_OLD_OTHER_SUBJECT",
+                first["other_subject_id"].as_str().unwrap(),
             )
             .env("LOUISELM_E2E_SEND_SYNC", directory)
             .env("LOUISELM_E2E_SEND_TEXT", FIRST_TEXT)
@@ -464,16 +513,16 @@ fn one_enrollment_sends_to_selected_agents_across_restarts() {
         "https://localhost:{}",
         listener.local_addr().unwrap().port()
     );
-    let first = desktop.start_receiver(&listener, &root.path().join("receiver-one"));
+    let first = desktop.start_receiver(&listener, &root.path().join("receiver-one"), false);
     let phone = desktop.enroll(&url);
     let editor = Editor::start(&desktop, &root.path().join("first"), FIRST_TEXT);
     let old_targets = editor.targets.clone();
-    let mut android = phone.start_android(&desktop, root.path(), &old_targets);
+    let mut android = phone.start_android(&desktop, root.path(), &old_targets, TEST_CLASS);
     android.wait_for("restart");
-    editor.finish();
+    editor.finish(1);
     first.stop();
 
-    let second = desktop.start_receiver(&listener, &root.path().join("receiver-two"));
+    let second = desktop.start_receiver(&listener, &root.path().join("receiver-two"), false);
     let editor = Editor::start(&desktop, &root.path().join("second"), NEXT_TEXT);
     assert_ne!(
         old_targets["controller_id"],
@@ -486,6 +535,43 @@ fn one_enrollment_sends_to_selected_agents_across_restarts() {
     assert_eq!(disabled["type"], "disabled");
     android.complete("disable");
     android.finish();
-    editor.finish();
+    editor.finish(1);
+    second.stop();
+}
+
+#[test]
+#[ignore = "requires the Android SDK, Gradle, stock Neovim, and built capture executable"]
+fn unavailable_send_then_reviewed_send_after_enablement() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let desktop = Desktop {
+        paths: paths(root.path()),
+        project: fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).unwrap(),
+        binary: PathBuf::from(env::var_os("LOUISELM_TEST_CAPTURE").unwrap()),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let first = desktop.start_receiver(&listener, &root.path().join("receiver-read-only"), true);
+    let phone = desktop.enroll(&url);
+    let editor = Editor::start(&desktop, &root.path().join("before"), FIRST_TEXT);
+    let old_targets = editor.targets.clone();
+    let mut android = phone.start_android(&desktop, root.path(), &old_targets, UPGRADE_TEST_CLASS);
+    android.wait_for("enable-send");
+    editor.finish(0);
+    first.stop();
+
+    let second = desktop.start_receiver(&listener, &root.path().join("receiver-enabled"), false);
+    let editor = Editor::start(&desktop, &root.path().join("after"), FIRST_TEXT);
+    assert_ne!(
+        old_targets["controller_id"],
+        editor.targets["controller_id"]
+    );
+    assert_ne!(old_targets["subject_id"], editor.targets["subject_id"]);
+    android.complete("enable-send");
+    android.finish();
+    editor.finish(1);
     second.stop();
 }
