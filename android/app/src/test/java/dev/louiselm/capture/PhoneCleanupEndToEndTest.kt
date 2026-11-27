@@ -9,6 +9,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.StandardWatchEventKinds
@@ -48,6 +49,7 @@ class PhoneCleanupEndToEndTest {
         val sync = System.getenv("LOUISELM_E2E_SEND_SYNC")
         assumeTrue(sync != null)
         val directory = Paths.get(requireNotNull(sync))
+        val fenced = System.getenv("LOUISELM_E2E_FENCED") == "1"
         fun desktopStep(step: String) {
             directory.fileSystem.newWatchService().use { changes ->
                 directory.register(changes, StandardWatchEventKinds.ENTRY_CREATE)
@@ -100,14 +102,30 @@ class PhoneCleanupEndToEndTest {
             val page = background {
                 (client.readSession(firstPeriod, target, SystemClock.elapsedRealtime()) { true } as PhoneControlResult.Value).value
             }
+            val drafts = PhoneDraftStore(File(app.filesDir, "phone-drafts-v1"))
+            val originalDraft = PhoneDraft(PhoneOfflineSource(config.receiverIdentitySha256, target,
+                "Phone Send target", "codex", "project"), requireNotNull(System.getenv("LOUISELM_E2E_SEND_TEXT")), emptyList())
+            val submitted = if (fenced) {
+                assertEquals(PhoneDraftSave.SAVED, background { drafts.save(originalDraft, key) { true } })
+                PhoneSubmittedDraft(drafts.id(originalDraft.source), requireNotNull(background { drafts.revision(originalDraft, key) }))
+            } else null
             val attempt = background {
                 (client.sendPrompt(firstPeriod, target, page.revision, requireNotNull(System.getenv("LOUISELM_E2E_SEND_TEXT")),
-                    pendingStore, SystemClock.elapsedRealtime()) { true } as PhoneControlResult.Value).value
+                    pendingStore, SystemClock.elapsedRealtime(), submitted) { true } as PhoneControlResult.Value).value
             }
             assertEquals(null, attempt.outcome)
             val original = requireNotNull(captured)
             assertEquals(attempt.pending.operationId, original.getJSONObject("request").getString("operation_id"))
             Files.writeString(directory.resolve("first-operation"), attempt.pending.operationId)
+            if (fenced) {
+                assertEquals(submitted, attempt.pending.draft)
+                assertEquals(PhoneDraftSave.SAVED, background { drafts.save(originalDraft.copy(text = "Later unsent draft"), key) { true } })
+                val beforeCleanup = background {
+                    (client.readActionHistory(firstPeriod, attempt.pending, SystemClock.elapsedRealtime()) { true } as PhoneControlResult.Value).value
+                }
+                assertEquals("FENCED_NO_EFFECT", beforeCleanup.state.name)
+                Files.writeString(directory.resolve("fence-evidence"), beforeCleanup.evidence)
+            }
             desktopStep("cleanup")
             val repeated = background { PinnedHttps.phoneControl(config, "request", original) { true } }
             assertTrue(repeated is PhoneControlReply.Failure ||
@@ -150,6 +168,10 @@ class PhoneCleanupEndToEndTest {
                     it.text.toString().contains(attempt.pending.operationId) &&
                         it.text.toString().contains(activity.getString(R.string.phone_action_removed))
                 })
+                if (fenced) {
+                    assertEquals("Later unsent draft", background { drafts.list(key).drafts.single().text })
+                    assertEquals(attempt.pending, background { pendingStore.pending().single() })
+                }
             } finally {
                 screen.close()
                 executor.runAll()

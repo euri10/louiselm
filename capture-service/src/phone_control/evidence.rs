@@ -27,7 +27,7 @@ use thiserror::Error;
 use super::{
     MAX_INTEGER,
     barrier::{Barrier, BarrierBinding},
-    fixed, valid_string,
+    fixed, owner_journal, valid_string,
 };
 use crate::{
     hex::lower_hex,
@@ -640,9 +640,9 @@ impl ActionEvidenceStore {
         })
     }
 
-    // Only a completed ordinary Send may lose details. The unchanged identity
-    // remains the permanent reservation and retains the original read scope.
-    pub(super) fn remove_completed_send_details(
+    // A completed or owner-fenced ordinary Send may lose details. The unchanged
+    // identity remains the permanent reservation and original read scope.
+    pub(super) fn remove_send_details(
         &self,
         operation_id: &str,
     ) -> Result<DetailRemoval, ActionEvidenceError> {
@@ -661,14 +661,32 @@ impl ActionEvidenceStore {
                     return Ok((DetailRemoval::Unsupported, false));
                 }
                 match record.outcome {
-                    ActionOutcome::DetailsRemoved => Ok((DetailRemoval::Removed, false)),
-                    ActionOutcome::Completed { .. } => {
-                        record.outcome = ActionOutcome::DetailsRemoved;
-                        record.phases.clear();
-                        Ok((DetailRemoval::Removed, true))
+                    ActionOutcome::DetailsRemoved => return Ok((DetailRemoval::Removed, false)),
+                    ActionOutcome::Completed { .. } => {}
+                    ActionOutcome::FencedNoEffect { .. } => {
+                        let path = self
+                            .owner_journal_path()
+                            .ok_or(ActionEvidenceError::Unavailable)?;
+                        let binding = guard
+                            .barrier
+                            .as_ref()
+                            .ok_or(ActionEvidenceError::Unavailable)?;
+                        let owner = owner_journal::inspect_for_cleanup(
+                            &path,
+                            &record.identity,
+                            &guard.receiver,
+                            &guard.generation,
+                            binding,
+                        )?;
+                        if owner.outcome != record.outcome || owner.phases != record.phases {
+                            return Err(ActionEvidenceError::Conflict);
+                        }
                     }
-                    _ => Ok((DetailRemoval::NotCompleted, false)),
+                    _ => return Ok((DetailRemoval::NotCompleted, false)),
                 }
+                record.outcome = ActionOutcome::DetailsRemoved;
+                record.phases.clear();
+                Ok((DetailRemoval::Removed, true))
             })
         })
     }
@@ -1123,7 +1141,10 @@ fn preserves_evidence(
             return kind == ActionEvidenceKind::Archive
                 && old.identity.action == 3
                 && (old.outcome == ActionOutcome::DetailsRemoved
-                    || matches!(old.outcome, ActionOutcome::Completed { .. }))
+                    || matches!(
+                        old.outcome,
+                        ActionOutcome::Completed { .. } | ActionOutcome::FencedNoEffect { .. }
+                    ))
                 && old.updated_at_ms == new.updated_at_ms
                 && new.phases.is_empty();
         }

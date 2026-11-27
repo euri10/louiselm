@@ -1694,7 +1694,7 @@ fn process_admin(
                 .and_then(|value| value.as_ref().ok())
                 .ok_or(Refusal::Unavailable)?;
             super::http::refresh_action_for_cleanup(store, &operation_id)?;
-            match store.remove_completed_send_details(&operation_id) {
+            match store.remove_send_details(&operation_id) {
                 Ok(DetailRemoval::Removed) => {
                     Ok(json!({"v":1,"type":"action_details_removed","operation_id":operation_id}))
                 }

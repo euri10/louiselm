@@ -343,7 +343,7 @@ struct Editor {
 
 impl Editor {
     fn start(desktop: &Desktop, receipts: &Path, text: &str) -> Self {
-        Self::start_with_drafts(desktop, receipts, text, None, false)
+        Self::start_inner(desktop, receipts, text, None, false, false)
     }
 
     fn start_with_drafts(
@@ -352,6 +352,17 @@ impl Editor {
         text: &str,
         sync: Option<&Path>,
         restarted: bool,
+    ) -> Self {
+        Self::start_inner(desktop, receipts, text, sync, restarted, false)
+    }
+
+    fn start_inner(
+        desktop: &Desktop,
+        receipts: &Path,
+        text: &str,
+        sync: Option<&Path>,
+        restarted: bool,
+        fenced: bool,
     ) -> Self {
         fs::create_dir(receipts).unwrap();
         let nvim = PathBuf::from(env::var_os("LOUISELM_TEST_NVIM").unwrap());
@@ -369,6 +380,9 @@ impl Editor {
             .env("LOUISELM_TEST_SEND_TEXT", text)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
+        if fenced {
+            command.env("LOUISELM_TEST_FENCED", "1");
+        }
         if let Some(directory) = sync {
             command.env("LOUISELM_TEST_DRAFT_SYNC", directory);
             if restarted {
@@ -474,6 +488,17 @@ impl Phone {
         first: &Value,
         test_class: &str,
     ) -> MobileRun {
+        self.start_android_inner(desktop, directory, first, test_class, false)
+    }
+
+    fn start_android_inner(
+        &self,
+        desktop: &Desktop,
+        directory: &Path,
+        first: &Value,
+        test_class: &str,
+        fenced: bool,
+    ) -> MobileRun {
         let android = desktop.project.join("android");
         let report = android
             .join("app/build/test-results/testDebugUnitTest")
@@ -510,6 +535,7 @@ impl Phone {
             .env("LOUISELM_E2E_SEND_SYNC", directory)
             .env("LOUISELM_E2E_SEND_TEXT", FIRST_TEXT)
             .env("LOUISELM_E2E_NEXT_TEXT", NEXT_TEXT)
+            .env("LOUISELM_E2E_FENCED", if fenced { "1" } else { "0" })
             .spawn()
             .unwrap();
         MobileRun {

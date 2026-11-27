@@ -222,15 +222,18 @@ authorized Read grant can inspect scoped history while Neovim is offline;
 history checks do not renew the working period. Missing or damaged evidence is
 unavailable, not proof that an action was never sent.
 
-To remove the archived phase details of one positively completed ordinary
-phone Send, run the following command while the receiver is running. The
-operation ID is in phone action history.
+To remove the archived details of an ordinary phone Send that completed or was
+durably fenced without effect by its original Session, run the following
+command while the receiver is running. The operation ID is in phone action
+history.
 
 ```sh
 louiselm-capture phone-control remove-action-details --operation-id HEX16
 ```
 
-Pending, uncertain and other action types are refused.
+For a fenced Send, the receiver checks that the native journal agrees with the
+archive. Missing or conflicting owner evidence, pending or uncertain Sends,
+and other action types are refused.
 The permanent identity and duplicate guard remain, and authorized history
 shows that details were removed. This neither authorizes another Send nor
 deletes the native owner's journal or conversation.

@@ -7,6 +7,7 @@ nvim.opt.runtimepath:prepend(root)
 local Louise = require("louiselm")
 local Session = require("louiselm.session")
 local Chat = require("louiselm.ui.chat")
+local fenced = nvim.env.LOUISELM_TEST_FENCED == "1"
 local agent = {
   provider = "test-service",
   command = "/usr/bin/python3",
@@ -21,8 +22,10 @@ local agent = {
     "lua require('louiselm.dev.mock_agent').run()",
   },
 }
+local capture = assert(nvim.env.LOUISELM_TEST_CAPTURE)
+local service = fenced and { "/usr/bin/python3", root .. "/tests/fixtures/phone_send_fence.py", capture } or { capture }
 assert(Louise.setup({
-  capture = { service = { assert(nvim.env.LOUISELM_TEST_CAPTURE) } },
+  capture = { service = service },
   agents = { codex = agent },
 }))
 local api = assert(Session.new({ codex = agent }, nil, { usage_directory = directory .. "/usage" }))
@@ -95,7 +98,7 @@ local function run()
       local message = nvim.json.decode(line)
       if message.method == "session/prompt" then
         count = count + 1
-        local text = expected_prompts and expected_prompts[count] or expected
+        local text = fenced and "Desktop moved on" or (expected_prompts and expected_prompts[count] or expected)
         assert(nvim.deep_equal(message.params.prompt, { { type = "text", text = text } }), "unexpected ACP prompt")
       end
     end
@@ -108,6 +111,17 @@ local function run()
     assert(not err, err)
     if data == nil or data:find("stop", 1, true) then
       finished = true
+    elseif fenced and data:find("fence%-desktop") then
+      nvim.schedule(function()
+        assert(selected:prompt("Desktop moved on"))
+        assert(
+          nvim.wait(15000, function()
+            return selected:inspect().status == "ready"
+          end),
+          "desktop turn did not complete"
+        )
+        report({ step = "fence-desktop" })
+      end)
     elseif draft_sync ~= nil then
       local name = data:match("^(desktop%-%a+)")
       local text = name == "desktop-before" and "Desktop before the reviewed Send"
@@ -141,7 +155,9 @@ local function run()
   )
   local lines = nvim.api.nvim_buf_get_lines(renderer.buffer, 0, -1, false)
   local mentions = 0
-  if draft_sync ~= nil then
+  if fenced then
+    expected = "Desktop moved on"
+  elseif draft_sync ~= nil then
     expected = draft_restarted and "Desktop conflict after reconnection"
       or nvim.fn.readfile(draft_sync .. "/first-payload")[1]
   end

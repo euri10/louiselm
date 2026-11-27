@@ -63,6 +63,24 @@ pub(super) fn inspect_existing(
         .collect()
 }
 
+// The caller holds the shared generation barrier until the archive update is durable.
+pub(super) fn inspect_for_cleanup(
+    path: &Path,
+    identity: &ActionIdentity,
+    receiver: &str,
+    generation: &str,
+    binding: &BarrierBinding,
+) -> Result<ActionEvidence, ActionEvidenceError> {
+    #[cfg(test)]
+    let journal = {
+        let _ = (receiver, generation, binding);
+        OwnerJournal::open_existing(path)?
+    };
+    #[cfg(not(test))]
+    let journal = OwnerJournal::open_for_generation(path, receiver, generation, binding)?;
+    journal.inspect(identity)
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {

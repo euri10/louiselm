@@ -1,4 +1,4 @@
-//! Disposable receiver evidence for completed-Send cleanup.
+//! Disposable receiver evidence for Send cleanup.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -109,7 +109,7 @@ fn completed_send_cleanup_keeps_the_guard_across_restart() {
     );
     for _ in 0..2 {
         assert_eq!(
-            store.remove_completed_send_details(&identity.operation_id),
+            store.remove_send_details(&identity.operation_id),
             Ok(DetailRemoval::Removed)
         );
     }
@@ -150,6 +150,213 @@ fn completed_send_cleanup_keeps_the_guard_across_restart() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario compares owner proof and storage refusals"
+)]
+fn fenced_send_cleanup_requires_matching_durable_owner_evidence() {
+    for case in [
+        "match",
+        "lagged_archive",
+        "missing",
+        "unknown",
+        "different_evidence",
+        "different_identity",
+        "damaged",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let capture = root.path().join("louiselm/capture");
+        let tls = capture.join("tls");
+        fs::create_dir_all(&tls).unwrap();
+        let (receiver, generation, _registrar) = super::super::barrier::receiver_fixture(&tls);
+        let directory = capture.join("phone-control/action-evidence");
+        let guard = tls.join("phone-action-evidence.json");
+        initialize_receiver_fixture(&directory, &guard, &receiver);
+        bind_receiver_fixture(&directory, &guard, &receiver, &generation);
+        let mut store = ActionEvidenceStore::open_bound(
+            &directory,
+            &guard,
+            &receiver,
+            ActionEvidenceKind::Archive,
+        )
+        .unwrap();
+        let identity = ActionIdentity {
+            operation_id: "01".repeat(16),
+            receiver_identity: receiver.clone(),
+            controller_id: "03".repeat(16),
+            subject_id: "04".repeat(16),
+            action: 3,
+            payload_hash: "05".repeat(32),
+            grant_id: "06".repeat(16),
+            grant_revision: 1,
+            period_id: "07".repeat(16),
+            expected_revision: 1,
+            project: fs::canonicalize(root.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "test-agent".into(),
+            recorded_at_ms: 1,
+        };
+        let fence = ActionOutcome::FencedNoEffect {
+            evidence: "11".repeat(32),
+        };
+        store.reserve(&generation, &identity).unwrap();
+        if case != "lagged_archive" {
+            store.report(&identity, &fence, 2).unwrap();
+        }
+        let mut before = store.lookup(&identity.operation_id).unwrap();
+        let mut other = identity.clone();
+        other.operation_id = "12".repeat(16);
+        other.action = 4;
+        store.reserve(&generation, &other).unwrap();
+        let other_outcome = ActionOutcome::Completed {
+            evidence: "13".repeat(32),
+        };
+        store.report(&other, &other_outcome, 2).unwrap();
+        let owner_path = root.path().join("louiselm/workflow/phone-action-owner");
+        if case != "missing" {
+            let owner = ActionEvidenceStore::open(&owner_path).unwrap();
+            let mut owner_identity = identity.clone();
+            if case == "different_identity" {
+                owner_identity.payload_hash = "ff".repeat(32);
+            }
+            owner.reserve_owner(&owner_identity).unwrap();
+            if case != "unknown" {
+                let outcome = if case == "different_evidence" {
+                    ActionOutcome::FencedNoEffect {
+                        evidence: "22".repeat(32),
+                    }
+                } else {
+                    fence.clone()
+                };
+                owner
+                    .report_under_barrier(&owner_identity, &outcome, 2)
+                    .unwrap();
+            }
+            drop(owner);
+            if case == "damaged" {
+                fs::write(owner_path.join("actions.json"), b"damaged").unwrap();
+            }
+        }
+        if case == "lagged_archive" {
+            assert_eq!(before.outcome, ActionOutcome::Unknown);
+            super::super::http::refresh_action_for_cleanup(&store, &identity.operation_id).unwrap();
+            before = store.lookup(&identity.operation_id).unwrap();
+            assert_eq!(before.outcome, fence);
+        }
+        if !matches!(case, "match" | "lagged_archive") {
+            let result = store.remove_send_details(&identity.operation_id);
+            let expected = if matches!(case, "missing" | "damaged") {
+                ActionEvidenceError::Unavailable
+            } else {
+                ActionEvidenceError::Conflict
+            };
+            assert_eq!(result, Err(expected), "{case}");
+            assert_eq!(store.lookup(&identity.operation_id).unwrap(), before);
+            continue;
+        }
+        let obstruction = directory.join("pending-before.json");
+        fs::create_dir(&obstruction).unwrap();
+        assert_eq!(
+            store.remove_send_details(&identity.operation_id),
+            Err(ActionEvidenceError::Unavailable)
+        );
+        drop(store);
+        fs::remove_dir(obstruction).unwrap();
+        store = ActionEvidenceStore::open_bound(
+            &directory,
+            &guard,
+            &receiver,
+            ActionEvidenceKind::Archive,
+        )
+        .unwrap();
+        assert_eq!(store.lookup(&identity.operation_id).unwrap(), before);
+        if case == "match" {
+            let guard = store.guard.as_ref().unwrap();
+            let barrier = Barrier::existing(
+                guard.path.parent().unwrap(),
+                &receiver,
+                guard.barrier.clone().unwrap(),
+            )
+            .unwrap();
+            let held_owner = root.path().join("louiselm/workflow/held-owner");
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                barrier
+                    .with_generation(&generation, || {
+                        scope.spawn(|| {
+                            started_tx.send(()).unwrap();
+                            done_tx
+                                .send(store.remove_send_details(&identity.operation_id))
+                                .unwrap();
+                        });
+                        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                        assert_eq!(
+                            done_rx.recv_timeout(Duration::from_millis(100)),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                        );
+                        fs::rename(&owner_path, &held_owner).unwrap();
+                    })
+                    .unwrap();
+                assert_eq!(
+                    done_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+                    Err(ActionEvidenceError::Unavailable)
+                );
+            });
+            fs::rename(&held_owner, &owner_path).unwrap();
+            assert_eq!(store.lookup(&identity.operation_id).unwrap(), before);
+        }
+        assert_eq!(
+            store.remove_send_details(&identity.operation_id),
+            Ok(DetailRemoval::Removed)
+        );
+        assert_eq!(
+            store.lookup(&identity.operation_id).unwrap().outcome,
+            ActionOutcome::DetailsRemoved
+        );
+        assert_eq!(
+            store.remove_send_details(&identity.operation_id),
+            Ok(DetailRemoval::Removed)
+        );
+        drop(store);
+        store = ActionEvidenceStore::open_bound(
+            &directory,
+            &guard,
+            &receiver,
+            ActionEvidenceKind::Archive,
+        )
+        .unwrap();
+        assert_eq!(
+            store.lookup(&identity.operation_id).unwrap().outcome,
+            ActionOutcome::DetailsRemoved
+        );
+        assert_eq!(
+            store.reserve(&generation, &identity),
+            Ok(ActionReservation::Existing)
+        );
+        let mut changed = identity.clone();
+        changed.payload_hash = "ff".repeat(32);
+        assert_eq!(
+            store.reserve(&generation, &changed),
+            Err(ActionEvidenceError::Conflict)
+        );
+        assert_eq!(
+            store.report(&identity, &fence, 3),
+            Err(ActionEvidenceError::Conflict)
+        );
+        assert_eq!(
+            store.lookup(&other.operation_id).unwrap().outcome,
+            other_outcome
+        );
+        let owner = ActionEvidenceStore::open_existing(&owner_path).unwrap();
+        assert_eq!(owner.lookup(&identity.operation_id).unwrap().outcome, fence);
+    }
+}
+
+#[test]
 fn cleanup_refuses_unresolved_and_other_action_types_without_changing_them() {
     let fixture = Fixture::new();
     let store = fixture.store();
@@ -177,13 +384,6 @@ fn cleanup_refuses_unresolved_and_other_action_types_without_changing_them() {
             },
         ),
         (
-            5,
-            3,
-            ActionOutcome::FencedNoEffect {
-                evidence: "44".repeat(32),
-            },
-        ),
-        (
             6,
             4,
             ActionOutcome::Completed {
@@ -196,7 +396,7 @@ fn cleanup_refuses_unresolved_and_other_action_types_without_changing_them() {
         store.report(&identity, &outcome, 2).unwrap();
         let before = store.lookup(&identity.operation_id).unwrap();
         assert_eq!(
-            store.remove_completed_send_details(&identity.operation_id),
+            store.remove_send_details(&identity.operation_id),
             Ok(if action == 3 {
                 DetailRemoval::NotCompleted
             } else {
@@ -209,7 +409,7 @@ fn cleanup_refuses_unresolved_and_other_action_types_without_changing_them() {
 
 #[test]
 fn interrupted_cleanup_recovers_the_marker_and_removes_staged_details() {
-    for replaced in [false, true] {
+    for (replaced, fenced) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut fixture = Fixture::new();
         let identity = fixture.identity(1, 3);
         let store = fixture.store();
@@ -217,8 +417,14 @@ fn interrupted_cleanup_recovers_the_marker_and_removes_staged_details() {
         store
             .report(
                 &identity,
-                &ActionOutcome::Completed {
-                    evidence: "33".repeat(32),
+                &if fenced {
+                    ActionOutcome::FencedNoEffect {
+                        evidence: "33".repeat(32),
+                    }
+                } else {
+                    ActionOutcome::Completed {
+                        evidence: "33".repeat(32),
+                    }
                 },
                 2,
             )
@@ -283,9 +489,7 @@ fn storage_failure_does_not_remove_the_original_evidence() {
     let obstruction = fixture.root.path().join("actions/pending-before.json");
     fs::create_dir(&obstruction).unwrap();
     assert_eq!(
-        fixture
-            .store()
-            .remove_completed_send_details(&identity.operation_id),
+        fixture.store().remove_send_details(&identity.operation_id),
         Err(ActionEvidenceError::Unavailable)
     );
     fixture.store = None;
@@ -323,7 +527,7 @@ fn restart_discards_staged_details_left_after_a_committed_cleanup() {
     let old = fs::read(directory.join("actions.json")).unwrap();
     fixture
         .store()
-        .remove_completed_send_details(&identity.operation_id)
+        .remove_send_details(&identity.operation_id)
         .unwrap();
     let marker = fs::read(directory.join("actions.json")).unwrap();
     replace(&directory, "pending-before.json", &old).unwrap();
@@ -482,11 +686,7 @@ fn cleanup_waits_for_the_same_barrier_as_delivery_and_reports() {
                 scope.spawn(|| {
                     started_tx.send(()).unwrap();
                     done_tx
-                        .send(
-                            fixture
-                                .store()
-                                .remove_completed_send_details(&identity.operation_id),
-                        )
+                        .send(fixture.store().remove_send_details(&identity.operation_id))
                         .unwrap();
                 });
                 started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
