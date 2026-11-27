@@ -277,6 +277,13 @@ IDs and Close/Keep confirmation. `Chat:submit(text)` writes the current
 composer. The orchestrator needs separate operation, Session and issue lookups,
 plus slot status for a VM. The helper has no addressed follow-up or verified close.
 
+`Session:prompt` can deliver its completion callback directly from ACP stdout.
+Capture the stop reason there and use `vim.schedule` to run `vim.fn.writefile`
+on Neovim's main loop. If the receipt is missing, look up the follow-up turn's
+dispatch and its matching ACP response before deciding whether to retry.
+Session 25 returned `end_turn` before its receipt write raised `E5560`
+(`louiselm-6twgs.4`).
+
 ### Proposed controls
 
 **1. Can the orchestrator send the next message?** Add `followup FILE` to
