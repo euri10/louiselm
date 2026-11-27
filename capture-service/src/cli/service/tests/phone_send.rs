@@ -1,7 +1,11 @@
 //! Signed Android Send through production receiver startup and two real ACP transports.
 
 use super::{Features, Paths, paths, prepare};
-use crate::{PairingRegistry, TlsIdentity, time::now_ms};
+use crate::{
+    PairingRegistry, TlsIdentity,
+    phone_control::{ActionEvidenceKind, ActionEvidenceStore, ActionOutcome},
+    time::now_ms,
+};
 use serde_json::{Value, json};
 use std::{
     env, fs,
@@ -287,6 +291,46 @@ fn wait_for_file(path: &Path, child: &mut Child, timeout: Duration) {
     }
 }
 
+fn completed_owner_evidence(desktop: &Desktop, phone: &Phone, operation: &str) -> Value {
+    let owner = ActionEvidenceStore::open_bound(
+        desktop
+            .paths
+            .state
+            .join("louiselm/workflow/phone-action-owner"),
+        desktop.paths.tls().join("phone-action-owner.json"),
+        &phone.identity,
+        ActionEvidenceKind::Owner,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        let record = owner.lookup(operation).unwrap();
+        if let ActionOutcome::Completed { evidence } = &record.outcome {
+            let [
+                ActionOutcome::Accepted { evidence: accepted },
+                ActionOutcome::Dispatched {
+                    evidence: dispatched,
+                },
+                ActionOutcome::Completed {
+                    evidence: completed,
+                },
+            ] = record.phases.as_slice()
+            else {
+                panic!("completed owner record lacks its exact ordered phases");
+            };
+            assert_eq!(evidence, completed);
+            return json!({"operation_id":record.identity.operation_id,
+                "controller_id":record.identity.controller_id,"subject_id":record.identity.subject_id,
+                "accepted":accepted,"dispatched":dispatched,"completed":completed});
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "owner completion not durable"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 struct Editor {
     child: Child,
     reports: mpsc::Receiver<String>,
@@ -519,17 +563,22 @@ fn one_enrollment_sends_to_selected_agents_across_restarts() {
     let old_targets = editor.targets.clone();
     let mut android = phone.start_android(&desktop, root.path(), &old_targets, TEST_CLASS);
     android.wait_for("restart");
+    let operation = fs::read_to_string(root.path().join("first-operation")).unwrap();
+    let proof = completed_owner_evidence(&desktop, &phone, operation.trim());
+    fs::write(root.path().join("first-proof.json"), proof.to_string()).unwrap();
     editor.finish(1);
     first.stop();
 
     let second = desktop.start_receiver(&listener, &root.path().join("receiver-two"), false);
+    android.complete("restart");
+    android.wait_for("start-editor");
     let editor = Editor::start(&desktop, &root.path().join("second"), NEXT_TEXT);
     assert_ne!(
         old_targets["controller_id"],
         editor.targets["controller_id"]
     );
     assert_ne!(old_targets["subject_id"], editor.targets["subject_id"]);
-    android.complete("restart");
+    android.complete("start-editor");
     android.wait_for("disable");
     let disabled = desktop.admin(&["disable", "--device-id", &phone.device]);
     assert_eq!(disabled["type"], "disabled");

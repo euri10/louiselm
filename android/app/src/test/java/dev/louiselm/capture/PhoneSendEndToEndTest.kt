@@ -84,6 +84,8 @@ class PhoneSendEndToEndTest {
         var disabled = false
         var deniedByReceiver = false
         var original: String? = null
+        var firstReceipt: PhoneActionRecord? = null
+        var originalHistory: PhoneActionRecord? = null
         var chosenRow = ""
         var reconnected = false
         var reconciled = false
@@ -113,10 +115,14 @@ class PhoneSendEndToEndTest {
                 assertEquals(request.getString("subject_id"), receipt.subjectId)
                 assertEquals(grant.grantId, receipt.grantId)
                 assertTrue(receipt.acceptedEvidence.isNotEmpty())
+                if (!loseAcknowledgement) firstReceipt = receipt
                 if (loseAcknowledgement && lostAcknowledgements == 0) {
                     lostAcknowledgements++
                     PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
                 } else reply
+            } else if (reply is PhoneControlReply.ActionHistoryPage && firstReceipt != null) {
+                originalHistory = reply.records.singleOrNull { it.operationId == firstReceipt?.operationId }
+                reply
             } else if (loseAcknowledgement && reply is PhoneControlReply.ActionHistory && reply.record.operationId == original) {
                 if (reconnected) {
                     reconciled = reply.record.acceptedEvidence.isNotEmpty()
@@ -124,7 +130,7 @@ class PhoneSendEndToEndTest {
                 } else PhoneControlReply.Failure(PhoneControlOutcome.UNAVAILABLE)
             } else reply
         }
-        fun open(oldTarget: Boolean = false) {
+        fun open(oldTarget: Boolean = false, historyProof: JSONObject? = null) {
             val intent = Intent(app, PhoneControlActivity::class.java)
             if (oldTarget) {
                 intent.putExtra(PhoneControlActivity.ATTENTION, true)
@@ -159,6 +165,37 @@ class PhoneSendEndToEndTest {
                 }
                 button(R.string.phone_unlock).performClick()
                 drain()
+                if (historyProof != null) {
+                    originalHistory = null
+                    assertTrue(button(R.string.phone_action_history).performClick())
+                    drain()
+                    val record = requireNotNull(originalHistory) { "original action missing from signed history" }
+                    val first = requireNotNull(firstReceipt)
+                    assertEquals(PhoneActionState.COMPLETED, record.state)
+                    assertEquals(first.operationId, record.operationId)
+                    assertEquals(first.receiverIdentity, record.receiverIdentity)
+                    assertEquals(first.controllerId, record.controllerId)
+                    assertEquals(first.subjectId, record.subjectId)
+                    assertEquals(first.action, record.action)
+                    assertEquals(first.payloadHash, record.payloadHash)
+                    assertEquals(first.grantId, record.grantId)
+                    assertEquals(first.grantRevision, record.grantRevision)
+                    assertEquals(first.expectedRevision, record.expectedRevision)
+                    assertEquals(first.recordedAtMs, record.recordedAtMs)
+                    assertEquals(historyProof.getString("operation_id"), record.operationId)
+                    assertEquals(historyProof.getString("controller_id"), record.controllerId)
+                    assertEquals(historyProof.getString("subject_id"), record.subjectId)
+                    assertEquals(first.acceptedEvidence, record.acceptedEvidence)
+                    assertEquals(historyProof.getString("accepted"), record.acceptedEvidence)
+                    assertEquals(historyProof.getString("dispatched"), record.dispatchedEvidence)
+                    assertEquals(historyProof.getString("completed"), record.completedEvidence)
+                    assertEquals(record.completedEvidence, record.evidence)
+                    assertTrue(controls().filterIsInstance<TextView>().any {
+                        it.text.toString().contains(record.operationId) &&
+                            it.text.toString().contains(activity.getString(R.string.phone_action_completed))
+                    })
+                    return
+                }
                 if (oldTarget) {
                     assertTrue("old target after restart must be stale", controls().filterIsInstance<TextView>().any {
                         it.text.toString() == activity.getString(R.string.phone_stale)
@@ -237,8 +274,12 @@ class PhoneSendEndToEndTest {
         open()
         assertEquals(1, posted)
         val firstOperation = requireNotNull(original)
+        Files.writeString(directory.resolve("first-operation"), firstOperation)
         desktopStep("restart")
         assertEquals("same mobile enrollment after desktop restart", grant, PhoneControlStore(app).grant())
+        val firstProof = JSONObject(Files.readString(directory.resolve("first-proof.json")))
+        open(historyProof = firstProof)
+        desktopStep("start-editor")
         open(oldTarget = true)
         loseAcknowledgement = true
         text = requireNotNull(System.getenv("LOUISELM_E2E_NEXT_TEXT"))
