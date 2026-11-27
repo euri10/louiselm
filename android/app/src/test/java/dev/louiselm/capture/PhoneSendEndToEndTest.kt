@@ -88,6 +88,7 @@ class PhoneSendEndToEndTest {
         var reconnected = false
         var reconciled = false
         val transport: PhoneControlTransport = { pairing, endpoint, body, maySend ->
+            assertFalse("phone transport must run off the main thread", Looper.getMainLooper().thread == Thread.currentThread())
             val reply = PinnedHttps.phoneControl(pairing, endpoint, body, maySend)
             val request = body.optJSONObject("request")
             if (disabled && reply is PhoneControlReply.Failure && reply.outcome == PhoneControlOutcome.REVOKED) {
