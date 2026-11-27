@@ -12,9 +12,22 @@ if sys.argv[-1] == "verify":
 else:
     hold = os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "hold-completion")
     if "completed" in message.get("outcome", {}):
+        open(os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "completion-started"), "w", encoding="utf-8").close()
         deadline = time.monotonic() + 4
         while os.path.exists(hold) and time.monotonic() < deadline:
             time.sleep(0.01)
+    outcome = message.get("outcome", {})
+    for state in ("completed", "fenced_no_effect"):
+        fail_once = os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "fail-once-" + state)
+        if state not in outcome or not os.path.exists(fail_once):
+            continue
+        with open(fail_once, encoding="utf-8") as marker:
+            operation = marker.read().strip()
+        if operation == message["identity"]["operation_id"]:
+            os.unlink(fail_once)
+            with open(os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "owner-failures"), "a", encoding="utf-8") as out:
+                out.write(message["identity"]["operation_id"] + ":" + state + "\n")
+            sys.exit(1)
     with open(os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "owner-reports.jsonl"), "a", encoding="utf-8") as out:
         out.write(json.dumps(message, separators=(",", ":")) + "\n")
     result = {"v": message["v"], "type": "begun" if message["type"] == "begin" else "recorded"}

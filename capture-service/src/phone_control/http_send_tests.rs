@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::tests::{
-    approve_scoped_grant, history_grant, post, signed_history, signed_history_page, signed_unlock,
-    unhex,
+    approve_scoped_grant, history_grant, history_period, post, signed_history, signed_history_page,
+    signed_unlock, unhex,
 };
 use crate::{
     PairingRegistry,
@@ -862,7 +862,7 @@ async fn history_imports_durable_native_phases_for_the_original_action() {
     drop(owner);
     let lookup = signed_history(&fixture, &grant, &period, &identity, 100);
     let (status, history) = post(
-        app,
+        app.clone(),
         "/v1/phone-control/request",
         &phone.credential,
         &lookup.to_string(),
@@ -878,6 +878,76 @@ async fn history_imports_durable_native_phases_for_the_original_action() {
         archive.lookup(&identity.operation_id).unwrap().outcome,
         completed
     );
+
+    let mut unresolved = identity.clone();
+    unresolved.operation_id = "17".repeat(16);
+    archive
+        .reserve_session_prompt(&generation, &unresolved, &[])
+        .unwrap();
+    let owner = ActionEvidenceStore::open_bound(
+        &owner_path,
+        tls.join("phone-action-owner.json"),
+        &receiver,
+        ActionEvidenceKind::Owner,
+    )
+    .unwrap();
+    barrier
+        .with_generation(&generation, || {
+            owner.reserve_owner(&unresolved).unwrap();
+            for phase in [&accepted, &dispatched, &ActionOutcome::Unknown] {
+                owner
+                    .report_under_barrier(&unresolved, phase, crate::time::now_ms())
+                    .unwrap();
+            }
+        })
+        .unwrap();
+    drop(owner);
+    let lookup = signed_history(&fixture, &grant, &period, &unresolved, 101);
+    let (status, history) = post(
+        app.clone(),
+        "/v1/phone-control/request",
+        &phone.credential,
+        &lookup.to_string(),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(history["record"]["state"], "unknown");
+    assert_eq!(history["record"]["accepted_evidence"], "14".repeat(32));
+    assert_eq!(history["record"]["dispatched_evidence"], "15".repeat(32));
+    assert_eq!(history["record"]["completed_evidence"], "");
+
+    drop(app);
+    drop(service);
+    std::fs::rename(&owner_path, owner_path.with_extension("lost")).unwrap();
+    let pairing = Arc::new(PairingRegistry::open(capture.join("pairing")).unwrap());
+    let restarted = Service::open(
+        &capture.join("phone-control/grants.json"),
+        &receiver,
+        pairing,
+    )
+    .unwrap();
+    let app = restarted.router();
+    let period = history_period(&app, &phone, &fixture, &grant).await;
+    for (operation, state, completed_evidence, sequence) in [
+        (&identity, "completed", "16".repeat(32), 102),
+        (&unresolved, "unknown", String::new(), 103),
+    ] {
+        let lookup = signed_history(&fixture, &grant, &period, operation, sequence);
+        let (status, history) = post(
+            app.clone(),
+            "/v1/phone-control/request",
+            &phone.credential,
+            &lookup.to_string(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(history["record"]["operation_id"], operation.operation_id);
+        assert_eq!(history["record"]["state"], state);
+        assert_eq!(history["record"]["accepted_evidence"], "14".repeat(32));
+        assert_eq!(history["record"]["dispatched_evidence"], "15".repeat(32));
+        assert_eq!(history["record"]["completed_evidence"], completed_evidence);
+        assert!(history["record"].get("payload").is_none());
+    }
 }
 
 #[tokio::test]

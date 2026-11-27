@@ -57,7 +57,9 @@ T["registered Send enters the real Session once and keeps its later evidence and
   }
   local failing_definition = nvim.deepcopy(definition)
   failing_definition.env.LOUISELM_MOCK_MODE = "crash"
-  local api = assert(Session.new({ mock = definition, failing = failing_definition }, nil, {
+  local hold_definition = nvim.deepcopy(definition)
+  hold_definition.env.LOUISELM_MOCK_MODE = "hold"
+  local api = assert(Session.new({ mock = definition, failing = failing_definition, hold = hold_definition }, nil, {
     usage_directory = directory .. "/usage",
   }))
   local controller = Controller.new({
@@ -132,6 +134,7 @@ T["registered Send enters the real Session once and keeps its later evidence and
     request = request,
   }
   assert(nvim.fn.writefile({}, directory .. "/hold-completion") == 0)
+  assert(nvim.fn.writefile({ operation }, directory .. "/fail-once-completed") == 0)
   local function read(value)
     local result
     controller:read(nvim.json.encode(value), function(response)
@@ -160,7 +163,7 @@ T["registered Send enters the real Session once and keeps its later evidence and
   })
   MiniTest.expect.equality(outcome.state, "accepted")
   assert(nvim.wait(6000, function()
-    return session:inspect().status == "ready"
+    return session:inspect().status == "ready" and nvim.uv.fs_stat(directory .. "/completion-started") ~= nil
   end))
   assert(nvim.wait(3000, function()
     return witness:find("\n", 1, true) ~= nil
@@ -228,7 +231,21 @@ T["registered Send enters the real Session once and keeps its later evidence and
   assert(nvim.fn.delete(directory .. "/hold-completion") == 0)
   assert(nvim.wait(6000, function()
     local path = directory .. "/owner-reports.jsonl"
-    return nvim.uv.fs_stat(path) and table.concat(nvim.fn.readfile(path), "\n"):find('"completed"', 1, true)
+    if not nvim.uv.fs_stat(path) or not nvim.uv.fs_stat(directory .. "/owner-failures") then
+      return false
+    end
+    if not table.concat(nvim.fn.readfile(directory .. "/owner-failures"), "\n"):find(operation, 1, true) then
+      return false
+    end
+    for _, line in ipairs(nvim.fn.readfile(path)) do
+      local report = nvim.json.decode(line)
+      if report.identity.operation_id == operation and type(report.outcome) == "table" then
+        if report.outcome.completed ~= nil then
+          return true
+        end
+      end
+    end
+    return false
   end))
   local records = {}
   for _, line in ipairs(nvim.fn.readfile(directory .. "/owner-reports.jsonl")) do
@@ -272,14 +289,112 @@ T["registered Send enters the real Session once and keeps its later evidence and
     )
   )
   MiniTest.expect.equality(controller.uncertain_sessions[failing], true)
+
+  local cancelled = assert(api:create_session("hold", { cwd = root }))
+  assert(nvim.wait(6000, function()
+    return cancelled:inspect().status == "ready"
+  end))
+  local dispatched = false
+  local unsubscribe = cancelled:on(function(event)
+    if event.type == "prompt_dispatched" then
+      dispatched = true
+    end
+  end)
+  MiniTest.finally(unsubscribe)
+  local cancelled_subject = assert(controller:track(cancelled))
+  local cancelled_message = nvim.deepcopy(message)
+  cancelled_message.controller_id = controller.controller_id
+  cancelled_message.grant.agents = { "hold" }
+  cancelled_message.request.controller_id = controller.controller_id
+  cancelled_message.request.subject_id = cancelled_subject
+  cancelled_message.request.operation_id = string.rep("0e", 16)
+  cancelled_message.request.expected_revision = controller.subjects[cancelled_subject].projection.revision
+  MiniTest.expect.equality(read(cancelled_message).type, "action_prepared")
+  local cancelled_outcome = read({
+    v = 2,
+    type = "action_commit",
+    controller_id = controller.controller_id,
+    operation_id = cancelled_message.request.operation_id,
+    gate_id = string.rep("0f", 16),
+    remaining_ms = 5000,
+  })
+  MiniTest.expect.equality(cancelled_outcome.state, "accepted")
+  assert(nvim.wait(6000, function()
+    return dispatched
+  end))
+  assert(cancelled:cancel())
+  assert(nvim.wait(6000, function()
+    return controller.uncertain_sessions[cancelled] == true
+  end))
+  local cancelled_phases = {}
+  for _, line in ipairs(nvim.fn.readfile(directory .. "/owner-reports.jsonl")) do
+    local report = nvim.json.decode(line)
+    if report.outcome and report.identity.operation_id == cancelled_message.request.operation_id then
+      cancelled_phases[#cancelled_phases + 1] = report.outcome
+    end
+  end
+  MiniTest.expect.equality(#cancelled_phases, 3)
+  MiniTest.expect.equality(type(cancelled_phases[1].accepted), "table")
+  MiniTest.expect.equality(type(cancelled_phases[2].dispatched), "table")
+  MiniTest.expect.equality(cancelled_phases[3], "unknown")
+
+  local fenced = nvim.deepcopy(message)
+  fenced.controller_id = controller.controller_id
+  fenced.request.controller_id = controller.controller_id
+  fenced.request.subject_id = assert(controller:track(session))
+  fenced.request.operation_id = string.rep("13", 16)
+  fenced.request.expected_revision = controller.subjects[fenced.request.subject_id].projection.revision
+  MiniTest.expect.equality(read(fenced).type, "action_prepared")
+  assert(nvim.fn.writefile({ fenced.request.operation_id }, directory .. "/fail-once-fenced_no_effect") == 0)
+  assert(controller:detach())
+  assert(nvim.wait(6000, function()
+    return table
+      .concat(nvim.fn.readfile(directory .. "/owner-failures"), "\n")
+      :find(fenced.request.operation_id, 1, true)
+  end))
+  for _, line in ipairs(nvim.fn.readfile(directory .. "/owner-reports.jsonl")) do
+    local report = nvim.json.decode(line)
+    MiniTest.expect.equality(
+      report.identity.operation_id == fenced.request.operation_id and report.outcome ~= nil,
+      false
+    )
+  end
+  assert(controller:attach(string.rep("14", 16), {
+    pipe = pipe,
+    process = process,
+    clock = clock,
+    generation = string.rep("09", 16),
+  }))
+  assert(nvim.wait(6000, function()
+    for _, line in ipairs(nvim.fn.readfile(directory .. "/owner-reports.jsonl")) do
+      local report = nvim.json.decode(line)
+      if report.identity.operation_id == fenced.request.operation_id and report.outcome then
+        return report.outcome.fenced_no_effect ~= nil
+      end
+    end
+    return false
+  end))
+  MiniTest.expect.equality(
+    read({
+      v = 2,
+      type = "action_commit",
+      controller_id = fenced.controller_id,
+      operation_id = fenced.request.operation_id,
+      gate_id = string.rep("15", 16),
+      remaining_ms = 5000,
+    }).code,
+    "unavailable"
+  )
+  MiniTest.expect.equality(session:inspect().current_turn, 1)
   local witnesses = {}
   for line in witness:gmatch("([^\n]+)\n") do
     witnesses[#witnesses + 1] = nvim.json.decode(line)
   end
-  MiniTest.expect.equality(#witnesses, 3)
+  MiniTest.expect.equality(#witnesses, 4)
   MiniTest.expect.equality(witnesses[1].operation_id, operation)
   MiniTest.expect.equality(witnesses[2].operation_id, other_message.request.operation_id)
   MiniTest.expect.equality(witnesses[3].operation_id, failed_message.request.operation_id)
+  MiniTest.expect.equality(witnesses[4].operation_id, cancelled_message.request.operation_id)
   MiniTest.expect.equality(session:inspect().current_turn, 1)
   MiniTest.expect.equality(view.renderer:prompt_text(), "UNSENT DRAFT")
   MiniTest.expect.equality(

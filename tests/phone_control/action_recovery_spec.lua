@@ -213,6 +213,76 @@ T["a failed fence write cannot confirm safe recovery"] = function()
   MiniTest.expect.equality(assert(recovery).state, "fenced_no_effect")
 end
 
+T["a failed refusal fence remains retryable after its unavailable reply"] = function()
+  local available, reports = false, {}
+  local journal = {}
+  function journal:run(message, callback)
+    reports[#reports + 1] = message
+    nvim.schedule(function()
+      callback(
+        message.type == "begin" and { v = 1, type = "begun" }
+          or available and { v = 1, type = "recorded" }
+          or { v = 1, type = "error", code = "unavailable" }
+      )
+    end)
+  end
+  local owner = { sessions = {} }
+  local session = { owner = owner }
+  owner.sessions.s = session
+  function session:inspect()
+    return { id = "s", status = "ready" }
+  end
+  local action = Action.new({
+    journal = journal,
+    generation = string.rep("09", 16),
+    session = session,
+    projection = {
+      page = function()
+        return nil
+      end,
+    },
+    current = function()
+      return true
+    end,
+    authorize = function(done)
+      nvim.schedule(function()
+        done({ gate = {}, release = function() end })
+      end)
+    end,
+  })
+  MiniTest.finally(function()
+    action:dispose()
+  end)
+  local text, replies = "phone text", {}
+  action:send(
+    {
+      action = 3,
+      operation_id = string.rep("05", 16),
+      expected_revision = 1,
+      payload_hash = nvim.fn.sha256(string.char(1) .. text),
+    },
+    text,
+    function(result)
+      replies[#replies + 1] = result
+    end
+  )
+  assert(nvim.wait(5000, function()
+    return #replies == 1
+  end))
+  MiniTest.expect.equality(replies[1].code, "unavailable")
+  available = true
+  local recovered
+  action:detach(function(result)
+    recovered = result
+  end)
+  assert(nvim.wait(5000, function()
+    return recovered ~= nil
+  end))
+  MiniTest.expect.equality(recovered.state, "fenced_no_effect")
+  MiniTest.expect.equality(reports[2].outcome, reports[3].outcome)
+  MiniTest.expect.equality(#replies, 1)
+end
+
 T["detaching after admission but before its journal reply never fences"] = function()
   local writes = {}
   local journal = {}

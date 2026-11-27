@@ -44,6 +44,30 @@ local function release_action(self, pending)
   return stopped
 end
 
+local function fence_action(self, pending)
+  if pending.fencing then
+    pending.retry_fence = true
+    return
+  end
+  pending.fencing = true
+  pending.action:detach(function(result)
+    pending.fencing = false
+    if not self.actions[pending] then
+      return
+    end
+    if pending.action.admitted then
+      if pending.retry_fence then
+        pending.action:retry_phases()
+      end
+    elseif result.state == "fenced_no_effect" or not pending.action.pending then
+      release_action(self, pending)
+    elseif pending.retry_fence then
+      pending.retry_fence = false
+      fence_action(self, pending)
+    end
+  end)
+end
+
 local function hex_id(value)
   return type(value) == "string" and #value == 32 and value:match("^[0-9a-f]+$") ~= nil
 end
@@ -548,6 +572,13 @@ function Controller:attach(controller_id, registration)
       return false, err
     end
   end
+  for pending in pairs(self.actions) do
+    if pending.action.admitted then
+      pending.action:retry_phases()
+    elseif pending.action.pending then
+      fence_action(self, pending)
+    end
+  end
   return true
 end
 
@@ -936,7 +967,7 @@ function Controller:read(line, callback)
               if self.pending_action == pending then
                 self.pending_action = nil
               end
-              if not action.admitted and not release_action(self, pending) then
+              if not action.admitted and not action.pending and not release_action(self, pending) then
                 outcome = error_result("unavailable")
               end
               if self.disposed or self.generation ~= generation then
@@ -1034,11 +1065,7 @@ function Controller:detach()
     local pending = self.pending_action
     self.pending_action = nil
     if not pending.action.admitted then
-      pending.action:detach(function()
-        if not pending.action.admitted then
-          release_action(self, pending)
-        end
-      end)
+      fence_action(self, pending)
     end
   end
   for _, subject in pairs(self.sessions) do

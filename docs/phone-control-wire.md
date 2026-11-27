@@ -611,8 +611,14 @@ State is `unknown`, `accepted`, `dispatched`, `completed`, `rejected`, or
 carry the native owner's
 opaque evidence digest. Acceptance does not mean dispatch; dispatch records
 local transport acceptance, not peer receipt. Completion is a successful
-native Session callback. The archive retains each known phase's evidence even
-when the current outcome becomes unknown.
+native Session callback with a recognized non-cancelled stop reason. Cancelled,
+failed or malformed callbacks are recorded as unknown; this format has no
+separate cancellation result. If that report fails or no callback arrives, the
+last proven phase remains and the terminal outcome is unresolved. The archive
+retains each known phase's evidence even when the current outcome becomes
+unknown. A living owner retries its
+unconfirmed phase or no-effect fence report on controller reattachment, without
+repeating the action or changing the original fence evidence.
 `fenced_no_effect` may be archived only after the native owner has proved no
 effect and durably fenced late execution. Capture-service neither supplies
 that proof nor authorizes a new attempt. Missing or damaged evidence returns

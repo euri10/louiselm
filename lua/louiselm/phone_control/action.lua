@@ -85,7 +85,7 @@ function Action:send(identity, text, callback)
   self.pending = true
   local finished, began, authorized = false, false, false
   local reserved, detached, transitioning, reporting, admitted = false, false, false, false, false
-  local detach_callback
+  local detach_callback, fence_code
   local function finish(result)
     if finished or self.disposed then
       return
@@ -101,6 +101,10 @@ function Action:send(identity, text, callback)
   end
   local function report(state, code, turn_id)
     reporting = true
+    if state == "fenced_no_effect" then
+      fence_code = fence_code or code
+      code = fence_code
+    end
     local evidence =
       nvim.fn.sha256("louiselm-phone-owner-" .. state .. "-v1:" .. identity.operation_id .. ":" .. (turn_id or code))
     self.journal:run({
@@ -111,11 +115,16 @@ function Action:send(identity, text, callback)
       at_ms = os.time() * 1000,
     }, function(result)
       if result.type ~= "recorded" then
-        if detached and state == "fenced_no_effect" and not self.disposed then
+        if state == "fenced_no_effect" and not self.disposed then
           reporting = false
-          local done = detach_callback
-          detach_callback = nil
-          done(failure("unavailable"))
+          if detached then
+            local done = detach_callback
+            detach_callback = nil
+            done(failure("unavailable"))
+          else
+            detached = true
+            callback(failure("unavailable"))
+          end
         else
           finish(failure("unavailable"))
         end
@@ -209,7 +218,8 @@ function Action:send(identity, text, callback)
       self.phases[#self.phases + 1] = phases
       transitioning = true
       local turn_id, prompt_error = self.session:prompt_phone(text, permit.gate, function(result, err)
-        phases:completed(err == nil and result ~= nil)
+        local completed = { end_turn = true, max_tokens = true, max_turn_requests = true, refusal = true }
+        phases:completed(err == nil and type(result) == "table" and completed[result.stopReason] == true)
       end)
       transitioning = false
       admitted = turn_id ~= nil

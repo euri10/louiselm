@@ -361,4 +361,68 @@ T["a failed turn retains unknown after the dispatched proof"] = function()
   MiniTest.expect.equality(writes[3], "unknown")
 end
 
+T["cancelled and malformed callbacks never prove completion"] = function()
+  for _, result in ipairs({ { stopReason = "cancelled" }, {}, { stopReason = "invalid" } }) do
+    local reports, complete = {}, nil
+    local journal = {}
+    function journal:run(message, callback)
+      if message.type == "report" then
+        reports[#reports + 1] = message.outcome
+      end
+      nvim.schedule(function()
+        callback({ v = 1, type = message.type == "begin" and "begun" or "recorded" })
+      end)
+    end
+    local owner = { sessions = {} }
+    local session = { owner = owner }
+    owner.sessions.s = session
+    function session:inspect()
+      return { id = "s", status = "ready" }
+    end
+    function session:on()
+      return function() end
+    end
+    function session:prompt_phone(_, _, callback)
+      complete = callback
+      return "turn-1"
+    end
+    local action = Action.new({
+      journal = journal,
+      generation = string.rep("09", 16),
+      session = session,
+      projection = {
+        page = function()
+          return {}
+        end,
+      },
+      current = function()
+        return true
+      end,
+      authorize = function(done)
+        nvim.schedule(function()
+          done({ gate = {}, release = function() end })
+        end)
+      end,
+    })
+    MiniTest.finally(function()
+      action:dispose()
+    end)
+    local text = "phone text"
+    action:send({
+      action = 3,
+      operation_id = string.rep("05", 16),
+      expected_revision = 1,
+      payload_hash = nvim.fn.sha256(string.char(1) .. text),
+    }, text, function() end)
+    assert(nvim.wait(5000, function()
+      return complete ~= nil
+    end))
+    assert(complete)(result, nil)
+    assert(nvim.wait(5000, function()
+      return #reports == 2
+    end))
+    MiniTest.expect.equality(reports[2], "unknown")
+  end
+end
+
 return T

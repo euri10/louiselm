@@ -23,11 +23,16 @@ local function drain(self)
     if self.disposed then
       return
     end
+    local retry = self.retry_after_write
+    self.retry_after_write = false
     if result.type ~= "recorded" then
       if item.callback ~= nil then
         local callback = item.callback
         item.callback = nil
         callback(nil)
+      end
+      if retry then
+        drain(self)
       end
       return
     end
@@ -83,7 +88,11 @@ end
 
 ---Retry an unconfirmed report after storage becomes available.
 function Phases:retry()
-  drain(self)
+  if self.writing then
+    self.retry_after_write = true
+  else
+    drain(self)
+  end
 end
 
 ---Release the Session subscription and ignore outstanding journal callbacks.
