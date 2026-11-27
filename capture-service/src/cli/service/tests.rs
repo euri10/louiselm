@@ -12,6 +12,8 @@ use tokio::{
     net::UnixStream,
 };
 
+mod phone_send;
+
 fn paths(root: &std::path::Path) -> Paths {
     Paths {
         config: root.join("config"),
