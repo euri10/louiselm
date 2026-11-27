@@ -14,6 +14,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.StandardWatchEventKinds
+import java.time.Duration
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -150,6 +151,7 @@ class PhoneSendUpgradeEndToEndTest {
             assertTrue(send.isEnabled)
             send.performClick(); drain()
             assertEquals(text, input.text.toString())
+            assertTrue("refused Send retains an editable instruction", input.isEnabled)
             assertTrue(hasText(activity, controls, R.string.phone_unsupported))
             assertEquals(0, posted)
             assertFalse("preflight must not create a pending store", snapshot.exists())
@@ -186,7 +188,9 @@ class PhoneSendUpgradeEndToEndTest {
         screen { activity, drain, controls ->
             button(activity, controls, R.string.phone_unlock).performClick(); drain()
             select(controls, "Second phone Session"); drain()
-            assertEquals(oldText, controls().filterIsInstance<EditText>().single().text.toString())
+            val oldInput = controls().filterIsInstance<EditText>().single()
+            assertEquals(oldText, oldInput.text.toString())
+            assertTrue("an unknown instruction remains editable", oldInput.isEnabled)
             assertFalse("a prior unknown on this Session blocks Send", button(activity, controls, R.string.phone_send).isEnabled)
             button(activity, controls, R.string.phone_sessions).performClick(); drain()
             select(controls, "Phone Send target"); drain()
@@ -237,14 +241,36 @@ class PhoneSendUpgradeEndToEndTest {
             input.setText(savedText); drain()
             val send = button(activity, controls, R.string.phone_send)
             assertTrue("the distinct reviewed instruction is ready", send.isEnabled)
+            val drafts = PhoneDraftStore(File(app.filesDir, "phone-drafts-v1"))
+            val submitted = drafts.list(key).drafts.single {
+                chosenRow.contains(it.source.target.controllerId) && chosenRow.contains(it.source.target.subjectId)
+            }
+            assertEquals(text, submitted.text)
+            val reference = PhoneSubmittedDraft(drafts.id(submitted.source), requireNotNull(drafts.revision(submitted, key)))
             send.performClick(); drain()
+            val action = pendingStore().pending().single { it.operationId !in oldIds }
+            assertEquals("the Send owns the exact reviewed draft revision", reference, action.draft)
+            val evidence = ReflectionHelpers.getField<Map<String, PhoneActionRecord>>(activity, "actionEvidence")[action.operationId]
+            if (evidence?.state == PhoneActionState.COMPLETED && evidence.completedEvidence.isNotEmpty()) {
+                assertEquals("completed draft is consumed", "", input.text.toString())
+                assertFalse(drafts.list(key).drafts.any { it.source == submitted.source })
+            } else {
+                assertEquals("unconfirmed Send retains its draft", text, input.text.toString())
+                assertTrue("unconfirmed Send remains editable", input.isEnabled)
+                assertEquals(submitted, drafts.list(key).drafts.single { it.source == submitted.source })
+            }
+            val newerText = "A newer phone edit"
+            input.setText(newerText); drain()
             for (attempt in 1..12) {
                 button(activity, controls, R.string.phone_refresh).performClick(); drain()
                 if (controls().filterIsInstance<TextView>().any { it.text.toString() == activity.getString(R.string.phone_agent_message, text) }) break
             }
             assertTrue(controls().filterIsInstance<TextView>().any { it.text.toString() == activity.getString(R.string.phone_user_message, text) })
             assertTrue(controls().filterIsInstance<TextView>().any { it.text.toString() == activity.getString(R.string.phone_agent_message, text) })
-            assertEquals(text, input.text.toString())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11)); drain()
+            assertEquals("a newer edit survives reconciliation", newerText, input.text.toString())
+            assertEquals(newerText, drafts.list(key).drafts.single { it.source == submitted.source }.text)
+            assertEquals("reconciliation must not resend", 1, posted)
         }
         assertEquals(1, posted)
         val after = pendingStore().pending()
