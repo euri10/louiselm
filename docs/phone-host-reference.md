@@ -3,8 +3,9 @@
 The administrator provisioner registers one capture state directory and one
 receiver public-key fingerprint. On supported storage, its boot service reopens
 the registered directory by a persistent kernel file handle and exposes that
-open directory to the system manager. This is a prerequisite for phone Send,
-not permission to send or recover. Send remains disabled.
+open directory to the system manager. This guide covers managed receiver
+registration and recovery. For Android Send on a trusted personal desktop,
+follow [Send from a personal desktop](../capture-service/README.md#send-from-a-personal-desktop).
 
 ## Provisioning and limits
 
@@ -68,7 +69,8 @@ the independent native authority and complete old-registrar proof exist, the
 registration request returns unavailable and the fixed store transaction is
 not invoked. Ordinary capture-only behavior remains available; if it creates
 or publishes a different receiver in the meantime, that installation cannot
-later be assumed fresh. Send remains disabled.
+later be assumed fresh. Send through this managed registration path stays
+unavailable.
 
 ## Held directory interface
 

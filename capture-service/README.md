@@ -220,8 +220,7 @@ Phone action evidence is retained without automatic expiry in the private
 capture state directory, without prompts or result copies. A currently
 authorized Read grant can inspect scoped history while Neovim is offline;
 history checks do not renew the working period. Missing or damaged evidence is
-unavailable, not proof that an action was never sent. The first phone write
-still requires the separate Send integration and its native-owner safeguards.
+unavailable, not proof that an action was never sent.
 
 To remove the archived phase details of one positively completed ordinary
 phone Send, run the following command while the receiver is running. The
@@ -236,14 +235,28 @@ The permanent identity and duplicate guard remain, and authorized history
 shows that details were removed. This neither authorizes another Send nor
 deletes the native owner's journal or conversation.
 
-On a trusted personal desktop, phone-control startup establishes the receiver's
-native journal, capture archive, and shared admission barrier once. An existing
-approved phone and its project and Agent scope are retained across ordinary
-service and editor restarts; startup does not grant a new scope or operating
-period. A legacy read-only enrollment is transitioned once. If initialization
-is interrupted, or an established store, its guard, the pairing state, or the
-barrier is missing or inconsistent, phone Send stays unavailable and the
-remaining evidence is preserved. Capture and authorized phone reads remain
+### Send from a personal desktop
+
+Set `LOUISELM_RECEIVER_ENABLED=true` and `LOUISELM_PHONE_CONTROL_ENABLED=true`
+for the receiver. In the Neovim configuration shared by your editors, set
+`phone_control = { enabled = true }` and use the same capture state directory
+as the receiver. When you approve enrollment on the computer, include
+`--group read --group operate_sessions` and the projects and Agents you want
+the phone to use.
+
+Approve the phone once. After you unlock the workspace on Android, choose a
+ready Session, review the message and tap **Send**. The same approval covers
+current and future Sessions in the approved scope, including after ordinary
+receiver and editor restarts. When the phone's working period ends, unlock
+again. Each Agent keeps its configured permission policy.
+
+Phone-control startup establishes the receiver's native journal, capture
+archive, and shared admission barrier once. When it initializes Send for a
+previously read-only installation, it keeps the phone's approved groups,
+projects and Agents. If initialization is interrupted, or an established
+store, its guard, the pairing state, or the barrier is missing or inconsistent,
+phone Send stays unavailable and the remaining evidence is preserved.
+Capture and authorized phone reads remain
 available where their own state is healthy. Restoring older local state does not
 prove that a previously admitted action had no effect. Do not re-enable phone
 Send after a known restore until the separate recovery procedure is available;

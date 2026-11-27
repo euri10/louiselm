@@ -111,10 +111,13 @@ the manual WorkManager retry path.
 ## Phone-control workspace
 
 Phone control requires an already-paired receiver that supports the phone-control
-protocol. See the [computer administration commands](../capture-service/README.md)
-for the opt-in and enrollment steps. Start enrollment on the computer, open
+protocol. For the computer settings and enrollment groups that enable Send,
+see [Send from a personal desktop](../capture-service/README.md#send-from-a-personal-desktop).
+Start enrollment on the computer, open
 **Phone control**, and choose **Enable phone control**. Compare the eight-digit
 code on both devices and approve the phone and its scope on the computer.
+This approval covers current and future Sessions in the selected projects
+and Agents, including after you restart Neovim.
 **Check approval** completes enrollment;
 capture pairing alone does not grant workspace access.
 
