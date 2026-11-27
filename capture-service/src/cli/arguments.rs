@@ -86,6 +86,11 @@ pub(super) enum PhoneControl {
     Verify,
     /// Persist an exact native-owner action reservation or outcome.
     OwnerJournal,
+    /// Remove archived details of one positively completed ordinary phone Send.
+    RemoveActionDetails {
+        #[arg(long)]
+        operation_id: String,
+    },
     /// Make one exact, reviewed private selection available for phone reads.
     PublishPrepared {
         #[arg(long)]

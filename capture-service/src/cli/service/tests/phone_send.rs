@@ -18,6 +18,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "phone_send/cleanup.rs"]
+mod cleanup;
+
 const TEST_CLASS: &str = "dev.louiselm.capture.PhoneSendEndToEndTest";
 const UPGRADE_TEST_CLASS: &str = "dev.louiselm.capture.PhoneSendUpgradeEndToEndTest";
 const DRAFT_TEST_CLASS: &str = "dev.louiselm.capture.PhoneDraftSendEndToEndTest";

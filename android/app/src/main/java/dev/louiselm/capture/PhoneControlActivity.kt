@@ -1788,6 +1788,7 @@ class PhoneControlActivity : Activity() {
             wrongTarget -> R.string.phone_send_other_session
             reviewNeeded -> R.string.phone_send_review
             unresolved && related.any { actionEvidence[it.operationId]?.state == PhoneActionState.REJECTED } -> R.string.phone_send_rejected
+            unresolved && related.any { actionEvidence[it.operationId]?.state == PhoneActionState.DETAILS_REMOVED } -> R.string.phone_action_removed
             unresolved -> sendNotice ?: R.string.phone_send_unknown
             related.any { actionEvidence[it.operationId]?.state == PhoneActionState.COMPLETED } -> R.string.phone_action_completed
             related.any { actionEvidence[it.operationId]?.state == PhoneActionState.DISPATCHED } -> R.string.phone_action_dispatched
@@ -3096,6 +3097,7 @@ class PhoneControlActivity : Activity() {
                     PhoneActionState.COMPLETED -> R.string.phone_action_completed
                     PhoneActionState.REJECTED -> R.string.phone_action_rejected
                     PhoneActionState.FENCED_NO_EFFECT -> R.string.phone_action_fenced
+                    PhoneActionState.DETAILS_REMOVED -> R.string.phone_action_removed
                 }
                 conversation.addView(TextView(this).apply {
                     text = getString(R.string.phone_action_row, record.action, getString(state), record.operationId)

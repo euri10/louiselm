@@ -26,10 +26,11 @@ use tokio::{
 };
 
 use super::{
-    MAX_FRAME, MAX_INTEGER, Request,
+    ActionEvidenceError, ActionEvidenceStore, MAX_FRAME, MAX_INTEGER, Request,
     authority::{Authority, EnrollmentStatus, LegacyScopeApproval, Refusal, Scope, random_hex},
     barrier::{BarrierBinding, CutoffError, ReceiverBarrier},
     barrier_log::CutoffKind,
+    evidence::DetailRemoval,
     fixed,
     prepared_owner::{OwnerPreparedError, PreparedAdmission, PreparedOwner, Publication},
     source::PhoneSourceError,
@@ -1276,6 +1277,7 @@ pub(super) struct AdminSocket {
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
     prepared: Option<PreparedOwner>,
+    evidence: Option<Arc<Result<ActionEvidenceStore, ActionEvidenceError>>>,
 }
 
 impl AdminSocket {
@@ -1292,11 +1294,20 @@ impl AdminSocket {
             pairing,
             controllers,
             prepared: None,
+            evidence: None,
         })
     }
 
     pub(super) fn with_prepared(mut self, prepared: Option<PreparedOwner>) -> Self {
         self.prepared = prepared;
+        self
+    }
+
+    pub(super) fn with_evidence(
+        mut self,
+        evidence: Arc<Result<ActionEvidenceStore, ActionEvidenceError>>,
+    ) -> Self {
+        self.evidence = Some(evidence);
         self
     }
 
@@ -1311,8 +1322,9 @@ impl AdminSocket {
                     let pairing = self.pairing.clone();
                     let controllers = self.controllers.clone();
                     let prepared = self.prepared.clone();
+                    let evidence = self.evidence.clone();
                     let hash = self.socket.operator_hash.clone();
-                    clients.spawn(async move { serve_admin(stream, authority, pairing, controllers, prepared, &hash).await });
+                    clients.spawn(async move { serve_admin(stream, authority, pairing, controllers, prepared, evidence, &hash).await });
                 }
                 Some(_) = clients.join_next(), if !clients.is_empty() => {}
             }
@@ -1323,6 +1335,11 @@ impl AdminSocket {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum AdminRequest {
+    RemoveActionDetails {
+        v: u64,
+        capability: String,
+        operation_id: String,
+    },
     PublishPrepared {
         v: u64,
         capability: String,
@@ -1493,7 +1510,8 @@ impl AdminRequest {
 
     fn common(&self) -> (u64, &str, Option<&str>) {
         match self {
-            Self::PublishPrepared { v, capability, .. }
+            Self::RemoveActionDetails { v, capability, .. }
+            | Self::PublishPrepared { v, capability, .. }
             | Self::ListPrepared { v, capability, .. }
             | Self::InspectPrepared { v, capability, .. }
             | Self::OpenPrepared { v, capability, .. }
@@ -1602,6 +1620,7 @@ async fn serve_admin(
     pairing: Arc<PairingRegistry>,
     controllers: Arc<ControllerRegistry>,
     prepared: Option<PreparedOwner>,
+    evidence: Option<Arc<Result<ActionEvidenceStore, ActionEvidenceError>>>,
     hash: &str,
 ) -> io::Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -1630,6 +1649,7 @@ async fn serve_admin(
                         &pairing,
                         &controllers,
                         prepared.as_ref(),
+                        evidence.as_deref(),
                         request,
                     )
                 })
@@ -1654,6 +1674,7 @@ fn process_admin(
     pairing: &PairingRegistry,
     controllers: &ControllerRegistry,
     prepared: Option<&PreparedOwner>,
+    evidence: Option<&Result<ActionEvidenceStore, ActionEvidenceError>>,
     request: AdminRequest,
 ) -> Result<Value, Refusal> {
     let (_, _, device) = request.common();
@@ -1668,6 +1689,23 @@ fn process_admin(
         return Err(Refusal::Unauthenticated);
     }
     match request {
+        AdminRequest::RemoveActionDetails { operation_id, .. } => {
+            let store = evidence
+                .and_then(|value| value.as_ref().ok())
+                .ok_or(Refusal::Unavailable)?;
+            super::http::refresh_action_for_cleanup(store, &operation_id)?;
+            match store.remove_completed_send_details(&operation_id) {
+                Ok(DetailRemoval::Removed) => {
+                    Ok(json!({"v":1,"type":"action_details_removed","operation_id":operation_id}))
+                }
+                Ok(DetailRemoval::NotCompleted) => {
+                    Ok(json!({"v":1,"type":"error","code":"not_completed"}))
+                }
+                Ok(DetailRemoval::Unsupported) => Err(Refusal::Unsupported),
+                Err(ActionEvidenceError::Malformed) => Err(Refusal::Malformed),
+                Err(_) => Err(Refusal::Unavailable),
+            }
+        }
         request @ (AdminRequest::PublishPrepared { .. }
         | AdminRequest::ListPrepared { .. }
         | AdminRequest::InspectPrepared { .. }

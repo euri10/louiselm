@@ -356,7 +356,7 @@ class PhoneScreenClientFixture {
         val state = PhoneScreenFixture.evidenceState ?: return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
         return PhoneControlResult.Value(PhoneActionRecord(pending.operationId, pending.receiverIdentity, pending.controllerId,
             pending.subjectId, pending.action, pending.payloadHash, pending.grantId, pending.grantRevision,
-            pending.expectedRevision, 1, 2, state, if (state == PhoneActionState.UNKNOWN) "" else "66".repeat(32),
+            pending.expectedRevision, 1, 2, state, if (state in setOf(PhoneActionState.UNKNOWN, PhoneActionState.DETAILS_REMOVED)) "" else "66".repeat(32),
             if (state in setOf(PhoneActionState.ACCEPTED, PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)) "66".repeat(32) else "",
             if (state in setOf(PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)) "66".repeat(32) else "",
             if (state == PhoneActionState.COMPLETED) "66".repeat(32) else ""))
@@ -1210,6 +1210,45 @@ class PhoneControlActivityTest {
         assertEquals("", input.text.toString())
         assertTrue(PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1")).list(secret).drafts.isEmpty())
         assertEquals(1, PhoneScreenFixture.sendCalls)
+    }
+
+    @Test
+    fun removedActionDetailsKeepTheDraftAndBlockAnotherSend() {
+        PhoneScreenFixture.status = PhoneControlStatus.Granted(PhoneScreenFixture.grant)
+        PhoneScreenFixture.sendOutcome = PhoneControlOutcome.UNAVAILABLE
+        val intent = Intent(activity, PhoneControlActivity::class.java)
+            .putExtra(PhoneControlActivity.CONTROLLER_ID, "aa".repeat(16))
+            .putExtra(PhoneControlActivity.SUBJECT_ID, "bb".repeat(16))
+        controller.close()
+        create(intent)
+        val snapshot = File(activity.noBackupFilesDir, "phone-action-pending-v1")
+        assertTrue(!snapshot.exists() || snapshot.delete())
+        val secret = SecretKeySpec(ByteArray(32) { 7 }, "AES")
+        var initialized = false
+        val store = PendingPhoneActionStore(activity, { create ->
+            if (create) initialized = true
+            if (initialized) secret else null
+        })
+        ReflectionHelpers.setField(activity, "pendingActionsStore", store)
+        button(R.string.phone_unlock).performClick()
+        drainBackground()
+        requireNotNull(PhoneScreenFixture.prompt).invoke(null)
+        repeat(5) { drainBackground() }
+        val input = views(activity.window.decorView).filterIsInstance<EditText>().single()
+        input.setText("retain this instruction")
+        repeat(2) { drainBackground() }
+        button(R.string.phone_send).performClick()
+        repeat(3) { drainBackground() }
+        assertEquals(1, PhoneScreenFixture.sendCalls)
+        PhoneScreenFixture.evidenceState = PhoneActionState.DETAILS_REMOVED
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        repeat(5) { drainBackground() }
+        assertTrue(hasText(R.string.phone_action_removed))
+        assertEquals("retain this instruction", input.text.toString())
+        assertFalse(button(R.string.phone_send).isEnabled)
+        assertEquals(1, PhoneScreenFixture.sendCalls)
+        assertEquals(1, store.pending().size)
+        assertEquals(1, PhoneDraftStore(File(activity.filesDir, "phone-drafts-v1")).list(secret).drafts.size)
     }
 
     @Test

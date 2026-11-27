@@ -4,6 +4,10 @@
 #[path = "evidence_lock_tests.rs"]
 mod lock_tests;
 
+#[cfg(test)]
+#[path = "evidence_cleanup_tests.rs"]
+mod cleanup_tests;
+
 #[path = "evidence_init.rs"]
 pub(crate) mod first_init;
 
@@ -72,7 +76,7 @@ pub struct ActionIdentity {
     pub recorded_at_ms: u64,
 }
 
-/// The native owner's last proven outcome; acceptance is not completion.
+/// The owner's last proven outcome or an explicit archive-only removal marker.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionOutcome {
@@ -103,9 +107,11 @@ pub enum ActionOutcome {
         /// Digest identifying that owner's proof and durable fence.
         evidence: String,
     },
+    /// Details were explicitly removed after an ordinary Send completed.
+    DetailsRemoved,
 }
 
-/// A retained action identity and the last native-owner report.
+/// A retained action identity and owner report or archive-only removal marker.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionEvidence {
@@ -127,6 +133,13 @@ pub enum ActionReservation {
     New,
     /// This identity was already reserved and must not be forwarded again.
     Existing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DetailRemoval {
+    Removed,
+    NotCompleted,
+    Unsupported,
 }
 
 /// A closed evidence-store refusal.
@@ -352,15 +365,21 @@ impl ActionEvidenceStore {
             recover_update(&store.directory, guard, receiver, record)?;
         }
         let snapshot = load(&store.directory)?;
-        if snapshot
-            .actions
-            .values()
-            .any(|record| record.identity.receiver_identity != receiver)
-        {
+        if snapshot.actions.values().any(|record| {
+            record.identity.receiver_identity != receiver
+                || (kind == ActionEvidenceKind::Owner
+                    && record.outcome == ActionOutcome::DetailsRemoved)
+        }) {
             return Err(ActionEvidenceError::Unavailable);
         }
         let bytes = read_bounded(&store.directory.join("actions.json"), MAX_STORE_BYTES)?;
         let record = verify_guard(guard, receiver, kind, &bytes)?;
+        // A previous guard rename may have succeeded even if its directory
+        // sync failed. Seal that rename before discarding recovery images.
+        File::open(guard.parent().ok_or(ActionEvidenceError::Unavailable)?)
+            .and_then(|file| file.sync_all())
+            .map_err(unavailable)?;
+        clear_staged(&store.directory)?;
         store.guard = Some(GuardBinding {
             path: guard.to_owned(),
             receiver: receiver.to_owned(),
@@ -621,6 +640,39 @@ impl ActionEvidenceStore {
         })
     }
 
+    // Only a completed ordinary Send may lose details. The unchanged identity
+    // remains the permanent reservation and retains the original read scope.
+    pub(super) fn remove_completed_send_details(
+        &self,
+        operation_id: &str,
+    ) -> Result<DetailRemoval, ActionEvidenceError> {
+        fixed::<16>(operation_id).map_err(|_| ActionEvidenceError::Malformed)?;
+        let guard = self
+            .guard
+            .as_ref()
+            .ok_or(ActionEvidenceError::Unavailable)?;
+        self.with_archive_generation(&guard.generation, || {
+            self.access(|snapshot| {
+                let record = snapshot
+                    .actions
+                    .get_mut(operation_id)
+                    .ok_or(ActionEvidenceError::Unavailable)?;
+                if record.identity.action != 3 {
+                    return Ok((DetailRemoval::Unsupported, false));
+                }
+                match record.outcome {
+                    ActionOutcome::DetailsRemoved => Ok((DetailRemoval::Removed, false)),
+                    ActionOutcome::Completed { .. } => {
+                        record.outcome = ActionOutcome::DetailsRemoved;
+                        record.phases.clear();
+                        Ok((DetailRemoval::Removed, true))
+                    }
+                    _ => Ok((DetailRemoval::NotCompleted, false)),
+                }
+            })
+        })
+    }
+
     pub(super) fn is_reserved(&self, operation_id: &str) -> Result<bool, ActionEvidenceError> {
         fixed::<16>(operation_id).map_err(|_| ActionEvidenceError::Malformed)?;
         self.access(|snapshot| Ok((snapshot.actions.contains_key(operation_id), false)))
@@ -731,6 +783,9 @@ impl ActionEvidenceStore {
         validate_identity(identity)?;
         self.check_receiver(&identity.receiver_identity)?;
         validate_outcome(outcome)?;
+        if matches!(outcome, ActionOutcome::DetailsRemoved) {
+            return Err(ActionEvidenceError::Malformed);
+        }
         if at_ms > MAX_INTEGER {
             return Err(ActionEvidenceError::Malformed);
         }
@@ -750,6 +805,7 @@ impl ActionEvidenceStore {
                 ActionOutcome::Completed { .. }
                     | ActionOutcome::Rejected { .. }
                     | ActionOutcome::FencedNoEffect { .. }
+                    | ActionOutcome::DetailsRemoved
             ) {
                 return Err(ActionEvidenceError::Conflict);
             }
@@ -973,7 +1029,21 @@ fn stage_update(
     if read_guard(&guard.path, &guard.receiver, guard.kind)? != record {
         return Err(ActionEvidenceError::Unavailable);
     }
-    write_guard(guard, next)
+    write_guard(guard, next)?;
+    clear_staged(directory)
+}
+
+fn clear_staged(directory: &Path) -> Result<(), ActionEvidenceError> {
+    for name in ["pending-before.json", "pending-after.json"] {
+        match fs::remove_file(directory.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(unavailable(error)),
+        }
+    }
+    File::open(directory)
+        .and_then(|file| file.sync_all())
+        .map_err(unavailable)
 }
 
 fn recover_update(
@@ -997,7 +1067,7 @@ fn recover_update(
     }
     let before = parse_snapshot(&previous)?;
     let after = parse_snapshot(&next)?;
-    if !preserves_evidence(&before, &after, receiver) {
+    if !preserves_evidence(&before, &after, receiver, record.kind) {
         return Err(ActionEvidenceError::Unavailable);
     }
     let current = read_bounded(&directory.join("actions.json"), MAX_STORE_BYTES)?;
@@ -1024,7 +1094,12 @@ fn recover_update(
     )
 }
 
-fn preserves_evidence(before: &Snapshot, after: &Snapshot, receiver: &str) -> bool {
+fn preserves_evidence(
+    before: &Snapshot,
+    after: &Snapshot,
+    receiver: &str,
+    kind: ActionEvidenceKind,
+) -> bool {
     if after
         .actions
         .values()
@@ -1032,11 +1107,27 @@ fn preserves_evidence(before: &Snapshot, after: &Snapshot, receiver: &str) -> bo
     {
         return false;
     }
+    if after.actions.iter().any(|(id, new)| {
+        new.outcome == ActionOutcome::DetailsRemoved && !before.actions.contains_key(id)
+    }) {
+        return false;
+    }
     before.actions.iter().all(|(id, old)| {
         let Some(new) = after.actions.get(id) else {
             return false;
         };
         if old.identity != new.identity || old.updated_at_ms > new.updated_at_ms {
+            return false;
+        }
+        if new.outcome == ActionOutcome::DetailsRemoved {
+            return kind == ActionEvidenceKind::Archive
+                && old.identity.action == 3
+                && (old.outcome == ActionOutcome::DetailsRemoved
+                    || matches!(old.outcome, ActionOutcome::Completed { .. }))
+                && old.updated_at_ms == new.updated_at_ms
+                && new.phases.is_empty();
+        }
+        if old.outcome == ActionOutcome::DetailsRemoved {
             return false;
         }
         if matches!(
@@ -1071,6 +1162,38 @@ pub(super) fn initialize_receiver_fixture(directory: &Path, guard: &Path, receiv
             kind: ActionEvidenceKind::Archive,
         },
         &bytes,
+    )
+    .unwrap();
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test fixture")]
+pub(super) fn bind_receiver_fixture(
+    directory: &Path,
+    guard: &Path,
+    receiver: &str,
+    generation: &str,
+) {
+    let anchor: serde_json::Value = serde_json::from_slice(
+        &fs::read(guard.parent().unwrap().join("phone-admission-barrier.json")).unwrap(),
+    )
+    .unwrap();
+    let body = &anchor["body"];
+    let binding: BarrierBinding = serde_json::from_value(serde_json::json!({
+        "anchor":body["anchor"], "lock":body["lock"], "lock_nonce":body["lock_nonce"],
+        "registrar":body["registrar"], "registrar_nonce":body["registrar_nonce"],
+        "cutoff":body["cutoff"], "cutoff_nonce":body["cutoff_nonce"]
+    }))
+    .unwrap();
+    write_guard(
+        &GuardBinding {
+            path: guard.to_owned(),
+            receiver: receiver.to_owned(),
+            generation: generation.to_owned(),
+            barrier: Some(binding),
+            kind: ActionEvidenceKind::Archive,
+        },
+        &fs::read(directory.join("actions.json")).unwrap(),
     )
     .unwrap();
 }
@@ -1115,7 +1238,7 @@ pub(super) fn validate_identity(value: &ActionIdentity) -> Result<(), ActionEvid
 
 fn validate_outcome(outcome: &ActionOutcome) -> Result<(), ActionEvidenceError> {
     match outcome {
-        ActionOutcome::Unknown => Ok(()),
+        ActionOutcome::Unknown | ActionOutcome::DetailsRemoved => Ok(()),
         ActionOutcome::Accepted { evidence }
         | ActionOutcome::Dispatched { evidence }
         | ActionOutcome::Completed { evidence }
@@ -1170,6 +1293,7 @@ fn valid_phases(record: &ActionEvidence) -> bool {
     }
     match &record.outcome {
         ActionOutcome::Unknown => previous < 3,
+        ActionOutcome::DetailsRemoved => record.identity.action == 3 && record.phases.is_empty(),
         ActionOutcome::Rejected { .. } | ActionOutcome::FencedNoEffect { .. } => previous == 0,
         outcome => record.phases.is_empty() || record.phases.last() == Some(outcome),
     }

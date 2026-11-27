@@ -30,6 +30,9 @@ mod send;
 mod voice_upload;
 
 #[cfg(test)]
+#[path = "http_cleanup_tests.rs"]
+mod cleanup_tests;
+#[cfg(test)]
 #[path = "http_installed_saved_review.rs"]
 mod installed_saved_review;
 #[cfg(test)]
@@ -791,6 +794,17 @@ fn history_response(history: &History, request_id: &str) -> Value {
     }
 }
 
+pub(super) fn refresh_action_for_cleanup(
+    store: &ActionEvidenceStore,
+    operation_id: &str,
+) -> Result<(), Refusal> {
+    let record = store.lookup(operation_id).map_err(|error| match error {
+        ActionEvidenceError::Malformed => Refusal::Malformed,
+        _ => Refusal::Unavailable,
+    })?;
+    send::refresh_history(store, &mut History::Record(Box::new(record)))
+}
+
 fn history_record(record: &ActionEvidence) -> Value {
     let (accepted, dispatched, completed) = super::evidence::phase_evidence(record);
     let (state, evidence) = match &record.outcome {
@@ -800,6 +814,7 @@ fn history_record(record: &ActionEvidence) -> Value {
         ActionOutcome::Completed { evidence } => ("completed", evidence.as_str()),
         ActionOutcome::Rejected { evidence } => ("rejected", evidence.as_str()),
         ActionOutcome::FencedNoEffect { evidence } => ("fenced_no_effect", evidence.as_str()),
+        ActionOutcome::DetailsRemoved => ("details_removed", ""),
     };
     let identity = &record.identity;
     json!({"operation_id":identity.operation_id,

@@ -210,7 +210,8 @@ impl Service {
             self.controllers.clone(),
         )
         .await?
-        .with_prepared(self.prepared.clone());
+        .with_prepared(self.prepared.clone())
+        .with_evidence(self.evidence.clone());
         let controller =
             socket::ControllerSocket::bind(controller_path, capability, self.controllers.clone())
                 .await?;

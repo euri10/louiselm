@@ -66,7 +66,7 @@ internal data class PhoneControlSessionSummary(
 
 internal data class PhoneSelectionProject(val id: String, val path: String)
 
-internal enum class PhoneActionState { UNKNOWN, ACCEPTED, DISPATCHED, COMPLETED, REJECTED, FENCED_NO_EFFECT }
+internal enum class PhoneActionState { UNKNOWN, ACCEPTED, DISPATCHED, COMPLETED, REJECTED, FENCED_NO_EFFECT, DETAILS_REMOVED }
 
 internal data class PhoneActionRecord(
     val operationId: String, val receiverIdentity: String, val controllerId: String, val subjectId: String,
@@ -160,7 +160,7 @@ private fun parseActionRecord(value: Any): PhoneActionRecord {
     val state = PhoneActionState.entries.firstOrNull { it.name.lowercase() == record.wireString("state") }
         ?: throw UnsupportedReply()
     val evidence = record.wireString("evidence")
-    if (state == PhoneActionState.UNKNOWN) require(evidence.isEmpty()) else phoneControlHex(evidence, 32)
+    if (state == PhoneActionState.UNKNOWN || state == PhoneActionState.DETAILS_REMOVED) require(evidence.isEmpty()) else phoneControlHex(evidence, 32)
     val accepted = record.wireString("accepted_evidence")
     val dispatched = record.wireString("dispatched_evidence")
     val completed = record.wireString("completed_evidence")
@@ -170,14 +170,15 @@ private fun parseActionRecord(value: Any): PhoneActionRecord {
         PhoneActionState.ACCEPTED -> require(evidence == accepted && dispatched.isEmpty() && completed.isEmpty())
         PhoneActionState.DISPATCHED -> require(evidence == dispatched && completed.isEmpty())
         PhoneActionState.COMPLETED -> require(evidence == completed)
-        PhoneActionState.REJECTED, PhoneActionState.FENCED_NO_EFFECT ->
+        PhoneActionState.REJECTED, PhoneActionState.FENCED_NO_EFFECT, PhoneActionState.DETAILS_REMOVED ->
             require(accepted.isEmpty() && dispatched.isEmpty() && completed.isEmpty())
     }
     val action = record.wireNumber("action")
     val grantRevision = record.wireNumber("grant_revision")
     val recorded = record.wireNumber("recorded_at_ms")
     val updated = record.wireNumber("updated_at_ms")
-    require(action in 3..255 && grantRevision > 0 && updated >= recorded)
+    require(action in 3..255 && grantRevision > 0 && updated >= recorded &&
+        (state != PhoneActionState.DETAILS_REMOVED || action == 3L))
     return PhoneActionRecord(record.wireHex("operation_id", 16), record.wireHex("receiver_identity", 32),
         record.wireHex("controller_id", 16), record.wireHex("subject_id", 16), action.toInt(),
         record.wireHex("payload_hash", 32), record.wireHex("grant_id", 16), grantRevision,

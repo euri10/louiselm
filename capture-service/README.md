@@ -93,6 +93,7 @@ phone-control list-prepared
 phone-control inspect-prepared --registration-id HEX16 --revision N
 phone-control unpublish-prepared --registration-id HEX16 --expected-revision N
 phone-control inspect-grant --device-id DEVICE_UUID
+phone-control remove-action-details --operation-id HEX16
 phone-control approve-legacy-scope --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --enrolled-key HEX65 --project /absolute/project --agent AGENT --group read --confirm-complete-scope
 phone-control confirm-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16
 phone-control recover-legacy-project --device-id DEVICE_UUID --grant-id HEX16 --grant-revision N --scope-digest HEX32 --project-id HEX16 --discard-damaged-confirmations
@@ -221,6 +222,19 @@ authorized Read grant can inspect scoped history while Neovim is offline;
 history checks do not renew the working period. Missing or damaged evidence is
 unavailable, not proof that an action was never sent. The first phone write
 still requires the separate Send integration and its native-owner safeguards.
+
+To remove the archived phase details of one positively completed ordinary
+phone Send, run the following command while the receiver is running. The
+operation ID is in phone action history.
+
+```sh
+louiselm-capture phone-control remove-action-details --operation-id HEX16
+```
+
+Pending, uncertain and other action types are refused.
+The permanent identity and duplicate guard remain, and authorized history
+shows that details were removed. This neither authorizes another Send nor
+deletes the native owner's journal or conversation.
 
 On a trusted personal desktop, phone-control startup establishes the receiver's
 native journal, capture archive, and shared admission barrier once. An existing

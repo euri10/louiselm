@@ -312,11 +312,19 @@ async fn phone_control_admin_exchange(
     phone_control_write_request(stream, &request, expected).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the closed administration protocol keeps its command mappings together"
+)]
 fn phone_control_admin_request(
     command: PhoneControl,
     capability: &str,
 ) -> Result<(serde_json::Value, &'static str), CliError> {
     Ok(match command {
+        PhoneControl::RemoveActionDetails { operation_id } => (
+            serde_json::json!({"v":1,"type":"remove_action_details","capability":capability,"operation_id":operation_id}),
+            "action_details_removed",
+        ),
         prepared @ (PhoneControl::PublishPrepared { .. }
         | PhoneControl::ListPrepared
         | PhoneControl::InspectPrepared { .. }
@@ -610,6 +618,7 @@ fn phone_control_admin_response(
                             | "stale_subject"
                             | "unavailable"
                             | "malformed"
+                            | "not_completed"
                             | "unsupported"
                     )
                 })
@@ -1228,6 +1237,36 @@ fn configured_root(
 mod tests {
     use super::*;
     use crate::Transcriber;
+
+    #[test]
+    fn completed_phone_action_cleanup_is_an_explicit_desktop_command() {
+        let parsed = Cli::try_parse_from([
+            "louiselm-capture",
+            "phone-control",
+            "remove-action-details",
+            "--operation-id",
+            "01010101010101010101010101010101",
+        ]);
+        let parsed = parsed.expect("explicit cleanup command");
+        let command = parsed
+            .command
+            .and_then(|command| match command {
+                Command::PhoneControl { command } => Some(command),
+                _ => None,
+            })
+            .expect("phone-control command");
+        let (request, expected) =
+            phone_control_admin_request(command, "operator-capability").expect("admin request");
+        assert_eq!(request["type"], "remove_action_details");
+        assert_eq!(request["operation_id"], "01010101010101010101010101010101");
+        assert_eq!(expected, "action_details_removed");
+        let error = phone_control_admin_response(
+            br#"{"v":1,"type":"error","code":"not_completed"}"#,
+            expected,
+        )
+        .expect_err("incomplete actions must be refused");
+        assert!(error.to_string().contains("not_completed"));
+    }
 
     #[test]
     fn legacy_confirmation_recovery_cli_requires_explicit_discard() {

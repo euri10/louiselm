@@ -606,9 +606,9 @@ recorded_at_ms:integer,updated_at_ms:integer,state:string,
 evidence:hex32-or-empty-string,accepted_evidence:hex32-or-empty-string,
 dispatched_evidence:hex32-or-empty-string,completed_evidence:hex32-or-empty-string}`.
 Its operation ID is the original write.
-State is `unknown`, `accepted`, `dispatched`, `completed`, `rejected`, or
-`fenced_no_effect`. Empty evidence is used only for `unknown`; other states
-carry the native owner's
+State is `unknown`, `accepted`, `dispatched`, `completed`, `rejected`,
+`fenced_no_effect`, or `details_removed`. Empty evidence is used for `unknown`
+and `details_removed`; the other states carry the native owner's
 opaque evidence digest. Acceptance does not mean dispatch; dispatch records
 local transport acceptance, not peer receipt. Completion is a successful
 native Session callback with a recognized non-cancelled stop reason. Cancelled,
@@ -625,6 +625,17 @@ that proof nor authorizes a new attempt. Missing or damaged evidence returns
 `unavailable`, never a claim that the operation was not sent. The journal holds
 no payload or result copy. Its size is bounded; exhaustion refuses new evidence
 instead of evicting existing records.
+
+The desktop operator may use `phone-control remove-action-details --operation-id HEX16`
+with the receiver running. Only an
+ordinary Send with a positively completed native Session outcome qualifies;
+other action types, incomplete, rejected and fenced records remain intact.
+The command retains the original identity, request bindings and read scope as
+a permanent duplicate guard, removes archived phase evidence, and reports
+`details_removed` with all evidence fields empty. Repeating the command is safe.
+This state does not mean no effect, permit retry, change a phone grant or remove
+the separate native-owner journal. Interrupted cleanup recovers under the
+receiver's archive guard before reads or actions resume.
 
 ## Local controller channel
 

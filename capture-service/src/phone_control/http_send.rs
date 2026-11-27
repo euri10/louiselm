@@ -566,6 +566,7 @@ pub(super) fn refresh_history(
                     ActionOutcome::Completed { .. }
                         | ActionOutcome::Rejected { .. }
                         | ActionOutcome::FencedNoEffect { .. }
+                        | ActionOutcome::DetailsRemoved
                 )
         })
         .map(|(index, record)| (index, record.identity.clone()))

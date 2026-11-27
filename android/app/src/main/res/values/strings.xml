@@ -101,6 +101,7 @@
     <string name="phone_action_dispatched_unknown">Dispatched; later outcome unknown</string>
     <string name="phone_action_rejected">Rejected</string>
     <string name="phone_action_fenced">No effect; original fenced</string>
+    <string name="phone_action_removed">Action details removed</string>
     <string name="phone_send">Send</string>
     <string name="phone_send_hint">Instruction for this Session</string>
     <string name="phone_send_ready">Review your instruction before sending.</string>
