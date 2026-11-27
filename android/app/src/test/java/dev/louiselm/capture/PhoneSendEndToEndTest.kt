@@ -4,6 +4,7 @@ import android.app.KeyguardManager
 import android.content.Intent
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -12,6 +13,7 @@ import android.widget.TextView
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.StandardWatchEventKinds
+import java.time.Duration
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 import javax.crypto.spec.SecretKeySpec
@@ -89,10 +91,20 @@ class PhoneSendEndToEndTest {
         var chosenRow = ""
         var reconnected = false
         var reconciled = false
+        var historyReads = 0
+        val authorizedHistoryReads = mutableMapOf<String, Int>()
         val transport: PhoneControlTransport = { pairing, endpoint, body, maySend ->
             assertFalse("phone transport must run off the main thread", Looper.getMainLooper().thread == Thread.currentThread())
             val reply = PinnedHttps.phoneControl(pairing, endpoint, body, maySend)
             val request = body.optJSONObject("request")
+            if (loseAcknowledgement && request?.optInt("action") == 2) {
+                historyReads++
+                assertTrue("history requires current foreground authority", maySend())
+                if (request.optString("payload") == "00$original" && reply is PhoneControlReply.ActionHistory &&
+                    reply.record.operationId == original) {
+                    authorizedHistoryReads[reply.record.operationId] = (authorizedHistoryReads[reply.record.operationId] ?: 0) + 1
+                }
+            }
             if (disabled && reply is PhoneControlReply.Failure && reply.outcome == PhoneControlOutcome.REVOKED) {
                 deniedByReceiver = true
                 reply
@@ -252,9 +264,99 @@ class PhoneSendEndToEndTest {
                 assertTrue("reviewed instruction is ready", send.isEnabled)
                 assertTrue(send.performClick())
                 drain()
+                if (loseAcknowledgement) {
+                    val pending = requireNotNull(original)
+                    val period = ReflectionHelpers.getField<PhoneControlPeriod>(activity, "period")
+                    val deadline = SystemClock.elapsedRealtime() + period.remainingMs(SystemClock.elapsedRealtime())
+                    fun retainedInput() {
+                        val editor = controls().filterIsInstance<EditText>().single()
+                        assertEquals("uncertain Send retains editable text", text, editor.text.toString())
+                        assertTrue(editor.isEnabled)
+                        assertFalse("unknown outcome must block a repeat", button(R.string.phone_send).isEnabled)
+                        assertEquals(pending, original)
+                        assertEquals(2, posted)
+                    }
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+                    drain()
+                    fun authorizedReads() = authorizedHistoryReads[pending] ?: 0
+                    assertTrue("authorized foreground read reaches the original operation", authorizedReads() > 0)
+                    retainedInput()
+
+                    // Queue the next poll before pausing, but do not run its executor yet.
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+                    screen.pause()
+                    var readsBefore = historyReads
+                    var authorizedBefore = authorizedReads()
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+                    drain()
+                    assertEquals("background must not read action history", readsBefore, historyReads)
+                    screen.resume()
+                    drain()
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+                    drain()
+                    assertTrue("foreground reconnect must read the original operation", historyReads > readsBefore)
+                    assertTrue("foreground read must receive owner evidence", authorizedReads() > authorizedBefore)
+                    assertEquals("passive reads must not renew the working period", deadline,
+                        SystemClock.elapsedRealtime() + period.remainingMs(SystemClock.elapsedRealtime()))
+                    retainedInput()
+
+                    screen.pause()
+                    shadowOf(app.getSystemService(PowerManager::class.java)).turnScreenOn(false)
+                    drain()
+                    readsBefore = historyReads
+                    authorizedBefore = authorizedReads()
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+                    drain()
+                    shadowOf(app.getSystemService(PowerManager::class.java)).turnScreenOn(true)
+                    screen.resume()
+                    drain()
+                    assertEquals("locked workspace must not read action history", readsBefore, historyReads)
+                    assertTrue(button(R.string.phone_unlock).performClick())
+                    drain()
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+                    drain()
+                    assertTrue("fresh unlock permits the original history read", historyReads > readsBefore)
+                    assertTrue("fresh unlock receives owner evidence", authorizedReads() > authorizedBefore)
+                    retainedInput()
+
+                    screen.pause()
+                    readsBefore = historyReads
+                    authorizedBefore = authorizedReads()
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(6))
+                    drain()
+                    screen.resume()
+                    drain()
+                    assertEquals("expired working period must not read action history", readsBefore, historyReads)
+                    assertTrue(button(R.string.phone_unlock).performClick())
+                    drain()
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+                    drain()
+                    assertTrue("unlock after expiry permits the original history read", historyReads > readsBefore)
+                    assertTrue("unlock after expiry receives owner evidence", authorizedReads() > authorizedBefore)
+                    retainedInput()
+                    reconnected = true
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+                    drain()
+                    assertTrue("the foreground Activity must reconcile the original Send", reconciled)
+                    val accepted = setOf(R.string.phone_action_accepted, R.string.phone_action_dispatched, R.string.phone_action_completed)
+                        .map { activity.getString(it) }
+                    assertTrue("recovered evidence must reach the current Send UI", controls().filterIsInstance<TextView>().any {
+                        it.text.toString() in accepted
+                    })
+                    assertEquals("reconciliation must not send again", 2, posted)
+                    // Replacing a working period can reconnect the desktop controller;
+                    // select its current identity instead of retargeting the stale row.
+                    assertTrue(button(R.string.phone_sessions).performClick())
+                    drain()
+                    val current = rows(selectedName).single()
+                    chosenRow = current.text.toString()
+                    assertTrue(current.performClick())
+                    drain()
+                }
                 // A refresh observes the receiver and Agent even when the Send reply was lost.
                 for (attempt in 1..12) {
-                    button(R.string.phone_refresh).performClick()
+                    assertTrue("refresh should be enabled", button(R.string.phone_refresh).isEnabled)
+                    assertTrue(button(R.string.phone_refresh).performClick())
                     drain()
                     if (lines(R.string.phone_agent_message) > 0) break
                 }
