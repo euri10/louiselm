@@ -378,6 +378,16 @@ jobs:
                   unshare --mount --propagation private -- /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture'\'' bash "$library_test"
               done
             done
+            # The completed Send and pending broker result must coexist in the
+            # same disposable receiver, across cleanup and receiver restart.
+            sudo -n env LOUISELM_REQUIRE_BEAD_EXECUTOR=1 LOUISELM_BEAD_EXECUTOR_CASE=15 \
+              LOUISELM_TEST_SEND_COEXIST=1 LOUISELM_TEST_LUA_ROOT=/var/tmp/louiselm-controller-source \
+              LOUISELM_TEST_BEADS_INSTALLER=/home/vm/scripts/install-broker-beads.py \
+              LOUISELM_TEST_CAPTURE=/var/tmp/louiselm-test-capture \
+              LOUISELM_TEST_CAPTURE_TEST=/var/tmp/louiselm-test-capture-review \
+              LOUISELM_TEST_NVIM=/var/tmp/louiselm-test-nvim/bin/nvim timeout 300 \
+              unshare --mount --net --propagation private -- \
+              /bin/bash -ec '\''umask 022; /usr/sbin/ip link set lo up; exec "$1" launch_supervisor::system::installed_tests::daemon::bead_executor::privileged_installed_lua_bead_executor --exact --nocapture'\'' bash "$library_test"
             # Keep the empty case above as the unset check, then require real
             # source bytes through both startup and the operator/capture path.
             sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
@@ -579,6 +589,8 @@ jobs:
             cli::service::tests::phone_send::one_enrollment_sends_to_selected_agents_across_restarts \
             cli::service::tests::phone_send::unavailable_send_then_reviewed_send_after_enablement \
             cli::service::tests::phone_send::reviewed_drafts_survive_send_orderings_and_reconcile \
+            cli::service::tests::phone_send::cleanup::completed_send_cleanup_survives_restart_without_replaying \
+            cli::service::tests::phone_send::cleanup::owner_fenced_send_cleanup_survives_restart_without_replaying \
             phone_control::http::voice_job_tests::send::reviewed_voice_reaches_only_the_selected_native_session; do
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib "$send_test" -- --exact --ignored --list | grep -Fx "$send_test: test"
             LOUISELM_TEST_NVIM="$(command -v nvim)" \

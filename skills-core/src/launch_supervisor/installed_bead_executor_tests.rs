@@ -283,6 +283,8 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
     assert!((1..=15).contains(&index));
     let saved_refresh = index == 14;
     let saved_review = index == 15;
+    let send_coexistence = std::env::var_os("LOUISELM_TEST_SEND_COEXIST").is_some();
+    assert!(!send_coexistence || saved_review);
     let saved_review_decision =
         std::env::var("LOUISELM_TEST_REVIEW_DECISION").unwrap_or_else(|_| "pending".into());
     assert!(
@@ -444,6 +446,10 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             .env_clear()
             .env("LOUISELM_TEST_REVIEW_ROOT", &operator)
             .env("LOUISELM_TEST_REVIEW_PHASE", "prepare")
+            .env(
+                "LOUISELM_TEST_SEND_COEXIST",
+                if send_coexistence { "1" } else { "" },
+            )
             .output()
             .unwrap();
         assert!(
@@ -503,8 +509,11 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
         assert!(readable_by_broker(
             &promotion_snapshot.join("snapshot.json")
         ));
-        let private_source =
-            operator.join("phone/run-sources/44444444-4444-4444-8444-444444444444.json");
+        let private_source = operator.join(if send_coexistence {
+            "louiselm/capture/phone-control/run-sources/44444444-4444-4444-8444-444444444444.json"
+        } else {
+            "phone/run-sources/44444444-4444-4444-8444-444444444444.json"
+        });
         assert!(private_source.is_file());
         assert!(!readable_by_broker(&private_source));
     }
@@ -765,6 +774,7 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             (config.broker_uid, config.broker_gid),
             now,
             saved_review,
+            send_coexistence,
             &staged_inputs,
         )
     });
@@ -855,6 +865,16 @@ fn installed_lua_bead_executor(failure: Option<&FailureObservation>) {
             std::env::var_os("LOUISELM_TEST_CAPTURE_TEST").unwrap(),
         );
         command.env("LOUISELM_TEST_REVIEW_DECISION", &saved_review_decision);
+        if send_coexistence {
+            assert_eq!(saved_review_decision, "pending");
+            command.env("LOUISELM_TEST_SEND_COEXIST", "1");
+            command.env("LOUISELM_TEST_NVIM", &neovim);
+            command.env(
+                "LOUISELM_TEST_CAPTURE",
+                std::env::var_os("LOUISELM_TEST_CAPTURE").unwrap(),
+            );
+            command.env("LOUISELM_TEST_LUA_ROOT", &project);
+        }
     }
     let status = if let Some(observation) = failure {
         let mut neovim = BrokerChild(command.spawn().unwrap());
@@ -1185,12 +1205,14 @@ fn expire_saved_result_sessions(
     owner: (u32, u32),
     now: u64,
     saved_review: bool,
+    send_coexistence: bool,
     staged_inputs: &Path,
 ) -> thread::JoinHandle<Option<crate::broker::attention::Projection>> {
     let ready = operator.join("saved-ready");
     let cleaned = operator.join("saved-cleaned");
     let stale_ready = operator.join("stale-check-ready");
     let stale_result = operator.join("stale-check-result");
+    let operator = operator.to_owned();
     let staged_inputs = staged_inputs.to_owned();
     thread::spawn(move || {
         if saved_review {
@@ -1235,8 +1257,48 @@ fn expire_saved_result_sessions(
         }
         let pending = saved_review
             .then(|| saved_attention::wait_saved_pending("44444444-4444-4444-8444-444444444444"));
+        if send_coexistence {
+            let projection = operator.join("coexist-projection.json");
+            let mut entries: Vec<crate::broker::attention::Projection> =
+                fs::read_dir(Path::new(STATE).join("authorizations/attention-outbox/entries"))
+                    .unwrap()
+                    .map(|entry| {
+                        serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap()
+                    })
+                    .collect();
+            entries.sort_by_key(|entry| entry.sequence);
+            write_json(
+                &projection,
+                &entries
+                    .iter()
+                    .map(crate::broker::attention::Projection::wire)
+                    .collect::<Vec<_>>(),
+            );
+            chown(&projection, Some(owner.0), Some(owner.1)).unwrap();
+        }
         fs::write(cleaned, b"").unwrap();
         println!("SAVED_RESULT_EXPIRED_SESSION_STORAGE_REMOVED");
+        if send_coexistence {
+            for phase in ["before", "after", "restart"] {
+                let marker = operator.join(format!("coexist-{phase}"));
+                let deadline = Instant::now() + Duration::from_secs(90);
+                while !marker.exists() {
+                    if operator.join("coexist-abort").exists() {
+                        return pending;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "missing coexistence {phase} checkpoint"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert_eq!(
+                    saved_attention::assert_saved_pending("44444444-4444-4444-8444-444444444444"),
+                    *pending.as_ref().unwrap()
+                );
+                fs::write(operator.join(format!("coexist-{phase}.ack")), b"").unwrap();
+            }
+        }
         pending
     })
 }

@@ -30,6 +30,9 @@ use super::{
 };
 use crate::{PairingRegistry, PhoneProjectStore, RunSession, RunStore, hex::lower_hex};
 
+#[path = "http_installed_send_coexistence.rs"]
+mod coexistence;
+
 const RUN: &str = "44444444-4444-4444-8444-444444444444";
 const TEST: &str = "phone_control::http::installed_saved_review::installed_saved_review";
 
@@ -42,14 +45,15 @@ async fn installed_saved_review() {
     match std::env::var("LOUISELM_TEST_REVIEW_PHASE").as_deref() {
         Ok("prepare") => prepare(root),
         Ok("attach") => attach(root),
+        Ok("review") if coexistence::enabled() => coexistence::review(root).await,
         Ok("review") => review(root).await,
         _ => panic!("{TEST} requires an explicit fixture phase"),
     }
 }
 
 fn prepare(root: &Path) {
-    let phone = root.join("phone");
-    std::fs::create_dir(&phone).unwrap();
+    let phone = coexistence::phone_root(root);
+    std::fs::create_dir_all(&phone).unwrap();
     std::fs::set_permissions(&phone, std::fs::Permissions::from_mode(0o700)).unwrap();
     let projects = PhoneProjectStore::open(phone.join("project-identities")).unwrap();
     let project = root.join("project");
@@ -68,7 +72,7 @@ fn prepare(root: &Path) {
     let checkout = sources
         .prepare_checkout(RUN, &source.source_id, &root.join("checkout"))
         .unwrap();
-    let runs = RunStore::new(root.join("runs")).unwrap();
+    let runs = RunStore::new(coexistence::runs_root(root)).unwrap();
     let owner = PreparedOwner::new(phone, runs.clone());
     let mut input: Value =
         serde_json::from_str(&selection(root, &checkout.head, "fixture")).unwrap();
@@ -101,7 +105,7 @@ fn prepare(root: &Path) {
 }
 
 fn attach(root: &Path) {
-    let runs = RunStore::new(root.join("runs")).unwrap();
+    let runs = RunStore::new(coexistence::runs_root(root)).unwrap();
     let admitted = runs.run(RUN).unwrap();
     assert_eq!(admitted.state, "admitted");
     assert!(admitted.session_id.is_none());

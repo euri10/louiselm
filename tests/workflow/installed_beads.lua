@@ -35,6 +35,12 @@ local function capture_review(phase, extra)
     LOUISELM_TEST_REVIEW_ROOT = nvim.env.XDG_STATE_HOME,
     LOUISELM_TEST_REVIEW_PHASE = phase,
   }
+  if nvim.env.LOUISELM_TEST_SEND_COEXIST == "1" then
+    env.LOUISELM_TEST_SEND_COEXIST = "1"
+    env.LOUISELM_TEST_NVIM = nvim.env.LOUISELM_TEST_NVIM
+    env.LOUISELM_TEST_CAPTURE = nvim.env.LOUISELM_TEST_CAPTURE
+    env.LOUISELM_TEST_LUA_ROOT = nvim.env.LOUISELM_TEST_LUA_ROOT
+  end
   for key, value in pairs(extra) do
     env[key] = value
   end
@@ -88,21 +94,40 @@ local controller = assert(Workflow.new_bead_executor({
         assert(preview.selection.expires_at_ms == nil, "saved review must have no deadline")
         if saved_review then
           nvim.defer_fn(function()
-            assert(now_ms() >= case.envelope.expires_at_ms, "original Run must have expired")
-            local output = capture_review("review", {
-              LOUISELM_TEST_REVIEW_RESULT = preview.selection.request_id,
-              LOUISELM_TEST_REVIEW_EXPIRES_MS = string.format("%.0f", case.envelope.expires_at_ms),
-              LOUISELM_TEST_REVIEW_DECISION = nvim.env.LOUISELM_TEST_REVIEW_DECISION or "pending",
-              LOUISELM_TEST_REVIEW_APPROVAL = preview.approval_digest,
-            })
-            assert(output:find("SAVED_REVIEW_INSTALLED_HTTP_PASSED", 1, true), output)
-            local decision = nvim.env.LOUISELM_TEST_REVIEW_DECISION or "pending"
-            if decision ~= "pending" then
-              local marker = "SAVED_REVIEW_INSTALLED_DECISION_" .. decision:upper()
-              assert(output:find(marker, 1, true), output)
-              print(marker)
+            local ok, err = pcall(function()
+              assert(now_ms() >= case.envelope.expires_at_ms, "original Run must have expired")
+              local output = capture_review("review", {
+                LOUISELM_TEST_REVIEW_RESULT = preview.selection.request_id,
+                LOUISELM_TEST_REVIEW_EXPIRES_MS = string.format("%.0f", case.envelope.expires_at_ms),
+                LOUISELM_TEST_REVIEW_DECISION = nvim.env.LOUISELM_TEST_REVIEW_DECISION or "pending",
+                LOUISELM_TEST_REVIEW_APPROVAL = preview.approval_digest,
+              })
+              assert(output:find("SAVED_REVIEW_INSTALLED_HTTP_PASSED", 1, true), output)
+              if nvim.env.LOUISELM_TEST_SEND_COEXIST == "1" then
+                for _, marker in ipairs({
+                  "SEND_SAVED_BEFORE_PASSED",
+                  "SEND_SAVED_AFTER_PASSED",
+                  "SEND_SAVED_RESTART_PASSED",
+                  "SEND_SAVED_COEXISTENCE_PASSED",
+                }) do
+                  assert(output:find(marker, 1, true), output)
+                  print(marker)
+                end
+              end
+              local decision = nvim.env.LOUISELM_TEST_REVIEW_DECISION or "pending"
+              if decision ~= "pending" then
+                local marker = "SAVED_REVIEW_INSTALLED_DECISION_" .. decision:upper()
+                assert(output:find(marker, 1, true), output)
+                print(marker)
+              end
+              print("SAVED_REVIEW_INSTALLED_HTTP_PASSED")
+            end)
+            if not ok then
+              failure = err
+              if nvim.env.LOUISELM_TEST_SEND_COEXIST == "1" then
+                nvim.fn.writefile({}, nvim.env.XDG_STATE_HOME .. "/coexist-abort")
+              end
             end
-            print("SAVED_REVIEW_INSTALLED_HTTP_PASSED")
             decide(nil, "leave saved review pending")
           end, math.max(1, case.envelope.expires_at_ms - now_ms() + 50))
           return
