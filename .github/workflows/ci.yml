@@ -852,6 +852,12 @@ jobs:
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             ./scripts/test-lua tests/phone_control/real_verifier_spec.lua
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            ./scripts/test-lua tests/phone_control/real_clock_spec.lua
+          LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            ./scripts/test-lua tests/phone_control/transport_spec.lua
+          LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
+            ./scripts/test-lua tests/phone_control/native_owner_integration_spec.lua
+          LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             ./scripts/test-lua tests/phone_control/action_journal_spec.lua
           LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \
             ./scripts/test-lua tests/phone_control/action_dispatch_spec.lua

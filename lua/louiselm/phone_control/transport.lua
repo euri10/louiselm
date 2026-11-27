@@ -129,7 +129,7 @@ local function begin_registration(self, pipe, generation, offer)
   end
   local candidate = {
     process = process,
-    clock = BootClock.new(),
+    clock = BootClock.new(self.controller.service),
     generation = offer.generation,
     controller_id = offer.controller_id,
     pipe = pipe,

@@ -24,6 +24,118 @@ local function centiseconds(value)
   return seconds * 100 + fraction
 end
 
+-- vim.system cannot pass an existing descriptor as stdin. The child verifies
+-- this exact handle and never reads it; the editor retains it for final checks.
+local function verify(self, callback)
+  local stdout = nvim.uv.new_pipe(false)
+  local timer = nvim.uv.new_timer()
+  if stdout == nil or timer == nil or self.service == nil or #self.service == 0 then
+    if stdout then
+      stdout:close()
+    end
+    if timer then
+      timer:close()
+    end
+    nvim.schedule(function()
+      callback(false)
+    end)
+    return
+  end
+  local args = {}
+  for index = 2, #self.service do
+    args[#args + 1] = self.service[index]
+  end
+  nvim.list_extend(args, { "phone-control", "verify-clock" })
+  local env = {}
+  for _, key in ipairs({
+    "PATH",
+    "HOME",
+    "LANG",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+  }) do
+    if nvim.env[key] ~= nil then
+      env[#env + 1] = key .. "=" .. nvim.env[key]
+    end
+  end
+  ---@alias ClockVerifierKill fun(self: table, signal: integer): integer?, string?
+  local process ---@type {kill: ClockVerifierKill, close: fun(self: table)}?
+  local completed, exited, eof, output = false, false, false, ""
+  local function finish(valid)
+    if completed then
+      return
+    end
+    completed = true
+    self.verifier = nil
+    timer:stop()
+    timer:close()
+    stdout:read_stop()
+    stdout:close()
+    if process ~= nil then
+      local killed, err = process:kill(9)
+      if killed == nil and (type(err) ~= "string" or not err:match("ESRCH")) then
+        self.error = err or "could not stop clock verifier"
+      end
+    end
+    nvim.schedule(function()
+      callback(valid)
+    end)
+  end
+  self.verifier = {
+    cancel = function()
+      finish(false)
+    end,
+  }
+  local cwd = nvim.uv.cwd()
+  if cwd == nil then
+    finish(false)
+    return
+  end
+  local spawned, handle = pcall(nvim.uv.spawn, self.service[1], {
+    args = args,
+    cwd = cwd,
+    env = env,
+    stdio = { self.fd, stdout },
+  }, function(code, signal)
+    if process ~= nil then
+      process:close()
+    end
+    process = nil
+    exited = code == 0 and signal == 0
+    if not completed and (not exited or eof) then
+      finish(exited and output == '{"v":1,"type":"clock_verified"}\n')
+    end
+  end)
+  if not spawned or handle == nil then
+    finish(false)
+    return
+  end
+  process = handle
+  local reading = stdout:read_start(function(err, data)
+    if err ~= nil then
+      finish(false)
+    elseif data == nil then
+      eof = true
+      if exited then
+        finish(output == '{"v":1,"type":"clock_verified"}\n')
+      end
+    else
+      output = output .. data
+      if #output > 128 then
+        finish(false)
+      end
+    end
+  end)
+  local started = timer:start(5000, 0, function()
+    finish(false)
+  end)
+  if reading == nil or started == nil then
+    finish(false)
+  end
+end
+
 ---Open and validate a Linux boot-time source asynchronously.
 ---@param callback fun(opened: boolean, error_message: string?) Called on the main loop unless disposed.
 function Clock:open(callback)
@@ -46,16 +158,29 @@ function Clock:open(callback)
       end
       return
     end
-    self.fd = fd
-    self.state = fd and "open" or "failed"
-    if fd ~= nil and self:sample() == nil then
-      local closed, cause = nvim.uv.fs_close(fd)
-      self.fd, self.state = nil, "failed"
-      if not closed then
-        self.error = cause
-      end
+    if fd == nil then
+      self.state = "failed"
+      callback(false, err or "unavailable")
+      return
     end
-    callback(self.state == "open", self.state ~= "open" and (err or "unavailable") or nil)
+    self.fd, self.state = fd, "validating"
+    verify(self, function(valid)
+      if self.state == "disposed" then
+        return
+      end
+      self.state = valid and "open" or "failed"
+      if valid and self:sample() == nil then
+        self.state = "failed"
+      end
+      if self.state ~= "open" then
+        local closed, cause = nvim.uv.fs_close(fd)
+        self.fd = nil
+        if not closed then
+          self.error = cause
+        end
+      end
+      callback(self.state == "open", self.state ~= "open" and "unavailable" or nil)
+    end)
   end)
 end
 
@@ -132,17 +257,21 @@ end
 function Clock:dispose()
   local fd = self.fd
   self.fd, self.state = nil, "disposed"
+  if self.verifier ~= nil then
+    self.verifier.cancel()
+  end
   if fd == nil then
     return self.error == nil, self.error
   end
   local closed, err = nvim.uv.fs_close(fd)
-  return closed ~= nil, err
+  return closed ~= nil and self.error == nil, err or self.error
 end
 
 ---Create an unopened clock without I/O.
+---@param service string[] Configured capture-service argv prefix.
 ---@return table clock
-function M.new()
-  return setmetatable({ state = "new" }, Clock)
+function M.new(service)
+  return setmetatable({ state = "new", service = type(service) == "table" and nvim.deepcopy(service) or nil }, Clock)
 end
 
 return M

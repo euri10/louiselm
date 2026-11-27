@@ -5,9 +5,10 @@ local BootClock = require("louiselm.phone_control.boot_clock")
 local ProcFile = require("louiselm.phone_control.proc_file")
 
 local T = MiniTest.new_set()
+local verifier = { "python3", nvim.fn.getcwd() .. "/tests/fixtures/phone_clock_verifier.py", "healthy" }
 
 T["the native boot clock reads a validated Linux proc source"] = function()
-  local clock = BootClock.new()
+  local clock = BootClock.new(verifier)
   MiniTest.finally(function()
     clock:dispose()
   end)
@@ -26,6 +27,62 @@ T["the native boot clock reads a validated Linux proc source"] = function()
   MiniTest.expect.equality(BootClock.within(first, second, 5000), true)
   clock:dispose()
   MiniTest.expect.equality(clock:sample(), nil)
+end
+
+T["a malformed verifier result leaves the clock unavailable"] = function()
+  local clock = BootClock.new({ verifier[1], verifier[2], "malformed" })
+  MiniTest.finally(function()
+    clock:dispose()
+  end)
+  local opened, cause
+  clock:open(function(ok, err)
+    opened, cause = ok, err
+  end)
+  assert(nvim.wait(5000, function()
+    return opened ~= nil
+  end))
+  MiniTest.expect.equality({ opened, cause, clock:sample() }, { false, "unavailable", nil })
+end
+
+T["disposing during verification closes the clock and reaps the verifier"] = function()
+  local marker = nvim.fn.tempname()
+  local clock = BootClock.new({ verifier[1], verifier[2], "hold", marker })
+  local called = false
+  MiniTest.finally(function()
+    clock:dispose()
+    nvim.fn.delete(marker)
+  end)
+  clock:open(function()
+    called = true
+  end)
+  assert(nvim.wait(5000, function()
+    return nvim.uv.fs_stat(marker) ~= nil
+  end))
+  local pid = assert(tonumber(nvim.fn.readfile(marker)[1]))
+  local fd = clock.fd
+  assert(clock:dispose())
+  assert(nvim.wait(5000, function()
+    local alive = nvim.uv.kill(pid, 0)
+    return alive == nil
+  end))
+  MiniTest.expect.equality(nvim.uv.fs_fstat(fd), nil)
+  MiniTest.expect.equality(clock:sample(), nil)
+  MiniTest.expect.equality(called, false)
+end
+
+T["an unavailable clock verifier leaves the clock unavailable"] = function()
+  local clock = BootClock.new({ "/nonexistent/louiselm-clock-verifier" })
+  MiniTest.finally(function()
+    clock:dispose()
+  end)
+  local opened, cause
+  clock:open(function(ok, err)
+    opened, cause = ok, err
+  end)
+  assert(nvim.wait(5000, function()
+    return opened ~= nil
+  end))
+  MiniTest.expect.equality({ opened, cause, clock:sample() }, { false, "unavailable", nil })
 end
 
 T["the final deadline counts all elapsed boot time conservatively"] = function()

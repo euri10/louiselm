@@ -10,6 +10,7 @@ mod selection;
 mod send;
 #[path = "sleep_clock.rs"]
 mod sleep_clock;
+pub(crate) use sleep_clock::verify_descriptor as verify_clock_descriptor;
 #[path = "authority_voice.rs"]
 mod voice;
 #[path = "authority_voice_job.rs"]

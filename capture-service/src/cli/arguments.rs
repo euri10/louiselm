@@ -82,6 +82,9 @@ pub(super) enum Command {
 
 #[derive(Subcommand)]
 pub(super) enum PhoneControl {
+    /// Verify the inherited native boot-clock descriptor.
+    #[command(hide = true)]
+    VerifyClock,
     /// Read and authenticate one controller frame from standard input.
     Verify,
     /// Persist an exact native-owner action reservation or outcome.

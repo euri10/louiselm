@@ -679,7 +679,12 @@ The connection itself grants no phone access.
 On a personal desktop with healthy receiver-bound stores, a new controller asks
 for `{v:1,type:"attach_write",capability:string}`. The receiver offers
 `{v:1,type:"registration_offer",controller_id:hex16,generation:hex16,receiver_pid:integer,receiver_namespace:string}`.
-The controller opens a pinned identity for that process, then sends a fresh
+The controller opens a pinned identity for that process and a sleep-aware clock.
+It passes the already-open clock descriptor to the configured capture executable
+for verification, retaining that descriptor for the final synchronous Send
+deadline check. Missing or invalid clock verification prevents write registration
+and the controller retries as read-only; the capture executable must support
+`phone-control verify-clock`. The controller then sends a fresh
 `{v:1,type:"register",controller_id:hex16,nonce:hex16}` and checks the matching
 `{v:1,type:"registered",controller_id:hex16,generation:hex16,nonce:hex16}`
 on the same socket. The receiver registers that exact connection under its

@@ -1,7 +1,7 @@
 //! Authentication of the frozen phone-control controller frame.
 
 mod authority;
-pub(crate) use authority::verify_native_frame;
+pub(crate) use authority::{verify_clock_descriptor, verify_native_frame};
 mod barrier;
 mod barrier_log;
 mod discovery;

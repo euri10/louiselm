@@ -1,6 +1,8 @@
 //! Linux boot-time samples for finite phone working periods.
 
 use std::io;
+#[cfg(target_os = "linux")]
+use std::io::Read;
 
 use super::{ABSOLUTE_LIFETIME, IDLE_LIFETIME, Refusal};
 
@@ -149,6 +151,66 @@ fn proc_mount_id(file: impl std::os::fd::AsFd) -> io::Result<u64> {
 }
 
 #[cfg(target_os = "linux")]
+fn open_file(path: &str) -> io::Result<std::fs::File> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    open(
+        path,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(io::Error::from)
+}
+
+#[cfg(target_os = "linux")]
+fn bounded(file: impl Read, limit: u64) -> io::Result<String> {
+    let mut value = String::new();
+    file.take(limit + 1).read_to_string(&mut value)?;
+    if value.len() as u64 > limit {
+        return Err(io::Error::other("boot clock source is too large"));
+    }
+    Ok(value)
+}
+
+#[cfg(target_os = "linux")]
+fn proc_root_mount() -> io::Result<u64> {
+    let mounts = open_file("/proc/thread-self/mountinfo")?;
+    let mount_id = proc_mount_id(&mounts)?;
+    if !is_proc_mount(&bounded(&mounts, 1_048_576)?, &mount_id.to_string()) {
+        return Err(io::Error::other("boot clock is not on the proc filesystem"));
+    }
+    Ok(mount_id)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn verify_descriptor(file: &std::io::Stdin) -> io::Result<()> {
+    use rustix::fs::fstat;
+
+    let mount_id = proc_root_mount()?;
+    let uptime = open_file("/proc/uptime")?;
+    let actual = fstat(file).map_err(io::Error::from)?;
+    let expected = fstat(&uptime).map_err(io::Error::from)?;
+    if proc_mount_id(file)? != mount_id
+        || proc_mount_id(&uptime)? != mount_id
+        || actual.st_dev != expected.st_dev
+        || actual.st_ino != expected.st_ino
+        || actual.st_mode != expected.st_mode
+    {
+        return Err(io::Error::other("boot clock descriptor is unavailable"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn verify_descriptor(_file: &std::io::Stdin) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "sleep-aware phone authority requires Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
 fn parse_namespace(namespace: &str) -> io::Result<String> {
     namespace
         .strip_prefix("time:[")
@@ -181,37 +243,12 @@ fn read_namespace(path: &std::path::Path, mount_id: u64) -> io::Result<String> {
 
 #[cfg(target_os = "linux")]
 pub(super) fn sample() -> io::Result<Sample> {
-    use std::{fs::File, io::Read, path::Path};
-
-    use rustix::fs::{Mode, OFlags, open};
-
-    fn open_file(path: &str) -> io::Result<File> {
-        open(
-            path,
-            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map(File::from)
-        .map_err(io::Error::from)
-    }
-
-    fn bounded(file: impl Read, limit: u64) -> io::Result<String> {
-        let mut value = String::new();
-        file.take(limit + 1).read_to_string(&mut value)?;
-        if value.len() as u64 > limit {
-            return Err(io::Error::other("boot clock source is too large"));
-        }
-        Ok(value)
-    }
+    use std::path::Path;
 
     // Linux fs/proc/uptime.c reports CLOCK_BOOTTIME in the calling thread's
     // time namespace, rounded down to centiseconds. Descriptor metadata binds
     // every source to the same full proc mount without trusting fdinfo text.
-    let mounts = open_file("/proc/thread-self/mountinfo")?;
-    let mount_id = proc_mount_id(&mounts)?;
-    if !is_proc_mount(&bounded(&mounts, 1_048_576)?, &mount_id.to_string()) {
-        return Err(io::Error::other("boot clock is not on the proc filesystem"));
-    }
+    let mount_id = proc_root_mount()?;
     let namespace_path = Path::new("/proc/thread-self/ns/time");
     let namespace = read_namespace(namespace_path, mount_id)?;
     let uptime = open_file("/proc/uptime")?;

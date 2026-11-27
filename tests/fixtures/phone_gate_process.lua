@@ -32,7 +32,7 @@ local receiver_pid = assert(tonumber(nvim.env.LOUISELM_GATE_RECEIVER_PID))
 assert(receiver_pid > 0 and receiver_pid % 1 == 0)
 ---@cast receiver_pid integer -- The fixture validates the process ID above.
 local process = assert(Process.new(receiver_pid, assert(nvim.uv.fs_readlink("/proc/self/ns/pid"))))
-local clock = Clock.new()
+local clock = Clock.new({ nvim.env.LOUISELM_TEST_CAPTURE or root .. "/capture-service/target/debug/louiselm-capture" })
 local function open(object)
   local result
   object:open(function(ok)

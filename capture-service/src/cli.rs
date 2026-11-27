@@ -146,6 +146,23 @@ pub async fn run() -> Result<(), CliError> {
             .map_err(std::io::Error::other)?
             .map_err(CliError::from);
     }
+    if matches!(
+        command,
+        Command::PhoneControl {
+            command: PhoneControl::VerifyClock
+        }
+    ) {
+        return tokio::task::spawn_blocking(|| {
+            crate::phone_control::verify_clock_descriptor(&std::io::stdin())?;
+            writeln!(
+                std::io::stdout().lock(),
+                "{{\"v\":1,\"type\":\"clock_verified\"}}"
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(std::io::Error::other)?;
+    }
     let paths = Paths::discover()?;
     execute(command, paths).await
 }

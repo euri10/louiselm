@@ -51,7 +51,9 @@ T["registers the original receiver connection after opening its process identity
       end
     end)
   end) == 0)
-  local controller = Controller.new({ service = { "unused" } })
+  local verifier = nvim.env.LOUISELM_TEST_CAPTURE and { nvim.env.LOUISELM_TEST_CAPTURE }
+    or { "python3", nvim.fn.getcwd() .. "/tests/fixtures/phone_clock_verifier.py", "healthy" }
+  local controller = Controller.new({ service = verifier })
   local transport = assert(Transport.connect({
     controller = controller,
     socket_path = directory .. "/socket",
@@ -81,6 +83,107 @@ T["registers the original receiver connection after opening its process identity
     return controller.controller_id == nil
   end))
   MiniTest.expect.equality(controller.registration, nil)
+end
+
+T["a malformed clock verifier falls back to ordinary reads"] = function()
+  local directory = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(directory, "p") == 1)
+  assert(nvim.fn.writefile({ "00112233-4455-6677-8899-aabbccddeeff" }, directory .. "/capability", "b") == 0)
+  local listener, peers, requests = assert(nvim.uv.new_pipe(false)), {}, {}
+  assert(listener:bind(directory .. "/socket") == 0)
+  assert(listener:listen(4, function()
+    local peer = assert(nvim.uv.new_pipe(false))
+    assert(listener:accept(peer) == 0)
+    peers[#peers + 1] = peer
+    peer:read_start(function(err, data)
+      assert(not err)
+      if data == nil then
+        return
+      end
+      local request = nvim.json.decode(data:match("^(.-)\n"))
+      requests[#requests + 1] = request.type
+      if request.type == "attach_write" then
+        peer:write(nvim.json.encode({
+          v = 1,
+          type = "registration_offer",
+          controller_id = string.rep("a", 32),
+          generation = string.rep("b", 32),
+          receiver_pid = nvim.uv.os_getpid(),
+          receiver_namespace = nvim.uv.fs_readlink("/proc/self/ns/pid"),
+        }) .. "\n")
+      else
+        peer:write(nvim.json.encode({ v = 1, type = "attached", controller_id = string.rep("1", 32) }) .. "\n")
+      end
+    end)
+  end) == 0)
+  local controller = Controller.new({
+    service = { "python3", nvim.fn.getcwd() .. "/tests/fixtures/phone_clock_verifier.py", "malformed" },
+  })
+  local state = { id = "session-1", agent = "mock", working_dir = nvim.uv.cwd(), status = "ready" }
+  local owner = { sessions = {} }
+  local session = {
+    state = state,
+    owner = owner,
+    inspect = function(self)
+      return nvim.deepcopy(self.state)
+    end,
+  }
+  require("tests.fixtures.phone_control_history")(session, controller)
+  owner.sessions[state.id] = session
+  controller:track(session)
+  local transport = assert(Transport.connect({
+    controller = controller,
+    socket_path = directory .. "/socket",
+    capability_path = directory .. "/capability",
+    retry_ms = 20,
+  }))
+  MiniTest.finally(function()
+    transport:dispose()
+    controller:dispose()
+    for _, peer in ipairs(peers) do
+      if not peer:is_closing() then
+        peer:close()
+      end
+    end
+    listener:close()
+    nvim.fn.delete(directory, "rf")
+  end)
+  assert(nvim.wait(5000, function()
+    return controller.controller_id ~= nil
+  end))
+  MiniTest.expect.equality(requests, { "attach_write", "attach" })
+  MiniTest.expect.equality(controller.registration, nil)
+  local subject = assert(controller:track(session))
+  local response
+  controller:read(
+    nvim.json.encode({
+      v = 1,
+      type = "read_session",
+      controller_id = controller.controller_id,
+      grant = {
+        projects = { assert(nvim.uv.fs_realpath(state.working_dir)) },
+        agents = { "mock" },
+        groups = { "read" },
+      },
+      period = {},
+      proof = {},
+      request = {
+        controller_id = controller.controller_id,
+        subject_id = subject,
+        operation_id = string.rep("a", 32),
+        action = 1,
+        payload = "00000000000000000014",
+        expected_revision = 0,
+      },
+    }),
+    function(result)
+      response = result
+    end
+  )
+  assert(nvim.wait(5000, function()
+    return response ~= nil
+  end))
+  MiniTest.expect.equality(response.type, "session_page")
 end
 
 T["an older read-only receiver remains usable"] = function()
