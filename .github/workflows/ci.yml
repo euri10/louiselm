@@ -807,8 +807,24 @@ jobs:
         working-directory: .
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends strace
+          sudo apt-get install -y --no-install-recommends strace sqlite3
           python3 scripts/test-phone-gate-order.py
+
+      - name: Test pending Send and offline Forget
+        run: |
+          sudo timeout 120 unshare --mount --net --propagation private -- /bin/sh -c '
+            set -eu
+            mount -t tmpfs -o mode=0755 tmpfs /run
+            ip link set lo up
+            test_name=pending_commit_is_fenced_after_offline_forget_and_survives_restart
+            setpriv --reuid "$1" --regid "$2" --init-groups \
+              env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" "LOUISELM_TEST_NVIM=$6" LANG=C.UTF-8 \
+              cargo test --offline --locked --test personal_phone_pending_forget -- --ignored --exact "$test_name" --list |
+              grep -Fx "$test_name: test"
+            exec setpriv --reuid "$1" --regid "$2" --init-groups \
+              env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" "LOUISELM_TEST_NVIM=$6" LANG=C.UTF-8 \
+              cargo test --offline --locked --test personal_phone_pending_forget -- --ignored --exact "$test_name"
+          ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}" "$(command -v nvim)"
 
       - name: Test Neovim phone-control boundaries
         working-directory: .

@@ -293,6 +293,15 @@ namespaces with an isolated `/run` and loopback enabled. CI runs it as the
 unprivileged owner. It exercises the real CLI, service, local approval and
 evidence reopening with disposable identities; it is not Android Send acceptance.
 
+Phone Send admission, owner fencing or offline Forget changes also run
+`pending_commit_is_fenced_after_offline_forget_and_survives_restart` from
+`personal_phone_pending_forget` in the same isolated namespaces, with stable
+Neovim, `strace`, and `LOUISELM_TEST_NVIM` naming the Neovim executable. CI
+requires the exact test. It holds a queued commit in a real disposable editor,
+kills the real receiver, runs offline Forget, and checks native no-effect proof
+and history after both processes exit. It uses synthetic phones and a local
+echo Agent; it does not establish installed or physical Android acceptance.
+
 The manual ecosystem-radar workflow uses the Python standard-library gate
 `python3 scripts/test-ecosystem-radar.py`. It checks routing and receipt
 validation against offline fixtures; it does not certify external project
