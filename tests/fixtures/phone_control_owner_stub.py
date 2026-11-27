@@ -17,6 +17,12 @@ else:
         while os.path.exists(hold) and time.monotonic() < deadline:
             time.sleep(0.01)
     outcome = message.get("outcome", {})
+    hold_fence = os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "hold-fence")
+    if "fenced_no_effect" in outcome and os.path.exists(hold_fence):
+        open(os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "fence-started"), "w", encoding="utf-8").close()
+        deadline = time.monotonic() + 4
+        while os.path.exists(hold_fence) and time.monotonic() < deadline:
+            time.sleep(0.01)
     for state in ("completed", "fenced_no_effect"):
         fail_once = os.path.join(os.environ["LOUISELM_CAPTURE_STATE_DIR"], "fail-once-" + state)
         if state not in outcome or not os.path.exists(fail_once):

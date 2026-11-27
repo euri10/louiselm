@@ -346,11 +346,10 @@ T["registered Send enters the real Session once and keeps its later evidence and
   fenced.request.expected_revision = controller.subjects[fenced.request.subject_id].projection.revision
   MiniTest.expect.equality(read(fenced).type, "action_prepared")
   assert(nvim.fn.writefile({ fenced.request.operation_id }, directory .. "/fail-once-fenced_no_effect") == 0)
+  assert(nvim.fn.writefile({}, directory .. "/hold-fence") == 0)
   assert(controller:detach())
   assert(nvim.wait(6000, function()
-    return table
-      .concat(nvim.fn.readfile(directory .. "/owner-failures"), "\n")
-      :find(fenced.request.operation_id, 1, true)
+    return nvim.uv.fs_stat(directory .. "/fence-started") ~= nil
   end))
   for _, line in ipairs(nvim.fn.readfile(directory .. "/owner-reports.jsonl")) do
     local report = nvim.json.decode(line)
@@ -365,7 +364,15 @@ T["registered Send enters the real Session once and keeps its later evidence and
     clock = clock,
     generation = string.rep("09", 16),
   }))
+  assert(nvim.fn.delete(directory .. "/hold-fence") == 0)
   assert(nvim.wait(6000, function()
+    if
+      not table
+        .concat(nvim.fn.readfile(directory .. "/owner-failures"), "\n")
+        :find(fenced.request.operation_id, 1, true)
+    then
+      return false
+    end
     for _, line in ipairs(nvim.fn.readfile(directory .. "/owner-reports.jsonl")) do
       local report = nvim.json.decode(line)
       if report.identity.operation_id == fenced.request.operation_id and report.outcome then
