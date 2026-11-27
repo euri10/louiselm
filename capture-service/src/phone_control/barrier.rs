@@ -302,6 +302,10 @@ impl Barrier {
 }
 
 impl ReceiverBarrier {
+    pub(super) fn binding(&self) -> &BarrierBinding {
+        &self.barrier.binding
+    }
+
     pub(super) fn register<T>(
         &self,
         generation: &str,

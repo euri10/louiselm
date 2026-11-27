@@ -5,13 +5,40 @@ local Config = require("louiselm.config")
 local Schema = require("louiselm.schema")
 local PhoneControl = require("louiselm.phone_control")
 
-local T = MiniTest.new_set()
+local previous_state
+local T = MiniTest.new_set({
+  hooks = {
+    pre_case = function()
+      previous_state = nvim.env.LOUISELM_CAPTURE_STATE_DIR
+      nvim.env.LOUISELM_CAPTURE_STATE_DIR = nvim.fn.tempname()
+    end,
+    post_case = function()
+      nvim.env.LOUISELM_CAPTURE_STATE_DIR = previous_state
+    end,
+  },
+})
 
-T["phone control is disabled unless explicitly enabled"] = function()
-  MiniTest.expect.equality(Config.enabled({}, "phone_control"), false)
-  MiniTest.expect.equality(PhoneControl.start({}), nil)
+T["ordinary setup observes Sessions without granting phone authority"] = function()
+  MiniTest.expect.equality(Config.enabled({}, "phone_control"), true)
+  local owner = assert(PhoneControl.start({}))
+  MiniTest.finally(function()
+    owner:dispose()
+  end)
+  MiniTest.expect.equality(owner.controller.controller_id, nil)
+  MiniTest.expect.equality(PhoneControl.start(nil), nil)
   MiniTest.expect.equality(Schema.validate(Config.schema, { phone_control = { enabled = true } }), {})
   MiniTest.expect.equality(Config.enabled({ phone_control = { enabled = true } }, "phone_control"), true)
+end
+
+T["capture-enabled stock setup connects unless phone control is explicitly disabled"] = function()
+  local owner = assert(PhoneControl.start({ capture = { enabled = true } }))
+  MiniTest.finally(function()
+    owner:dispose()
+  end)
+  MiniTest.expect.equality(
+    PhoneControl.start({ capture = { enabled = true }, phone_control = { enabled = false } }),
+    nil
+  )
 end
 
 T["repeated owners dispose safely while the service is unavailable"] = function()

@@ -1,6 +1,7 @@
 //! Authentication of the frozen phone-control controller frame.
 
 mod authority;
+pub(crate) use authority::verify_native_frame;
 mod barrier;
 mod barrier_log;
 mod discovery;
@@ -252,7 +253,7 @@ pub enum PhoneControlError {
     /// The version, message type, action, or enum is unsupported.
     #[error("unsupported")]
     Unsupported,
-    /// The local receiver identity is unavailable.
+    /// The local receiver identity or approved enrollment is unavailable.
     #[error("unavailable")]
     Unavailable,
 }

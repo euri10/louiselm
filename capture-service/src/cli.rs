@@ -235,7 +235,13 @@ fn verify_phone_control(paths: &Paths) -> Result<(), CliError> {
     } else {
         TlsIdentity::existing_public_key_sha256(&paths.tls())
             .map_err(|_| crate::PhoneControlError::Unavailable)
-            .and_then(|identity| crate::verify_phone_control_frame(line, &identity))
+            .and_then(|identity| {
+                crate::phone_control::verify_native_frame(
+                    line,
+                    &identity,
+                    &paths.phone_control_store(),
+                )
+            })
     };
     match outcome {
         Ok(()) => println!("{{\"v\":1,\"type\":\"verified\"}}"),

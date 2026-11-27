@@ -33,7 +33,7 @@ T["setup serves a real headless Session and fences disposed incarnations"] = fun
         local ending = buffer:find("\n", 1, true)
         local message = nvim.json.decode(buffer:sub(1, ending - 1))
         buffer = buffer:sub(ending + 1)
-        if message.type == "attach" then
+        if message.type == "attach" or message.type == "attach_write" then
           assert(message.capability == capability)
           peer:write(nvim.json.encode({ v = 1, type = "attached", controller_id = string.rep("1", 32) }) .. "\n")
         else

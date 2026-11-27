@@ -9,6 +9,52 @@ local Chat = require("louiselm.ui.chat")
 
 local T = MiniTest.new_set()
 
+T["the native Session refuses a forged phone gate before changing its turn"] = function()
+  local root, directory = nvim.fn.getcwd(), nvim.fn.tempname()
+  local api = assert(Session.new({
+    mock = {
+      provider = "test-service",
+      command = nvim.v.progpath,
+      env = { LOUISELM_MOCK_MODE = "static" },
+      args = {
+        "--headless",
+        "--noplugin",
+        "-u",
+        root .. "/tests/mock/init.lua",
+        "-c",
+        "lua require('louiselm.dev.mock_agent').run()",
+      },
+    },
+  }, nil, { usage_directory = directory .. "/usage" }))
+  MiniTest.finally(function()
+    assert(api:dispose())
+    local finished = false
+    api:flush_recording(function()
+      finished = true
+    end)
+    assert(nvim.wait(6000, function()
+      return finished
+    end))
+    nvim.fn.delete(directory, "rf")
+  end)
+  local session = assert(api:create_session("mock", { cwd = root }))
+  assert(nvim.wait(6000, function()
+    return session:inspect().status == "ready"
+  end))
+  local initial = session:inspect().current_turn
+  local called = false
+  local turn = session:prompt_phone("phone text", {
+    check = function()
+      called = true
+      return true
+    end,
+  })
+  MiniTest.expect.equality(turn, nil)
+  MiniTest.expect.equality(called, false)
+  MiniTest.expect.equality(session:inspect().current_turn, initial)
+  MiniTest.expect.equality(session:inspect().status, "ready")
+end
+
 T["an action without a bound generation cannot reserve or authorize"] = function()
   local called = false
   local session = {}
@@ -65,7 +111,7 @@ T["a stale Session is durably fenced before the refusal is returned"] = function
   function session:inspect()
     return { id = "s", status = "ready" }
   end
-  function session:prompt()
+  function session:prompt_phone()
     prompt_count = prompt_count + 1
   end
   owner.sessions.s = session
@@ -84,9 +130,7 @@ T["a stale Session is durably fenced before the refusal is returned"] = function
     authorize = function(done)
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function()
             released = released + 1
           end,
@@ -139,7 +183,7 @@ T["a lost owner report never confirms or repeats an admitted prompt"] = function
   function session:inspect()
     return { id = "s", status = "ready" }
   end
-  function session:prompt()
+  function session:prompt_phone()
     prompts = prompts + 1
     return "turn-1"
   end
@@ -159,9 +203,7 @@ T["a lost owner report never confirms or repeats an admitted prompt"] = function
     authorize = function(done)
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function()
             released = released + 1
           end,
@@ -266,9 +308,7 @@ local function exercise_real_session(initialized)
       authorizations = authorizations + 1
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function()
             releases = releases + 1
           end,

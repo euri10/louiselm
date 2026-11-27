@@ -106,7 +106,7 @@ local function exercise_detach(initialized)
   function session:inspect()
     return { id = "s", status = "ready" }
   end
-  function session:prompt()
+  function session:prompt_phone()
     prompts = prompts + 1
     return "turn-1"
   end
@@ -193,9 +193,7 @@ local function exercise_detach(initialized)
   MiniTest.expect.equality(fenced.state, "fenced_no_effect")
   local released = false
   assert(permit)({
-    valid = function()
-      return true
-    end,
+    gate = {},
     release = function()
       released = true
     end,

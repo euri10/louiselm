@@ -7,6 +7,8 @@ local Discovery = require("louiselm.phone_control.discovery")
 local Scope = require("louiselm.phone_control.scope")
 local Action = require("louiselm.phone_control.action")
 local ActionJournal = require("louiselm.phone_control.action_journal")
+local AdmissionGate = require("louiselm.phone_control.admission_gate")
+local BootClock = require("louiselm.phone_control.boot_clock")
 local RunOwner = require("louiselm.phone_control.run_owner")
 local M = {}
 local Controller = {}
@@ -27,6 +29,19 @@ local codes = {
 
 local function error_result(code)
   return { v = 1, type = "error", code = code }
+end
+
+local function release_action(self, pending)
+  if not self.actions[pending] then
+    return true
+  end
+  self.actions[pending] = nil
+  pending.action:dispose()
+  local stopped, cause = pending.journal:dispose()
+  if not stopped then
+    self.last_error = { code = "unavailable", cause = cause }
+  end
+  return stopped
 end
 
 local function hex_id(value)
@@ -303,6 +318,107 @@ local function action_scope(self, message, line, callback)
   end)
 end
 
+local function action_independence(self, message, line, callback)
+  local function reject(code)
+    nvim.schedule(function()
+      callback(error_result(code))
+    end)
+  end
+  local function exact(value, keys, wanted)
+    if type(value) ~= "table" then
+      return false
+    end
+    local count = 0
+    for key in pairs(value) do
+      if not keys[key] then
+        return false
+      end
+      count = count + 1
+    end
+    return count == wanted
+  end
+  local top = { v = true, type = true, controller_id = true, subject_id = true, operation_id = true, unknowns = true }
+  local item_keys = { controller_id = true, subject_id = true, operation_id = true }
+  if
+    not exact(message, top, 6)
+    or message.v ~= 1
+    or not line:match('"v"%s*:%s*1%s*[,}]')
+    or line:find("\\", 1, true)
+    or not hex_id(message.controller_id)
+    or not hex_id(message.subject_id)
+    or not hex_id(message.operation_id)
+    or type(message.unknowns) ~= "table"
+    or #message.unknowns > 50
+  then
+    reject("malformed")
+    return
+  end
+  local length, seen = #message.unknowns, {}
+  local indices = 0
+  for key in pairs(message.unknowns) do
+    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > length then
+      reject("malformed")
+      return
+    end
+    indices = indices + 1
+  end
+  if indices ~= length then
+    reject("malformed")
+    return
+  end
+  for _, item in ipairs(message.unknowns) do
+    if
+      not exact(item, item_keys, 3)
+      or not hex_id(item.controller_id)
+      or not hex_id(item.subject_id)
+      or not hex_id(item.operation_id)
+      or seen[item.operation_id]
+    then
+      reject("malformed")
+      return
+    end
+    seen[item.operation_id] = true
+  end
+  local counts =
+    { v = 1, type = 1, unknowns = 1, controller_id = length + 1, subject_id = length + 1, operation_id = length + 1 }
+  for name in line:gmatch('"([a-z_]+)"%s*:') do
+    if counts[name] == nil or counts[name] == 0 then
+      reject("malformed")
+      return
+    end
+    counts[name] = counts[name] - 1
+  end
+  for _, count in pairs(counts) do
+    if count ~= 0 then
+      reject("malformed")
+      return
+    end
+  end
+  local target = current(self, message.subject_id)
+  if message.controller_id ~= self.controller_id or target == nil then
+    reject("stale_subject")
+    return
+  end
+  local independent = {}
+  for _, item in ipairs(message.unknowns) do
+    local previous = self.seen_subjects[item.subject_id]
+    local prior = previous and previous.controller_id == item.controller_id and self.sessions[previous.session] or nil
+    if prior ~= nil and prior.id ~= nil and current(self, prior.id) == prior and prior.session ~= target.session then
+      independent[#independent + 1] = item.operation_id
+    end
+  end
+  nvim.schedule(function()
+    callback({
+      v = 1,
+      type = "action_independence",
+      controller_id = message.controller_id,
+      subject_id = message.subject_id,
+      operation_id = message.operation_id,
+      independent = independent,
+    })
+  end)
+end
+
 local function action_commit(self, message, line, callback)
   local pending = self.pending_action
   if pending == nil or pending.authorize == nil or pending.commit ~= nil then
@@ -311,7 +427,8 @@ local function action_commit(self, message, line, callback)
     end)
     return
   end
-  local fields = { v = true, type = true, controller_id = true, operation_id = true, remaining_ms = true }
+  local fields =
+    { v = true, type = true, controller_id = true, operation_id = true, gate_id = true, remaining_ms = true }
   local count, seen = 0, {}
   if line:find("\\", 1, true) then
     nvim.schedule(function()
@@ -339,14 +456,17 @@ local function action_commit(self, message, line, callback)
   end
   local remaining = message.remaining_ms
   if
-    count ~= 5
-    or message.v ~= 1
-    or not line:match('"v"%s*:%s*1%s*[,}]')
+    count ~= 6
+    or message.v ~= 2
+    or not line:match('"v"%s*:%s*2%s*[,}]')
     or message.controller_id ~= self.controller_id
     or message.operation_id ~= pending.operation_id
+    or not hex_id(message.gate_id)
+    or message.gate_id == string.rep("0", 32)
+    or self.registration ~= pending.registration
     or type(remaining) ~= "number"
-    or remaining < 0
-    or remaining > 3600000
+    or remaining <= 0
+    or remaining > 5000
     or remaining % 1 ~= 0
     or not line:match('"remaining_ms"%s*:%s*%d+%s*[,}]')
   then
@@ -355,12 +475,31 @@ local function action_commit(self, message, line, callback)
     end)
     return
   end
+  local registration = pending.registration
+  local gate = AdmissionGate.registered({
+    controller = registration.pipe,
+    receiver_process = registration.process,
+    clock = registration.clock,
+    started = pending.started,
+    remaining_ms = remaining,
+    session = pending.subject.session,
+    projection = pending.subject.projection,
+    expected_revision = pending.identity.expected_revision,
+    payload_hash = pending.identity.payload_hash,
+    controller_id = message.controller_id,
+    operation_id = message.operation_id,
+    gate_id = message.gate_id,
+  })
+  if gate == nil then
+    nvim.schedule(function()
+      callback(error_result("unavailable"))
+    end)
+    return
+  end
   self.pending = true
   pending.commit = callback
   pending.authorize({
-    valid = function()
-      return (nvim.uv.hrtime() - pending.started) / 1000000 < remaining
-    end,
+    gate = gate,
     release = function() end,
   })
 end
@@ -370,7 +509,9 @@ local function allocate(self, subject)
   if id == nil or id == string.rep("0", 32) or self.seen_subjects[id] then
     return nil, err or "subject identity collision"
   end
-  self.seen_subjects[id] = true
+  self.seen_subjects[id] = { controller_id = self.controller_id, session = subject.session }
+  subject.identities = subject.identities or {}
+  subject.identities[#subject.identities + 1] = id
   subject.id = id
   self.subjects[id] = subject
   return id
@@ -378,9 +519,10 @@ end
 
 ---Attach a fresh receiver-issued controller identity to this connection.
 ---@param controller_id string Receiver-issued random identity.
+---@param registration? table Fresh receiver registration bound to the original connection.
 ---@return boolean attached
 ---@return string? error_message Invalid identity or subject allocation failure.
-function Controller:attach(controller_id)
+function Controller:attach(controller_id, registration)
   if self.disposed or not hex_id(controller_id) then
     return false, "invalid controller identity"
   end
@@ -393,6 +535,7 @@ function Controller:attach(controller_id)
   end
   self.seen_controllers[controller_id] = true
   self.controller_id = controller_id
+  self.registration = registration
   local refreshed, refresh_error = self.runs:reidentify()
   if not refreshed then
     self:detach()
@@ -463,7 +606,11 @@ function Controller:untrack(session)
   if subject.unsubscribe ~= nil then
     subject.unsubscribe()
   end
+  for _, id in ipairs(subject.identities or {}) do
+    self.seen_subjects[id].session = nil
+  end
   self.sessions[session] = nil
+  self.uncertain_sessions[session] = nil
 end
 
 ---Associate an exact registered Run controller with this connection owner.
@@ -511,6 +658,10 @@ function Controller:read(line, callback)
     action_scope(self, message, line, callback)
     return
   end
+  if type(message) == "table" and message.type == "action_independence" then
+    action_independence(self, message, line, callback)
+    return
+  end
   if type(message) == "table" and message.type == "action_commit" then
     action_commit(self, message, line, callback)
     return
@@ -530,8 +681,7 @@ function Controller:read(line, callback)
   local selecting = message.type == "list_selection" and request.action == 50
   local sending = message.type == "send_prompt" and request.action == 3
   local linked_read = message.type == "read_run_session" and request.action == 57
-  if sending then
-    -- The version-1 commit lacks the crash-safe guard and connection witness.
+  if sending and self.registration == nil then
     nvim.schedule(function()
       callback(error_result("unsupported"))
     end)
@@ -727,19 +877,50 @@ function Controller:read(line, callback)
               recorded_at_ms = os.time() * 1000,
             }
             local journal = ActionJournal.new({ service = self.service })
-            local pending = { operation_id = request.operation_id, journal = journal }
+            local pending = {
+              operation_id = request.operation_id,
+              journal = journal,
+              subject = subject,
+              identity = identity,
+              registration = self.registration,
+            }
             self.pending_action = pending
             local action = Action.new({
               journal = journal,
+              generation = pending.registration.generation,
               session = subject.session,
               projection = subject.projection,
+              on_terminal = function(outcome)
+                if outcome == "unknown" and self.sessions[subject.session] ~= nil then
+                  self.uncertain_sessions[subject.session] = true
+                end
+                release_action(self, pending)
+              end,
               current = function()
-                return self.generation == generation
-                  and self.controller_id == attached
-                  and current(self, request.subject_id) == subject
+                if
+                  self.generation ~= generation
+                  or self.controller_id ~= attached
+                  or self.registration ~= pending.registration
+                  or current(self, request.subject_id) ~= subject
+                then
+                  return false, "stale_subject"
+                end
+                if self.uncertain_sessions[subject.session] then
+                  return false, "unavailable"
+                end
+                for prior in pairs(self.actions) do
+                  if prior ~= pending and prior.subject.session == subject.session and prior.action.admitted then
+                    return false, "unavailable"
+                  end
+                end
+                return true
               end,
               authorize = function(done)
-                pending.authorize, pending.started = done, nvim.uv.hrtime()
+                pending.authorize, pending.started = done, BootClock.sample(pending.registration.clock)
+                if pending.started == nil then
+                  done(nil)
+                  return
+                end
                 finish({
                   v = 1,
                   type = "action_prepared",
@@ -750,16 +931,16 @@ function Controller:read(line, callback)
               end,
             })
             pending.action = action
+            self.actions[pending] = true
             action:send(identity, send_text, function(outcome)
+              if self.pending_action == pending then
+                self.pending_action = nil
+              end
+              if not action.admitted and not release_action(self, pending) then
+                outcome = error_result("unavailable")
+              end
               if self.disposed or self.generation ~= generation then
                 return
-              end
-              self.pending_action = nil
-              action:dispose()
-              local stopped, cause = journal:dispose()
-              if not stopped then
-                self.last_error = { code = "unavailable", cause = cause }
-                outcome = error_result("unavailable")
               end
               if pending.commit ~= nil then
                 self.pending = false
@@ -841,6 +1022,7 @@ end
 function Controller:detach()
   self.generation = self.generation + 1
   self.controller_id = nil
+  self.registration = nil
   self.subjects = {}
   self.pending = false
   local failure
@@ -849,12 +1031,14 @@ function Controller:detach()
     self.cancel_history = nil
   end
   if self.pending_action ~= nil then
-    self.pending_action.action:dispose()
-    local stopped, cause = self.pending_action.journal:dispose()
+    local pending = self.pending_action
     self.pending_action = nil
-    if not stopped then
-      self.last_error = { code = "unavailable", cause = cause }
-      failure = "could not stop action journal"
+    if not pending.action.admitted then
+      pending.action:detach(function()
+        if not pending.action.admitted then
+          release_action(self, pending)
+        end
+      end)
     end
   end
   for _, subject in pairs(self.sessions) do
@@ -882,12 +1066,20 @@ function Controller:dispose()
   end
   local detached, detach_error = self:detach()
   self.disposed = true
+  for pending in pairs(self.actions) do
+    if not release_action(self, pending) then
+      detached, detach_error = false, detach_error or "could not stop action journal"
+    end
+  end
   for _, subject in pairs(self.sessions) do
     if subject.unsubscribe ~= nil then
       subject.unsubscribe()
     end
   end
   self.sessions = {}
+  self.seen_subjects = {}
+  self.seen_controllers = {}
+  self.uncertain_sessions = {}
   self.runs = RunOwner.new()
   return detached, detach_error
 end
@@ -906,6 +1098,8 @@ function M.new(options)
     sessions = {},
     runs = RunOwner.new(),
     subjects = {},
+    actions = {},
+    uncertain_sessions = {},
     seen_subjects = {},
     seen_controllers = {},
     generation = 0,

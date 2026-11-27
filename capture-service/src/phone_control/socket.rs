@@ -5,7 +5,7 @@
 mod cut_tests;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io,
     net::Shutdown,
@@ -19,16 +19,16 @@ use fs2::FileExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{mpsc, oneshot},
+    sync::{Notify, mpsc, oneshot},
     task::JoinSet,
 };
 
 use super::{
     MAX_FRAME, MAX_INTEGER, Request,
     authority::{Authority, EnrollmentStatus, LegacyScopeApproval, Refusal, Scope, random_hex},
-    barrier::{CutoffError, ReceiverBarrier},
+    barrier::{BarrierBinding, CutoffError, ReceiverBarrier},
     barrier_log::CutoffKind,
     fixed,
     prepared_owner::{OwnerPreparedError, PreparedAdmission, PreparedOwner, Publication},
@@ -123,6 +123,7 @@ impl LockedListener {
 pub(super) struct ControllerRegistry {
     attached: Mutex<BTreeMap<String, ControllerEntry>>,
     barrier: Option<RegistrationBarrier>,
+    changed: Notify,
     #[cfg(test)]
     allow_unbound_cutoff: bool,
 }
@@ -132,6 +133,7 @@ impl Default for ControllerRegistry {
         Self {
             attached: Mutex::new(BTreeMap::new()),
             barrier: None,
+            changed: Notify::new(),
             #[cfg(test)]
             allow_unbound_cutoff: true,
         }
@@ -147,12 +149,24 @@ struct ControllerEntry {
     sender: Option<mpsc::Sender<Dispatch>>,
     socket: Option<StdUnixStream>,
     gate_capable: bool,
+    gate: Option<GateWitness>,
+    used_gates: BTreeSet<String>,
 }
 
 impl ControllerEntry {
+    fn can_register_gate(&self, gate_id: &str) -> bool {
+        self.gate_capable
+            && self.sender.is_some()
+            && self.socket.is_some()
+            && self.gate.is_none()
+            && !self.used_gates.contains(gate_id)
+            && self.used_gates.len() < 65_536
+    }
+
     fn cut(&mut self) -> Result<(), Refusal> {
         // A failed shutdown must not leave the controller discoverable.
         self.sender = None;
+        self.gate = None;
         if let Some(socket) = &self.socket {
             socket
                 .shutdown(Shutdown::Both)
@@ -166,6 +180,30 @@ impl ControllerEntry {
 struct Dispatch {
     frame: Vec<u8>,
     response: oneshot::Sender<Vec<u8>>,
+    gate: Option<GateWitness>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActionCommit {
+    v: u64,
+    #[serde(rename = "type")]
+    kind: String,
+    controller_id: String,
+    operation_id: String,
+    gate_id: String,
+    remaining_ms: u64,
+}
+
+#[derive(Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GateWitness {
+    v: u64,
+    #[serde(rename = "type")]
+    kind: String,
+    controller_id: String,
+    operation_id: String,
+    gate_id: String,
 }
 
 #[derive(Deserialize)]
@@ -636,6 +674,7 @@ impl ControllerRegistry {
                 generation,
                 owner: Arc::new(owner),
             }),
+            changed: Notify::new(),
             #[cfg(test)]
             allow_unbound_cutoff: false,
         }
@@ -646,6 +685,7 @@ impl ControllerRegistry {
         Self {
             attached: Mutex::new(BTreeMap::new()),
             barrier: None,
+            changed: Notify::new(),
             allow_unbound_cutoff: true,
         }
     }
@@ -668,6 +708,8 @@ impl ControllerRegistry {
                             // A read attachment is not a registered admission gate.
                             // Send remains unavailable until .4.5 supplies one.
                             gate_capable: false,
+                            gate: None,
+                            used_gates: BTreeSet::new(),
                         },
                     );
                     return Ok(id);
@@ -681,6 +723,127 @@ impl ControllerRegistry {
                 .register(&barrier.generation, insert)
                 .map_err(|_| Refusal::Unavailable)?,
             None => insert(),
+        }
+    }
+
+    fn activate(&self, id: &str) -> Result<String, Refusal> {
+        let barrier = self.barrier.as_ref().ok_or(Refusal::Unavailable)?;
+        let result = barrier
+            .owner
+            .register(&barrier.generation, || {
+                let mut attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+                let entry = attached.get_mut(id).ok_or(Refusal::StaleSubject)?;
+                if entry.sender.is_none() || entry.socket.is_none() || entry.gate_capable {
+                    return Err(Refusal::Unavailable);
+                }
+                entry.gate_capable = true;
+                Ok(barrier.generation.clone())
+            })
+            .map_err(|_| Refusal::Unavailable)?;
+        if result.is_ok() {
+            self.changed.notify_waiters();
+        }
+        result
+    }
+
+    pub(super) fn write_capable(&self, id: &str) -> bool {
+        self.attached.lock().is_ok_and(|entries| {
+            entries.get(id).is_some_and(|entry| {
+                entry.sender.is_some() && entry.socket.is_some() && entry.gate_capable
+            })
+        })
+    }
+
+    pub(super) fn any_write_capable(&self) -> bool {
+        self.attached.lock().is_ok_and(|entries| {
+            entries
+                .values()
+                .any(|entry| entry.sender.is_some() && entry.socket.is_some() && entry.gate_capable)
+        })
+    }
+
+    pub(super) async fn wait_for_write_capable(&self, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.any_write_capable() {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return self.any_write_capable();
+            }
+        }
+    }
+
+    pub(super) fn cut_controller(&self, id: &str) -> Result<(), Refusal> {
+        let mut attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+        attached.get_mut(id).ok_or(Refusal::StaleSubject)?.cut()
+    }
+
+    /// Bind one gate to this exact connection while authority is checked under
+    /// the same generation exclusion used by invalidation and cutoff.
+    pub(super) fn register_gate<T>(
+        &self,
+        id: &str,
+        operation_id: &str,
+        gate_id: &str,
+        authorize: impl FnOnce(&str, &BarrierBinding) -> Result<T, Refusal>,
+    ) -> Result<T, Refusal> {
+        if fixed::<16>(operation_id).is_err()
+            || fixed::<16>(gate_id).is_err()
+            || operation_id == "00".repeat(16)
+            || gate_id == "00".repeat(16)
+        {
+            return Err(Refusal::Malformed);
+        }
+        let barrier = self.barrier.as_ref().ok_or(Refusal::Unavailable)?;
+        let result = barrier.owner.register(&barrier.generation, || {
+            let original_sender = {
+                let attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+                let entry = attached.get(id).ok_or(Refusal::StaleSubject)?;
+                if !entry.can_register_gate(gate_id) {
+                    return Err(Refusal::Unavailable);
+                }
+                entry.sender.clone().ok_or(Refusal::Unavailable)?
+            };
+            // Reads take authority before the registry; do not invert that order.
+            let authorized = authorize(&barrier.generation, barrier.owner.binding())?;
+            let mut attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+            let entry = attached.get_mut(id).ok_or(Refusal::StaleSubject)?;
+            if !entry.can_register_gate(gate_id)
+                || entry
+                    .sender
+                    .as_ref()
+                    .is_none_or(|sender| !sender.same_channel(&original_sender))
+            {
+                return Err(Refusal::Unavailable);
+            }
+            entry.used_gates.insert(gate_id.to_owned());
+            entry.gate = Some(GateWitness {
+                v: 2,
+                kind: "gate_use".into(),
+                controller_id: id.to_owned(),
+                operation_id: operation_id.to_owned(),
+                gate_id: gate_id.to_owned(),
+            });
+            Ok(authorized)
+        });
+        if let Ok(result) = result {
+            result
+        } else {
+            // A post-operation barrier validation failure never publishes a gate.
+            if let Ok(mut attached) = self.attached.lock()
+                && let Some(entry) = attached.get_mut(id)
+                && entry
+                    .gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.gate_id == gate_id)
+            {
+                entry.gate = None;
+            }
+            Err(Refusal::Unavailable)
         }
     }
 
@@ -730,11 +893,17 @@ impl ControllerRegistry {
             })
     }
 
-    pub(super) fn replace_period<T>(
+    pub(super) fn replace_period_if<T>(
         &self,
+        existing: impl FnOnce() -> Result<bool, Refusal>,
         operation: impl FnOnce() -> Result<T, Refusal>,
     ) -> Result<T, Refusal> {
-        let cut = || self.cut_matching(|entry| entry.gate_capable);
+        let cut = || {
+            if existing()? {
+                self.cut_matching(|entry| entry.gate_capable)?;
+            }
+            Ok(())
+        };
         match &self.barrier {
             Some(barrier) => barrier
                 .owner
@@ -765,23 +934,68 @@ impl ControllerRegistry {
     }
 
     pub(super) async fn dispatch(&self, id: &str, frame: Vec<u8>) -> Result<Vec<u8>, Refusal> {
-        let (sender, gate_capable) = {
-            let attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
-            let entry = attached.get(id).ok_or(Refusal::StaleSubject)?;
-            (
-                entry.sender.clone().ok_or(Refusal::StaleSubject)?,
-                entry.gate_capable,
-            )
-        };
         let kind = serde_json::from_slice::<Value>(&frame)
             .ok()
             .and_then(|value| value["type"].as_str().map(str::to_owned));
-        if matches!(kind.as_deref(), Some("send_prompt" | "action_commit")) && !gate_capable {
-            return Err(Refusal::Unavailable);
+        {
+            let attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+            let entry = attached.get(id).ok_or(Refusal::StaleSubject)?;
+            if entry.sender.is_none() {
+                return Err(Refusal::StaleSubject);
+            }
+            if matches!(kind.as_deref(), Some("send_prompt" | "action_commit"))
+                && !entry.gate_capable
+            {
+                return Err(Refusal::Unavailable);
+            }
         }
+        let gate = if kind.as_deref() == Some("action_commit") {
+            let commit: ActionCommit =
+                serde_json::from_slice(&frame).map_err(|_| Refusal::Malformed)?;
+            if commit.v != 2
+                || commit.kind != "action_commit"
+                || commit.controller_id != id
+                || fixed::<16>(&commit.operation_id).is_err()
+                || fixed::<16>(&commit.gate_id).is_err()
+                || commit.gate_id == "00".repeat(16)
+                || !(1..=5000).contains(&commit.remaining_ms)
+            {
+                return Err(Refusal::Malformed);
+            }
+            Some(GateWitness {
+                v: 2,
+                kind: "gate_use".into(),
+                controller_id: commit.controller_id,
+                operation_id: commit.operation_id,
+                gate_id: commit.gate_id,
+            })
+        } else {
+            None
+        };
+        let sender = {
+            let mut attached = self.attached.lock().map_err(|_| Refusal::Unavailable)?;
+            let entry = attached.get_mut(id).ok_or(Refusal::StaleSubject)?;
+            let sender = entry.sender.clone().ok_or(Refusal::StaleSubject)?;
+            if matches!(kind.as_deref(), Some("send_prompt" | "action_commit"))
+                && !entry.gate_capable
+            {
+                return Err(Refusal::Unavailable);
+            }
+            if let Some(expected) = &gate {
+                if entry.gate.as_ref() != Some(expected) {
+                    return Err(Refusal::Unavailable);
+                }
+                entry.gate = None;
+            }
+            sender
+        };
         let (response, received) = oneshot::channel();
         sender
-            .try_send(Dispatch { frame, response })
+            .try_send(Dispatch {
+                frame,
+                response,
+                gate,
+            })
             .map_err(|_| Refusal::Unavailable)?;
         tokio::time::timeout(Duration::from_secs(10), received)
             .await
@@ -885,6 +1099,79 @@ struct Attach {
     capability: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Register {
+    v: u64,
+    #[serde(rename = "type")]
+    kind: String,
+    controller_id: String,
+    nonce: String,
+}
+
+async fn finish_registration(
+    reader: &mut (impl AsyncBufRead + Unpin),
+    writer: &mut (impl AsyncWrite + Unpin),
+    registry: &ControllerRegistry,
+    id: &str,
+    wants_registration: bool,
+) -> io::Result<()> {
+    let namespace = std::fs::read_link("/proc/self/ns/pid")
+        .ok()
+        .and_then(|path| path.into_os_string().into_string().ok())
+        .filter(|value| {
+            value.len() > 6
+                && value.starts_with("pid:[")
+                && value.ends_with(']')
+                && value[5..value.len() - 1]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit())
+        });
+    let offer = registry
+        .barrier
+        .as_ref()
+        .filter(|_| wants_registration)
+        .zip(namespace);
+    let response = if let Some((barrier, namespace)) = &offer {
+        json!({"v":1,"type":"registration_offer","controller_id":id,
+            "generation":barrier.generation,"receiver_pid":std::process::id(),"receiver_namespace":namespace})
+    } else {
+        json!({"v":1,"type":"attached","controller_id":id})
+    };
+    writer
+        .write_all(&serde_json::to_vec(&response).map_err(io::Error::other)?)
+        .await?;
+    writer.write_all(b"\n").await?;
+    if offer.is_some() {
+        let request = tokio::time::timeout(Duration::from_secs(5), read_frame(reader))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "registration timed out"))??;
+        let request: Register = serde_json::from_slice(&request)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid registration"))?;
+        if request.v != 1
+            || request.kind != "register"
+            || request.controller_id != id
+            || fixed::<16>(&request.nonce).is_err()
+            || request.nonce == "00".repeat(16)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid registration",
+            ));
+        }
+        let generation = registry
+            .activate(id)
+            .map_err(|_| io::Error::other("registration unavailable"))?;
+        let response = json!({"v":1,"type":"registered","controller_id":id,
+            "generation":generation,"nonce":request.nonce});
+        writer
+            .write_all(&serde_json::to_vec(&response).map_err(io::Error::other)?)
+            .await?;
+        writer.write_all(b"\n").await?;
+    }
+    Ok(())
+}
+
 async fn serve_controller(
     stream: UnixStream,
     hash: &str,
@@ -899,6 +1186,7 @@ async fn serve_controller(
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "attach timed out"))??;
     let (sender, mut requests) = mpsc::channel::<Dispatch>(1);
+    let mut wants_registration = false;
     let result = match serde_json::from_slice::<Attach>(&bytes) {
         Err(_) => Err(Refusal::Malformed),
         Ok(request)
@@ -908,11 +1196,18 @@ async fn serve_controller(
         {
             Err(Refusal::Malformed)
         }
-        Ok(request) if request.v != 1 || request.kind != "attach" => Err(Refusal::Unsupported),
+        Ok(request)
+            if request.v != 1 || !matches!(request.kind.as_str(), "attach" | "attach_write") =>
+        {
+            Err(Refusal::Unsupported)
+        }
         Ok(request) if !verify_capability(hash, &request.capability) => {
             Err(Refusal::Unauthenticated)
         }
-        Ok(_) => registry.attach(sender, shutdown_socket),
+        Ok(request) => {
+            wants_registration = request.kind == "attach_write";
+            registry.attach(sender, shutdown_socket)
+        }
     };
     let id = match result {
         Ok(id) => id,
@@ -926,14 +1221,10 @@ async fn serve_controller(
         }
     };
     let _registration = Registration {
-        registry,
+        registry: registry.clone(),
         id: id.clone(),
     };
-    let response = json!({"v":1,"type":"attached","controller_id":id});
-    writer
-        .write_all(&serde_json::to_vec(&response).map_err(io::Error::other)?)
-        .await?;
-    writer.write_all(b"\n").await?;
+    finish_registration(&mut reader, &mut writer, &registry, &id, wants_registration).await?;
     loop {
         let mut byte = [0; 1];
         tokio::select! {
@@ -948,7 +1239,25 @@ async fn serve_controller(
                 let delivery = async {
                     writer.write_all(&dispatch.frame).await?;
                     writer.write_all(b"\n").await?;
-                    read_frame(&mut reader).await
+                    let first = read_frame(&mut reader).await?;
+                    if let Some(expected) = dispatch.gate {
+                        let value: Value = serde_json::from_slice(&first)
+                            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid gate response"))?;
+                        if value["type"] == "gate_use" {
+                            let actual: GateWitness = serde_json::from_slice(&first)
+                                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid gate witness"))?;
+                            if actual != expected {
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, "mismatched gate witness"));
+                            }
+                            return read_frame(&mut reader).await;
+                        }
+                        if value["type"] != "error"
+                            && !(value["type"] == "action_result" && value["state"] == "fenced_no_effect")
+                        {
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, "missing gate witness"));
+                        }
+                    }
+                    Ok(first)
                 };
                 let bytes = tokio::time::timeout(Duration::from_secs(8), delivery).await
                     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "controller response timed out"))??;

@@ -6,6 +6,8 @@ mod prepared;
 mod run;
 #[path = "authority_selection.rs"]
 mod selection;
+#[path = "authority_send.rs"]
+mod send;
 #[path = "sleep_clock.rs"]
 mod sleep_clock;
 #[path = "authority_voice.rs"]
@@ -171,6 +173,102 @@ pub(super) struct LegacyScopeApproval {
 struct StoredState {
     grants: BTreeMap<String, StoredGrant>,
     revisions: BTreeMap<String, u64>,
+}
+
+fn read_stored_state(path: &Path) -> Result<StoredState, Refusal> {
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|_| Refusal::Unavailable)?
+        .take(MAX_STORED_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Refusal::Unavailable)?;
+    if bytes.len() as u64 > MAX_STORED_BYTES {
+        return Err(Refusal::Unavailable);
+    }
+    let mut stored: StoredState =
+        serde_json::from_slice(&bytes).map_err(|_| Refusal::Unavailable)?;
+    if stored
+        .revisions
+        .values()
+        .any(|revision| *revision == 0 || *revision > MAX_INTEGER)
+    {
+        return Err(Refusal::Unavailable);
+    }
+    for (device, grant) in &mut stored.grants {
+        if device != &grant.device_id
+            || fixed::<16>(&grant.enrollment_id).is_err()
+            || fixed::<16>(&grant.grant_id).is_err()
+            || fixed::<32>(&grant.receiver_identity).is_err()
+            || key(&grant.enrolled_key).is_err()
+            || grant.grant_revision == 0
+            || grant.grant_revision > MAX_INTEGER
+            || stored.revisions.get(device) != Some(&grant.grant_revision)
+            || validate_scope(&grant.scope).is_err()
+        {
+            return Err(Refusal::Unavailable);
+        }
+        if let Some(seal) = &grant.grant_scope_sha256 {
+            if grant_scope_hash(grant).map_err(|_| Refusal::Unavailable)? != *seal {
+                return Err(Refusal::Unavailable);
+            }
+        } else if grant.project_roots_sha256.is_some() {
+            return Err(Refusal::Unavailable);
+        }
+        grant.scope_approved = grant.project_roots_sha256.is_some()
+            || (grant.project_root_ids.is_empty()
+                && grant.grant_scope_sha256.is_some()
+                && grant.legacy_scope_approval_sha256 == grant.grant_scope_sha256);
+        grant.project_scope_valid = project_scope_valid(grant);
+        grant.legacy_confirmations_valid = legacy_confirmations_valid(grant);
+    }
+    Ok(stored)
+}
+
+fn verify_enrolled_send(path: &Path, frame: &Frame, receiver: &str) -> Result<(), Refusal> {
+    let stored = read_stored_state(path)?;
+    let mut matching = stored
+        .grants
+        .values()
+        .filter(|grant| grant.grant_id == frame.grant.grant_id);
+    let grant = matching.next().ok_or(Refusal::Unauthenticated)?;
+    if matching.next().is_some()
+        || !grant.scope_approved
+        || !grant.project_scope_valid
+        || grant.receiver_identity != receiver
+        || grant.grant_revision != frame.grant.grant_revision
+        || grant.enrolled_key != frame.grant.enrolled_key
+        || grant.scope.projects != frame.grant.projects
+        || grant.scope.agents != frame.grant.agents
+        || grant.scope.groups != frame.grant.groups
+        || !grant
+            .scope
+            .groups
+            .iter()
+            .any(|group| group == "operate_sessions")
+    {
+        return Err(Refusal::Unauthenticated);
+    }
+    Ok(())
+}
+
+/// Verify a native frame and independently bind Sends to the local enrollment.
+pub(crate) fn verify_native_frame(
+    input: &[u8],
+    receiver: &str,
+    enrollment_path: &Path,
+) -> Result<(), super::PhoneControlError> {
+    use super::PhoneControlError;
+    verify_phone_control_frame(input, receiver)?;
+    let frame: Frame = serde_json::from_slice(input).map_err(|_| PhoneControlError::Malformed)?;
+    if frame.kind == "send_prompt" {
+        verify_enrolled_send(enrollment_path, &frame, receiver).map_err(
+            |refusal| match refusal {
+                Refusal::Unavailable => PhoneControlError::Unavailable,
+                _ => PhoneControlError::Unauthenticated,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -573,52 +671,7 @@ impl Authority {
         fs::create_dir_all(parent).map_err(|_| Refusal::Unavailable)?;
         set_private_permissions(parent, true).map_err(|_| Refusal::Unavailable)?;
         let stored = if path.try_exists().map_err(|_| Refusal::Unavailable)? {
-            let mut bytes = Vec::new();
-            File::open(path)
-                .map_err(|_| Refusal::Unavailable)?
-                .take(MAX_STORED_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|_| Refusal::Unavailable)?;
-            if bytes.len() as u64 > MAX_STORED_BYTES {
-                return Err(Refusal::Unavailable);
-            }
-            let mut stored: StoredState =
-                serde_json::from_slice(&bytes).map_err(|_| Refusal::Unavailable)?;
-            if stored
-                .revisions
-                .values()
-                .any(|revision| *revision == 0 || *revision > MAX_INTEGER)
-            {
-                return Err(Refusal::Unavailable);
-            }
-            for (device, grant) in &mut stored.grants {
-                if device != &grant.device_id
-                    || fixed::<16>(&grant.enrollment_id).is_err()
-                    || fixed::<16>(&grant.grant_id).is_err()
-                    || fixed::<32>(&grant.receiver_identity).is_err()
-                    || key(&grant.enrolled_key).is_err()
-                    || grant.grant_revision == 0
-                    || grant.grant_revision > MAX_INTEGER
-                    || stored.revisions.get(device) != Some(&grant.grant_revision)
-                    || validate_scope(&grant.scope).is_err()
-                {
-                    return Err(Refusal::Unavailable);
-                }
-                if let Some(seal) = &grant.grant_scope_sha256 {
-                    if grant_scope_hash(grant).map_err(|_| Refusal::Unavailable)? != *seal {
-                        return Err(Refusal::Unavailable);
-                    }
-                } else if grant.project_roots_sha256.is_some() {
-                    return Err(Refusal::Unavailable);
-                }
-                grant.scope_approved = grant.project_roots_sha256.is_some()
-                    || (grant.project_root_ids.is_empty()
-                        && grant.grant_scope_sha256.is_some()
-                        && grant.legacy_scope_approval_sha256 == grant.grant_scope_sha256);
-                grant.project_scope_valid = project_scope_valid(grant);
-                grant.legacy_confirmations_valid = legacy_confirmations_valid(grant);
-            }
-            stored
+            read_stored_state(path)?
         } else {
             StoredState::default()
         };
@@ -924,6 +977,7 @@ impl Authority {
         let sleep_started = self.sleep_now()?;
         match request.action {
             1 => validate_request_shape(request).map_err(refusal)?,
+            3 => super::validate_send_request_shape(request).map_err(refusal)?,
             52 => super::validate_prepared_list_request_shape(request).map_err(refusal)?,
             53 => super::validate_prepared_request_shape(request).map_err(refusal)?,
             54 => super::validate_run_list_request_shape(request).map_err(refusal)?,
@@ -967,6 +1021,7 @@ impl Authority {
             v: 1,
             kind: match request.action {
                 1 => "read_session",
+                3 => "send_prompt",
                 48 => "list_controllers",
                 49 => "list_sessions",
                 50 => "list_selection",
@@ -1013,7 +1068,7 @@ impl Authority {
             return Err(Refusal::Expired);
         }
         lease.sleep.check(&self.sleep_now()?)?;
-        let group = if matches!(request.action, 83..=85) {
+        let group = if matches!(request.action, 3 | 83..=85) {
             "operate_sessions"
         } else {
             "read"
@@ -1831,6 +1886,162 @@ mod tests {
             enrolled_key: review.enrolled_key.clone(),
             scope,
         }
+    }
+
+    fn signed_send_request(grant: &StoredGrant, lease: &Lease) -> Request {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let mut request = signed_request(grant, lease, 1, 921);
+        request.action = 3;
+        request.payload = "0168656c6c6f".into();
+        request.payload_hash = lower_hex(&Sha256::digest(unhex(&request.payload)));
+        request.expected_revision = 1;
+        let mut bytes = prefix(2);
+        bytes.extend(fixed::<16>(&request.grant_id).unwrap());
+        bytes.extend(request.grant_revision.to_be_bytes());
+        bytes.extend(fixed::<16>(&request.period_id).unwrap());
+        bytes.extend(fixed::<32>(&request.receiver_identity).unwrap());
+        bytes.extend(fixed::<16>(&request.controller_id).unwrap());
+        bytes.extend(fixed::<16>(&request.subject_id).unwrap());
+        bytes.push(3);
+        bytes.extend(fixed::<32>(&request.payload_hash).unwrap());
+        bytes.extend(fixed::<16>(&request.operation_id).unwrap());
+        bytes.extend(request.expected_revision.to_be_bytes());
+        bytes.push(1);
+        let working_key = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &unhex(fixture["keys"]["working"]["pkcs8"].as_str().unwrap()),
+        )
+        .unwrap();
+        request.signature = lower_hex(
+            working_key
+                .sign(&SystemRandom::new(), &bytes)
+                .unwrap()
+                .as_ref(),
+        );
+        request
+    }
+
+    fn replace_enrolled_key(frame: &mut super::super::Frame) {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let wrong = &fixture["keys"]["wrong"];
+        frame.grant.enrolled_key = wrong["sec1"].as_str().unwrap().into();
+        frame.proof.enrolled_key_hash =
+            lower_hex(&Sha256::digest(unhex(&frame.grant.enrolled_key)));
+        let mut proof_bytes = prefix(1);
+        proof_bytes.extend(fixed::<16>(&frame.proof.grant_id).unwrap());
+        proof_bytes.extend(frame.proof.grant_revision.to_be_bytes());
+        proof_bytes.extend(fixed::<32>(&frame.proof.enrolled_key_hash).unwrap());
+        proof_bytes.extend(fixed::<32>(&frame.proof.receiver_identity).unwrap());
+        proof_bytes.extend(fixed::<16>(&frame.proof.challenge_id).unwrap());
+        proof_bytes.extend(fixed::<32>(&frame.proof.challenge).unwrap());
+        proof_bytes.extend(fixed::<65>(&frame.proof.working_key).unwrap());
+        let wrong_key = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &unhex(wrong["pkcs8"].as_str().unwrap()),
+        )
+        .unwrap();
+        frame.proof.signature = lower_hex(
+            wrong_key
+                .sign(&SystemRandom::new(), &proof_bytes)
+                .unwrap()
+                .as_ref(),
+        );
+    }
+
+    #[test]
+    fn native_send_checks_local_enrollment_even_for_a_self_consistent_signed_frame() {
+        use super::super::{
+            Frame, GrantRecord, PeriodRecord, PhoneControlError, verify_phone_control_frame,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("grants");
+        let receiver = "01".repeat(32);
+        let authority = Authority::open(&path, &receiver).unwrap();
+        let now = Instant::now();
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let key = fixture["keys"]["enrolled"]["sec1"].as_str().unwrap();
+        let offer = authority.start("phone", now, 1_000).unwrap();
+        authority
+            .submit(
+                "phone",
+                &offer.enrollment_id,
+                &offer.matching_code,
+                key,
+                now,
+            )
+            .unwrap();
+        let grant = authority
+            .approve(
+                "phone",
+                &offer.enrollment_id,
+                key,
+                Scope {
+                    projects: vec![root.path().to_str().unwrap().into()],
+                    agents: vec!["codex".into()],
+                    groups: vec!["operate_sessions".into()],
+                },
+                &[],
+                now,
+            )
+            .unwrap();
+        let challenge = authority
+            .challenge("phone", &grant.grant_id, grant.grant_revision, now, 1_000)
+            .unwrap();
+        let proof = signed_proof(&grant, &challenge);
+        let lease = authority.unlock("phone", &proof, now, 1_000).unwrap();
+        let request = signed_send_request(&grant, &lease);
+        let mut frame = Frame {
+            v: 1,
+            kind: "send_prompt".into(),
+            controller_id: request.controller_id.clone(),
+            grant: GrantRecord {
+                grant_id: grant.grant_id.clone(),
+                grant_revision: grant.grant_revision,
+                enrolled_key: grant.enrolled_key.clone(),
+                projects: grant.scope.projects.clone(),
+                agents: grant.scope.agents.clone(),
+                groups: grant.scope.groups.clone(),
+            },
+            period: PeriodRecord {
+                period_id: lease.period_id,
+                challenge_id: proof.challenge_id.clone(),
+                idle_expires_at_ms: lease.idle_expires_at_ms,
+                absolute_expires_at_ms: lease.absolute_expires_at_ms,
+            },
+            proof,
+            request,
+        };
+        let encode = |frame: &Frame| serde_json::to_vec(frame).unwrap();
+        assert_eq!(
+            super::verify_native_frame(&encode(&frame), &receiver, &path),
+            Ok(())
+        );
+        frame.grant.agents.push("unapproved".into());
+        assert_eq!(
+            verify_phone_control_frame(&encode(&frame), &receiver),
+            Ok(())
+        );
+        assert_eq!(
+            super::verify_native_frame(&encode(&frame), &receiver, &path),
+            Err(PhoneControlError::Unauthenticated)
+        );
+        frame.grant.agents.pop();
+
+        replace_enrolled_key(&mut frame);
+        assert_eq!(
+            verify_phone_control_frame(&encode(&frame), &receiver),
+            Ok(())
+        );
+        assert_eq!(
+            super::verify_native_frame(&encode(&frame), &receiver, &path),
+            Err(PhoneControlError::Unauthenticated)
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            super::verify_native_frame(&encode(&frame), &receiver, &path),
+            Err(PhoneControlError::Unavailable)
+        );
+        assert!(!path.exists());
     }
 
     #[test]

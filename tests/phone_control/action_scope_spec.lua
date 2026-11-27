@@ -5,6 +5,71 @@ local Controller = require("louiselm.phone_control.controller")
 
 local T = MiniTest.new_set()
 
+T["the live owner proves only distinct exact Session incarnations independent"] = function()
+  local controller_id = string.rep("1", 32)
+  local controller = Controller.new({ service = { "unused" } })
+  assert(controller:attach(controller_id))
+  local owner = { sessions = {} }
+  local function session(id)
+    local item = { owner = owner }
+    function item:inspect()
+      return { id = id, status = "ready", working_dir = nvim.fn.getcwd(), agent = "mock" }
+    end
+    owner.sessions[id] = item
+    require("tests.fixtures.phone_control_history")(item, controller)
+    return item
+  end
+  local first, second = session("first"), session("second")
+  local old, target = assert(controller:track(first)), assert(controller:track(second))
+  MiniTest.finally(function()
+    controller:dispose()
+  end)
+  local request = {
+    v = 1,
+    type = "action_independence",
+    controller_id = controller_id,
+    subject_id = target,
+    operation_id = string.rep("2", 32),
+    unknowns = {
+      { operation_id = string.rep("3", 32), controller_id = controller_id, subject_id = old },
+      { operation_id = string.rep("4", 32), controller_id = controller_id, subject_id = target },
+      { operation_id = string.rep("5", 32), controller_id = string.rep("6", 32), subject_id = old },
+    },
+  }
+  local function read(line)
+    local result
+    controller:read(line, function(value)
+      result = value
+    end)
+    assert(nvim.wait(3000, function()
+      return result ~= nil
+    end))
+    return result
+  end
+  local result = read(nvim.json.encode(request))
+  MiniTest.expect.equality(result.type, "action_independence")
+  MiniTest.expect.equality(result.independent, { string.rep("3", 32) })
+  assert(controller:detach())
+  controller_id = string.rep("7", 32)
+  assert(controller:attach(controller_id))
+  target = assert(controller:track(second))
+  request.controller_id, request.subject_id = controller_id, target
+  MiniTest.expect.equality(read(nvim.json.encode(request)).independent, { string.rep("3", 32) })
+  owner.sessions.first = nil
+  MiniTest.expect.equality(read(nvim.json.encode(request)).independent, {})
+  local duplicate = nvim.json.encode(request):gsub('"type":', '"type":"action_independence","type":')
+  MiniTest.expect.equality(read(duplicate).code, "malformed")
+  request.unknowns = {}
+  for index = 1, 51 do
+    request.unknowns[index] =
+      { operation_id = string.format("%032x", index), controller_id = controller_id, subject_id = old }
+  end
+  MiniTest.expect.equality(read(nvim.json.encode(request)).code, "malformed")
+  request.unknowns = {}
+  owner.sessions.second = {}
+  MiniTest.expect.equality(read(nvim.json.encode(request)).code, "stale_subject")
+end
+
 T["a local scope lookup identifies only the exact live Session incarnation"] = function()
   local controller_id = string.rep("1", 32)
   local state = { id = "s", status = "ready", working_dir = nvim.fn.getcwd(), agent = "mock" }

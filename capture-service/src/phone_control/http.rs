@@ -18,12 +18,14 @@ use super::{
     MAX_INTEGER, Proof, Request, fixed, valid_string,
 };
 use super::{
-    authority::{Authority, EnrollmentStatus, History, ReadPermit, Refusal},
+    authority::{Authority, EnrollmentStatus, History, Lease, ReadPermit, Refusal},
     prepared_owner::OwnerRunReader,
     socket::{ControllerRegistry, validate_read_response},
 };
 use crate::{PairingRegistry, hex::lower_hex, time::now_ms};
 
+#[path = "http_send.rs"]
+mod send;
 #[path = "http_voice_upload.rs"]
 mod voice_upload;
 
@@ -48,6 +50,9 @@ mod run_tests;
 #[cfg(test)]
 #[path = "http_selection_tests.rs"]
 mod selection_tests;
+#[cfg(test)]
+#[path = "http_send_tests.rs"]
+mod send_tests;
 #[cfg(test)]
 #[path = "http_settings_tests.rs"]
 mod settings_tests;
@@ -162,6 +167,15 @@ struct SignedRequest {
 
 enum Started {
     Response(Value),
+    Unlock {
+        device: String,
+        proof: Box<Proof>,
+        lease: Lease,
+    },
+    Send {
+        permit: Box<ReadPermit>,
+        request: Box<Request>,
+    },
     Read {
         permit: Box<ReadPermit>,
         request: Box<Request>,
@@ -227,6 +241,14 @@ async fn process_http(
     .unwrap_or(Err(Refusal::Unavailable));
     match started {
         Ok(Started::Response(value)) => Ok(value),
+        Ok(Started::Unlock {
+            device,
+            proof,
+            lease,
+        }) => finish_unlock(state, credential, device, *proof, lease).await,
+        Ok(Started::Send { permit, request }) => {
+            send::finish_send(state, credential, *permit, *request).await
+        }
         Ok(Started::Read { permit, request }) => {
             match request.action {
                 84 | 85 => return finish_voice_mutation(state, credential, *permit).await,
@@ -324,8 +346,60 @@ fn begin_http(
         .authenticate_device(credential)
         .map_err(|_| Refusal::Unavailable)?
         .ok_or(Refusal::Unauthenticated)?;
+    if path == "/v1/phone-control/unlock" {
+        let request: UnlockRequest = decode(body, "unlock")?;
+        let lease = state.controllers.replace_period_if(
+            || state.authority.validate_unlock(&device, &request.proof),
+            || {
+                state
+                    .authority
+                    .unlock(&device, &request.proof, Instant::now(), now_ms())
+            },
+        )?;
+        return Ok(Started::Unlock {
+            device,
+            proof: Box::new(request.proof),
+            lease,
+        });
+    }
     if path == "/v1/phone-control/request" {
         let signed: SignedRequest = decode(body, "request")?;
+        if signed.request.action == 3 {
+            let permit = state
+                .authority
+                .begin_read(&device, &signed.request, Instant::now())?;
+            if let Err(error) = ensure_send_ready(state, &signed.request.controller_id) {
+                state.authority.discard_voice_permit(&permit)?;
+                return Err(error);
+            }
+            return Ok(Started::Send {
+                permit: Box::new(permit),
+                request: Box::new(signed.request),
+            });
+        }
+        if signed.request.action == 2 {
+            let store = state
+                .evidence
+                .as_ref()
+                .as_ref()
+                .map_err(|_| Refusal::Unavailable)?;
+            let mut history =
+                state
+                    .authority
+                    .read_history(store, &device, &signed.request, Instant::now())?;
+            send::refresh_history(store, &mut history)?;
+            state.authority.confirm_history(
+                &device,
+                &signed.request,
+                &history,
+                &state.pairing,
+                credential,
+            )?;
+            return Ok(Started::Response(history_response(
+                &history,
+                &signed.request.operation_id,
+            )));
+        }
         if signed.request.action == 85 && !state.voice_transcription_enabled {
             return Err(Refusal::Unsupported);
         }
@@ -342,15 +416,108 @@ fn begin_http(
             });
         }
     }
-    process(
-        &state.authority,
-        &state.controllers,
-        &state.evidence,
-        &device,
-        path,
-        body,
+    process(&state.authority, &device, path, body).map(Started::Response)
+}
+
+fn ensure_send_ready(state: &HttpState, controller_id: &str) -> Result<(), Refusal> {
+    if !state.controllers.write_capable(controller_id) {
+        return Err(if state.controllers.contains(controller_id) {
+            Refusal::Unsupported
+        } else {
+            Refusal::StaleSubject
+        });
+    }
+    let store = state
+        .evidence
+        .as_ref()
+        .as_ref()
+        .map_err(|_| Refusal::Unavailable)?;
+    super::personal_startup::check_archive_health(
+        store,
+        state.authority.receiver_identity(),
+        &state.pairing,
     )
-    .map(Started::Response)
+    .map_err(|_| Refusal::Unavailable)
+}
+
+async fn finish_unlock(
+    state: HttpState,
+    credential: String,
+    device: String,
+    proof: Proof,
+    lease: Lease,
+) -> Result<Value, Refusal> {
+    let initial_state = state.clone();
+    let initial_credential = credential.clone();
+    let initial_device = device.clone();
+    let initial_proof = proof.clone();
+    let initial_period = lease.period_id.clone();
+    let can_wait = tokio::task::spawn_blocking(move || {
+        let allowed = initial_state.authority.send_capable(
+            &initial_device,
+            &initial_proof.grant_id,
+            initial_proof.grant_revision,
+            &initial_period,
+            &initial_state.pairing,
+            &initial_credential,
+        )?;
+        if !allowed {
+            return Ok(false);
+        }
+        let healthy = initial_state.evidence.as_ref().as_ref().is_ok_and(|store| {
+            super::personal_startup::check_archive_health(
+                store,
+                initial_state.authority.receiver_identity(),
+                &initial_state.pairing,
+            )
+            .is_ok()
+        });
+        Ok::<_, Refusal>(healthy)
+    })
+    .await
+    .map_err(|_| Refusal::Unavailable)??;
+    if can_wait {
+        state
+            .controllers
+            .wait_for_write_capable(std::time::Duration::from_secs(2))
+            .await;
+    }
+    let check_state = state.clone();
+    let check_credential = credential.clone();
+    let check_device = device.clone();
+    let check_proof = proof.clone();
+    let check_period = lease.period_id.clone();
+    let supported = tokio::task::spawn_blocking(move || {
+        let authorized = || {
+            check_state.authority.send_capable(
+                &check_device,
+                &check_proof.grant_id,
+                check_proof.grant_revision,
+                &check_period,
+                &check_state.pairing,
+                &check_credential,
+            )
+        };
+        if !authorized()? || !check_state.controllers.any_write_capable() {
+            return Ok(false);
+        }
+        let healthy = check_state.evidence.as_ref().as_ref().is_ok_and(|store| {
+            super::personal_startup::check_archive_health(
+                store,
+                check_state.authority.receiver_identity(),
+                &check_state.pairing,
+            )
+            .is_ok()
+        });
+        let allowed = authorized()?;
+        Ok(healthy && allowed && check_state.controllers.any_write_capable())
+    })
+    .await
+    .map_err(|_| Refusal::Unavailable)??;
+    Ok(json!({"v":1,"type":"unlocked","grant_id":proof.grant_id,
+        "grant_revision":proof.grant_revision,"period_id":lease.period_id,
+        "idle_expires_at_ms":lease.idle_expires_at_ms,
+        "absolute_expires_at_ms":lease.absolute_expires_at_ms,"send_supported":supported}))
 }
 
 async fn finish_voice_mutation(
@@ -543,14 +710,7 @@ fn controller_page(
     Ok((page, ids))
 }
 
-fn process(
-    authority: &Authority,
-    controllers: &ControllerRegistry,
-    evidence: &Result<ActionEvidenceStore, ActionEvidenceError>,
-    device: &str,
-    path: &str,
-    body: &[u8],
-) -> Result<Value, Refusal> {
+fn process(authority: &Authority, device: &str, path: &str, body: &[u8]) -> Result<Value, Refusal> {
     match path {
         "/v1/phone-control/enrollment/offer" => {
             let _: Empty = decode(body, "enrollment_offer")?;
@@ -613,26 +773,8 @@ fn process(
                 "challenge_id":challenge.challenge_id, "challenge":challenge.challenge, "expires_at_ms":challenge.expires_at_ms}),
             )
         }
-        "/v1/phone-control/unlock" => {
-            let request: UnlockRequest = decode(body, "unlock")?;
-            let lease = controllers.replace_period(|| {
-                authority.unlock(device, &request.proof, Instant::now(), now_ms())
-            })?;
-            Ok(
-                json!({"v":1,"type":"unlocked", "grant_id":request.proof.grant_id,
-                "grant_revision":request.proof.grant_revision, "period_id":lease.period_id,
-                "idle_expires_at_ms":lease.idle_expires_at_ms, "absolute_expires_at_ms":lease.absolute_expires_at_ms,
-                "send_supported":false}),
-            )
-        }
         "/v1/phone-control/request" => {
-            let request: SignedRequest = decode(body, "request")?;
-            if request.request.action == 2 {
-                let store = evidence.as_ref().map_err(|_| Refusal::Unavailable)?;
-                let record =
-                    authority.read_history(store, device, &request.request, Instant::now())?;
-                return Ok(history_response(&record, &request.request.operation_id));
-            }
+            let _: SignedRequest = decode(body, "request")?;
             Err(Refusal::Unsupported)
         }
         _ => Err(Refusal::Unsupported),
@@ -727,7 +869,7 @@ mod tests {
             .collect()
     }
 
-    fn signed_unlock(fixture: &Value, challenge: &Value) -> Value {
+    pub(super) fn signed_unlock(fixture: &Value, challenge: &Value) -> Value {
         let field = |name: &str| challenge[name].as_str().unwrap();
         let enrolled_hash = fixture["proof"]["enrolled_key_hash"].as_str().unwrap();
         let working_key = fixture["keys"]["working"]["sec1"].as_str().unwrap();
@@ -1278,7 +1420,7 @@ mod tests {
         controller_task.abort();
     }
 
-    fn signed_history(
+    pub(super) fn signed_history(
         fixture: &Value,
         grant: &StoredGrant,
         period: &str,
@@ -1297,7 +1439,7 @@ mod tests {
         )
     }
 
-    fn signed_history_page(
+    pub(super) fn signed_history_page(
         fixture: &Value,
         grant: &StoredGrant,
         period: &str,
@@ -1949,7 +2091,7 @@ mod tests {
                     Scope {
                         projects: vec![root.path().to_str().unwrap().into()],
                         agents: vec!["codex".into()],
-                        groups: vec!["read".into()],
+                        groups: vec!["read".into(), "operate_sessions".into()],
                     },
                     &[],
                     now,
@@ -2094,8 +2236,10 @@ mod tests {
             assert_eq!(page["controller_id"], controller);
             assert_eq!(page["subject_id"], subject);
 
-            let mut send = signed_read(&fixture, &grant, &second_period, controller, &subject, 105);
-            send["request"]["action"] = json!(3);
+            let send = json!({"v":1,"type":"request","request":
+            super::send_tests::signed_send_to(
+                &fixture, &grant, &second_period, 105, controller, &subject,
+            )});
             let (_, denied) = post(
                 app.clone(),
                 "/v1/phone-control/request",

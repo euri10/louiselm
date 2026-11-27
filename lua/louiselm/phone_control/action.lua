@@ -12,8 +12,9 @@ Action.__index = Action
 ---@field generation string? Receiver generation bound to this controller.
 ---@field session louiselm.session.Session
 ---@field projection table
----@field current fun(): boolean
----@field authorize fun(done: fun(permit: table))
+---@field current fun(): boolean, string?
+---@field authorize fun(done: fun(permit: table?))
+---@field on_terminal? fun(outcome: string) Called after durable terminal evidence.
 
 local function failure(code)
   return { v = 1, type = "error", code = code }
@@ -173,7 +174,7 @@ function Action:send(identity, text, callback)
       end
       authorized = true
       self.permit = permit
-      if type(permit) ~= "table" or type(permit.valid) ~= "function" or type(permit.release) ~= "function" then
+      if type(permit) ~= "table" or type(permit.gate) ~= "table" or type(permit.release) ~= "function" then
         self.permit = nil
         if type(permit) == "table" and type(permit.release) == "function" and not release(self, permit) then
           finish(failure("unavailable"))
@@ -184,14 +185,11 @@ function Action:send(identity, text, callback)
       end
       local state = self.session:inspect()
       local page = self.projection:page(0, 1, identity.expected_revision)
-      local current = self.current()
-        and state.status ~= "disposed"
-        and self.session.owner.sessions[state.id] == self.session
+      local current, current_error = self.current()
+      current = current and state.status ~= "disposed" and self.session.owner.sessions[state.id] == self.session
       local code
-      if not permit.valid() then
-        code = "expired"
-      elseif not current or page == nil then
-        code = "stale_subject"
+      if not current or page == nil then
+        code = current_error or "stale_subject"
       elseif state.status ~= "ready" then
         code = "busy"
       end
@@ -207,14 +205,15 @@ function Action:send(identity, text, callback)
         end
         return
       end
-      local phases = ActionPhases.new(self.session, self.journal, identity)
+      local phases = ActionPhases.new(self.session, self.journal, identity, self.on_terminal)
       self.phases[#self.phases + 1] = phases
       transitioning = true
-      local turn_id, prompt_error = self.session:prompt(text, function(result, err)
+      local turn_id, prompt_error = self.session:prompt_phone(text, permit.gate, function(result, err)
         phases:completed(err == nil and result ~= nil)
-      end, nil, text)
+      end)
       transitioning = false
       admitted = turn_id ~= nil
+      self.admitted = admitted
       local released = release(self, permit)
       if turn_id == nil then
         phases:dispose()
@@ -287,6 +286,7 @@ function M.new(options)
     projection = options.projection,
     current = options.current,
     authorize = options.authorize,
+    on_terminal = options.on_terminal,
     phases = {},
     pending = false,
     disposed = false,

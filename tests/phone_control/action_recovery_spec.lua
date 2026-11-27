@@ -20,7 +20,7 @@ T["detaching a begun unadmitted action persists a fence before recovery"] = func
   function session:inspect()
     return { id = "s", status = "ready" }
   end
-  function session:prompt()
+  function session:prompt_phone()
     prompts = prompts + 1
     return "turn-1"
   end
@@ -69,9 +69,7 @@ T["detaching a begun unadmitted action persists a fence before recovery"] = func
   MiniTest.expect.equality(old_reply, nil)
   local released = false
   assert(authorize)({
-    valid = function()
-      return true
-    end,
+    gate = {},
     release = function()
       released = true
     end,
@@ -114,15 +112,13 @@ T["detaching during admission cannot fence an accepted action"] = function()
     authorize = function(done)
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function() end,
         })
       end)
     end,
   })
-  function session:prompt()
+  function session:prompt_phone()
     action:detach(function(result)
       recovery = result
     end)
@@ -238,7 +234,7 @@ T["detaching after admission but before its journal reply never fences"] = funct
   function session:on()
     return function() end
   end
-  function session:prompt()
+  function session:prompt_phone()
     return "turn-1"
   end
   local action = Action.new({
@@ -256,9 +252,7 @@ T["detaching after admission but before its journal reply never fences"] = funct
     authorize = function(done)
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function() end,
         })
       end)

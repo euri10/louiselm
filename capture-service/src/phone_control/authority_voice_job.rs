@@ -111,7 +111,7 @@ impl Authority {
         Ok(())
     }
 
-    fn check_voice_request(
+    pub(super) fn check_voice_request(
         &self,
         state: &mut State,
         permit: &ReadPermit,
@@ -160,6 +160,18 @@ impl Authority {
         grant: &StoredGrant,
         association: &VoiceAssociation,
     ) -> Result<(), Refusal> {
+        if association.receiver != self.receiver_identity {
+            return Err(Refusal::OutOfScope);
+        }
+        self.check_owner_scope(grant, Path::new(&association.project), &association.agent)
+    }
+
+    pub(super) fn check_owner_scope(
+        &self,
+        grant: &StoredGrant,
+        project: &Path,
+        agent: &str,
+    ) -> Result<(), Refusal> {
         let roots = grant.project_roots()?.ok_or(Refusal::Unavailable)?;
         let projects = self.projects.as_ref().map_err(|_| Refusal::Unavailable)?;
         if roots.len() != grant.scope.projects.len() {
@@ -174,13 +186,11 @@ impl Authority {
                 return Err(Refusal::Unavailable);
             }
         }
-        let project = Path::new(&association.project);
-        if association.receiver != self.receiver_identity
-            || !project.is_absolute()
+        if !project.is_absolute()
             || project
                 .components()
                 .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
-            || !grant.scope.agents.contains(&association.agent)
+            || !grant.scope.agents.iter().any(|allowed| allowed == agent)
             || !grant
                 .scope
                 .projects

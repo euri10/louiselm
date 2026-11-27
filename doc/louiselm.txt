@@ -907,14 +907,14 @@ mcp.servers.<name>.url                  *louiselm-config-mcp-servers-name-url*
 phone_control                                  *louiselm-config-phone-control*
     Type: table
     Default: {}
-    Description: Optional local phone-control Session read integration.
+    Description: Local phone-control Session integration; phone access still
+    requires an approved grant.
 
 ------------------------------------------------------------------------------
 phone_control.enabled                  *louiselm-config-phone-control-enabled*
     Type: boolean
-    Default: false
-    Description: Attach this Neovim to the local phone-control service; a
-    separately approved phone grant is still required.
+    Description: Attach this Neovim to the local phone-control service unless
+    false; a separately approved phone grant is still required.
 
 ------------------------------------------------------------------------------
 skills                                                *louiselm-config-skills*

@@ -144,13 +144,19 @@ fn unhex(text: &str) -> Vec<u8> {
 
 fn sign_for_receiver(frame: &mut Value, receiver: &str) {
     let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+    let send: Value = serde_json::from_str(include_str!(
+        "../../android/app/src/test/resources/phone-control-send-v1.json"
+    ))
+    .unwrap();
     let original = fixture["proof"]["receiver_identity"].as_str().unwrap();
     for (name, key) in [("proof", "enrolled"), ("request", "working")] {
         frame[name]["receiver_identity"] = json!(receiver);
-        let encoded = fixture[name]["transcript"]
-            .as_str()
-            .unwrap()
-            .replace(original, receiver);
+        let transcript = if name == "request" && frame["type"] == "send_prompt" {
+            &send["transcript"]
+        } else {
+            &fixture[name]["transcript"]
+        };
+        let encoded = transcript.as_str().unwrap().replace(original, receiver);
         let pair = EcdsaKeyPair::from_pkcs8(
             &ECDSA_P256_SHA256_ASN1_SIGNING,
             &unhex(fixture["keys"][key]["pkcs8"].as_str().unwrap()),
@@ -159,6 +165,34 @@ fn sign_for_receiver(frame: &mut Value, receiver: &str) {
         let signature = pair.sign(&SystemRandom::new(), &unhex(&encoded)).unwrap();
         frame[name]["signature"] = json!(hex(signature.as_ref()));
     }
+}
+
+#[test]
+fn native_send_verifier_requires_a_locally_approved_enrollment() {
+    let state = tempfile::tempdir().unwrap();
+    let tls = state.path().join("louiselm/capture/tls");
+    let identity = TlsIdentity::load_or_create(&tls).unwrap();
+    let (mut frame, _) = frame();
+    let send: Value = serde_json::from_str(include_str!(
+        "../../android/app/src/test/resources/phone-control-send-v1.json"
+    ))
+    .unwrap();
+    frame["type"] = json!("send_prompt");
+    frame["grant"]["groups"] = json!(["operate_sessions"]);
+    frame["request"]["action"] = json!(3);
+    frame["request"]["payload"] = send["payload"].clone();
+    frame["request"]["payload_hash"] = send["payload_hash"].clone();
+    frame["request"]["expected_revision"] = json!(1);
+    frame["request"]["interaction"] = json!(1);
+    sign_for_receiver(&mut frame, identity.public_key_sha256());
+
+    let reply = cli(state.path(), &serde_json::to_vec(&frame).unwrap());
+    assert!(reply.status.success());
+    assert_eq!(
+        reply.stdout,
+        b"{\"v\":1,\"type\":\"error\",\"code\":\"unavailable\"}\n"
+    );
+    assert!(!state.path().join("louiselm/capture/phone-control").exists());
 }
 
 fn cli(state: &std::path::Path, input: &[u8]) -> std::process::Output {

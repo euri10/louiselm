@@ -31,7 +31,7 @@ T["recovers history before observation and keeps new Sessions complete"] = funct
         local ending = received:find("\n", 1, true)
         if ending then
           local attach = nvim.json.decode(received:sub(1, ending - 1))
-          assert(attach.type == "attach" and attach.capability == capability)
+          assert(attach.type == "attach_write" and attach.capability == capability)
           peer:write(nvim.json.encode({ v = 1, type = "attached", controller_id = controller_id }) .. "\n")
         end
       end

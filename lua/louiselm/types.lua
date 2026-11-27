@@ -6,7 +6,7 @@
 ---@field context? louiselm.ConfigContext Project-context injection settings.
 ---@field keymaps? boolean Install LouiseLM's global default keymaps; false disables them.
 ---@field mcp? louiselm.ConfigMcp MCP servers supplied to ACP Agents; the Agent owns server connections and tools.
----@field phone_control? louiselm.ConfigPhoneControl Optional local phone-control Session read integration.
+---@field phone_control? louiselm.ConfigPhoneControl Local phone-control Session integration; phone access still requires an approved grant.
 ---@field skills? louiselm.ConfigSkills Agent Skill discovery and injection settings.
 ---@field workflows? louiselm.ConfigWorkflows Workflow Run and Park integration; ordinary Handoff remains available independently.
 
@@ -85,7 +85,7 @@
 ---@field url? string Required for http: absolute HTTP(S) Streamable HTTP endpoint.
 
 ---@class louiselm.ConfigPhoneControl
----@field enabled? boolean Attach this Neovim to the local phone-control service; a separately approved phone grant is still required.
+---@field enabled? boolean Attach this Neovim to the local phone-control service unless false; a separately approved phone grant is still required.
 
 ---@class louiselm.ConfigSkills
 ---@field management? louiselm.ConfigSkillsManagement Trusted skill-management integration; independent of skill invocation and Admission.

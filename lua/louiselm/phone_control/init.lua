@@ -61,7 +61,7 @@ function Owner:dispose()
   return stopped and released, stop_error or release_error
 end
 
----Start the optional controller; omission does not connect or observe Sessions.
+---Start the controller for ordinary setup unless explicitly disabled.
 ---@param config? table Validated LouiseLM setup configuration.
 ---@return table? owner Nil when disabled or unavailable.
 ---@return string? error_message Setup failure, if enabled.

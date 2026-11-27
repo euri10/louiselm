@@ -57,6 +57,19 @@ impl Lease {
         Ok(())
     }
 
+    pub(super) fn remaining_ms(&mut self, now: &Sample) -> Result<u64, Refusal> {
+        self.check(now)?;
+        self.idle_deadline
+            .min(self.absolute_deadline)
+            .checked_sub(
+                now.centiseconds
+                    .checked_add(1)
+                    .ok_or(Refusal::Unavailable)?,
+            )
+            .and_then(|remaining| remaining.checked_mul(10))
+            .ok_or(Refusal::Unavailable)
+    }
+
     pub(super) fn renew_idle(&mut self, started: &Sample, now: &Sample) -> Result<(), Refusal> {
         if started.namespace != self.namespace || started.centiseconds > now.centiseconds {
             return Err(Refusal::Unavailable);
@@ -268,6 +281,22 @@ mod tests {
         assert_eq!(lease.check(&next), Ok(()));
         next.centiseconds = 29_999;
         assert_eq!(lease.check(&next), Err(Refusal::Expired));
+    }
+
+    #[test]
+    fn remaining_time_charges_the_truncated_fraction_and_refuses_rewind() {
+        let mut sample = Sample {
+            centiseconds: 0,
+            namespace: "time:[1]".into(),
+        };
+        let mut lease = Lease::new(&sample).unwrap();
+        assert_eq!(lease.remaining_ms(&sample), Ok(299_990));
+        sample.centiseconds = 29_998;
+        assert_eq!(lease.remaining_ms(&sample), Ok(10));
+        sample.centiseconds = 29_999;
+        assert_eq!(lease.remaining_ms(&sample), Err(Refusal::Expired));
+        sample.centiseconds = 1;
+        assert_eq!(lease.remaining_ms(&sample), Err(Refusal::Unavailable));
     }
 
     #[test]

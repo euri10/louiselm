@@ -5,6 +5,71 @@ local Action = require("louiselm.phone_control.action")
 
 local T = MiniTest.new_set()
 
+T["terminal notification waits for the durable completion report"] = function()
+  local Phases = require("louiselm.phone_control.action_phases")
+  local pending, terminal = {}, false
+  local journal = {}
+  function journal:run(message, callback)
+    pending[#pending + 1] = { message = message, callback = callback }
+  end
+  local session = {
+    on = function()
+      return function() end
+    end,
+  }
+  local phases = Phases.new(session, journal, { operation_id = string.rep("01", 16) }, function()
+    terminal = true
+  end)
+  MiniTest.finally(function()
+    phases:dispose()
+  end)
+  phases:admitted("turn-1", function() end)
+  phases:completed(true)
+  assert(nvim.wait(1000, function()
+    return #pending == 1
+  end))
+  MiniTest.expect.equality(terminal, false)
+  pending[1].callback({ type = "recorded" })
+  assert(nvim.wait(1000, function()
+    return #pending == 2
+  end))
+  MiniTest.expect.equality(terminal, false)
+  pending[2].callback({ type = "recorded" })
+  assert(nvim.wait(1000, function()
+    return terminal
+  end))
+end
+
+T["an unsuccessful callback stays unknown after its durable report"] = function()
+  local Phases = require("louiselm.phone_control.action_phases")
+  local reports, terminal = {}, nil
+  local journal = {}
+  function journal:run(message, callback)
+    reports[#reports + 1] = message.outcome
+    nvim.schedule(function()
+      callback({ type = "recorded" })
+    end)
+  end
+  local session = {
+    on = function()
+      return function() end
+    end,
+  }
+  local phases = Phases.new(session, journal, { operation_id = string.rep("01", 16) }, function(outcome)
+    terminal = outcome
+  end)
+  MiniTest.finally(function()
+    phases:dispose()
+  end)
+  phases:admitted("turn-1", function() end)
+  phases:completed(false)
+  assert(nvim.wait(1000, function()
+    return terminal ~= nil
+  end))
+  MiniTest.expect.equality(terminal, "unknown")
+  MiniTest.expect.equality(reports[2], "unknown")
+end
+
 T["owner phases remain distinct after the accepted reply"] = function()
   local reports, listeners, completion = {}, {}, nil
   local journal = {}
@@ -33,7 +98,7 @@ T["owner phases remain distinct after the accepted reply"] = function()
       end
     end
   end
-  function session:prompt(_, callback)
+  function session:prompt_phone(_, _gate, callback)
     completion = callback
     return "turn-1"
   end
@@ -52,9 +117,7 @@ T["owner phases remain distinct after the accepted reply"] = function()
     authorize = function(done)
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function() end,
         })
       end)
@@ -123,7 +186,7 @@ T["phase writes remain ordered when dispatch and completion overtake storage"] =
     listeners[#listeners + 1] = callback
     return function() end
   end
-  function session:prompt(_, callback)
+  function session:prompt_phone(_, _gate, callback)
     complete = callback
     return "turn-1"
   end
@@ -142,9 +205,7 @@ T["phase writes remain ordered when dispatch and completion overtake storage"] =
     authorize = function(done)
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function() end,
         })
       end)
@@ -215,7 +276,7 @@ T["a failed phase report is retained for retry without confirming acceptance"] =
   function session:on()
     return function() end
   end
-  function session:prompt()
+  function session:prompt_phone()
     return "turn-1"
   end
   local action = Action.new({
@@ -233,9 +294,7 @@ T["a failed phase report is retained for retry without confirming acceptance"] =
     authorize = function(done)
       nvim.schedule(function()
         done({
-          valid = function()
-            return true
-          end,
+          gate = {},
           release = function() end,
         })
       end)

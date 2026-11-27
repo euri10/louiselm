@@ -249,7 +249,7 @@ struct ScopeError {
     code: String,
 }
 
-async fn owner_scope(
+pub(super) async fn owner_scope(
     controllers: &Arc<ControllerRegistry>,
     request: &Request,
 ) -> Result<VoiceOwnerScope, Refusal> {

@@ -47,6 +47,22 @@ pub(super) struct OwnerJournal {
     store: ActionEvidenceStore,
 }
 
+pub(super) fn inspect_existing(
+    path: &Path,
+    identities: &[ActionIdentity],
+) -> Result<Vec<Option<ActionEvidence>>, ActionEvidenceError> {
+    let journal = OwnerJournal::open_existing(path)?;
+    identities
+        .iter()
+        .map(|identity| match journal.inspect(identity) {
+            Ok(record) => Ok(Some(record)),
+            // An absent report is not evidence of no effect.
+            Err(ActionEvidenceError::Unavailable) => Ok(None),
+            Err(error) => Err(error),
+        })
+        .collect()
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {

@@ -117,6 +117,48 @@ T["a one-use check writes exact operation witnesses without yielding"] = functio
   end
 end
 
+T["the registered receiver socket is a one-use, operation-bound gate"] = function()
+  local options, _, peer = fixture()
+  local received = ""
+  peer:read_start(function(err, data)
+    assert(not err)
+    if data then
+      received = received .. data
+    end
+  end)
+  local gate = assert(Gate.registered(options))
+  local scheduled = false
+  nvim.schedule(function()
+    scheduled = true
+  end)
+  MiniTest.expect.equality(Gate.check(gate, options.session, "phone"), true)
+  MiniTest.expect.equality(scheduled, false)
+  MiniTest.expect.equality(Gate.check(gate, options.session, "phone"), false)
+  assert(nvim.wait(5000, function()
+    return received:find("\n", 1, true) ~= nil
+  end))
+  MiniTest.expect.equality(nvim.json.decode(received), {
+    v = 2,
+    type = "gate_use",
+    controller_id = options.controller_id,
+    operation_id = options.operation_id,
+    gate_id = options.gate_id,
+  })
+end
+
+T["cutting the registered receiver socket prevents a later gate check"] = function()
+  local options, _, peer = fixture()
+  local gate = assert(Gate.registered(options))
+  local closed = false
+  peer:close(function()
+    closed = true
+  end)
+  assert(nvim.wait(5000, function()
+    return closed
+  end))
+  MiniTest.expect.equality(Gate.check(gate, options.session, "phone"), false)
+end
+
 T["a cut gate cannot yield a successful check"] = function()
   local options, peer = fixture()
   local closed = false

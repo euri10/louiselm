@@ -26,6 +26,331 @@ async fn attach(
     (peer, serde_json::from_str(&response).unwrap())
 }
 
+async fn register_write(
+    path: &std::path::Path,
+    token: &str,
+    generation: &str,
+    registry: &Arc<ControllerRegistry>,
+) -> (tokio::net::UnixStream, String) {
+    let mut peer = tokio::net::UnixStream::connect(path).await.unwrap();
+    peer.write_all(
+        format!(
+            "{}\n",
+            serde_json::json!({"v":1,"type":"attach_write","capability":token})
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut peer)
+        .read_line(&mut line)
+        .await
+        .unwrap();
+    let offer: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(offer["type"], "registration_offer");
+    assert_eq!(offer["generation"], generation);
+    let id = offer["controller_id"].as_str().unwrap().to_owned();
+    let waiting = tokio::spawn({
+        let registry = Arc::clone(registry);
+        async move {
+            registry
+                .wait_for_write_capable(std::time::Duration::from_secs(2))
+                .await
+        }
+    });
+    assert_eq!(
+        registry
+            .dispatch(&id, br#"{"type":"send_prompt"}"#.to_vec())
+            .await,
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    let nonce = "12".repeat(16);
+    peer.write_all(
+        format!(
+            "{}\n",
+            serde_json::json!({"v":1,"type":"register","controller_id":id,"nonce":nonce})
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    line.clear();
+    BufReader::new(&mut peer)
+        .read_line(&mut line)
+        .await
+        .unwrap();
+    let registered: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(registered["type"], "registered");
+    assert_eq!(registered["nonce"], nonce);
+    assert!(waiting.await.unwrap());
+    assert!(
+        registry
+            .attached
+            .lock()
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .gate_capable
+    );
+    (peer, id)
+}
+
+#[tokio::test]
+async fn write_registration_binds_a_fresh_socket_and_cutoff() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, owner) = super::super::barrier::receiver_fixture(root.path());
+    let path = root.path().join("controller.sock");
+    let capability = root.path().join("operator-capability");
+    let registry = Arc::new(ControllerRegistry::new(Some((generation.clone(), owner))));
+    let server = ControllerSocket::bind(&path, &capability, Arc::clone(&registry))
+        .await
+        .unwrap();
+    let token = std::fs::read_to_string(&capability).unwrap();
+    let task = tokio::spawn(server.serve());
+    let (mut peer, id) = register_write(&path, &token, &generation, &registry).await;
+    let mut line = String::new();
+    let operation = "34".repeat(16);
+    let gate = "56".repeat(16);
+    let commit = serde_json::json!({"v":2,"type":"action_commit","controller_id":id,
+        "operation_id":operation,"gate_id":gate,"remaining_ms":5000});
+    assert_eq!(
+        registry
+            .dispatch(&id, serde_json::to_vec(&commit).unwrap())
+            .await,
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    assert_eq!(
+        registry.register_gate(&id, &operation, &gate, |_, _| Ok(4500)),
+        Ok(4500)
+    );
+    let delivery = tokio::spawn({
+        let registry = Arc::clone(&registry);
+        let id = id.clone();
+        async move {
+            registry
+                .dispatch(&id, serde_json::to_vec(&commit).unwrap())
+                .await
+        }
+    });
+    line.clear();
+    BufReader::new(&mut peer)
+        .read_line(&mut line)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()["type"],
+        "action_commit"
+    );
+    let witness = serde_json::json!({"v":2,"type":"gate_use","controller_id":id,
+        "operation_id":operation,"gate_id":gate});
+    peer.write_all(format!("{witness}\n{{\"v\":1,\"type\":\"action_result\"}}\n").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        delivery.await.unwrap().unwrap(),
+        br#"{"v":1,"type":"action_result"}"#
+    );
+    assert_eq!(
+        registry.register_gate(&id, &operation, &gate, |_, _| Ok(())),
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    registry.replace_period_if(|| Ok(false), || Ok(())).unwrap();
+    assert!(registry.write_capable(&id));
+    registry.replace_period_if(|| Ok(true), || Ok(())).unwrap();
+    assert!(
+        !registry
+            .wait_for_write_capable(std::time::Duration::from_millis(20))
+            .await
+    );
+    assert_eq!(
+        peer.write_all(b"later\n").await.unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    task.abort();
+    let _ = task.await;
+}
+
+#[test]
+fn aborting_one_prepared_controller_cuts_only_its_socket() {
+    let registry = ControllerRegistry::default();
+    let mut owners = Vec::new();
+    for name in ["01", "02"] {
+        let (owner, receiver) = UnixStream::pair().unwrap();
+        let (sender, _responses) = tokio::sync::mpsc::channel(1);
+        registry.attached.lock().unwrap().insert(
+            name.repeat(16),
+            ControllerEntry {
+                sender: Some(sender),
+                socket: Some(receiver),
+                gate_capable: true,
+                gate: None,
+                used_gates: std::collections::BTreeSet::new(),
+            },
+        );
+        owners.push(owner);
+    }
+    registry.cut_controller(&"01".repeat(16)).unwrap();
+    assert_eq!(
+        owners[0].write(b"gate").unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(owners[1].write(b"gate").unwrap(), 4);
+}
+
+#[test]
+fn gate_registration_is_excluded_from_durable_revocation() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, barrier) = super::super::barrier::receiver_fixture(root.path());
+    let registry = Arc::new(ControllerRegistry::new(Some((generation, barrier))));
+    let (mut owner, socket) = UnixStream::pair().unwrap();
+    let (sender, _requests) = tokio::sync::mpsc::channel(1);
+    let id = "01".repeat(16);
+    registry.attached.lock().unwrap().insert(
+        id.clone(),
+        ControllerEntry {
+            sender: Some(sender),
+            socket: Some(socket),
+            gate_capable: true,
+            gate: None,
+            used_gates: std::collections::BTreeSet::new(),
+        },
+    );
+    let (inside, entered) = std::sync::mpsc::channel();
+    let (continue_registration, resume) = std::sync::mpsc::channel();
+    let registration = std::thread::spawn({
+        let registry = Arc::clone(&registry);
+        let id = id.clone();
+        move || {
+            registry.register_gate(&id, &"02".repeat(16), &"03".repeat(16), |_, _| {
+                inside.send(()).unwrap();
+                resume.recv().unwrap();
+                Ok(())
+            })
+        }
+    });
+    entered.recv().unwrap();
+    let (done, completed) = std::sync::mpsc::channel();
+    let cutoff = std::thread::spawn({
+        let registry = Arc::clone(&registry);
+        move || {
+            let result = registry.cutoff(
+                super::super::barrier_log::CutoffKind::Disable,
+                "11111111-1111-4111-8111-111111111111",
+                || Ok(()),
+            );
+            done.send(result).unwrap();
+        }
+    });
+    assert!(
+        completed
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err()
+    );
+    continue_registration.send(()).unwrap();
+    assert_eq!(registration.join().unwrap(), Ok(()));
+    assert_eq!(
+        completed
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap(),
+        Ok(())
+    );
+    cutoff.join().unwrap();
+    assert_eq!(
+        owner.write(b"gate").unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    let mut checked = false;
+    assert_eq!(
+        registry.register_gate(&id, &"04".repeat(16), &"05".repeat(16), |_, _| {
+            checked = true;
+            Ok(())
+        }),
+        Err(super::super::authority::Refusal::Unavailable)
+    );
+    assert!(!checked);
+}
+
+#[test]
+fn gate_authorization_does_not_hold_the_controller_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, barrier) = super::super::barrier::receiver_fixture(root.path());
+    let registry = Arc::new(ControllerRegistry::new(Some((generation, barrier))));
+    let (_owner, socket) = UnixStream::pair().unwrap();
+    let (sender, _requests) = tokio::sync::mpsc::channel(1);
+    let id = "01".repeat(16);
+    registry.attached.lock().unwrap().insert(
+        id.clone(),
+        ControllerEntry {
+            sender: Some(sender),
+            socket: Some(socket),
+            gate_capable: true,
+            gate: None,
+            used_gates: std::collections::BTreeSet::new(),
+        },
+    );
+    let (finished, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = registry.register_gate(&id, &"02".repeat(16), &"03".repeat(16), |_, _| {
+            assert!(registry.contains(&id));
+            Ok(())
+        });
+        finished.send(result).unwrap();
+    });
+    assert_eq!(
+        received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        Ok(())
+    );
+}
+
+#[test]
+fn gate_authorization_cannot_move_to_a_replacement_connection() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, generation, barrier) = super::super::barrier::receiver_fixture(root.path());
+    let registry = ControllerRegistry::new(Some((generation, barrier)));
+    let (_first, old) = UnixStream::pair().unwrap();
+    let (sender, _requests) = tokio::sync::mpsc::channel(1);
+    let id = "01".repeat(16);
+    registry.attached.lock().unwrap().insert(
+        id.clone(),
+        ControllerEntry {
+            sender: Some(sender),
+            socket: Some(old),
+            gate_capable: true,
+            gate: None,
+            used_gates: std::collections::BTreeSet::new(),
+        },
+    );
+    let (_second, replacement) = UnixStream::pair().unwrap();
+    let (replacement_sender, _requests) = tokio::sync::mpsc::channel(1);
+    let result = registry.register_gate(&id, &"02".repeat(16), &"03".repeat(16), |_, _| {
+        registry.attached.lock().unwrap().insert(
+            id.clone(),
+            ControllerEntry {
+                sender: Some(replacement_sender),
+                socket: Some(replacement),
+                gate_capable: true,
+                gate: None,
+                used_gates: std::collections::BTreeSet::new(),
+            },
+        );
+        Ok(())
+    });
+    assert_eq!(result, Err(super::super::authority::Refusal::Unavailable));
+    assert!(
+        registry
+            .attached
+            .lock()
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .gate
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn ordinary_service_reads_and_reconnects_after_shutdown() {
     let root = tempfile::tempdir().unwrap();
@@ -245,6 +570,8 @@ fn detach_shuts_the_original_connection_before_discarding_it() {
             sender: Some(sender),
             socket: Some(receiver),
             gate_capable: false,
+            gate: None,
+            used_gates: std::collections::BTreeSet::new(),
         },
     );
     let registration = Registration {
@@ -274,6 +601,8 @@ fn invalidation_cuts_all_active_controller_connections() {
                 sender: Some(sender),
                 socket: Some(receiver),
                 gate_capable: false,
+                gate: None,
+                used_gates: std::collections::BTreeSet::new(),
             },
         );
         peers.push(owner);
@@ -297,6 +626,8 @@ fn failed_shutdown_refuses_dispatch_but_retains_the_handle_for_retry() {
         sender: Some(sender),
         socket: Some(socket),
         gate_capable: false,
+        gate: None,
+        used_gates: std::collections::BTreeSet::new(),
     };
     assert!(entry.cut().is_err());
     assert!(entry.sender.is_none());
@@ -320,6 +651,8 @@ fn poisoned_registry_still_cuts_the_original_connection() {
             sender: Some(sender),
             socket: Some(receiver),
             gate_capable: false,
+            gate: None,
+            used_gates: std::collections::BTreeSet::new(),
         },
     );
     let registration = Registration {
@@ -360,6 +693,8 @@ fn detach_still_cuts_a_connection_when_the_registry_is_poisoned() {
             sender: Some(sender),
             socket: Some(receiver),
             gate_capable: false,
+            gate: None,
+            used_gates: std::collections::BTreeSet::new(),
         },
     );
     let registration = Registration {
@@ -537,11 +872,14 @@ async fn period_replacement_cuts_old_gate_connections_but_keeps_read_attachments
         .unwrap()
         .gate_capable = true;
     registry
-        .replace_period(|| {
-            assert!(!registry.contains(gate_id));
-            assert!(registry.contains(read_id));
-            Ok(())
-        })
+        .replace_period_if(
+            || Ok(true),
+            || {
+                assert!(!registry.contains(gate_id));
+                assert!(registry.contains(read_id));
+                Ok(())
+            },
+        )
         .unwrap();
     assert_eq!(
         gate.write_all(b"gate\n").await.unwrap_err().kind(),
@@ -565,14 +903,19 @@ fn period_replacement_refuses_if_an_old_gate_cannot_be_cut() {
             sender: Some(sender),
             socket: Some(socket),
             gate_capable: true,
+            gate: None,
+            used_gates: std::collections::BTreeSet::new(),
         },
     );
     let mut called = false;
     assert_eq!(
-        registry.replace_period(|| {
-            called = true;
-            Ok(())
-        }),
+        registry.replace_period_if(
+            || Ok(true),
+            || {
+                called = true;
+                Ok(())
+            }
+        ),
         Err(super::super::authority::Refusal::Unavailable)
     );
     assert!(!called);
@@ -590,10 +933,13 @@ fn period_replacement_refuses_a_lost_barrier_before_changing_authority() {
     .unwrap();
     let mut called = false;
     assert_eq!(
-        registry.replace_period(|| {
-            called = true;
-            Ok(())
-        }),
+        registry.replace_period_if(
+            || Ok(true),
+            || {
+                called = true;
+                Ok(())
+            }
+        ),
         Err(super::super::authority::Refusal::Unavailable)
     );
     assert!(!called);

@@ -85,11 +85,13 @@ millisecond timestamp; the computer enforces expiry using its monotonic clock.
 | `/v1/phone-control/unlock` | `{v,type:"unlock",proof:Proof}` | `{v,type:"unlocked",grant_id:hex16,grant_revision:integer,period_id:hex16,idle_expires_at_ms:integer,absolute_expires_at_ms:integer,send_supported:boolean}` |
 
 The paired receiver advertises Send availability on the authenticated unlock
-response for that working period. The current receiver reports `false`. A
-missing value means availability is unknown; the phone refuses a new Send
-before reserving an identity. This signal grants no action authority, does not
-resolve existing pending identities and does not replace durable reservation or
-the receiver's admission checks for any future supported Send.
+response for that working period. `true` requires the current Operate Sessions
+grant, healthy bound evidence stores and a live registered write-capable
+controller. A missing value means availability is unknown; the phone refuses a
+new Send before reserving an identity. The signal is a snapshot, not action
+authority; each Send rechecks the grant, storage, controller and native gate.
+After a period replacement the receiver waits briefly for a fresh automatic
+registration before responding. A timeout reports `false`.
 
 The approved grant is persisted with a nonzero revision and the exact enrolled
 key and scope. Scope has four independent groups: `read`, `operate_sessions`,
@@ -322,6 +324,17 @@ nonzero exact incarnations. The owner rechecks that revision, current authority
 and Session readiness before admission. The signed request and payload digest
 bind the entire action; accepting this schema alone grants no authority or
 indicates that a Send was admitted, dispatched or completed.
+
+After recording the native owner's proven result, success uses the existing
+`{v:2,type:"action_history",request_id:hex16,record:ActionRecord}` response.
+Both `request_id` and `record.operation_id` are the original Send operation ID.
+An `accepted` result is not a completed turn. A missing or invalid owner reply,
+or a failed archive write, leaves the action unknown; it never permits an
+automatic resend. Signed action-2 history reconciles later durable owner phases.
+Before reserving another prompt, the receiver also refreshes nonterminal owner
+evidence. An unknown, accepted or dispatched prompt remains a blocker until a
+terminal owner report or a native proof of independence; acceptance alone does
+not prove the turn finished.
 
 Action `48`, `list_controllers`, requires `read`. Its signed controller and
 subject IDs are all-zero 16-byte values: this receiver-wide discovery request
@@ -642,7 +655,21 @@ The Neovim client connects to `louiselm/workflow/phone-control.sock` beneath
 `operator-capability` is the existing shared capability. The integration can
 resolve a registry-owned Session with `require("louiselm").phone_control_subject(session)`;
 the returned controller and subject identities are valid only for the current
-connection and become unavailable on disconnect.
+connection and become unavailable on disconnect. Ordinary setup connects
+automatically; `phone_control.enabled = false` disables the editor attachment.
+The connection itself grants no phone access.
+
+On a personal desktop with healthy receiver-bound stores, a new controller asks
+for `{v:1,type:"attach_write",capability:string}`. The receiver offers
+`{v:1,type:"registration_offer",controller_id:hex16,generation:hex16,receiver_pid:integer,receiver_namespace:string}`.
+The controller opens a pinned identity for that process, then sends a fresh
+`{v:1,type:"register",controller_id:hex16,nonce:hex16}` and checks the matching
+`{v:1,type:"registered",controller_id:hex16,generation:hex16,nonce:hex16}`
+on the same socket. The receiver registers that exact connection under its
+generation barrier; reconnecting creates a new controller and subjects. The
+ordinary `attach` remains read-only. A receiver without an available write
+registration returns the ordinary `attached` response; an older receiver can
+still be used for reads after an unsupported write-attachment attempt.
 
 The owner may explicitly associate a registered Bead Run controller with that
 connection. The private receiver-to-controller probe is
@@ -683,14 +710,17 @@ Unavailable or ambiguous current state fails closed. Neither verification nor
 the local transport grants authority to answer an ACP permission request.
 
 The controller runs `louiselm-capture phone-control verify` asynchronously,
-passing exactly one `read_session` object on standard input. The command loads
+passing exactly one read or Send frame on standard input. The command loads
 the local receiver key identity from the capture state directory and prints
 exactly `{v:1,type:"verified"}` or the closed error object followed by a newline;
 both are exit status zero. Internal I/O failures use a nonzero status. Missing
 receiver identity is `unavailable`; verification never creates an identity.
-This checks the signed bindings only. The controller still checks its own live
-controller, subject, project, Agent and state, and the receiver must still
-check current grant, lease and replay state before delivery or admission.
+For Send, it also loads the locally approved enrollment independently of the
+forwarded frame and checks the grant, revision, enrolled key and complete
+project/Agent/group scope. A missing or damaged enrollment is unavailable;
+the verifier never creates one. The controller still checks its own live
+controller, subject, project, Agent and state, and the receiver must check
+current grant, lease and replay state before delivery or admission.
 
 Success is the version-2 object `{v:2,type:"session_page",controller_id:hex16,subject_id:hex16,operation_id:hex16,revision:integer,status:string,settings?:Settings,current_permission?:CurrentPermission,current_interactions?:CurrentInteractions,queue?:Queue,entries:[Entry],next_before:integer,complete:boolean,source:HistorySource}`.
 The receiver returns this same closed object over HTTPS after the final authority
@@ -819,11 +849,10 @@ physical Android flow exists. Those are the downstream slices and .22.
 
 ## Native action journal
 
-The existing local preparation and commit frames below are not a proven
-crash-safe admission protocol. HTTP action 3 remains unsupported until the
-guard, native transition and real-socket proof in louiselm-qbr.12.4.5 pass.
-A journal begin, receiver response or timeout is neither Session admission
-nor proof of no effect; the conditional design is louiselm-qbr.12.4.8.
+A journal begin, registration, socket write or timeout is neither Session
+admission nor proof of no effect. The conditional admission and cutoff rule is
+recorded in louiselm-qbr.12.4.10; uncertain operations retain their original
+identity and cannot be replayed merely because a connection was lost.
 
 Before reserving a verified write, capture may ask its attached controller for
 the target's locally owned scope with the closed message
@@ -835,17 +864,34 @@ resolution. This owner-only lookup carries no prompt and grants no action or
 content authority; the receiver still checks the current grant and durably
 reserves the write before forwarding it.
 
+For unresolved earlier actions, the receiver may ask this live owner
+`{v:1,type:"action_independence",controller_id:hex16,subject_id:hex16,operation_id:hex16,unknowns:[{operation_id:hex16,controller_id:hex16,subject_id:hex16}]}`.
+The list contains at most 50 distinct archived operations. The closed reply
+echoes the controller, target subject and new operation and contains
+`independent:[hex16]`. It lists only operations whose old and new subjects are
+both exact, distinct live Sessions owned by that controller. The same living
+owner retains its own prior controller/subject bindings across reconnect; it
+does not infer independence from a different random ID or an unavailable,
+foreign or replaced owner. Disposed Sessions cannot supply that proof.
+
 After that reservation, the receiver forwards the signed `send_prompt` frame
 with the same fields as `read_session`. The controller verifies the signatures,
 current Session and scope, and durably begins the exact owner operation. It
 then replies `{v:1,type:"action_prepared",controller_id:hex16,subject_id:hex16,
-operation_id:hex16}` without prompting. While serializing revocation with this
-admission, the receiver rechecks the current pairing, grant and monotonic lease,
-then sends `{v:1,type:"action_commit",controller_id:hex16,operation_id:hex16,
-remaining_ms:integer}` over that same authenticated connection. The remaining
-time is bounded by both lease deadlines and is never an extension. The owner
-subtracts all monotonic time since it sent `action_prepared`, rechecks its
-exact Session and revision, and only then calls `Session:prompt`.
+operation_id:hex16}` without prompting. Under the same barrier used by cutoff,
+the receiver checks current pairing, grant, storage and lease and registers one
+fresh operation-bound gate on that original socket. It sends
+`{v:2,type:"action_commit",controller_id:hex16,operation_id:hex16,gate_id:hex16,remaining_ms:integer}`.
+The bound is at most five seconds and never extends either working-period
+deadline. The owner starts a sleep-aware clock before the fresh receiver round
+trip and, immediately before its native Session transition, consumes the gate
+by writing `{v:2,type:"gate_use",controller_id:hex16,operation_id:hex16,gate_id:hex16}`
+on the registered socket. It checks the pinned receiver is alive, the clock is
+within the remaining bound, and the exact Session, revision and payload still
+match. A failed later check has no Session effect. A successful transition may
+be counted at the earlier gate check only under the conditions in .4.10.
+Cutoff shuts that same socket before durable invalidation, so a gate check that
+has not won before the cut cannot subsequently win.
 
 The owner replies `{v:1,type:"action_result",operation_id:hex16,state:string,
 code:string,evidence:hex32}` only after its evidence is durable. State is
@@ -867,9 +913,9 @@ The owner journal and capture archive each require a separate receiver-key-bound
 guard in `louiselm/capture/tls`. It records the store kind, generation and
 current snapshot digest outside the store and its lock. A missing or damaged guard,
 missing store or lock, or an older store with a current guard is unavailable;
-none initializes an empty history. Initialization and operator recovery are
-not yet available, so existing receivers without these records also refuse
-action evidence. An interrupted update completes on restart only when its
+none initializes an empty history. The approved personal-desktop startup can
+establish and reopen the paired stores; ambiguous or damaged established
+state does not become a fresh installation. An interrupted update completes on restart only when its
 guard and staged snapshots prove the exact update and preserve prior identities
 and owner evidence; otherwise it remains unavailable. Capture-only work and
 otherwise authorized phone reads do not depend on this archive.
@@ -890,8 +936,7 @@ an unbound guard, a replacement with a self-consistent anchor, missing or corrup
 barrier files, and stale or mismatched generations return unavailable. As with
 the existing receiver guard, a consistent rollback of all matching local state
 is not distinguishable without an external witness.
-The shared gate-registration and cutoff protocol and production initialization
-are not yet available, so this helper alone does not authorize Send or recovery.
+The journal helper alone does not authorize Send or recovery.
 `ActionIdentity` contains exactly `operation_id`, `receiver_identity`,
 `controller_id`, `subject_id`, `action`, `payload_hash`, `grant_id`,
 `grant_revision`, `period_id`, `expected_revision`, `project`, `agent` and

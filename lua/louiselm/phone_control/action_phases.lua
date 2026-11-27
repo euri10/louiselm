@@ -35,6 +35,11 @@ local function drain(self)
     if item.callback ~= nil then
       item.callback(item.evidence)
     end
+    if self.terminal and #self.queue == 0 and self.on_terminal ~= nil then
+      local callback = self.on_terminal
+      self.on_terminal = nil
+      callback(self.terminal_outcome)
+    end
     drain(self)
   end)
 end
@@ -71,7 +76,8 @@ function Phases:completed(succeeded)
     end
     self.terminal = true
     self.unsubscribe()
-    append(self, succeeded and "completed" or "unknown")
+    self.terminal_outcome = succeeded and "completed" or "unknown"
+    append(self, self.terminal_outcome)
   end)
 end
 
@@ -92,14 +98,16 @@ end
 ---@param session louiselm.session.Session
 ---@param journal table Asynchronous native-owner journal.
 ---@param identity table Exact payload-free action identity.
+---@param on_terminal? fun(outcome: string) Called after all terminal evidence is durable.
 ---@return table phases
-function M.new(session, journal, identity)
+function M.new(session, journal, identity, on_terminal)
   local self = setmetatable({
     journal = journal,
     identity = identity,
     queue = {},
     dispatched = false,
     terminal = false,
+    on_terminal = on_terminal,
     writing = false,
     disposed = false,
   }, Phases)

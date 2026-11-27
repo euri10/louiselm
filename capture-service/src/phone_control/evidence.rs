@@ -496,7 +496,7 @@ impl ActionEvidenceStore {
         self.reserve_inner(identity, None)
     }
 
-    /// Reserve a Session prompt only after every unknown action is accounted for.
+    /// Reserve a Session prompt only after nonterminal actions are accounted for.
     ///
     /// The caller must supply the generation bound to the original controller,
     /// authenticate the request and resolve the subject's scope
@@ -577,7 +577,7 @@ impl ActionEvidenceStore {
             if independent.is_some_and(|proved| {
                 snapshot.actions.values().any(|record| {
                     record.identity.receiver_identity == identity.receiver_identity
-                        && record.outcome == ActionOutcome::Unknown
+                        && blocks_prompt(record)
                         && !proved.contains(&record.identity.operation_id)
                 })
             }) {
@@ -624,6 +624,28 @@ impl ActionEvidenceStore {
     pub(super) fn is_reserved(&self, operation_id: &str) -> Result<bool, ActionEvidenceError> {
         fixed::<16>(operation_id).map_err(|_| ActionEvidenceError::Malformed)?;
         self.access(|snapshot| Ok((snapshot.actions.contains_key(operation_id), false)))
+    }
+
+    pub(super) fn unresolved(
+        &self,
+        receiver: &str,
+    ) -> Result<Vec<ActionEvidence>, ActionEvidenceError> {
+        self.check_receiver(receiver)?;
+        self.access(|snapshot| {
+            let records: Vec<_> = snapshot
+                .actions
+                .values()
+                .filter(|record| {
+                    record.identity.receiver_identity == receiver && blocks_prompt(record)
+                })
+                .take(51)
+                .cloned()
+                .collect();
+            if records.len() > 50 {
+                return Err(ActionEvidenceError::Unresolved);
+            }
+            Ok((records, false))
+        })
     }
 
     pub(super) fn page(
@@ -1113,6 +1135,15 @@ fn phase_rank(outcome: &ActionOutcome) -> Option<u8> {
     }
 }
 
+fn blocks_prompt(record: &ActionEvidence) -> bool {
+    record.outcome == ActionOutcome::Unknown
+        || (record.identity.action == 3
+            && matches!(
+                record.outcome,
+                ActionOutcome::Accepted { .. } | ActionOutcome::Dispatched { .. }
+            ))
+}
+
 pub(super) fn phase_evidence(record: &ActionEvidence) -> (&str, &str, &str) {
     let (mut accepted, mut dispatched, mut completed) = ("", "", "");
     for phase in record.phases.iter().chain(std::iter::once(&record.outcome)) {
@@ -1459,6 +1490,60 @@ mod tests {
         assert_eq!(
             store.lookup(&original.operation_id).unwrap().identity,
             original
+        );
+    }
+
+    #[test]
+    fn accepted_prompt_remains_unresolved_until_native_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ActionEvidenceStore::open(root.path().join("actions")).unwrap();
+        let first = ActionIdentity {
+            operation_id: "01".repeat(16),
+            receiver_identity: "02".repeat(32),
+            controller_id: "03".repeat(16),
+            subject_id: "04".repeat(16),
+            action: 3,
+            payload_hash: "05".repeat(32),
+            grant_id: "06".repeat(16),
+            grant_revision: 1,
+            period_id: "07".repeat(16),
+            expected_revision: 1,
+            project: std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            agent: "codex".into(),
+            recorded_at_ms: 1,
+        };
+        store.reserve_session_prompt_inner(&first, &[]).unwrap();
+        store
+            .report_fixture(
+                &first,
+                &ActionOutcome::Accepted {
+                    evidence: "11".repeat(32),
+                },
+                2,
+            )
+            .unwrap();
+        let mut next = first.clone();
+        next.operation_id = "08".repeat(16);
+        assert_eq!(
+            store.reserve_session_prompt_inner(&next, &[]),
+            Err(ActionEvidenceError::Unresolved)
+        );
+        store
+            .report_fixture(
+                &first,
+                &ActionOutcome::Completed {
+                    evidence: "22".repeat(32),
+                },
+                3,
+            )
+            .unwrap();
+        assert_eq!(
+            store.reserve_session_prompt_inner(&next, &[]),
+            Ok(ActionReservation::New)
         );
     }
 

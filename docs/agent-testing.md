@@ -153,6 +153,14 @@ cargo test --all-features --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked
 ```
 
+Phone Send admission or cutoff changes also run
+`python3 scripts/test-phone-gate-order.py` from the repository root. It uses
+strace, disposable local processes and a mock ACP Agent to delay the real
+native gate and clock syscalls. It checks cutoff after a gate win, original
+receiver death with a duplicate socket still open, and a transition after the
+final clock sample and five-second bound. It does not establish installed or
+physical Android acceptance. CI runs it in the capture-service job.
+
 They are separate crates with separate lockfiles, not a workspace, so a gate run
 in one says nothing about the others. CI runs each as a separate job.
 `usage-cli` links the system SQLite library (development headers and pkg-config

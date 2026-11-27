@@ -3,6 +3,8 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns the event loop.
 local nvim = vim
 local RunClient = require("louiselm.workflow.run_client")
+local ProcessIdentity = require("louiselm.phone_control.process_identity")
+local BootClock = require("louiselm.phone_control.boot_clock")
 local M = {}
 local Transport = {}
 Transport.__index = Transport
@@ -43,12 +45,19 @@ end
 
 local connect
 
-local function disconnect(self, pipe)
+local function disconnect(self, pipe, read_only)
   if self.disposed or (pipe ~= nil and self.pipe ~= pipe) then
     return
   end
   self.generation = self.generation + 1
   local detached, detach_error = self.controller:detach()
+  if self.candidate ~= nil then
+    self.candidate.process:dispose()
+    self.candidate.clock:dispose()
+    self.candidate = nil
+  end
+  self.read_only = read_only == true
+  self.phase = nil
   self.ready, self.awaiting, self.buffer, self.queued, self.invalid = false, false, "", 0, false
   local current = self.pipe
   self.pipe = nil
@@ -67,17 +76,159 @@ local function disconnect(self, pipe)
   end)
 end
 
+local function handshake_message(line, allowed, kind)
+  if line:find("\\", 1, true) then
+    return nil
+  end
+  local seen, count = {}, 0
+  for name in line:gmatch('"([a-z_]+)"%s*:') do
+    if seen[name] then
+      return nil
+    end
+    seen[name] = true
+  end
+  local ok, message = pcall(nvim.json.decode, line)
+  if
+    not ok
+    or type(message) ~= "table"
+    or message.v ~= 1
+    or message.type ~= kind
+    or not line:match('"v"%s*:%s*1%s*[,}]')
+  then
+    return nil
+  end
+  for name in pairs(message) do
+    if not allowed[name] then
+      return nil
+    end
+    count = count + 1
+  end
+  local expected = 0
+  for _ in pairs(allowed) do
+    expected = expected + 1
+  end
+  if count ~= expected then
+    return nil
+  end
+  return message
+end
+
+local function hex_id(value)
+  return type(value) == "string" and #value == 32 and value:match("^[0-9a-f]+$") ~= nil and value ~= string.rep("0", 32)
+end
+
+local function begin_registration(self, pipe, generation, offer)
+  if not hex_id(offer.controller_id) or not hex_id(offer.generation) then
+    disconnect(self, pipe, true)
+    return
+  end
+  local process = ProcessIdentity.new(offer.receiver_pid, offer.receiver_namespace)
+  if process == nil then
+    disconnect(self, pipe, true)
+    return
+  end
+  local candidate = {
+    process = process,
+    clock = BootClock.new(),
+    generation = offer.generation,
+    controller_id = offer.controller_id,
+    pipe = pipe,
+  }
+  self.candidate, self.phase = candidate, "opening"
+  local function current()
+    return not self.disposed and self.pipe == pipe and self.generation == generation and self.candidate == candidate
+  end
+  process:open(function(opened)
+    if not current() then
+      return
+    end
+    if not opened then
+      disconnect(self, pipe, true)
+      return
+    end
+    candidate.clock:open(function(clock_opened)
+      if not current() then
+        return
+      end
+      if not clock_opened then
+        disconnect(self, pipe, true)
+        return
+      end
+      local bytes = nvim.uv.random(16)
+      if bytes == nil then
+        disconnect(self, pipe, true)
+        return
+      end
+      candidate.nonce = bytes:gsub(".", function(byte)
+        return string.format("%02x", byte:byte())
+      end)
+      if not hex_id(candidate.nonce) then
+        disconnect(self, pipe, true)
+        return
+      end
+      self.phase = "registering"
+      pipe:write(nvim.json.encode({
+        v = 1,
+        type = "register",
+        controller_id = candidate.controller_id,
+        nonce = candidate.nonce,
+      }) .. "\n", function(err)
+        if err ~= nil then
+          nvim.schedule(function()
+            disconnect(self, pipe, true)
+          end)
+        end
+      end)
+    end)
+  end)
+end
+
 local function handle_line(self, pipe, generation, line)
   if self.disposed or self.invalid or self.pipe ~= pipe or self.generation ~= generation then
     return
   end
   if not self.ready then
-    local id = attached_identity(line)
-    if id == nil or not self.controller:attach(id) then
-      disconnect(self, pipe)
+    if self.phase == "registering" then
+      local response = handshake_message(
+        line,
+        { v = true, type = true, controller_id = true, generation = true, nonce = true },
+        "registered"
+      )
+      local candidate = self.candidate
+      if
+        response == nil
+        or candidate == nil
+        or response.controller_id ~= candidate.controller_id
+        or response.generation ~= candidate.generation
+        or response.nonce ~= candidate.nonce
+        or not ProcessIdentity.alive(candidate.process)
+        or not self.controller:attach(candidate.controller_id, candidate)
+      then
+        disconnect(self, pipe, true)
+        return
+      end
+      self.ready, self.phase = true, nil
       return
     end
-    self.ready = true
+    if self.phase ~= nil then
+      disconnect(self, pipe, true)
+      return
+    end
+    local id = attached_identity(line)
+    if id ~= nil and self.controller:attach(id) then
+      self.ready = true
+      return
+    end
+    local offer = handshake_message(
+      line,
+      { v = true, type = true, controller_id = true, generation = true, receiver_pid = true, receiver_namespace = true },
+      "registration_offer"
+    )
+    if offer == nil or self.read_only then
+      disconnect(self, pipe, true)
+      return
+    end
+    begin_registration(self, pipe, generation, offer)
     return
   end
   if self.awaiting then
@@ -166,13 +317,17 @@ connect = function(self)
             end)
           end
         end)
-        pipe:write(nvim.json.encode({ v = 1, type = "attach", capability = capability }) .. "\n", function(write_error)
-          if write_error ~= nil then
-            nvim.schedule(function()
-              disconnect(self, pipe)
-            end)
+        pipe:write(
+          nvim.json.encode({ v = 1, type = self.read_only and "attach" or "attach_write", capability = capability })
+            .. "\n",
+          function(write_error)
+            if write_error ~= nil then
+              nvim.schedule(function()
+                disconnect(self, pipe)
+              end)
+            end
           end
-        end)
+        )
       end)
     end)
   end)
@@ -191,6 +346,11 @@ function Transport:dispose()
   self.disposed = true
   self.generation = self.generation + 1
   local detached, detach_error = self.controller:detach()
+  if self.candidate ~= nil then
+    self.candidate.process:dispose()
+    self.candidate.clock:dispose()
+    self.candidate = nil
+  end
   self.timer:stop()
   self.timer:close()
   if self.pipe ~= nil and not self.pipe:is_closing() then

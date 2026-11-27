@@ -292,6 +292,7 @@ string|table
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
 - `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string), correlation?: louiselm.routing.SubmissionMetadata, display_text?: string):string?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
+- `prompt_phone: fun(self: louiselm.session.Session, text: string, gate: table, callback?: fun(result: unknown, error?: string)):string?, string?` -- Admit phone text through the registered one-use gate.
 - `queue: (louiselm.session.Queue)?` -- Session-owned submitted instructions.
 - `queue_cancel: fun(self: louiselm.session.Session, id: string, revision: integer, callback: fun(changed: boolean, error_message?: string)):boolean, string?`
 - `queue_continue: fun(self: louiselm.session.Session, revision: integer, callback: fun(changed: boolean, error_message?: string)):boolean, string?`

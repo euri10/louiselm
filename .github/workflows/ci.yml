@@ -796,6 +796,13 @@ jobs:
           neovim: true
           version: stable
 
+      - name: Test native phone admission ordering
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends strace
+          python3 scripts/test-phone-gate-order.py
+
       - name: Test Neovim phone-control boundaries
         working-directory: .
         run: |
