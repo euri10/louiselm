@@ -578,7 +578,8 @@ jobs:
           for send_test in \
             cli::service::tests::phone_send::one_enrollment_sends_to_selected_agents_across_restarts \
             cli::service::tests::phone_send::unavailable_send_then_reviewed_send_after_enablement \
-            cli::service::tests::phone_send::reviewed_drafts_survive_send_orderings_and_reconcile; do
+            cli::service::tests::phone_send::reviewed_drafts_survive_send_orderings_and_reconcile \
+            phone_control::http::voice_job_tests::send::reviewed_voice_reaches_only_the_selected_native_session; do
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib "$send_test" -- --exact --ignored --list | grep -Fx "$send_test: test"
             LOUISELM_TEST_NVIM="$(command -v nvim)" \
               LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \

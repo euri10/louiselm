@@ -23,6 +23,9 @@ use crate::{
     phone_control::{Service, authority::StoredGrant, fixed, prefix},
 };
 
+#[path = "http_voice_send_tests.rs"]
+mod send;
+
 fn signed_job(
     fixture: &Value,
     grant: &StoredGrant,
