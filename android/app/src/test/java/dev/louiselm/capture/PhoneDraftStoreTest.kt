@@ -31,6 +31,25 @@ class PhoneDraftStoreTest {
         assertEquals("frozen private context", (PhoneDraftStore(root).list(key).drafts.single().context.single().page.entries.single() as PhoneControlEntry.Message).text)
     }
 
+    @Test fun confirmationConsumesOnlyTheExactStoredVersion() {
+        val root = temporary.newFolder()
+        val original = PhoneDraft(source, "reviewed", listOf(PhoneDraftSelection(source, page)))
+        val store = PhoneDraftStore(root)
+        assertEquals(PhoneDraftSave.SAVED, store.save(original, key) { true })
+        val reference = PhoneSubmittedDraft(store.id(source), requireNotNull(store.revision(original, key)))
+        assertFalse(store.consume(reference, key) { false })
+        val newer = original.copy(text = "reviewed and edited")
+        assertEquals(PhoneDraftSave.SAVED, store.save(newer, key) { true })
+        assertFalse(PhoneDraftStore(root).consume(reference, key) { true })
+        assertEquals(newer, store.list(key).drafts.single())
+        assertTrue(store.discard(source, key) { true })
+        assertEquals(PhoneDraftSave.SAVED, store.save(original, key) { true })
+        assertFalse(store.consume(reference, key) { true })
+        val replacement = PhoneSubmittedDraft(store.id(source), requireNotNull(store.revision(original, key)))
+        assertTrue(store.consume(replacement, key) { true })
+        assertTrue(store.list(key).drafts.isEmpty())
+    }
+
     @Test fun limitsAndCorruptionNeverEvictOtherDrafts() {
         val root = temporary.newFolder()
         val store = PhoneDraftStore(root)

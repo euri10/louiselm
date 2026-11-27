@@ -494,6 +494,7 @@ internal class PhoneControlClient(
         text: String,
         pendingStore: PendingPhoneActionStore,
         nowMs: Long,
+        draft: PhoneSubmittedDraft? = null,
         maySend: () -> Boolean,
     ): PhoneControlResult<PhoneSendAttempt> = guarded {
         if (!period.isActive(nowMs)) return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
@@ -511,10 +512,10 @@ internal class PhoneControlClient(
             operationId, expectedRevision, true, action = 3)
         val signature = period.sign(request, nowMs) ?: return@guarded PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
         if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded unavailable()
-        if (pendingStore.reserve(request) != PendingReservation.NEW) return@guarded unavailable()
+        if (pendingStore.reserve(request, draft) != PendingReservation.NEW) return@guarded unavailable()
         val pending = PendingPhoneAction(request.operationId, request.receiverIdentity, request.controllerId,
             request.subjectId, request.action, request.payloadHash, request.grantId, request.grantRevision,
-            request.periodId, request.expectedRevision)
+            request.periodId, request.expectedRevision, draft)
         val attempt = PhoneSendAttempt(pending, PhoneControlOutcome.UNAVAILABLE)
         if (!maySend() || !period.isActive(SystemClock.elapsedRealtime())) return@guarded PhoneControlResult.Value(attempt)
         val currentConfig = pairingStore.load() ?: return@guarded PhoneControlResult.Value(attempt)

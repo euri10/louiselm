@@ -20,6 +20,7 @@ use std::{
 
 const TEST_CLASS: &str = "dev.louiselm.capture.PhoneSendEndToEndTest";
 const UPGRADE_TEST_CLASS: &str = "dev.louiselm.capture.PhoneSendUpgradeEndToEndTest";
+const DRAFT_TEST_CLASS: &str = "dev.louiselm.capture.PhoneDraftSendEndToEndTest";
 const FIRST_TEXT: &str = "First Send from the phone — café";
 const NEXT_TEXT: &str = "Second Send after restarting — café";
 
@@ -339,10 +340,20 @@ struct Editor {
 
 impl Editor {
     fn start(desktop: &Desktop, receipts: &Path, text: &str) -> Self {
+        Self::start_with_drafts(desktop, receipts, text, None, false)
+    }
+
+    fn start_with_drafts(
+        desktop: &Desktop,
+        receipts: &Path,
+        text: &str,
+        sync: Option<&Path>,
+        restarted: bool,
+    ) -> Self {
         fs::create_dir(receipts).unwrap();
         let nvim = PathBuf::from(env::var_os("LOUISELM_TEST_NVIM").unwrap());
-        let mut child = desktop
-            .isolated(&nvim)
+        let mut command = desktop.isolated(&nvim);
+        command
             .args(["--headless", "--noplugin", "-u", "NONE", "-l"])
             .arg(
                 desktop
@@ -354,9 +365,14 @@ impl Editor {
             .env("LOUISELM_TEST_RECEIPTS", receipts)
             .env("LOUISELM_TEST_SEND_TEXT", text)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stdout(Stdio::piped());
+        if let Some(directory) = sync {
+            command.env("LOUISELM_TEST_DRAFT_SYNC", directory);
+            if restarted {
+                command.env("LOUISELM_TEST_DRAFT_RESTARTED", "1");
+            }
+        }
+        let mut child = command.spawn().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (writer, reports) = mpsc::channel();
         thread::spawn(move || {
@@ -377,6 +393,11 @@ impl Editor {
             editor.targets["other_subject_id"]
         );
         editor
+    }
+
+    fn desktop_turn(&mut self, step: &str) {
+        writeln!(self.child.stdin.as_mut().unwrap(), "{step}").unwrap();
+        assert_eq!(self.report()["step"], step);
     }
 
     fn report(&self) -> Value {
@@ -623,4 +644,68 @@ fn unavailable_send_then_reviewed_send_after_enablement() {
     android.finish();
     editor.finish(1);
     second.stop();
+}
+
+#[test]
+#[ignore = "requires the Android SDK, Gradle, stock Neovim, and built capture executable"]
+fn reviewed_drafts_survive_send_orderings_and_reconcile() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let desktop = Desktop {
+        paths: paths(root.path()),
+        project: fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).unwrap(),
+        binary: PathBuf::from(env::var_os("LOUISELM_TEST_CAPTURE").unwrap()),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let receiver = desktop.start_receiver(&listener, &root.path().join("receiver"), false);
+    let phone = desktop.enroll(&url);
+    let mut editor = Editor::start_with_drafts(
+        &desktop,
+        &root.path().join("editor"),
+        FIRST_TEXT,
+        Some(root.path()),
+        false,
+    );
+    let mut android = phone.start_android(&desktop, root.path(), &editor.targets, DRAFT_TEST_CLASS);
+    android.wait_for("desktop-before");
+    editor.desktop_turn("desktop-before");
+    android.complete("desktop-before");
+    android.wait_for("first-complete");
+    let operation = fs::read_to_string(root.path().join("first-operation")).unwrap();
+    completed_owner_evidence(&desktop, &phone, operation.trim());
+    android.complete("first-complete");
+    android.wait_for("desktop-after");
+    editor.desktop_turn("desktop-after");
+    android.complete("desktop-after");
+    android.wait_for("second-complete");
+    let operation = fs::read_to_string(root.path().join("second-operation")).unwrap();
+    completed_owner_evidence(&desktop, &phone, operation.trim());
+    let old_targets = editor.targets.clone();
+    editor.finish(5);
+    receiver.stop();
+    let receiver =
+        desktop.start_receiver(&listener, &root.path().join("receiver-restarted"), false);
+    let mut editor = Editor::start_with_drafts(
+        &desktop,
+        &root.path().join("editor-restarted"),
+        FIRST_TEXT,
+        Some(root.path()),
+        true,
+    );
+    assert_ne!(
+        old_targets["controller_id"],
+        editor.targets["controller_id"]
+    );
+    assert_ne!(old_targets["subject_id"], editor.targets["subject_id"]);
+    android.complete("second-complete");
+    android.wait_for("desktop-conflict");
+    editor.desktop_turn("desktop-conflict");
+    android.complete("desktop-conflict");
+    android.finish();
+    editor.finish(1);
+    receiver.stop();
 }

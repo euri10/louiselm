@@ -109,7 +109,9 @@
     <string name="phone_send_rejected">An action was rejected; a fence is not yet proven. Your instruction remains available.</string>
     <string name="phone_send_unsupported">This receiver does not support Send. Your instruction and the pending identity remain; delivery is not confirmed.</string>
     <string name="phone_send_unavailable">Send could not be confirmed. Your instruction remains available.</string>
-    <string name="phone_send_invalid">Enter valid text of at most 4095 UTF-8 bytes.</string>
+    <string name="phone_send_invalid">Enter valid text and selected context totaling at most 4095 UTF-8 bytes.</string>
+    <string name="phone_send_review_title">Review what will be sent to %1$s\nController: %2$s\nSession: %3$s</string>
+    <string name="phone_send_review_changed">The Session or draft changed. Review it again before sending.</string>
     <string name="phone_draft_limit">Draft limit reached. Clear an existing draft to write here.</string>
     <string name="phone_send_other_session">This instruction belongs to another Session. Return to that Session to send it.</string>
     <string name="phone_send_review">The original was fenced without effect. Refresh this Session and review the instruction before sending again.</string>
@@ -271,12 +273,13 @@
     <string name="phone_draft_context">Selected from %1$s (%2$s / %3$s / %4$s), revision %5$d:\n%6$s</string>
     <string name="phone_draft_remove_context">Remove selected context</string>
     <string name="phone_draft_discard">Discard draft</string>
+    <string name="phone_draft_destination">Choose destination</string>
     <string name="phone_draft_discard_title">Discard this phone draft?</string>
     <string name="phone_draft_discard_warning">The saved instruction and selected context will be deleted. Original recordings and pending action evidence remain.</string>
     <string name="phone_draft_saving">Saving phone draft…</string>
     <string name="phone_draft_save_failed">Draft not saved. The last saved version is preserved; retry your edit or free space.</string>
+    <string name="phone_draft_cleanup_failed">Sent, but the saved draft could not be cleared. LouiseLM will check again.</string>
     <string name="phone_draft_saved">Phone draft saved locally.</string>
-    <string name="phone_draft_context_send_unavailable">Selected context is saved for review; Send will be available when reviewed context delivery is supported.</string>
     <string name="phone_draft_key_lost_title">Phone draft key permanently lost</string>
     <string name="phone_draft_key_lost_message">These encrypted drafts and selected excerpts cannot be recovered without this device key. There is no backup or recovery secret. Delete the affected draft records and reset their key? Original recordings, downloaded copies and pending action evidence are unaffected.</string>
     <string name="phone_draft_key_delete">Delete unrecoverable drafts</string>

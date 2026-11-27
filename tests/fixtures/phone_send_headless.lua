@@ -48,6 +48,17 @@ local function run()
     end),
     "two ready Sessions must be discoverable"
   )
+  local draft_sync = nvim.env.LOUISELM_TEST_DRAFT_SYNC
+  local draft_restarted = nvim.env.LOUISELM_TEST_DRAFT_RESTARTED == "1"
+  if draft_sync ~= nil and not draft_restarted then
+    assert(selected:prompt("Desktop seed for selected context"))
+    assert(
+      nvim.wait(15000, function()
+        return selected:inspect().status == "ready"
+      end),
+      "desktop seed did not complete"
+    )
+  end
   chat = assert(Chat.new(api, { agents = { "codex" }, start_insert_on_switch = false }))
   assert(chat:attach(selected))
   local renderer = chat.views[selected:inspect().id].renderer
@@ -69,11 +80,23 @@ local function run()
   local expected = assert(nvim.env.LOUISELM_TEST_SEND_TEXT)
   local function received(label)
     local count = 0
+    local expected_prompts
+    if draft_sync ~= nil and label == "selected" then
+      expected_prompts = draft_restarted and { "Desktop conflict after reconnection" }
+        or {
+          "Desktop seed for selected context",
+          "Desktop before the reviewed Send",
+          table.concat(nvim.fn.readfile(draft_sync .. "/first-payload", "b"), "\n"),
+          "Desktop after the confirmed Send",
+          table.concat(nvim.fn.readfile(draft_sync .. "/second-payload", "b"), "\n"),
+        }
+    end
     for _, line in ipairs(nvim.fn.readfile(directory .. "/" .. label)) do
       local message = nvim.json.decode(line)
       if message.method == "session/prompt" then
-        assert(nvim.deep_equal(message.params.prompt, { { type = "text", text = expected } }), "unexpected ACP prompt")
         count = count + 1
+        local text = expected_prompts and expected_prompts[count] or expected
+        assert(nvim.deep_equal(message.params.prompt, { { type = "text", text = text } }), "unexpected ACP prompt")
       end
     end
     return count
@@ -85,6 +108,22 @@ local function run()
     assert(not err, err)
     if data == nil or data:find("stop", 1, true) then
       finished = true
+    elseif draft_sync ~= nil then
+      local name = data:match("^(desktop%-%a+)")
+      local text = name == "desktop-before" and "Desktop before the reviewed Send"
+        or name == "desktop-after" and "Desktop after the confirmed Send"
+        or name == "desktop-conflict" and "Desktop conflict after reconnection"
+      assert(text, "unknown desktop step")
+      nvim.schedule(function()
+        assert(selected:prompt(text))
+        assert(
+          nvim.wait(15000, function()
+            return selected:inspect().status == "ready"
+          end),
+          "desktop step did not complete"
+        )
+        report({ step = name })
+      end)
     end
   end)
   assert(
@@ -102,6 +141,10 @@ local function run()
   )
   local lines = nvim.api.nvim_buf_get_lines(renderer.buffer, 0, -1, false)
   local mentions = 0
+  if draft_sync ~= nil then
+    expected = draft_restarted and "Desktop conflict after reconnection"
+      or nvim.fn.readfile(draft_sync .. "/first-payload")[1]
+  end
   for _, line in ipairs(lines) do
     if line:find(expected, 1, true) then
       mentions = mentions + 1

@@ -32,8 +32,10 @@ private val ACTION_AAD = ACTION_KEY_ALIAS.toByteArray(Charsets.UTF_8)
 internal data class PendingPhoneAction(
     val operationId: String, val receiverIdentity: String, val controllerId: String, val subjectId: String,
     val action: Int, val payloadHash: String, val grantId: String, val grantRevision: Long,
-    val periodId: String, val expectedRevision: Long,
+    val periodId: String, val expectedRevision: Long, val draft: PhoneSubmittedDraft? = null,
 )
+
+internal data class PhoneSubmittedDraft(val id: String, val revision: String)
 
 internal enum class PendingReservation { NEW, EXISTING }
 internal enum class PendingPhoneActionFailure { MALFORMED, CONFLICT, UNAVAILABLE, LIMIT }
@@ -62,12 +64,12 @@ internal class PendingPhoneActionStore(
      * Persist the exact Send request before transmission. NEW is evidence, not authority;
      * EXISTING must never be resent. Refusals throw [PendingPhoneActionStoreException].
      */
-    fun reserve(request: PhoneControlRequest): PendingReservation = synchronized(lock) {
+    fun reserve(request: PhoneControlRequest, draft: PhoneSubmittedDraft? = null): PendingReservation = synchronized(lock) {
         val action = try {
             require(request.action == 3)
             PendingPhoneAction(request.operationId, request.receiverIdentity, request.controllerId, request.subjectId,
                 request.action, request.payloadHash, request.grantId, request.grantRevision, request.periodId,
-                request.expectedRevision).also(::validate)
+                request.expectedRevision, draft).also(::validate)
         } catch (_: IllegalArgumentException) {
             throw PendingPhoneActionStoreException(PendingPhoneActionFailure.MALFORMED)
         }
@@ -197,6 +199,7 @@ private fun validate(action: PendingPhoneAction) {
     for (id in listOf(action.operationId, action.controllerId, action.subjectId, action.grantId, action.periodId)) phoneControlHex(id, 16)
     phoneControlHex(action.receiverIdentity, 32)
     phoneControlHex(action.payloadHash, 32)
+    action.draft?.let { phoneControlHex(it.id, 32); phoneControlHex(it.revision, 32) }
     require(action.action in 3..255 && action.grantRevision in 1..9_007_199_254_740_991L &&
         action.expectedRevision in 0..9_007_199_254_740_991L)
 }
@@ -206,10 +209,13 @@ private fun encode(action: PendingPhoneAction): JSONObject = JSONObject()
     .put("controller_id", action.controllerId).put("subject_id", action.subjectId).put("action", action.action)
     .put("payload_hash", action.payloadHash).put("grant_id", action.grantId).put("grant_revision", action.grantRevision)
     .put("period_id", action.periodId).put("expected_revision", action.expectedRevision)
+    .apply { action.draft?.let { put("draft_id", it.id); put("draft_revision", it.revision) } }
 
 private fun decode(value: JSONObject): PendingPhoneAction {
-    require(value.keys().asSequence().toSet() == setOf("operation_id", "receiver_identity", "controller_id", "subject_id",
-        "action", "payload_hash", "grant_id", "grant_revision", "period_id", "expected_revision"))
+    val fields = value.keys().asSequence().toSet()
+    val required = setOf("operation_id", "receiver_identity", "controller_id", "subject_id",
+        "action", "payload_hash", "grant_id", "grant_revision", "period_id", "expected_revision")
+    require(fields == required || fields == required + setOf("draft_id", "draft_revision"))
     fun text(name: String) = value.get(name) as? String ?: throw IllegalArgumentException("invalid action identity")
     fun number(name: String): Long = when (val number = value.get(name)) {
         is Int -> number.toLong()
@@ -220,7 +226,7 @@ private fun decode(value: JSONObject): PendingPhoneAction {
     require(action in 3..255)
     return PendingPhoneAction(text("operation_id"), text("receiver_identity"), text("controller_id"), text("subject_id"),
         action.toInt(), text("payload_hash"), text("grant_id"), number("grant_revision"), text("period_id"),
-        number("expected_revision")).also(::validate)
+        number("expected_revision"), if ("draft_id" in fields) PhoneSubmittedDraft(text("draft_id"), text("draft_revision")) else null).also(::validate)
 }
 
 private fun pendingActionKey(create: Boolean): SecretKey? {

@@ -158,8 +158,7 @@ still applies. Physical Keystore and authentication acceptance is tracked in
 `louiselm-qbr.12.22`.
 
 The Session screen offers an explicit **Send** for a reviewed text instruction
-when the displayed Session is ready. The current receiver still refuses Send
-until the crash-safe admission work in `louiselm-qbr.12.4.5` is proven; a refusal
+when the displayed Session is ready and the receiver supports Send. A refusal
 is displayed and the text remains on screen. The phone stores a private,
 payload-free operation identity before sending and checks retained owner evidence
 while the workspace is open and unlocked. A lost response is not confirmation,
@@ -169,18 +168,22 @@ The composer keeps a separate phone draft for each receiver and exact
 controller/Session. **Unlock phone drafts** opens its independent local key; it
 does not grant online authority. Edits save in the background: wait for saving
 to finish before leaving or locking. A failed save keeps the last saved version
-and reports that the current edit was not saved. Saved drafts remain until
-explicit **Discard draft** confirmation. At most 128 drafts, 8 MiB per draft
+and reports that the current edit was not saved. A completed native Send removes
+only the exact saved version submitted; later edits remain. Unknown outcomes
+retain the draft and its pending identity. If local cleanup fails, the phone
+reports it and checks again while authorized. You can also explicitly **Discard
+draft**. At most 128 drafts, 8 MiB per draft
 and 64 MiB total are retained; freeing space requires a discard.
 
 Use **Add to draft** beside an authorized live or saved offline entry to freeze
 that entry and its source in the current draft. Later refreshes and removal of a
 downloaded copy do not change the selection. **Phone drafts** reopens saved work
 offline, including work detached from a missing or revoked source. Detached
-context can contain sensitive excerpts; explicitly choose an authorized
-destination and review before sending. Reviewed Send with selected context and
-consumption of the confirmed snapshot remain `louiselm-qbr.12.12.2`; until then,
-Send is unavailable for drafts containing selected context.
+context can contain sensitive excerpts; use **Choose destination** to select a
+currently authorized Session and review before sending. When a draft includes
+context, the phone displays the complete text and selected excerpts as they will
+be sent, including their source labels. The complete Send is limited to 4095
+UTF-8 bytes. Reopening or changing computers never resends an uncertain action.
 
 Drafts use a device-only key separate from downloads, pairing and online keys.
 The local unlock has the same inactivity, maximum duration and screen-lock rules

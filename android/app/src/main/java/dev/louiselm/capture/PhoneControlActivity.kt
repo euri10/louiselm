@@ -58,6 +58,8 @@ private data class PhoneReconciliation(
     val records: List<PhoneActionRecord>,
     val nextAfter: String?,
     val failure: PhoneControlOutcome?,
+    val consumed: List<Pair<String, PhoneControlTarget>>,
+    val cleanup: Map<String, Boolean>,
 )
 private data class PhoneVoiceScan(val pending: Boolean, val filled: List<PhoneDraft>)
 
@@ -102,6 +104,7 @@ class PhoneControlActivity : Activity() {
     private lateinit var draftUnlockButton: Button
     private lateinit var draftListButton: Button
     private lateinit var draftDiscardButton: Button
+    private lateinit var draftDestinationButton: Button
     private lateinit var draftContextView: LinearLayout
     private lateinit var voiceDisclosure: TextView
     private lateinit var voiceStatus: TextView
@@ -132,6 +135,7 @@ class PhoneControlActivity : Activity() {
     private var draftsDamaged = false
     private var showingDrafts = false
     private var selectedDraft: PhoneOfflineSource? = null
+    private var destinationDraft: PhoneOfflineSource? = null
     private var visibleOfflinePage: PhoneControlReply.SessionPage? = null
     private var preparedOfflineUnlock: PreparedPhoneOfflineUnlock? = null
     private var showingOffline = false
@@ -176,6 +180,7 @@ class PhoneControlActivity : Activity() {
     private val draftSources = mutableMapOf<Pair<String, PhoneControlTarget>, PhoneOfflineSource>()
     private val draftContexts = mutableMapOf<Pair<String, PhoneControlTarget>, List<PhoneDraftSelection>>()
     private val savedDrafts = mutableMapOf<Pair<String, PhoneControlTarget>, PhoneDraft>()
+    private val failedDraftCleanup = mutableSetOf<String>()
     private val dirtyDrafts = linkedMapOf<Pair<String, PhoneControlTarget>, PhoneDraft>()
     private val draftGeneration = AtomicLong()
     private val draftMutation = AtomicLong()
@@ -206,6 +211,7 @@ class PhoneControlActivity : Activity() {
     private var reconciliationLoaded = false
     private var reconciliationCursor: String? = null
     private var sendNotice: Int? = null
+    private var sendReview: AlertDialog? = null
     private var pinRefreshIndex = 0
     private val expiryCheck = Runnable { scheduleExpiry() }
     private val offlineExpiryCheck = Runnable { scheduleOfflineExpiry() }
@@ -360,6 +366,8 @@ class PhoneControlActivity : Activity() {
     }
 
     override fun onPause() {
+        sendReview?.dismiss()
+        sendReview = null
         stopVoicePlayback()
         foreground = false
         reconciliationLoaded = false
@@ -377,6 +385,7 @@ class PhoneControlActivity : Activity() {
         sendStatus.visibility = View.GONE
         draftContextView.visibility = View.GONE
         draftDiscardButton.visibility = View.GONE
+        draftDestinationButton.visibility = View.GONE
         voiceDisclosure.visibility = View.GONE
         voiceStatus.visibility = View.GONE
         voiceButton.visibility = View.GONE
@@ -607,6 +616,11 @@ class PhoneControlActivity : Activity() {
         add(draftContextView)
         draftDiscardButton = Button(this).apply { text = getString(R.string.phone_draft_discard); setOnClickListener { confirmDiscardDraft() } }
         add(draftDiscardButton)
+        draftDestinationButton = Button(this).apply {
+            setText(R.string.phone_draft_destination)
+            setOnClickListener { selectedDraft?.let { source -> withNetwork { showSessions(source) } } }
+        }
+        add(draftDestinationButton)
         sendButton = Button(this).apply {
             text = getString(R.string.phone_send)
             setOnClickListener {
@@ -665,6 +679,7 @@ class PhoneControlActivity : Activity() {
             else if (target == null || period == null) showDrafts()
             else sessionPage?.let { displayPage(it) }
             after()
+            if (period?.isActive(SystemClock.elapsedRealtime()) == true) scheduleReconciliation(0)
             resumeVoiceJobs()
         }
     }
@@ -741,6 +756,7 @@ class PhoneControlActivity : Activity() {
 
     private fun showDrafts() {
         if (!draftsReady) return
+        destinationDraft = null
         stopVoicePlayback()
         showingVoice = false
         showingDrafts = true
@@ -780,7 +796,8 @@ class PhoneControlActivity : Activity() {
         }
         draftSources[key] = draft
         drafts.putIfAbsent(key, "")
-        val selectedPage = page.copy(entries = listOf(entry), nextBefore = 0)
+        val selectedPage = page.copy(entries = listOf(entry), nextBefore = 0, settings = PhoneSessionSettings(),
+            currentPermission = null, currentInteractions = null, queue = null)
         draftContexts[key] = draftContexts[key].orEmpty() + PhoneDraftSelection(source, selectedPage)
         draftContextOffset = ((draftContexts[key].orEmpty().size - 1) / DRAFT_CONTEXT_PAGE_SIZE) * DRAFT_CONTEXT_PAGE_SIZE
         queueDraftSave(key)
@@ -792,7 +809,7 @@ class PhoneControlActivity : Activity() {
         val receiver = draftReceiver ?: return
         val target = draftTarget ?: return
         val key = receiver to target
-        if (showingOffline || showingDrafts || period == null || sessionPage == null) {
+        if (showingOffline || showingDrafts || period == null || sessionPage == null || destinationDraft != null) {
             draftContextView.addView(TextView(this).apply { text = getString(R.string.phone_draft_detached) })
         }
         draftContextView.addView(TextView(this).apply { text = getString(R.string.phone_offline_copy_notice) })
@@ -805,17 +822,8 @@ class PhoneControlActivity : Activity() {
         })
         for (index in draftContextOffset until end) {
             val selected = selections[index]
-            val entry = selected.page.entries.single()
-            val content = when (entry) {
-                is PhoneControlEntry.Message -> entry.text
-                is PhoneControlEntry.Tool -> "${entry.title}\n${entry.status}\n${entry.content}"
-                is PhoneControlEntry.Plan -> entry.text
-                is PhoneControlEntry.Question -> entry.question + "\n" + entry.options.joinToString("\n") { "${it.label} ${it.description} ${it.preview}" }
-            }
             draftContextView.addView(TextView(this).apply {
-                text = getString(R.string.phone_draft_context, selected.source.name, selected.source.receiver,
-                    selected.source.target.controllerId, selected.source.target.subjectId, selected.page.revision,
-                    if (entry.truncated) "$content\n${getString(R.string.phone_truncated)}" else content)
+                text = draftContextText(selected)
                 setTextIsSelectable(true)
             })
             draftContextView.addView(Button(this).apply {
@@ -838,6 +846,22 @@ class PhoneControlActivity : Activity() {
             setOnClickListener { draftContextOffset += DRAFT_CONTEXT_PAGE_SIZE; render() }
         })
     }
+
+    private fun draftContextText(selected: PhoneDraftSelection): String {
+        val entry = selected.page.entries.single()
+        val content = when (entry) {
+            is PhoneControlEntry.Message -> entry.text
+            is PhoneControlEntry.Tool -> "${entry.title}\n${entry.status}\n${entry.content}"
+            is PhoneControlEntry.Plan -> entry.text
+            is PhoneControlEntry.Question -> entry.question + "\n" + entry.options.joinToString("\n") { "${it.label} ${it.description} ${it.preview}" }
+        }
+        return getString(R.string.phone_draft_context, selected.source.name, selected.source.receiver,
+            selected.source.target.controllerId, selected.source.target.subjectId, selected.page.revision,
+            if (entry.truncated) "$content\n${getString(R.string.phone_truncated)}" else content)
+    }
+
+    private fun draftSendText(draft: PhoneDraft): String =
+        if (draft.context.isEmpty()) draft.text else draft.text + "\n\n" + draft.context.joinToString("\n\n", transform = ::draftContextText)
 
     private fun confirmDiscardDraft() {
         if (voiceRecorder != null || voicePreparing || voiceSaving) return
@@ -867,6 +891,7 @@ class PhoneControlActivity : Activity() {
                     draftSources.remove(key)
                     draftContexts.remove(key)
                     savedDrafts.remove(key)
+                    failedDraftCleanup.remove(draftStore.id(source))
                     draftTarget = null
                     draftReceiver = null
                     draftSaveNotice = null
@@ -1639,6 +1664,8 @@ class PhoneControlActivity : Activity() {
     }
 
     private fun clearDrafts() {
+        sendReview?.dismiss()
+        sendReview = null
         stopVoicePlayback()
         if (voiceRecorder != null) stopVoice(false)
         cancelVoicePreparation()
@@ -1656,8 +1683,10 @@ class PhoneControlActivity : Activity() {
         dirtyDrafts.clear()
         drafts.clear()
         savedDrafts.clear()
+        failedDraftCleanup.clear()
         draftSources.clear()
         draftContexts.clear()
+        destinationDraft = null
         draftSource = null
         draftContextOffset = 0
         draftTarget = null
@@ -1697,7 +1726,7 @@ class PhoneControlActivity : Activity() {
             showingDrafts -> selectedDraft
             showingOffline -> selectedOffline?.source
             current != null && target != null && linkedRunSession == null && !showingActionHistory && !showingPrepared && !showingRuns ->
-                selectedSource?.takeIf { it.target == target && it.receiver == current.grant.receiverIdentity }
+                destinationDraft ?: selectedSource?.takeIf { it.target == target && it.receiver == current.grant.receiverIdentity }
                     ?: PhoneOfflineSource(current.grant.receiverIdentity, requireNotNull(target), getString(R.string.phone_open_session), "", "")
             else -> null
         }
@@ -1740,6 +1769,8 @@ class PhoneControlActivity : Activity() {
         draftContextView.visibility = if (showComposer) View.VISIBLE else View.GONE
         draftDiscardButton.visibility = if (showComposer && draftReceiver != null && draftTarget != null && (draftReceiver to draftTarget) in drafts) View.VISIBLE else View.GONE
         draftDiscardButton.isEnabled = !busy && voiceRecorder == null && !voicePreparing && !voiceSaving
+        draftDestinationButton.visibility = if (showComposer && showingDrafts && selectedDraft != null && unlocked) View.VISIBLE else View.GONE
+        draftDestinationButton.isEnabled = !busy && saved && !savingDraft && dirtyDrafts.isEmpty() && draftSaveNotice == null
         renderDraftContext()
         val related = relatedPendingActions()
         val acceptedStates = setOf(PhoneActionState.ACCEPTED, PhoneActionState.DISPATCHED, PhoneActionState.COMPLETED)
@@ -1748,12 +1779,12 @@ class PhoneControlActivity : Activity() {
         val reviewNeeded = related.any { actionEvidence[it.operationId]?.state == PhoneActionState.FENCED_NO_EFFECT && it.operationId !in reviewedFences }
         val acceptedDraft = related.any { actionEvidence[it.operationId]?.state in acceptedStates && it.payloadHash == sendDigest() }
         val wrongTarget = draftTarget != null &&
-            (draftTarget != target || draftReceiver != period?.grant?.receiverIdentity)
+            destinationDraft != draftSource && (draftTarget != target || draftReceiver != period?.grant?.receiverIdentity)
         sendStatus.text = getString(when {
             sendNotice == R.string.phone_draft_limit -> R.string.phone_draft_limit
             draftSaveNotice != null -> requireNotNull(draftSaveNotice)
             currentDraftKey != null && currentDraftKey in drafts && !saved -> R.string.phone_draft_save_failed
-            draftReceiver != null && draftTarget != null && !draftContexts[draftReceiver to draftTarget].isNullOrEmpty() -> R.string.phone_draft_context_send_unavailable
+            draftSource?.let { draftStore.id(it) } in failedDraftCleanup -> R.string.phone_draft_cleanup_failed
             wrongTarget -> R.string.phone_send_other_session
             reviewNeeded -> R.string.phone_send_review
             unresolved && related.any { actionEvidence[it.operationId]?.state == PhoneActionState.REJECTED } -> R.string.phone_send_rejected
@@ -1766,7 +1797,7 @@ class PhoneControlActivity : Activity() {
             else -> sendNotice ?: if (saved) R.string.phone_draft_saved else R.string.phone_send_ready
         })
         sendButton.isEnabled = saved && unlocked && draftUnlocked && !showingDrafts && !busy && !savingDraft && dirtyDrafts.isEmpty() && draftSaveNotice == null &&
-            draftContexts[draftReceiver to draftTarget].isNullOrEmpty() && reconciliationLoaded && !wrongTarget && !unresolved && !reviewNeeded && !acceptedDraft &&
+            reconciliationLoaded && !wrongTarget && !unresolved && !reviewNeeded && !acceptedDraft &&
             linkedRunSession == null && sendInput.text.isNotEmpty() && sessionPage?.status == "ready" && target != null && !showingOffline && !showingActionHistory
         enableButton.visibility = if (currentStatus is PhoneControlStatus.Granted) View.GONE else View.VISIBLE
         checkButton.visibility = if (currentStatus is PhoneControlStatus.Pending) View.VISIBLE else View.GONE
@@ -2324,8 +2355,11 @@ class PhoneControlActivity : Activity() {
     private fun active(token: Long): Boolean = generation.get() == token && !isDestroyed && !isFinishing && deviceUsable()
 
     private fun sendDigest(): String? = try {
-            if (sendInput.text.isEmpty()) null else phoneControlHex(
-                MessageDigest.getInstance("SHA-256").digest(phoneControlSendPayload(sendInput.text.toString())),
+            val source = draftSource
+            if (sendInput.text.isEmpty() || source == null) null else phoneControlHex(
+                MessageDigest.getInstance("SHA-256").digest(phoneControlSendPayload(draftSendText(
+                    PhoneDraft(source, sendInput.text.toString(), draftContexts[source.receiver to source.target].orEmpty()),
+                ))),
             )
         } catch (_: IllegalArgumentException) {
             null
@@ -2333,9 +2367,15 @@ class PhoneControlActivity : Activity() {
 
     private fun relatedPendingActions(): List<PendingPhoneAction> {
         val selected = target
+        val receiver = period?.grant?.receiverIdentity
+        val source = draftSource
+        val draftId = source?.let { draftStore.id(it) }
         val digest = sendDigest()
         return pendingActions.filter {
-            (selected != null && it.controllerId == selected.controllerId && it.subjectId == selected.subjectId) ||
+            (draftId != null && it.draft?.id == draftId) ||
+                (source != null && it.receiverIdentity == source.receiver && it.controllerId == source.target.controllerId &&
+                    it.subjectId == source.target.subjectId) ||
+                (selected != null && it.receiverIdentity == receiver && it.controllerId == selected.controllerId && it.subjectId == selected.subjectId) ||
                 (digest != null && it.payloadHash == digest)
         }
     }
@@ -2351,13 +2391,45 @@ class PhoneControlActivity : Activity() {
         val current = period ?: return
         val requested = target ?: return
         val revision = sessionPage?.revision ?: return
-        val text = sendInput.text.toString()
+        val source = draftSource ?: return
+        val snapshot = PhoneDraft(source, sendInput.text.toString(), draftContexts[source.receiver to source.target].orEmpty().toList())
+        val text = draftSendText(snapshot)
+        if (snapshot.context.isNotEmpty() || destinationDraft != null) {
+            val destination = selectedSource
+            val title = getString(R.string.phone_send_review_title, destination?.name.orEmpty(), requested.controllerId, requested.subjectId)
+            val dialog = AlertDialog.Builder(this).setTitle(title).setMessage(text)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.phone_send) { _, _ ->
+                    val key = source.receiver to source.target
+                    if (period === current && target == requested && sessionPage?.revision == revision && sendButton.isEnabled &&
+                        draftSource == source && drafts[key] == snapshot.text && draftContexts[key].orEmpty() == snapshot.context) {
+                        submitDraft(current, requested, revision, snapshot, text)
+                    } else render(R.string.phone_send_review_changed)
+                }.create()
+            sendReview?.dismiss()
+            sendReview = dialog
+            dialog.setOnDismissListener { if (sendReview === dialog) sendReview = null }
+            dialog.show()
+            return
+        }
+        submitDraft(current, requested, revision, snapshot, text)
+    }
+
+    private fun submitDraft(current: PhoneControlPeriod, requested: PhoneControlTarget, revision: Long, snapshot: PhoneDraft, text: String) {
+        val local = draftPeriod ?: return
+        val source = snapshot.source
         val pairing = PairingStore(applicationContext)
         val binding = pairing.binding() ?: return
         reconciliationLoaded = false
         task({ maySend ->
-            client.sendPrompt(current, requested, revision, text, pendingActionsStore, SystemClock.elapsedRealtime()) {
-                foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
+            offlineResult {
+                val secret = local.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                val draftRevision = draftStore.revision(snapshot, secret) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
+                val submitted = PhoneSubmittedDraft(draftStore.id(source), draftRevision)
+                client.sendPrompt(current, requested, revision, text, pendingActionsStore, SystemClock.elapsedRealtime(), submitted) {
+                    foreground && maySend() && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime()) &&
+                        local.isActive(SystemClock.elapsedRealtime())
+                }
             }
         }, { outcome ->
             if (!foreground) return@task
@@ -2423,18 +2495,24 @@ class PhoneControlActivity : Activity() {
         val token = generation.get()
         val prior = actionEvidence.toMap()
         val cursor = reconciliationCursor
+        val local = draftPeriod
+        val draftToken = draftGeneration.get()
+        val mutation = draftMutation.get()
+        val eligible = if (local != null && draftsReady && !savingDraft && dirtyDrafts.isEmpty() && discardingDraft == null) {
+            savedDrafts.filter { (key, value) -> drafts[key] == value.text && draftContexts[key].orEmpty() == value.context }
+                .mapKeys { (_, value) -> draftStore.id(value.source) }.mapValues { it.value.source.receiver to it.value.source.target }
+        } else emptyMap()
         networkExecutor.execute {
             val mayContinue = {
                 foreground && active(token) && pairing.binding() == binding && current.isActive(SystemClock.elapsedRealtime())
             }
             val pending = try {
-                if (mayContinue()) pendingActionsStore.pending().filter { it.receiverIdentity == current.grant.receiverIdentity }
-                    .sortedBy { it.operationId } else null
+                if (mayContinue()) pendingActionsStore.pending().sortedBy { it.operationId } else null
             } catch (_: PendingPhoneActionStoreException) {
                 null
             }
             val candidates = pending.orEmpty().filter {
-                prior[it.operationId]?.state != PhoneActionState.FENCED_NO_EFFECT
+                it.receiverIdentity == current.grant.receiverIdentity && prior[it.operationId]?.state != PhoneActionState.FENCED_NO_EFFECT
             }
             val selected = (candidates.filter { cursor == null || it.operationId > cursor } +
                 candidates.filter { cursor != null && it.operationId <= cursor }).take(RECONCILE_BATCH)
@@ -2452,7 +2530,30 @@ class PhoneControlActivity : Activity() {
                     }
                 }
             }
-            val result = PhoneReconciliation(pending, records, selected.lastOrNull()?.operationId, failure)
+            val consumed = mutableListOf<Pair<String, PhoneControlTarget>>()
+            val cleanup = mutableMapOf<String, Boolean>()
+            if (failure == null && local != null) {
+                for (record in records) {
+                    if (record.state != PhoneActionState.COMPLETED || record.completedEvidence.isEmpty()) continue
+                    val submitted = pending.orEmpty().firstOrNull { it.operationId == record.operationId }?.draft ?: continue
+                    val key = eligible[submitted.id] ?: continue
+                    val result = offlineResult {
+                        val secret = local.key(SystemClock.elapsedRealtime()) ?: return@offlineResult PhoneControlResult.Failure(PhoneControlOutcome.EXPIRED)
+                        PhoneControlResult.Value(draftStore.consume(submitted, secret) {
+                            mayContinue() && local.isActive(SystemClock.elapsedRealtime()) && draftGeneration.get() == draftToken &&
+                                draftMutation.get() == mutation
+                        })
+                    }
+                    when (result) {
+                        is PhoneControlResult.Value -> {
+                            cleanup[submitted.id] = true
+                            if (result.value) consumed.add(key)
+                        }
+                        is PhoneControlResult.Failure -> cleanup[submitted.id] = false
+                    }
+                }
+            }
+            val result = PhoneReconciliation(pending, records, selected.lastOrNull()?.operationId, failure, consumed, cleanup)
             runOnUiThread {
                 if (!foreground || !active(token) || period !== current || pairing.binding() != binding ||
                     !current.isActive(SystemClock.elapsedRealtime())) {
@@ -2468,6 +2569,22 @@ class PhoneControlActivity : Activity() {
                     pendingActions = result.pending
                     reconciliationCursor = result.nextAfter
                     for (record in result.records) actionEvidence[record.operationId] = record
+                }
+                if (draftGeneration.get() == draftToken && draftMutation.get() == mutation && draftPeriod === local) {
+                    for ((id, succeeded) in result.cleanup) {
+                        if (succeeded) failedDraftCleanup.remove(id) else failedDraftCleanup.add(id)
+                    }
+                    for (key in result.consumed) {
+                        drafts.remove(key)
+                        savedDrafts.remove(key)
+                        draftSources.remove(key)
+                        draftContexts.remove(key)
+                        if (draftReceiver == key.first && draftTarget == key.second) {
+                            changingDraft = true
+                            sendInput.text.clear()
+                            changingDraft = false
+                        }
+                    }
                 }
                 render()
                 scheduleReconciliation()
@@ -2664,7 +2781,8 @@ class PhoneControlActivity : Activity() {
         withNetwork { readTarget() }
     }
 
-    private fun showSessions() {
+    private fun showSessions(forDraft: PhoneOfflineSource? = null) {
+        destinationDraft = forDraft
         clearSelection()
         stopVoicePlayback()
         showingVoice = false

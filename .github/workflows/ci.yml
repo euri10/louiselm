@@ -577,7 +577,8 @@ jobs:
           # Cargo otherwise succeeds when an exact test filter matches nothing.
           for send_test in \
             cli::service::tests::phone_send::one_enrollment_sends_to_selected_agents_across_restarts \
-            cli::service::tests::phone_send::unavailable_send_then_reviewed_send_after_enablement; do
+            cli::service::tests::phone_send::unavailable_send_then_reviewed_send_after_enablement \
+            cli::service::tests::phone_send::reviewed_drafts_survive_send_orderings_and_reconcile; do
             cargo test --manifest-path capture-service/Cargo.toml --locked --lib "$send_test" -- --exact --ignored --list | grep -Fx "$send_test: test"
             LOUISELM_TEST_NVIM="$(command -v nvim)" \
               LOUISELM_TEST_CAPTURE="$PWD/capture-service/target/debug/louiselm-capture" \

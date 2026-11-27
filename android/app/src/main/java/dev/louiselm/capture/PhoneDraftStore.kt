@@ -146,6 +146,20 @@ internal class PhoneDraftStore(private val root: File) {
         true
     }
 
+    /** Consume only the ciphertext version bound to a natively confirmed Send. */
+    fun consume(submitted: PhoneSubmittedDraft, key: SecretKey, mayCommit: () -> Boolean): Boolean = locked {
+        phoneControlHex(submitted.id, 32)
+        phoneControlHex(submitted.revision, 32)
+        val file = File(root, "${submitted.id}.draft")
+        if (!file.exists()) return@locked false
+        if (!keyMatches(key, false)) throw IOException("draft key changed")
+        read(file, key)
+        val revision = phoneControlHex(MessageDigest.getInstance("SHA-256").digest(readCiphertext(file)))
+        if (revision != submitted.revision || !mayCommit()) return@locked false
+        if (!file.delete()) throw IOException("draft could not be consumed")
+        true
+    }
+
     /** A newly created wrapped key may replace a loss fence only after all old records are gone. */
     fun installKey(key: SecretKey) = locked {
         if (records().isNotEmpty()) throw IOException("drafts still exist")

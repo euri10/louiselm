@@ -157,7 +157,7 @@ class VoiceScreenClient {
 
     @Implementation(methodName = "sendPrompt")
     internal fun sendPrompt(period: PhoneControlPeriod, target: PhoneControlTarget, revision: Long, text: String,
-        store: PendingPhoneActionStore, now: Long, maySend: () -> Boolean): PhoneControlResult<PhoneSendAttempt> {
+        store: PendingPhoneActionStore, now: Long, draft: PhoneSubmittedDraft?, maySend: () -> Boolean): PhoneControlResult<PhoneSendAttempt> {
         VoiceScreenFixture.sends++
         return PhoneControlResult.Failure(PhoneControlOutcome.UNAVAILABLE)
     }

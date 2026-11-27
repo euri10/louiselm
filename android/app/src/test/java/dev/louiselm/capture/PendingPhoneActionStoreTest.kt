@@ -95,6 +95,18 @@ class PendingPhoneActionStoreTest {
     }
 
     @Test
+    fun submittedDraftReferenceSurvivesRestartAndCannotBeRebound() {
+        val draft = PhoneSubmittedDraft("aa".repeat(32), "bb".repeat(32))
+        val store = PendingPhoneActionStore(context, keys)
+        assertEquals(PendingReservation.NEW, store.reserve(request(1), draft))
+        assertEquals(action(1).copy(draft = draft), PendingPhoneActionStore(context, keys).pending().single())
+        assertEquals(PendingReservation.EXISTING, store.reserve(request(1), draft))
+        assertThrows(PendingPhoneActionStoreException::class.java) {
+            store.reserve(request(1), draft.copy(revision = "cc".repeat(32)))
+        }.also { assertEquals(PendingPhoneActionFailure.CONFLICT, it.reason) }
+    }
+
+    @Test
     fun encryptedIdentitySurvivesRestartAndGrantClearing() {
         val first = PendingPhoneActionStore(context, keys)
         assertEquals(PendingReservation.NEW, first.reserve(request(1)))
