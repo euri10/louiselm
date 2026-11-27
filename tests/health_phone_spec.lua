@@ -14,7 +14,7 @@ local function fixture()
   assert(nvim.fn.writefile({
     "#!/bin/sh",
     "printf called > " .. nvim.fn.shellescape(marker),
-    '[ "$#" = 5 ] && [ "$1" = "prefix value" ] && [ "$3" = phone-control ] && [ "$4" = verify-clock ] && [ "$5" = --help ] || exit 7',
+    '[ "$#" = 5 ] && [ "$1" = "prefix value" ] && [ "$3" = phone-control ] && [ "$4" = verify-process ] && [ "$5" = --help ] || exit 7',
     'case "$2" in old) exit 1 ;; interrupted) kill -TERM $$ ;; slow) sleep 1 ;; hung) trap "" TERM; exec sleep 30 ;; esac',
     "exit 0",
   }, helper) == 0)
@@ -65,7 +65,7 @@ T["enabled phone control checks the configured argv asynchronously without deskt
   MiniTest.expect.equality(table.concat(calls.info, "\n"):find("result will be notified", 1, true) ~= nil, true)
   local result = notification(calls)
   MiniTest.expect.equality(result.level, nvim.log.levels.INFO)
-  MiniTest.expect.equality(result.message:find("phone-control verify-clock --help", 1, true) ~= nil, true)
+  MiniTest.expect.equality(result.message:find("phone-control verify-process --help", 1, true) ~= nil, true)
   MiniTest.expect.equality(result.message:find("exited successfully", 1, true) ~= nil, true)
   MiniTest.expect.equality(result.message:find("Send readiness", 1, true) ~= nil, true)
   MiniTest.expect.equality(nvim.fn.filereadable(marker), 1)

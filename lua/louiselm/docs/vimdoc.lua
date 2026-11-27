@@ -544,7 +544,7 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "When phone control is enabled, :checkhealth louiselm checks the configured capture.service command with phone-control verify-clock --help, independently of desktop capture. The result arrives as a notification; success checks only that the help command exited successfully, not Send readiness. See capture-service/README.md for manual helper updates.",
+        "When phone control is enabled, :checkhealth louiselm checks the configured capture.service command with phone-control verify-process --help, independently of desktop capture. The result arrives as a notification; success checks only that the help command exited successfully, not Send readiness. See capture-service/README.md for manual helper updates.",
         context
       )
       append_prose(

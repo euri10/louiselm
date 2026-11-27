@@ -241,9 +241,11 @@ deletes the native owner's journal or conversation.
 ### Send from a personal desktop
 
 `:checkhealth louiselm` checks the configured `capture.service` command with
-`phone-control verify-clock --help` when phone control is enabled, independently
+`phone-control verify-process --help` when phone control is enabled, independently
 of desktop recording. Its result appears as a notification. Success means only
 that this help command exited successfully; it does not establish Send readiness.
+The matching helper also supports the separate `phone-control verify-clock`
+command required at registration.
 If it fails, check the configured executable and arguments: the helper may be
 older, or the command may be invalid. Phone control attaches by default; set
 `phone_control = { enabled = false }` to disable the attachment and this check.

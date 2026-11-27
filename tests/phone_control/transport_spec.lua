@@ -85,7 +85,7 @@ T["registers the original receiver connection after opening its process identity
   MiniTest.expect.equality(controller.registration, nil)
 end
 
-T["a malformed clock verifier falls back to ordinary reads"] = function()
+local function read_only_after_invalid_verifier(mode)
   local directory = nvim.fn.tempname()
   assert(nvim.fn.mkdir(directory, "p") == 1)
   assert(nvim.fn.writefile({ "00112233-4455-6677-8899-aabbccddeeff" }, directory .. "/capability", "b") == 0)
@@ -117,7 +117,7 @@ T["a malformed clock verifier falls back to ordinary reads"] = function()
     end)
   end) == 0)
   local controller = Controller.new({
-    service = { "python3", nvim.fn.getcwd() .. "/tests/fixtures/phone_clock_verifier.py", "malformed" },
+    service = { "python3", nvim.fn.getcwd() .. "/tests/fixtures/phone_clock_verifier.py", mode },
   })
   local state = { id = "session-1", agent = "mock", working_dir = nvim.uv.cwd(), status = "ready" }
   local owner = { sessions = {} }
@@ -184,6 +184,14 @@ T["a malformed clock verifier falls back to ordinary reads"] = function()
     return response ~= nil
   end))
   MiniTest.expect.equality(response.type, "session_page")
+end
+
+T["a malformed clock verifier falls back to ordinary reads"] = function()
+  read_only_after_invalid_verifier("malformed")
+end
+
+T["a malformed process verifier falls back to ordinary reads"] = function()
+  read_only_after_invalid_verifier("process_malformed")
 end
 
 T["an older read-only receiver remains usable"] = function()

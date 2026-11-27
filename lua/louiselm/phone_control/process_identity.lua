@@ -3,6 +3,7 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns the event loop and proc descriptors.
 local nvim = vim
 local ProcFile = require("louiselm.phone_control.proc_file")
+local Verifier = require("louiselm.phone_control.descriptor_verifier")
 local M = {}
 local Identity = {}
 Identity.__index = Identity
@@ -29,46 +30,71 @@ function Identity:open(callback)
       end
       return
     end
-    local function finish(valid, cause)
-      if self.state == "disposed" or not valid then
-        local closed, close_error = nvim.uv.fs_close(fd)
-        if not closed then
-          self.error = close_error
-        end
-        if self.state ~= "disposed" then
-          self.state = "failed"
-          callback(false, cause or "unavailable")
-        end
-        return
-      end
-      self.fd, self.state = fd, "open"
-      callback(true)
-    end
     if self.state == "disposed" then
-      finish(false)
+      local closed, close_error = nvim.uv.fs_close(fd)
+      if not closed then
+        self.error = close_error
+      end
       return
     end
-    ProcFile.open("/proc/self/status", function(status_fd, status_error)
-      if status_fd == nil then
-        finish(false, status_error)
+    self.fd, self.state = fd, "validating"
+    local function finish(valid)
+      if self.state == "disposed" then
         return
       end
-      nvim.uv.fs_read(status_fd, 65537, 0, function(read_error, status)
-        nvim.uv.fs_close(status_fd, function(close_error)
-          nvim.schedule(function()
-            local numbers = type(status) == "string" and #status <= 65536 and status:match("\nNSpid:%s*([^\n]+)") or nil
-            local only_pid = numbers and numbers:match("^(%d+)%s*$") or nil
-            local own_namespace = nvim.uv.fs_readlink("/proc/self/ns/pid")
-            local peer_namespace = nvim.uv.fs_readlink("/proc/" .. self.pid .. "/ns/pid")
-            local valid = read_error == nil
-              and close_error == nil
-              and tonumber(only_pid) == nvim.uv.os_getpid()
-              and own_namespace == self.namespace
-              and peer_namespace == self.namespace
-            finish(valid)
-          end)
-        end)
-      end)
+      self.state = valid and "open" or "failed"
+      if valid and not self:alive() then
+        self.state = "failed"
+      end
+      if self.state ~= "open" then
+        local closed, cause = nvim.uv.fs_close(fd)
+        self.fd = nil
+        if not closed then
+          self.error = cause
+        end
+      end
+      callback(self.state == "open", self.state ~= "open" and "unavailable" or nil)
+    end
+    ProcFile.open("/proc/self/status", function(status_fd)
+      if self.state == "disposed" then
+        if status_fd ~= nil then
+          local closed, cause = nvim.uv.fs_close(status_fd)
+          if not closed then
+            self.error = cause
+          end
+        end
+        return
+      end
+      if status_fd == nil then
+        finish(false)
+        return
+      end
+      self.status_fd = status_fd
+      Verifier.start(
+        self,
+        {
+          "phone-control",
+          "verify-process",
+          "--pid",
+          tostring(self.pid),
+          "--editor-pid",
+          tostring(nvim.uv.os_getpid()),
+          "--namespace",
+          self.namespace,
+        },
+        '{"v":1,"type":"process_verified"}\n',
+        function(valid)
+          if self.state == "disposed" then
+            return
+          end
+          local closed, cause = nvim.uv.fs_close(status_fd)
+          self.status_fd = nil
+          if not closed then
+            self.error = cause
+          end
+          finish(valid and closed ~= nil)
+        end
+      )
     end)
   end)
 end
@@ -93,13 +119,22 @@ end
 ---@return boolean closed
 ---@return string? error_message
 function Identity:dispose()
-  local fd = self.fd
-  self.fd, self.state = nil, "disposed"
+  local fd, status_fd = self.fd, self.status_fd
+  self.fd, self.status_fd, self.state = nil, nil, "disposed"
+  if self.verifier ~= nil then
+    self.verifier.cancel()
+  end
+  if status_fd ~= nil then
+    local closed, err = nvim.uv.fs_close(status_fd)
+    if not closed then
+      self.error = err
+    end
+  end
   if fd == nil then
     return self.error == nil, self.error
   end
   local closed, err = nvim.uv.fs_close(fd)
-  return closed ~= nil, err
+  return closed ~= nil and self.error == nil, err or self.error
 end
 
 ---Check only an identity created by this module; do not invoke caller callbacks.
@@ -112,9 +147,10 @@ end
 ---Create an unopened process identity. This performs no I/O.
 ---@param pid integer PID in this process's proc namespace.
 ---@param namespace string PID namespace reported by the peer on its original connection.
+---@param service string[] Configured capture-service argv prefix.
 ---@return table? identity
 ---@return string? error_message
-function M.new(pid, namespace)
+function M.new(pid, namespace, service)
   if
     type(pid) ~= "number"
     or pid < 1
@@ -125,7 +161,13 @@ function M.new(pid, namespace)
   then
     return nil, "unavailable"
   end
-  return setmetatable({ pid = pid, namespace = namespace, state = "new" }, Identity), nil
+  return setmetatable({
+    pid = pid,
+    namespace = namespace,
+    service = type(service) == "table" and nvim.deepcopy(service) or nil,
+    state = "new",
+  }, Identity),
+    nil
 end
 
 return M

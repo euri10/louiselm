@@ -163,6 +163,35 @@ pub async fn run() -> Result<(), CliError> {
         .await
         .map_err(std::io::Error::other)?;
     }
+    if let Command::PhoneControl {
+        command:
+            PhoneControl::VerifyProcess {
+                pid,
+                editor_pid,
+                namespace,
+            },
+    } = &command
+    {
+        let pid = *pid;
+        let editor_pid = *editor_pid;
+        let namespace = namespace.clone();
+        return tokio::task::spawn_blocking(move || {
+            crate::phone_control::verify_process_descriptor(
+                &std::io::stdin(),
+                &std::io::stderr(),
+                pid,
+                editor_pid,
+                &namespace,
+            )?;
+            writeln!(
+                std::io::stdout().lock(),
+                "{{\"v\":1,\"type\":\"process_verified\"}}"
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(std::io::Error::other)?;
+    }
     let paths = Paths::discover()?;
     execute(command, paths).await
 }

@@ -29,9 +29,9 @@ T["registered Send enters the real Session once and keeps its later evidence and
     return peer ~= nil
   end))
   local namespace = assert(nvim.uv.fs_readlink("/proc/self/ns/pid"))
-  local process = assert(Process.new(nvim.uv.os_getpid(), namespace))
   local verifier = nvim.env.LOUISELM_TEST_CAPTURE and { nvim.env.LOUISELM_TEST_CAPTURE }
     or { "python3", root .. "/tests/fixtures/phone_clock_verifier.py", "healthy" }
+  local process = assert(Process.new(nvim.uv.os_getpid(), namespace, verifier))
   local clock = Clock.new(verifier)
   local function open(object)
     local done

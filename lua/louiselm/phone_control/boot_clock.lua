@@ -3,6 +3,7 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns the proc descriptor.
 local nvim = vim
 local ProcFile = require("louiselm.phone_control.proc_file")
+local Verifier = require("louiselm.phone_control.descriptor_verifier")
 local M = {}
 local Clock = {}
 Clock.__index = Clock
@@ -22,118 +23,6 @@ local function centiseconds(value)
     return nil
   end
   return seconds * 100 + fraction
-end
-
--- vim.system cannot pass an existing descriptor as stdin. The child verifies
--- this exact handle and never reads it; the editor retains it for final checks.
-local function verify(self, callback)
-  local stdout = nvim.uv.new_pipe(false)
-  local timer = nvim.uv.new_timer()
-  if stdout == nil or timer == nil or self.service == nil or #self.service == 0 then
-    if stdout then
-      stdout:close()
-    end
-    if timer then
-      timer:close()
-    end
-    nvim.schedule(function()
-      callback(false)
-    end)
-    return
-  end
-  local args = {}
-  for index = 2, #self.service do
-    args[#args + 1] = self.service[index]
-  end
-  nvim.list_extend(args, { "phone-control", "verify-clock" })
-  local env = {}
-  for _, key in ipairs({
-    "PATH",
-    "HOME",
-    "LANG",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "XDG_STATE_HOME",
-    "XDG_CACHE_HOME",
-  }) do
-    if nvim.env[key] ~= nil then
-      env[#env + 1] = key .. "=" .. nvim.env[key]
-    end
-  end
-  ---@alias ClockVerifierKill fun(self: table, signal: integer): integer?, string?
-  local process ---@type {kill: ClockVerifierKill, close: fun(self: table)}?
-  local completed, exited, eof, output = false, false, false, ""
-  local function finish(valid)
-    if completed then
-      return
-    end
-    completed = true
-    self.verifier = nil
-    timer:stop()
-    timer:close()
-    stdout:read_stop()
-    stdout:close()
-    if process ~= nil then
-      local killed, err = process:kill(9)
-      if killed == nil and (type(err) ~= "string" or not err:match("ESRCH")) then
-        self.error = err or "could not stop clock verifier"
-      end
-    end
-    nvim.schedule(function()
-      callback(valid)
-    end)
-  end
-  self.verifier = {
-    cancel = function()
-      finish(false)
-    end,
-  }
-  local cwd = nvim.uv.cwd()
-  if cwd == nil then
-    finish(false)
-    return
-  end
-  local spawned, handle = pcall(nvim.uv.spawn, self.service[1], {
-    args = args,
-    cwd = cwd,
-    env = env,
-    stdio = { self.fd, stdout },
-  }, function(code, signal)
-    if process ~= nil then
-      process:close()
-    end
-    process = nil
-    exited = code == 0 and signal == 0
-    if not completed and (not exited or eof) then
-      finish(exited and output == '{"v":1,"type":"clock_verified"}\n')
-    end
-  end)
-  if not spawned or handle == nil then
-    finish(false)
-    return
-  end
-  process = handle
-  local reading = stdout:read_start(function(err, data)
-    if err ~= nil then
-      finish(false)
-    elseif data == nil then
-      eof = true
-      if exited then
-        finish(output == '{"v":1,"type":"clock_verified"}\n')
-      end
-    else
-      output = output .. data
-      if #output > 128 then
-        finish(false)
-      end
-    end
-  end)
-  local started = timer:start(5000, 0, function()
-    finish(false)
-  end)
-  if reading == nil or started == nil then
-    finish(false)
-  end
 end
 
 ---Open and validate a Linux boot-time source asynchronously.
@@ -164,7 +53,7 @@ function Clock:open(callback)
       return
     end
     self.fd, self.state = fd, "validating"
-    verify(self, function(valid)
+    Verifier.start(self, { "phone-control", "verify-clock" }, '{"v":1,"type":"clock_verified"}\n', function(valid)
       if self.state == "disposed" then
         return
       end

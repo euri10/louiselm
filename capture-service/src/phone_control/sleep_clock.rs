@@ -136,7 +136,7 @@ fn parse_uptime(value: &str) -> io::Result<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn proc_mount_id(file: impl std::os::fd::AsFd) -> io::Result<u64> {
+pub(super) fn proc_mount_id(file: impl std::os::fd::AsFd) -> io::Result<u64> {
     use rustix::fs::{AtFlags, PROC_SUPER_MAGIC, StatxFlags, fstatfs, statx};
 
     let info =
@@ -151,7 +151,7 @@ fn proc_mount_id(file: impl std::os::fd::AsFd) -> io::Result<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn open_file(path: &str) -> io::Result<std::fs::File> {
+pub(super) fn open_file(path: &str) -> io::Result<std::fs::File> {
     use rustix::fs::{Mode, OFlags, open};
 
     open(
@@ -174,7 +174,7 @@ fn bounded(file: impl Read, limit: u64) -> io::Result<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn proc_root_mount() -> io::Result<u64> {
+pub(super) fn proc_root_mount() -> io::Result<u64> {
     let mounts = open_file("/proc/thread-self/mountinfo")?;
     let mount_id = proc_mount_id(&mounts)?;
     if !is_proc_mount(&bounded(&mounts, 1_048_576)?, &mount_id.to_string()) {

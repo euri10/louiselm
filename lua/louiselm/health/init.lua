@@ -342,7 +342,7 @@ local function check_phone_helper(config)
   end
   local probe = { timer = timer }
   config.phone_probe = probe
-  local argv = editor.list_extend(editor.deepcopy(service), { "phone-control", "verify-clock", "--help" })
+  local argv = editor.list_extend(editor.deepcopy(service), { "phone-control", "verify-process", "--help" })
   local started, process = pcall(editor.system, argv, {
     cwd = cwd,
     env = env,
@@ -362,18 +362,18 @@ local function check_phone_helper(config)
       stop_phone_probe(config)
       local message, level
       if timed_out or result.signal ~= 0 then
-        message = "Phone Send helper check could not determine whether phone-control verify-clock --help is available; "
+        message = "Phone Send helper check could not determine whether phone-control verify-process --help is available; "
           .. instruction
         level = editor.log.levels.WARN
       elseif result.code ~= 0 then
-        message = "Phone Send helper check: capture.service phone-control verify-clock --help exited with code "
+        message = "Phone Send helper check: capture.service phone-control verify-process --help exited with code "
           .. result.code
           .. "; the helper may be older or its command/arguments may be invalid; "
           .. instruction
         level = editor.log.levels.WARN
       else
         message =
-          "Phone Send helper: capture.service phone-control verify-clock --help exited successfully; Send readiness was not checked"
+          "Phone Send helper: capture.service phone-control verify-process --help exited successfully; Send readiness was not checked"
         level = editor.log.levels.INFO
       end
       editor.notify("louiselm health: " .. message, level)
@@ -397,7 +397,7 @@ local function check_phone_helper(config)
     return
   end
   editor.health.info(
-    "Phone Send helper: checking capture.service phone-control verify-clock --help; result will be notified"
+    "Phone Send helper: checking capture.service phone-control verify-process --help; result will be notified"
   )
 end
 

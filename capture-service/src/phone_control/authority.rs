@@ -11,6 +11,9 @@ mod send;
 #[path = "sleep_clock.rs"]
 mod sleep_clock;
 pub(crate) use sleep_clock::verify_descriptor as verify_clock_descriptor;
+#[path = "process_check.rs"]
+mod process_check;
+pub(crate) use process_check::verify_descriptor as verify_process_descriptor;
 #[path = "authority_voice.rs"]
 mod voice;
 #[path = "authority_voice_job.rs"]

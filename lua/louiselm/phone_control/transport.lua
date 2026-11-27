@@ -122,7 +122,7 @@ local function begin_registration(self, pipe, generation, offer)
     disconnect(self, pipe, true)
     return
   end
-  local process = ProcessIdentity.new(offer.receiver_pid, offer.receiver_namespace)
+  local process = ProcessIdentity.new(offer.receiver_pid, offer.receiver_namespace, self.controller.service)
   if process == nil then
     disconnect(self, pipe, true)
     return
