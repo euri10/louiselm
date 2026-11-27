@@ -162,8 +162,11 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
         .transpose()?;
     let mut phone_control = None;
     let receiver = if features.receiver {
-        let (identity, allow_registration) = if features.phone_control {
-            match super::receiver_identity(&paths) {
+        let Some(pairing) = &pairing else {
+            return Err(CliError::Invalid("receiver storage is unavailable".into()));
+        };
+        let (identity, identity_available) = if features.phone_control {
+            match super::select_receiver_identity(&paths, pairing, true) {
                 Ok(identity) => (identity, true),
                 Err(error) => {
                     eprintln!(
@@ -173,10 +176,34 @@ fn prepare(paths: Paths, features: Features) -> Result<Prepared, CliError> {
                 }
             }
         } else {
-            (TlsIdentity::load_or_create(paths.tls())?, false)
+            (
+                super::select_receiver_identity(&paths, pairing, false)?,
+                false,
+            )
+        };
+        let allow_registration = if features.phone_control && identity_available {
+            let Some(capture) = paths.tls().parent().map(std::path::Path::to_owned) else {
+                return Err(CliError::Invalid("receiver storage is unavailable".into()));
+            };
+            if crate::phone_control::personal_startup::prepare(
+                &capture,
+                identity.public_key_sha256(),
+                pairing,
+            )
+            .is_ok()
+            {
+                true
+            } else {
+                eprintln!(
+                    "phone Send evidence unavailable; capture and phone reads remain available"
+                );
+                false
+            }
+        } else {
+            false
         };
         let network = NetworkProfile::load_or_default(&paths.network())?;
-        let (Some(store), Some(pairing)) = (&captures, &pairing) else {
+        let Some(store) = &captures else {
             return Err(CliError::Invalid("receiver storage is unavailable".into()));
         };
         let receiver = match &attention {

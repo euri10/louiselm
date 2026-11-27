@@ -94,6 +94,23 @@ struct DeviceRecord {
     notification: Option<NotificationRegistration>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+enum PersonalSend {
+    Unbound {},
+    Eligible {
+        receiver: String,
+    },
+    Starting {
+        receiver: String,
+        generation: String,
+    },
+    Ready {
+        receiver: String,
+        generation: String,
+    },
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct RegistryState {
     schema_version: u8,
@@ -101,6 +118,8 @@ struct RegistryState {
     devices: Vec<DeviceRecord>,
     #[serde(default)]
     notifications: NotificationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    personal_send: Option<PersonalSend>,
 }
 
 /// Pairing-registry failure.
@@ -185,7 +204,8 @@ impl PairingRegistry {
                 registry.load().map(|_| ())
             } else if initialize {
                 registry.persist(&RegistryState {
-                    schema_version: 3,
+                    schema_version: 4,
+                    personal_send: Some(PersonalSend::Unbound {}),
                     ..RegistryState::default()
                 })
             } else {
@@ -195,6 +215,100 @@ impl PairingRegistry {
             result?;
         }
         Ok(registry)
+    }
+
+    // Serialize identity creation with the pairing record. A new identity is
+    // bound before publication; a missing identity beside an established
+    // pairing is not permission to replace it.
+    pub(crate) fn with_personal_receiver<T, E: From<PairingError>>(
+        &self,
+        operation: impl FnOnce(bool) -> Result<(T, Option<String>), E>,
+    ) -> Result<T, E> {
+        let _process_guard = self.process_guard().map_err(E::from)?;
+        let lock = self.lock_file().map_err(E::from)?;
+        let result = (|| {
+            let mut state = self.load().map_err(E::from)?;
+            let unbound = matches!(state.personal_send, Some(PersonalSend::Unbound {}))
+                && state.devices.is_empty()
+                && state.pending.is_empty();
+            let (identity, created_receiver) = operation(unbound)?;
+            if let Some(receiver) = created_receiver {
+                if !unbound {
+                    return Err(E::from(PairingError::Rejected(
+                        "receiver identity is unavailable".into(),
+                    )));
+                }
+                state.personal_send = Some(PersonalSend::Eligible { receiver });
+                lock.validate()
+                    .map_err(PairingError::from)
+                    .map_err(E::from)?;
+                self.persist(&state).map_err(E::from)?;
+            }
+            lock.validate()
+                .map_err(PairingError::from)
+                .map_err(E::from)?;
+            Ok(identity)
+        })();
+        lock.release()
+            .map_err(PairingError::from)
+            .map_err(E::from)?;
+        result
+    }
+
+    // Schema 3 predates production Send; schema 4 needs an eligible receiver
+    // recorded before publication. Persist the transition before creating data.
+    pub(crate) fn begin_personal_send(
+        &self,
+        receiver: &str,
+        generation: &str,
+    ) -> Result<bool, PairingError> {
+        self.with_state(true, |state| {
+            let eligible = state.schema_version == 3 || matches!(&state.personal_send,
+                Some(PersonalSend::Eligible { receiver: old_receiver }) if old_receiver == receiver);
+            if !eligible {
+                return Ok(false);
+            }
+            state.schema_version = 4;
+            state.personal_send = Some(PersonalSend::Starting {
+                receiver: receiver.into(),
+                generation: generation.into(),
+            });
+            Ok(true)
+        })
+    }
+
+    pub(crate) fn finish_personal_send(
+        &self,
+        receiver: &str,
+        generation: &str,
+    ) -> Result<(), PairingError> {
+        self.with_state(true, |state| {
+            if !matches!(&state.personal_send,
+                Some(PersonalSend::Starting { receiver: old_receiver, generation: old_generation })
+                if old_receiver == receiver && old_generation == generation)
+            {
+                return Err(PairingError::Rejected(
+                    "personal Send initialization is unavailable".into(),
+                ));
+            }
+            state.personal_send = Some(PersonalSend::Ready {
+                receiver: receiver.into(),
+                generation: generation.into(),
+            });
+            Ok(())
+        })
+    }
+
+    pub(crate) fn personal_send_ready(
+        &self,
+        receiver: &str,
+        generation: &str,
+    ) -> Result<bool, PairingError> {
+        self.with_state(false, |state| {
+            Ok(matches!(&state.personal_send,
+            Some(PersonalSend::Ready { receiver: old_receiver, generation: old_generation })
+            if old_receiver == receiver && old_generation == generation))
+        })
     }
 
     /// Issue one short-lived QR pairing offer.
@@ -486,7 +600,9 @@ impl PairingRegistry {
             value["schema_version"] = 3.into();
         }
         let state: RegistryState = serde_json::from_value(value)?;
-        if state.schema_version != 3 {
+        if !matches!(state.schema_version, 3 | 4)
+            || (state.schema_version == 3 && state.personal_send.is_some())
+        {
             return Err(PairingError::Rejected(
                 "pairing registry version is unsupported".to_owned(),
             ));

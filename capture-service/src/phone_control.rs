@@ -10,6 +10,7 @@ mod http;
 mod legacy_recovery_tests;
 mod managed_registration;
 pub(crate) mod owner_journal;
+pub(crate) mod personal_startup;
 mod prepared_owner;
 #[cfg(test)]
 mod prepared_owner_tests;
@@ -142,23 +143,7 @@ impl Service {
             .as_ref()
             .ok()
             .filter(|_| allow_registration)
-            .and_then(|store| {
-                Some((
-                    store.bound_generation()?.to_owned(),
-                    store.bound_barrier()?.clone(),
-                ))
-            })
-            .and_then(|(generation, binding)| {
-                barrier::Barrier::existing(
-                    state_root.parent().map(|root| root.join("tls"))?.as_path(),
-                    receiver,
-                    binding,
-                )
-                .ok()?
-                .receiver(&generation)
-                .ok()
-                .map(|barrier| (generation, barrier))
-            });
+            .and_then(|store| personal_startup::open_registration(receiver, store, &pairing).ok());
         let controllers = match registration {
             Some(registration) => socket::ControllerRegistry::new(Some(registration)),
             None => socket::ControllerRegistry::default(),

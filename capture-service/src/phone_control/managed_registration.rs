@@ -338,6 +338,7 @@ fn register_first(files: &ManagerFiles) -> Result<String, RegistrationFailure> {
             uid: setup.operator_uid,
             gid: setup.operator_gid,
         },
+        existing_identity: false,
         _startup: &startup,
         _registrar: &registrar,
     };
@@ -893,6 +894,7 @@ mod tests {
             receiver: &candidate.receiver,
             generation: &generation,
             owner,
+            existing_identity: false,
             _startup: &startup,
             _registrar: &registrar,
         };

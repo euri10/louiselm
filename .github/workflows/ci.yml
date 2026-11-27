@@ -756,6 +756,17 @@ jobs:
               real_receiver_and_offline_cutoff_share_exclusion
           ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}"
 
+      - name: Test personal phone approval and durable startup
+        run: |
+          sudo unshare --mount --net --propagation private -- /bin/sh -c '
+            set -eu
+            mount -t tmpfs -o mode=0755 tmpfs /run
+            ip link set lo up
+            exec setpriv --reuid "$1" --regid "$2" --init-groups \
+              env -i "HOME=$3" "PATH=$4" "TMPDIR=$5" LANG=C.UTF-8 cargo test --offline --locked \
+              --test personal_phone_startup -- --ignored --test-threads=1
+          ' sh "$(id -u)" "$(id -g)" "$HOME" "$PATH" "${RUNNER_TEMP:-/tmp}"
+
       - name: Test capture without transcription credentials
         run: |
           sudo unshare --net -- /bin/sh -c '

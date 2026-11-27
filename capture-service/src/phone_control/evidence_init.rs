@@ -1,4 +1,4 @@
-//! Fixed first-store transaction for the managed receiver writer.
+//! Fixed first-store transaction for managed and personal receivers.
 
 use std::{
     collections::BTreeMap,
@@ -71,6 +71,8 @@ pub(crate) struct FirstStoreInput<'a> {
     pub(crate) receiver: &'a str,
     pub(crate) generation: &'a str,
     pub(crate) owner: StoreOwner,
+    /// The personal installation may already have a trusted receiver key.
+    pub(crate) existing_identity: bool,
     pub(crate) _startup: &'a Startup,
     pub(crate) _registrar: &'a Registrar,
 }
@@ -114,7 +116,7 @@ fn verify_receipt(input: &FirstStoreInput<'_>, receipt: &FirstStoresReceipt) -> 
     validate_stage(input.private_state, input.capture_stage, &tls)?;
     validate_stage(input.private_state, input.capture_stage, &archive_parent)?;
     validate_stage(input.private_state, input.parent_stage, &workflow)?;
-    require_absent(&tls, &["receiver-key.pem", "receiver-cert.pem"])?;
+    verify_identity(input, &tls)?;
     let tls_path = fd_path(&tls);
     let barrier = Barrier::existing(&tls_path, input.receiver, receipt.barrier.clone())?;
     barrier.with_generation(input.generation, || {
@@ -124,7 +126,7 @@ fn verify_receipt(input: &FirstStoreInput<'_>, receipt: &FirstStoresReceipt) -> 
     verify_child(input.capture, "tls", &tls)?;
     verify_child(input.capture, "phone-control", &archive_parent)?;
     verify_child(input.parent, "workflow", &workflow)?;
-    require_absent(&tls, &["receiver-key.pem", "receiver-cert.pem"])?;
+    verify_identity(input, &tls)?;
     Ok(tls)
 }
 
@@ -152,11 +154,10 @@ fn initialize(
     let workflow_existing = optional_dir(parent, "workflow")?;
     if let Some(tls) = &tls_existing {
         validate_stage(private_state, capture_stage, tls)?;
+        verify_identity(input, tls)?;
         require_absent(
             tls,
             &[
-                "receiver-key.pem",
-                "receiver-cert.pem",
                 "phone-admission-barrier.json",
                 "phone-admission-barrier.lock",
                 "phone-admission-registrar.lock",
@@ -204,7 +205,7 @@ fn initialize(
         verify_child(capture, "tls", &tls)?;
         verify_child(capture, "phone-control", &archive_parent)?;
         verify_child(parent, "workflow", &workflow)?;
-        require_absent(&tls, &["receiver-key.pem", "receiver-cert.pem"])?;
+        verify_identity(input, &tls)?;
         commit_stores(&receipt)?;
         Ok::<_, io::Error>(receipt)
     })??;
@@ -212,8 +213,21 @@ fn initialize(
     verify_child(capture, "tls", &tls)?;
     verify_child(capture, "phone-control", &archive_parent)?;
     verify_child(parent, "workflow", &workflow)?;
-    require_absent(&tls, &["receiver-key.pem", "receiver-cert.pem"])?;
+    verify_identity(input, &tls)?;
     Ok(receipt)
+}
+
+fn verify_identity(input: &FirstStoreInput<'_>, tls: &File) -> io::Result<()> {
+    if input.existing_identity {
+        let identity =
+            crate::TlsIdentity::load_existing(&fd_path(tls)).map_err(io::Error::other)?;
+        if identity.public_key_sha256() != input.receiver {
+            return Err(io::Error::other("receiver identity changed"));
+        }
+        Ok(())
+    } else {
+        require_absent(tls, &["receiver-key.pem", "receiver-cert.pem"])
+    }
 }
 
 fn create_barrier(

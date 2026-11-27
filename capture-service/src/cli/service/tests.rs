@@ -225,7 +225,9 @@ async fn phone_control_routes_exist_only_after_explicit_opt_in() {
 
     features.phone_control = true;
     let enabled = prepare(paths, features).unwrap();
-    assert!(!evidence.exists());
+    // Enabling phone control establishes its personal evidence stores. The
+    // preceding disabled startup left them absent and granted no phone access.
+    assert!(evidence.exists());
     let enabled_app = enabled.receiver.as_ref().unwrap().0.router();
     let response = enabled_app.oneshot(request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -447,6 +449,9 @@ fn malformed_phone_grant_store_stays_sealed_and_untouched() {
     features.attention = false;
     features.receiver = true;
     features.phone_control = true;
+    // Establish a real receiver before damaging grants. A missing receiver
+    // identity beside existing phone state must be refused, not regenerated.
+    drop(prepare(paths.clone(), features).unwrap());
     std::fs::create_dir_all(paths.phone_control_store().parent().unwrap()).unwrap();
     for damaged in [
         b"not json".as_slice(),

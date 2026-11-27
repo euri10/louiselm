@@ -20,13 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use louiselm_capture::{
-    ActionEvidenceKind, NetworkProfile, NetworkProfileKind, PairingRegistry, TlsIdentity,
-};
-
-#[path = "support/phone_evidence.rs"]
-#[allow(dead_code, reason = "this integration uses the archive fixture")]
-mod phone_evidence;
+use louiselm_capture::{NetworkProfile, NetworkProfileKind, PairingRegistry, TlsIdentity};
 
 struct Receiver(Child);
 
@@ -48,6 +42,9 @@ fn fixture(root: &Path) -> (PathBuf, String) {
     let state = root.join("state");
     let capture = state.join("louiselm/capture");
     let tls = capture.join("tls");
+    // Establish both bound stores through the production startup. The previous
+    // archive-only fixture could not exercise a healthy write registrar.
+    let receiver_process = start(root, &state);
     let identity = TlsIdentity::load_or_create(&tls).unwrap();
     let receiver = identity.public_key_sha256();
     let pairing = PairingRegistry::open(capture.join("pairing")).unwrap();
@@ -55,14 +52,7 @@ fn fixture(root: &Path) -> (PathBuf, String) {
         .issue("https://192.0.2.1:7391", receiver, 1_000, 5_000)
         .unwrap();
     let phone = pairing.consume(&offer.token, "fixture", 2_000).unwrap();
-    phone_evidence::initialize(
-        &capture.join("phone-control/action-evidence"),
-        &tls.join("phone-action-evidence.json"),
-        receiver,
-        ActionEvidenceKind::Archive,
-    );
-    phone_evidence::initialize_barrier(&tls, receiver);
-    phone_evidence::bind_barrier_to_archive(&tls);
+    stop(receiver_process);
     (state, phone.device_id)
 }
 

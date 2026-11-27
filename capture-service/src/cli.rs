@@ -578,7 +578,7 @@ fn phone_control_admin_response(
     let response: serde_json::Value = serde_json::from_slice(reply)?;
     let expected_version = if response.get("type") == Some(&serde_json::json!("error")) {
         1
-    } else if expected == "enrollment_approved" {
+    } else if matches!(expected, "enrollment_approved" | "grant_inspection") {
         2
     } else {
         1
@@ -950,8 +950,8 @@ fn pair(paths: &Paths, svg_path: Option<&Path>) -> Result<(), CliError> {
             "phone pairing requires configure-network with one private receiver profile".to_owned(),
         )
     })?;
-    let identity = receiver_identity(paths)?;
     let registry = PairingRegistry::open(paths.pairing())?;
+    let identity = select_receiver_identity(paths, &registry, true)?;
     let offer = registry.issue(
         receiver_url,
         identity.public_key_sha256(),
@@ -982,6 +982,41 @@ fn receiver_identity(paths: &Paths) -> Result<TlsIdentity, CliError> {
         &paths.tls(),
         committed.as_deref(),
     )?)
+}
+
+fn fresh_receiver_identity(paths: &Paths) -> Result<bool, std::io::Error> {
+    Ok(!paths.tls().join("receiver-key.pem").try_exists()?
+        && !paths.tls().join("receiver-cert.pem").try_exists()?)
+}
+
+fn select_receiver_identity(
+    paths: &Paths,
+    pairing: &PairingRegistry,
+    managed: bool,
+) -> Result<TlsIdentity, CliError> {
+    let select = || {
+        if managed {
+            receiver_identity(paths)
+        } else {
+            Ok(TlsIdentity::load_or_create(paths.tls())?)
+        }
+    };
+    pairing.with_personal_receiver(|unbound| {
+        let fresh = fresh_receiver_identity(paths)?;
+        if fresh {
+            let capture = paths.state.join("louiselm/capture");
+            let prior_evidence = crate::phone_control::personal_startup::has_artifacts(&capture)
+                .map_err(|_| std::io::Error::other("phone evidence is unavailable"))?;
+            if !unbound || prior_evidence || paths.phone_control_store().try_exists()? {
+                return Err(CliError::Invalid(
+                    "receiver identity is missing for existing phone state".into(),
+                ));
+            }
+        }
+        let identity = select()?;
+        let created = fresh.then(|| identity.public_key_sha256().to_owned());
+        Ok((identity, created))
+    })
 }
 
 fn write_pairing_svg(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
@@ -1351,6 +1386,23 @@ mod tests {
         .expect("admin response");
         assert_eq!(response["type"], "enrollment_started");
         server.await.expect("server");
+    }
+
+    #[test]
+    fn grant_inspection_accepts_only_its_v2_response() {
+        let valid = br#"{"v":2,"type":"grant_inspection","grant_id":"retained"}"#;
+        let response =
+            phone_control_admin_response(valid, "grant_inspection").expect("v2 response");
+        assert_eq!(response["grant_id"], "retained");
+        for invalid in [
+            br#"{"v":1,"type":"grant_inspection"}"#.as_slice(),
+            br#"{"v":3,"type":"grant_inspection"}"#.as_slice(),
+        ] {
+            assert!(matches!(
+                phone_control_admin_response(invalid, "grant_inspection"),
+                Err(CliError::Invalid(message)) if message == "phone-control response is invalid"
+            ));
+        }
     }
 
     #[tokio::test]

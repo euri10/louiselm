@@ -279,6 +279,12 @@ capture-only fallback and preservation of a controller read attachment after a
 mismatched reply. The stub cannot prove manager provenance or first enrollment.
 Never run this gate against a workstation's `/run`.
 
+Personal phone startup changes also run `cargo test --test
+personal_phone_startup -- --ignored --test-threads=1` in private mount and network
+namespaces with an isolated `/run` and loopback enabled. CI runs it as the
+unprivileged owner. It exercises the real CLI, service, local approval and
+evidence reopening with disposable identities; it is not Android Send acceptance.
+
 The manual ecosystem-radar workflow uses the Python standard-library gate
 `python3 scripts/test-ecosystem-radar.py`. It checks routing and receipt
 validation against offline fixtures; it does not certify external project

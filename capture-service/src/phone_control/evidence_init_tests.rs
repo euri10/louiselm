@@ -91,6 +91,7 @@ impl Fixture {
             receiver: &self.receiver,
             generation: &self.generation,
             owner: self.owner,
+            existing_identity: false,
             _startup: &self.startup,
             _registrar: &self.registrar,
         }

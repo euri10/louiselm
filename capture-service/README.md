@@ -222,6 +222,19 @@ history checks do not renew the working period. Missing or damaged evidence is
 unavailable, not proof that an action was never sent. The first phone write
 still requires the separate Send integration and its native-owner safeguards.
 
+On a trusted personal desktop, phone-control startup establishes the receiver's
+native journal, capture archive, and shared admission barrier once. An existing
+approved phone and its project and Agent scope are retained across ordinary
+service and editor restarts; startup does not grant a new scope or operating
+period. A legacy read-only enrollment is transitioned once. If initialization
+is interrupted, or an established store, its guard, the pairing state, or the
+barrier is missing or inconsistent, phone Send stays unavailable and the
+remaining evidence is preserved. Capture and authorized phone reads remain
+available where their own state is healthy. Restoring older local state does not
+prove that a previously admitted action had no effect. Do not re-enable phone
+Send after a known restore until the separate recovery procedure is available;
+a coordinated rollback of local evidence cannot be detected from that evidence.
+
 If the phone-admission barrier is missing, damaged, or replaced, preserve the
 receiver state, owner journal, and capture archive. Do not recreate its lock
 files or clear the history. There is currently no supported barrier-recovery
@@ -321,8 +334,10 @@ Override XDG roots for tests or deployments with
 appends `louiselm/...`.
 
 The [phone host reference candidate](https://github.com/euri10/louiselm/blob/main/docs/phone-host-reference.md) provides
-fixture provisioning and diagnostics only. Phone Send and affected recovery
-remain unavailable until the independent host-scope proofs are implemented.
+fixture provisioning and diagnostics for a separate managed profile. It is not
+required for the trusted personal-desktop initialization described above.
+Recovery of lost or ambiguous admission evidence remains unavailable without
+the separate recovery proof.
 
 ## Transcription
 

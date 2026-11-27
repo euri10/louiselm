@@ -235,6 +235,25 @@ impl ActionEvidenceStore {
         self.guard.as_ref().and_then(|guard| guard.barrier.as_ref())
     }
 
+    pub(super) fn verify_available(&self, receiver: &str) -> Result<(), ActionEvidenceError> {
+        self.check_receiver(receiver)?;
+        self.access(|_| Ok(((), false)))
+    }
+
+    pub(super) fn owner_journal_path(&self) -> Option<PathBuf> {
+        let phone = self.directory.parent()?;
+        let capture = phone.parent()?;
+        let root = capture.parent()?;
+        if self.directory.file_name()? != "action-evidence"
+            || phone.file_name()? != "phone-control"
+            || capture.file_name()? != "capture"
+            || root.file_name()? != "louiselm"
+        {
+            return None;
+        }
+        Some(root.join("workflow/phone-action-owner"))
+    }
+
     /// Open a receiver-bound, already initialized private evidence store.
     ///
     /// `receiver` must be read from the local receiver key, not from a request.

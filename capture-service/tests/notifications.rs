@@ -548,6 +548,8 @@ fn token_registry_upgrade_preserves_pairing_and_progress_but_never_sends_tokens(
     let mut old: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     old["schema_version"] = 2.into();
+    // Version 2 predates the personal Send initialization record.
+    old.as_object_mut().unwrap().remove("personal_send");
     old["notifications"]["health"] = "ready".into();
     old["devices"][0]["notification"] = json!({
         "token": "old-private-fcm-token", "enabled": true,
