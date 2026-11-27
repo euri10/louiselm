@@ -5,6 +5,7 @@
 ---@field preflight_items? louiselm.PostureHealthItem[] Explicitly selected snapshot, never live state.
 ---@field preflight_error? string Fixed read/validation diagnostic.
 ---@field preflight_command? boolean Whether this lifecycle registered the preview command.
+---@field phone_probe? {timer: table, process?: table, timed_out?: boolean} Pending helper check.
 
 local Agent = require("louiselm.agent")
 local Schema = require("louiselm.schema")
@@ -288,6 +289,118 @@ local function check_capture(config)
   end
 end
 
+local function stop_phone_probe(config)
+  local probe = config.phone_probe
+  config.phone_probe = nil
+  if probe == nil then
+    return
+  end
+  probe.timer:stop()
+  probe.timer:close()
+  if probe.process ~= nil and not probe.process:is_closing() then
+    probe.process:kill(9)
+  end
+end
+
+---@param config louiselm.health.Configuration
+local function check_phone_helper(config)
+  stop_phone_probe(config)
+  if not Config.enabled(config.config, "phone_control") then
+    return
+  end
+  local editor = nvim()
+  local capture = type(config.config) == "table" and config.config.capture or nil
+  local service = type(capture) == "table" and capture.service or Config.schema.fields.capture.fields.service.default
+  ---@cast service string[] -- The validated capture schema supplies an argv prefix.
+  local instruction =
+    "check capture.service and its arguments; if needed, install a matching helper manually (capture-service/README.md), then rerun :checkhealth louiselm"
+  if editor.fn.executable(service[1]) ~= 1 then
+    editor.health.warn("Phone Send helper is not executable: " .. service[1] .. "; " .. instruction)
+    return
+  end
+  local cwd, timer = editor.uv.cwd(), editor.uv.new_timer()
+  if cwd == nil or timer == nil then
+    if timer ~= nil then
+      timer:close()
+    end
+    editor.health.warn("Phone Send helper check could not start; " .. instruction)
+    return
+  end
+  local env = {}
+  for _, key in ipairs({
+    "PATH",
+    "HOME",
+    "LANG",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+  }) do
+    if editor.env[key] ~= nil then
+      env[key] = editor.env[key]
+    end
+  end
+  local probe = { timer = timer }
+  config.phone_probe = probe
+  local argv = editor.list_extend(editor.deepcopy(service), { "phone-control", "verify-clock", "--help" })
+  local started, process = pcall(editor.system, argv, {
+    cwd = cwd,
+    env = env,
+    clear_env = true,
+    stdout = false,
+    stderr = false,
+  }, function(result)
+    if config.phone_probe ~= probe then
+      return
+    end
+    probe.timer:stop()
+    editor.schedule(function()
+      if configuration ~= config or config.phone_probe ~= probe then
+        return
+      end
+      local timed_out = probe.timed_out
+      stop_phone_probe(config)
+      local message, level
+      if timed_out or result.signal ~= 0 then
+        message = "Phone Send helper check could not determine whether phone-control verify-clock --help is available; "
+          .. instruction
+        level = editor.log.levels.WARN
+      elseif result.code ~= 0 then
+        message = "Phone Send helper check: capture.service phone-control verify-clock --help exited with code "
+          .. result.code
+          .. "; the helper may be older or its command/arguments may be invalid; "
+          .. instruction
+        level = editor.log.levels.WARN
+      else
+        message =
+          "Phone Send helper: capture.service phone-control verify-clock --help exited successfully; Send readiness was not checked"
+        level = editor.log.levels.INFO
+      end
+      editor.notify("louiselm health: " .. message, level)
+    end)
+  end)
+  if not started or process == nil then
+    stop_phone_probe(config)
+    editor.health.warn("Phone Send helper check could not start; " .. instruction)
+    return
+  end
+  probe.process = process
+  local timer_started = timer:start(5000, 0, function()
+    probe.timed_out = true
+    if not process:is_closing() then
+      process:kill(9)
+    end
+  end)
+  if not timer_started then
+    stop_phone_probe(config)
+    editor.health.warn("Phone Send helper check could not start; " .. instruction)
+    return
+  end
+  editor.health.info(
+    "Phone Send helper: checking capture.service phone-control verify-clock --help; result will be notified"
+  )
+end
+
 local function check_optional(config)
   local health = nvim().health
   if Config.enabled(config.config, "beads") then
@@ -393,6 +506,7 @@ end
 ---@return boolean cleared Always true.
 function M.reset()
   if configuration ~= nil then
+    stop_phone_probe(configuration)
     if configuration.preflight_handle ~= nil then
       configuration.preflight_handle.dispose()
     end
@@ -500,6 +614,7 @@ function M.check()
   check_agents(configuration)
   check_skills(configuration)
   check_capture(configuration)
+  check_phone_helper(configuration)
   check_optional(configuration)
   report(
     "turn recording requires sqlite3 >= 3.38 with JSON support on PATH (features verified at each write)",

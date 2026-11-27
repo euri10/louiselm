@@ -211,7 +211,7 @@ linked Session navigation are not yet connected.
 `disable` revokes workspace access while retaining capture;
 `forget` revokes both. Re-enabling needs a new enrollment and approval. The
 Neovim controller must use the same capture state directory as the receiver
-and opt in with `phone_control = { enabled = true }`. With Attention enabled,
+and keep phone control enabled. With Attention enabled,
 a Session card can open its bounded current conversation after the
 phone unlocks. An old controller or Session identity fails closed; opening a
 card neither resolves Attention nor admits a Session action.
@@ -239,6 +239,28 @@ shows that details were removed. This neither authorizes another Send nor
 deletes the native owner's journal or conversation.
 
 ### Send from a personal desktop
+
+`:checkhealth louiselm` checks the configured `capture.service` command with
+`phone-control verify-clock --help` when phone control is enabled, independently
+of desktop recording. Its result appears as a notification. Success means only
+that this help command exited successfully; it does not establish Send readiness.
+If it fails, check the configured executable and arguments: the helper may be
+older, or the command may be invalid. Phone control attaches by default; set
+`phone_control = { enabled = false }` to disable the attachment and this check.
+
+To update the default user-owned helper from this checkout, use
+`scripts/install-capture-service`. For a custom direct executable path, build
+and install the matching helper at that exact path instead:
+
+```sh
+cargo build --release --manifest-path capture-service/Cargo.toml
+install -m 0755 capture-service/target/release/louiselm-capture "/absolute/path/to/configured/louiselm-capture"
+```
+
+For a wrapper, update the helper it invokes and preserve the configured
+arguments. Retain the previous executable and stop or restart the service only
+at a safe boundary as described in `docs/releases.md`. Rerun health after the
+manual update; health does not install or restart anything.
 
 Set `LOUISELM_RECEIVER_ENABLED=true` and `LOUISELM_PHONE_CONTROL_ENABLED=true`
 for the receiver. In the Neovim configuration shared by your editors, set
