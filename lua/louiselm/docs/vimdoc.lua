@@ -382,7 +382,7 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "Custom Session names set with :LouiselmSessionRename or supplied at creation are saved locally and restored on Resume after an editor restart. Generated Session handles are not saved as names. Names lost before persistence was available must be set again.",
+        "Custom Session names set with :LouiselmSessionRename or supplied at creation are saved locally, shown first in the Resume picker, and restored on Resume after an editor restart. Generated Session handles are not saved as names. Names lost before persistence was available must be set again.",
         context
       )
       append_prose(

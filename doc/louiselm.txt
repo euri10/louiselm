@@ -162,9 +162,9 @@ Sessions                                                   *louiselm-sessions*
   always opens history across all workspaces.
 
   Custom Session names set with |:LouiselmSessionRename| or supplied at
-  creation are saved locally and restored on Resume after an editor restart.
-  Generated Session handles are not saved as names. Names lost before
-  persistence was available must be set again.
+  creation are saved locally, shown first in the Resume picker, and restored
+  on Resume after an editor restart. Generated Session handles are not saved
+  as names. Names lost before persistence was available must be set again.
 
   When an Agent reports that it cannot safely preserve saved permissions and
   offers replacement modes, Resume offers Cancel or an explicit choice.

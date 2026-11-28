@@ -42,6 +42,7 @@
 ---@field session_id string Agent-side ACP session identifier.
 ---@field cwd string Authoritative primary workspace.
 ---@field title? string Agent-provided display title.
+---@field name? string Custom name saved locally with this Session, never inferred.
 ---@field updated_at? string Agent-provided ISO 8601 activity timestamp.
 
 local M = {}

@@ -2200,6 +2200,9 @@ T["new"]["discovers paginated sessions with adapter-scoped identities"] = functi
     },
     nextCursor = nvim.NIL,
   })
+  assert(nvim.wait(6000, function()
+    return discovered ~= nil
+  end, 10))
 
   MiniTest.expect.equality(discovery_errors, {})
   MiniTest.expect.equality(discovered, {
@@ -2224,6 +2227,113 @@ T["new"]["discovers paginated sessions with adapter-scoped identities"] = functi
     },
   })
 
+  assert(api:dispose())
+  restore_processes(original_system)
+end
+
+T["new"]["discovery carries saved Session names and settles once on the main loop"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local saved
+  (api --[[@as louiselm.session.Registry]]).recording:save_session_name(
+    "agent",
+    "named",
+    "Renamed by operator",
+    function(err)
+      saved = err == nil
+    end
+  )
+  assert(nvim.wait(6000, function()
+    return saved ~= nil
+  end, 10))
+  MiniTest.expect.equality(saved, true)
+
+  local callbacks, discovered, discovery_errors = 0, nil, nil
+  assert(api:discover_sessions(nil, function(sessions, errors)
+    callbacks = callbacks + 1
+    discovered = sessions
+    discovery_errors = errors
+  end))
+  respond(processes[1], 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  respond(processes[1], 2, {
+    sessions = {
+      { sessionId = "named", cwd = "/tmp/project", title = "Agent title" },
+      { sessionId = "plain", cwd = "/tmp/project", title = "Other title" },
+    },
+  })
+  assert(nvim.wait(6000, function()
+    return callbacks > 0
+  end, 10))
+
+  MiniTest.expect.equality(discovery_errors, {})
+  MiniTest.expect.equality(discovered, {
+    {
+      agent = "agent",
+      session_id = "named",
+      cwd = "/tmp/project",
+      title = "Agent title",
+      name = "Renamed by operator",
+    },
+    { agent = "agent", session_id = "plain", cwd = "/tmp/project", title = "Other title" },
+  })
+  MiniTest.expect.equality(callbacks, 1)
+
+  assert(api:dispose())
+  restore_processes(original_system)
+end
+
+T["new"]["disposal suppresses a discovery waiting for saved Session names"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local pending, cancelled
+  local recording = (api --[[@as louiselm.session.Registry]]).recording
+  recording.session_names = function(_, callback)
+    pending = callback
+    return function()
+      cancelled = true
+    end
+  end
+  local callbacks = 0
+  assert(api:discover_sessions(nil, function()
+    callbacks = callbacks + 1
+  end))
+  respond(processes[1], 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  respond(processes[1], 2, { sessions = { { sessionId = "named", cwd = "/tmp/project" } } })
+  MiniTest.expect.equality(type(pending), "function")
+  assert(api:dispose())
+  pending({})
+  MiniTest.expect.equality({ callbacks, cancelled }, { 0, true })
+  restore_processes(original_system)
+end
+
+T["new"]["discovery keeps sessions and reports a failed Session name read"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local recording = (api --[[@as louiselm.session.Registry]]).recording
+  recording.session_names = function(_, callback)
+    callback(nil, { code = "corrupt", message = "recording store is corrupt" })
+    return function() end
+  end
+  local discovered, discovery_errors
+  assert(api:discover_sessions(nil, function(sessions, errors)
+    discovered = sessions
+    discovery_errors = errors
+  end))
+  respond(processes[1], 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  respond(processes[1], 2, { sessions = { { sessionId = "named", cwd = "/tmp/project" } } })
+  MiniTest.expect.equality(discovered, { { agent = "agent", session_id = "named", cwd = "/tmp/project" } })
+  MiniTest.expect.equality(discovery_errors, {
+    { message = "could not read saved Session names: recording store is corrupt" },
+  })
   assert(api:dispose())
   restore_processes(original_system)
 end
@@ -2259,6 +2369,9 @@ T["new"]["filters discovery to one workspace and reports unsupported adapters"] 
     },
   })
   respond(unsupported, 1, { protocolVersion = 1, agentCapabilities = {} })
+  assert(nvim.wait(6000, function()
+    return discovered ~= nil
+  end, 10))
 
   MiniTest.expect.equality(discovered, {
     { agent = "supported", session_id = "keep", cwd = "/tmp/project" },

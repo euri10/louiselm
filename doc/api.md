@@ -499,7 +499,7 @@ louiselm.session.TranscriptEntryKind:
 
 ### louiselm.session.DiscoveryError
 
-- `agent: string` -- Configured agent definition name.
+- `agent: string?` -- Configured agent definition name; absent for local store failures.
 - `message: string` -- Sanitized discovery failure.
 
 ### louiselm.session.DiscoveryCallback
@@ -511,6 +511,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 ### louiselm.session.DiscoveryState
 
 - `callback: fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.DiscoveryError[])`
+- `cancel_names: fun()?` -- Pending saved-name read; delivery waits for it.
 - `clients: table<string, louiselm.acp.Client>`
 - `done: boolean`
 - `errors: louiselm.session.DiscoveryError[]`
@@ -681,6 +682,7 @@ louiselm.session.LimitsStatus:
 
 - `agent: string` -- Configured agent definition name.
 - `cwd: string` -- Authoritative primary workspace.
+- `name: string?` -- Custom name saved locally with this Session, never inferred.
 - `session_id: string` -- Agent-side ACP session identifier.
 - `title: string?` -- Agent-provided display title.
 - `updated_at: string?` -- Agent-provided ISO 8601 activity timestamp.

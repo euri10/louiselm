@@ -81,6 +81,7 @@ local UsageQuery = require("louiselm.session.usage_query")
 ---@field routing_preference fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.RoutingPreferenceCallback): fun()
 ---@field save_session_name fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, name: string, callback?: louiselm.session.RecordingCallback)
 ---@field session_name fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: fun(name: string?, error?: louiselm.session.RecordingError)): fun()
+---@field session_names fun(self: louiselm.session.RecordingStore, callback: fun(names: table<string, table<string, string>>?, error?: louiselm.session.RecordingError)): fun()
 ---@field queue_reconciliation fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, turn_id: string?, callback: fun(unresolved: boolean?, outcome: string?, error?: louiselm.session.RecordingError))
 
 ---@class louiselm.session.UsageCohort
@@ -1098,6 +1099,52 @@ function Store:session_name(agent, acp_session_id, callback)
         end
       end
     )
+  end)
+  return function()
+    cancelled = true
+    cancel_read()
+  end
+end
+
+---Read every saved custom name without creating or migrating a store.
+---Missing/pre-feature stores return an empty map; malformed state returns an explicit error.
+---@param self louiselm.session.RecordingStore
+---@param callback fun(names: table<string, table<string, string>>?, error?: louiselm.session.RecordingError) Names by Agent, then ACP Session id; main-loop result, once.
+---@return fun() cancel Suppress delivery and terminate the current read.
+function Store:session_names(callback)
+  local cancelled = false
+  local cancel_read
+  cancel_read = read(self, "SELECT user_version AS version FROM pragma_user_version;", function(rows, err)
+    if cancelled then
+      return
+    end
+    if err ~= nil or rows == nil then
+      callback(nil, err)
+      return
+    end
+    if #rows == 0 or rows[1].version < 5 then
+      callback({})
+      return
+    end
+    cancel_read = read(self, "SELECT agent,acp_session_id,name FROM session_names;", function(records, query_error)
+      if cancelled then
+        return
+      end
+      if query_error ~= nil or records == nil then
+        callback(nil, query_error)
+        return
+      end
+      local names = {}
+      for _, record in ipairs(records) do
+        if not nonempty(record.agent) or not nonempty(record.acp_session_id) or not nonempty(record.name) then
+          callback(nil, failure("corrupt"))
+          return
+        end
+        names[record.agent] = names[record.agent] or {}
+        names[record.agent][record.acp_session_id] = record.name
+      end
+      callback(names)
+    end)
   end)
   return function()
     cancelled = true

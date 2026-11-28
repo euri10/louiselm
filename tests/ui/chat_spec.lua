@@ -5818,6 +5818,7 @@ T["chat"]["normalizes discovered session subjects across agent title shapes"] = 
       session_id = "native-session",
       cwd = "/tmp/project",
       title = "Review available agent skills",
+      name = "skills\nreview",
       updated_at = "2026-08-24T06:53:07.000Z",
     },
     {
@@ -5839,7 +5840,7 @@ T["chat"]["normalizes discovered session subjects across agent title shapes"] = 
 
   MiniTest.expect.equality(formatted, {
     "codex/skill-session · updated=2026-08-24T06:54:07.000Z · cwd=/tmp/project · Fix picker labels",
-    "claude/native-session · updated=2026-08-24T06:53:07.000Z · cwd=/tmp/project · Review available agent skills",
+    "skills review · claude/native-session · updated=2026-08-24T06:53:07.000Z · cwd=/tmp/project · Review available agent skills",
     "deepseek/truncated-session · updated=2026-08-24T06:52:07.000Z · cwd=/tmp/project",
     "copilot/resource-session · updated=2026-08-24T06:51:07.000Z · cwd=/tmp/project · Review the picker",
   })

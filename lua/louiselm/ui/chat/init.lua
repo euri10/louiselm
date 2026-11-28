@@ -363,9 +363,11 @@ end
 ---@param session louiselm.session.DiscoveredSession
 ---@return string
 local function discovered_session_summary(session)
-  local parts = {
-    report_id(single_line(session.agent), single_line(session.session_id)),
-  }
+  local parts = {}
+  if session.name ~= nil then
+    parts[1] = single_line(session.name)
+  end
+  parts[#parts + 1] = report_id(single_line(session.agent), single_line(session.session_id))
   if session.updated_at ~= nil then
     parts[#parts + 1] = "updated=" .. single_line(session.updated_at)
   end
@@ -382,7 +384,8 @@ end
 local function discovery_error_summary(errors)
   local messages = {}
   for _, discovery_error in ipairs(errors) do
-    messages[#messages + 1] = discovery_error.agent .. ": " .. discovery_error.message
+    local agent = discovery_error.agent
+    messages[#messages + 1] = agent and agent .. ": " .. discovery_error.message or discovery_error.message
   end
   return table.concat(messages, "; ")
 end

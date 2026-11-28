@@ -21,7 +21,7 @@ local nvim = vim
 ---@field cwd? string Exact ACP workspace filter; omit to discover every workspace.
 
 ---@class louiselm.session.DiscoveryError
----@field agent string Configured agent definition name.
+---@field agent? string Configured agent definition name; absent for local store failures.
 ---@field message string Sanitized discovery failure.
 
 ---@alias louiselm.session.DiscoveryCallback fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.DiscoveryError[])
@@ -35,6 +35,7 @@ local nvim = vim
 ---@field errors louiselm.session.DiscoveryError[]
 ---@field callback louiselm.session.DiscoveryCallback
 ---@field done boolean
+---@field cancel_names? fun() Pending saved-name read; delivery waits for it.
 
 ---@class louiselm.session.Registry: louiselm.session.Api
 ---@field definitions louiselm.agent.Definitions Normalized named definitions.
@@ -918,17 +919,45 @@ function Registry:discover_sessions(options, callback)
   self.next_discovery_id = self.next_discovery_id + 1
   self.discoveries[discovery.id] = discovery
 
-  local function complete()
-    if discovery.done or discovery.remaining > 0 then
-      return
-    end
+  local function deliver()
     discovery.done = true
+    discovery.cancel_names = nil
     self.discoveries[discovery.id] = nil
     sort_discovered_sessions(discovery.sessions)
+    -- Agent failures sort by Agent; local failures without one follow them.
     table.sort(discovery.errors, function(left, right)
+      if left.agent == nil or right.agent == nil then
+        return right.agent == nil and left.agent ~= nil
+      end
       return left.agent < right.agent
     end)
     discovery.callback(discovery.sessions, discovery.errors)
+  end
+
+  local function complete()
+    if discovery.done or discovery.remaining > 0 or discovery.cancel_names ~= nil then
+      return
+    end
+    if #discovery.sessions == 0 then
+      deliver()
+      return
+    end
+    -- Custom names live only in the local store; Agents list their own titles.
+    discovery.cancel_names = self.recording:session_names(function(saved, err)
+      if discovery.done then
+        return
+      end
+      if saved == nil then
+        discovery.errors[#discovery.errors + 1] = {
+          message = "could not read saved Session names: " .. (err and err.message or "unknown error"),
+        }
+      else
+        for _, session in ipairs(discovery.sessions) do
+          session.name = saved[session.agent] and saved[session.agent][session.session_id]
+        end
+      end
+      deliver()
+    end)
   end
 
   for _, name in ipairs(names) do
@@ -1354,6 +1383,10 @@ function Registry:dispose(callback)
   end
   for id, discovery in pairs(self.discoveries) do
     discovery.done = true
+    if discovery.cancel_names ~= nil then
+      discovery.cancel_names()
+      discovery.cancel_names = nil
+    end
     for name, client in pairs(discovery.clients) do
       discovery.clients[name] = nil
       local _, close_error = client:close()
