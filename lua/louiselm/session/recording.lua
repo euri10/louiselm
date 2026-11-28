@@ -832,6 +832,9 @@ COMMIT;
 end
 
 ---Read payload-free terminal evidence before a saved queue can be continued.
+---Any recorded outcome settles a turn, including Disposal without a peer
+---response; only a turn with no outcome is unresolved. The saved active turn
+---still needs peer-confirmed or not-sent evidence (louiselm-rm0n6).
 ---@param self louiselm.session.RecordingStore
 ---@param agent string
 ---@param acp_session_id string
@@ -842,9 +845,7 @@ function Store:queue_reconciliation(agent, acp_session_id, turn_id, callback)
   local subject = "t.agent=" .. sql_text(agent) .. " AND t.acp_session_id=" .. sql_text(acp_session_id)
   local sql = "SELECT EXISTS(SELECT 1 FROM turns t LEFT JOIN turn_events e ON e.turn_id=t.id AND e.kind='outcome' WHERE "
     .. subject
-    .. " AND (e.data IS NULL OR NOT COALESCE("
-    .. terminal
-    .. ",0))) AS unresolved, "
+    .. " AND e.data IS NULL) AS unresolved, "
     .. "(SELECT json_extract(e.data,'$.outcome') FROM turns t JOIN turn_events e ON e.turn_id=t.id AND e.kind='outcome' WHERE "
     .. subject
     .. " AND t.id="

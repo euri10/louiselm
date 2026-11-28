@@ -204,6 +204,41 @@ T["canonical retries preserve typed options and reject conflicting facts"] = fun
   )
 end
 
+-- Any recorded terminal outcome settles a turn; only a missing one is unresolved.
+-- The saved active turn still needs a usable outcome (louiselm-rm0n6).
+T["queue reconciliation settles old disposed turns but keeps missing outcomes unresolved"] = function()
+  local writer = store()
+  local function outcome(id, data)
+    MiniTest.expect.equality(append(writer, prepared(id)), nil)
+    if data ~= nil then
+      MiniTest.expect.equality(
+        append(
+          writer,
+          { turn_id = id, sequence = 1, kind = "outcome", observed_at = "2026-09-07T12:00:00Z", data = data }
+        ),
+        nil
+      )
+    end
+  end
+  local function reconcile(turn_id)
+    local result
+    writer:queue_reconciliation("mock", "session", turn_id, function(unresolved, value, err)
+      result = { unresolved = unresolved, outcome = value, err = err }
+    end)
+    wait_for(function()
+      return result ~= nil
+    end)
+    return result
+  end
+  outcome("disposed", { outcome = "disposed", peer_response = false })
+  outcome("completed", { outcome = "completed", peer_response = true })
+  MiniTest.expect.equality(reconcile(nil), { unresolved = false })
+  MiniTest.expect.equality(reconcile("completed"), { unresolved = false, outcome = "completed" })
+  MiniTest.expect.equality(reconcile("disposed"), { unresolved = false })
+  outcome("open", nil)
+  MiniTest.expect.equality(reconcile(nil), { unresolved = true })
+end
+
 T["missing sqlite and corrupt or unsafe files report typed failures"] = function()
   local writer = store()
   saved_path = nvim.env.PATH
