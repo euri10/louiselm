@@ -1718,6 +1718,30 @@ T["Session Disposal retires permission authority in every attached view"] = func
   MiniTest.expect.equality(sent, false)
 end
 
+-- A different well-formed boot id proves the old owner is gone (louiselm-sm35e).
+T["an owner from a previous boot is dead, missing boot evidence is live"] = function()
+  local QueueStore = require("louiselm.session.queue_store")
+  local namespace = assert(nvim.uv.fs_readlink("/proc/self/ns/pid"))
+  local boot = assert(io.open("/proc/sys/kernel/random/boot_id")):read("*l")
+  local function dead(owner)
+    local result
+    QueueStore.new(nvim.fn.tempname()):owner_dead(owner, function(value)
+      result = value
+    end)
+    wait_for(function()
+      return result ~= nil
+    end)
+    return result
+  end
+  local previous = boot == "00000000-0000-0000-0000-000000000000" and "11111111-1111-1111-1111-111111111111"
+    or "00000000-0000-0000-0000-000000000000"
+  local pid = nvim.uv.os_getpid()
+  MiniTest.expect.equality(dead({ pid = pid, boot = previous, namespace = namespace }), true)
+  MiniTest.expect.equality(dead({ pid = pid, boot = boot, namespace = namespace }), false)
+  MiniTest.expect.equality(dead({ pid = pid, namespace = namespace }), false)
+  MiniTest.expect.equality(dead({ pid = pid, boot = "not-a-boot-id", namespace = namespace }), false)
+end
+
 T["a live owner cannot be displaced and a reused local ID cannot adopt its queue"] = function()
   local api, original = fixture()
   local permission

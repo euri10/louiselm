@@ -183,13 +183,25 @@ local function process_identity(self, callback)
   end)
 end
 
----Prove the exact old editor process is absent in the same boot and PID namespace.
----PID reuse and unavailable evidence are conservatively treated as live.
+---Prove the exact old editor process is absent. A different well-formed boot id
+---proves it: no process survives a reboot. Otherwise require the same boot and PID
+---namespace. PID reuse and unavailable evidence are conservatively treated as live.
 ---@param self louiselm.session.QueueStore
 ---@param old table?
 ---@param callback fun(dead: boolean)
 function Store:owner_dead(old, callback)
   process_identity(self, function(current)
+    if
+      type(old) == "table"
+      and current.boot ~= nil
+      and type(old.boot) == "string"
+      and #old.boot == 36
+      and old.boot:match("^[%da-f%-]+$") ~= nil
+      and old.boot ~= current.boot
+    then
+      callback(true)
+      return
+    end
     if
       type(old) ~= "table"
       or type(old.pid) ~= "number"
